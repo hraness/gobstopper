@@ -1,0 +1,21 @@
+[package]
+name = "gobstopper"
+description = "Automatic context compaction for Codex and Claude Code sessions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "gobstopper"
+path = "src/main.rs"
+
+[dependencies]
+gobstopper-core = { path = "../gobstopper-core" }
+gobstopper-adapters = { path = "../gobstopper-adapters" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+anyhow = { workspace = true }
+clap = { workspace = true }
+toml = { workspace = true }

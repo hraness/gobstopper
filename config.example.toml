@@ -1,0 +1,35 @@
+# ~/.config/gobstopper/config.toml
+
+[policy]
+strategy = "auto"              # auto | sawtooth | elide | structured | agentic
+trigger_tokens = 250_000       # fire when context exceeds this
+floor_tokens = 40_000          # transcript-path post-compaction target
+keep_recent_tool_outputs = 8   # tail outputs never elided
+min_interval_secs = 300        # per-session compaction rate limit
+
+# Per-provider overrides
+[provider.codex]
+# trigger_tokens = 200_000
+
+[provider.claude_code]
+# trigger_tokens = 180_000
+
+# Per-session overrides, keyed by session id
+# [sessions."01a08d7c-77fd-7690-9413-e8219b379151"]
+# strategy = "structured"
+# trigger_tokens = 120_000
+
+# Named presets: `gobstopper plan <s> --preset deep-work`
+[presets.deep-work]
+strategy = "elide"
+trigger_tokens = 150_000
+floor_tokens = 20_000
+
+[presets.chatty]
+strategy = "structured"
+trigger_tokens = 180_000
+
+# Userspace code preset: receives the normalized transcript as JSON on
+# stdin, returns {"edits": [...]} on stdout.
+# [presets.my-script]
+# command = "python3 ~/bin/compactor.py"

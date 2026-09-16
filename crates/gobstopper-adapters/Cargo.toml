@@ -1,0 +1,13 @@
+[package]
+name = "gobstopper-adapters"
+description = "Session discovery and transcript adapters for Codex and Claude Code"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+gobstopper-core = { path = "../gobstopper-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
