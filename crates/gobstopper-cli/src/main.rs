@@ -2,6 +2,7 @@
 
 mod config;
 mod hooks;
+mod report;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -132,6 +133,14 @@ enum Cmd {
     Hook {
         /// "precompact" | "session-start"
         event: String,
+    },
+    /// Emit a session-observations-v1 report (aicharts schema) joining
+    /// detected sessions with compaction telemetry. JSON on stdout.
+    Report {
+        /// Strip the `gobstopper` extension key so the output parses
+        /// strictly against aicharts' session-observations-v1 schema.
+        #[arg(long)]
+        strict: bool,
     },
     /// Show compaction telemetry: recent events and cumulative savings.
     Events {
@@ -660,6 +669,21 @@ fn cmd_hook(event: &str) -> Result<()> {
     Ok(())
 }
 
+fn cmd_report(cli: &Cli, strict: bool) -> Result<()> {
+    let sessions = detect::discover(&roots(cli), 0);
+    let events = gobstopper_core::events::read_events(&default_log_path()).unwrap_or_default();
+    let mut report = report::build_report(&sessions, &events);
+    if strict {
+        if let Some(list) = report["sessions"].as_array_mut() {
+            for s in list {
+                s.as_object_mut().map(|o| o.remove("gobstopper"));
+            }
+        }
+    }
+    println!("{}", serde_json::to_string_pretty(&report)?);
+    Ok(())
+}
+
 fn cmd_events(session: Option<&str>, tail: usize, json: bool) -> Result<()> {
     let path = default_log_path();
     let mut events = gobstopper_core::events::read_events(&path).unwrap_or_default();
@@ -764,6 +788,7 @@ fn cmd_eval(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_apply(
     cli: &Cli,
     cfg: &config::Config,
@@ -1035,7 +1060,7 @@ fn cmd_watch(
                         provider_compact(&d)
                     } else {
                         snapshot_before_edit(&d, &plan.strategy)
-                            .and_then(|_| apply_edits(&d, &plan).map_err(anyhow::Error::from))
+                            .and_then(|_| apply_edits(&d, &plan))
                             .map(|_| ())
                     };
                     match r {
@@ -1212,6 +1237,7 @@ fn main() -> Result<()> {
         Cmd::InstallHooks => cmd_install_hooks(false),
         Cmd::UninstallHooks => cmd_install_hooks(true),
         Cmd::Hook { event } => cmd_hook(event),
+        Cmd::Report { strict } => cmd_report(&cli, *strict),
         Cmd::Events {
             session,
             tail,
