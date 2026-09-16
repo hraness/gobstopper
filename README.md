@@ -1,3 +1,4 @@
+<!-- hraness:gobstopper-landing:start -->
 # gobstopper
 
 Automatic context compaction for coding-agent sessions — Codex and Claude
@@ -7,6 +8,7 @@ Run it, and it watches your agent sessions. When a session's context
 crosses a configured threshold, gobstopper compacts it — earlier and
 smarter than the provider's own defaults — using a strategy you choose per
 session, per provider, or per preset.
+<!-- hraness:gobstopper-landing:end -->
 
 ## Why
 
@@ -54,7 +56,8 @@ plan on stdout.
 ## Install & use
 
 ```sh
-cargo install --path crates/gobstopper-cli   # or: cargo build --release
+cargo install --git https://github.com/hraness/gobstopper gobstopper
+# or from a checkout: cargo build --release
 
 gobstopper detect                  # sessions, context sizes, lifetime burn
 gobstopper plan <session>          # what would happen, under which strategy
@@ -148,19 +151,20 @@ for fully custom summaries is the designed v0.2 path.
 ## Status
 
 v0.2: detection, planning, and transcript elision work against real
-session files. `sawtooth` routes to Codex's `thread/compact/start` via
-`codex app-server proxy` when the shared daemon is reachable. `verify`
-checks resume-validity, `undo`/`vault` give reversible compaction via a
-content-addressed snapshot store, `policy-check` accepts
+session files. `sawtooth` routes to Codex's `thread/compact/start` through
+a private `codex app-server --listen stdio://` process — no daemon
+required. `verify` checks resume-validity, `undo`/`vault` give reversible
+compaction via a content-addressed snapshot store, `policy-check` accepts
 `--quota-pressure`, and every compaction emits a numeric
 `compaction-events-v1` record. The agentic driver interface
 (`EditorDriver`, `EditorCall` schema) is defined and falls back to the
 `auto` rubric until a model backend is wired in.
 
-See `docs/design.md` for the research basis and `docs/roadmap.md` for
-the phased plan — including how gobstopper shares foundations with
-oompa (control plane), aicharts (measurement), and the agentrouter task
-runtime (editor-model backend for the `agentic` strategy).
+See [docs/design.md](docs/design.md) for the research basis and
+[docs/roadmap.md](docs/roadmap.md) for the phased plan — including how
+gobstopper shares foundations with oompa (control plane), aicharts
+(measurement), and the agentrouter task runtime (editor-model backend for
+the `agentic` strategy).
 
 ## License
 
