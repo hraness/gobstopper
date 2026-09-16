@@ -8,6 +8,8 @@
 pub mod claude;
 pub mod codex;
 pub mod detect;
+pub mod eval;
+pub mod fork;
 pub mod verify;
 pub mod vault;
 

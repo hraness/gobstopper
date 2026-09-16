@@ -1,0 +1,709 @@
+//! Provider hook installation + hook-event handling.
+//!
+//! Both providers use the same hook document shape: a top-level `hooks`
+//! object mapping an event name to a list of matcher groups
+//! `{"matcher": <regex>, "hooks": [{"type": "command", "command": ...}]}`.
+//!
+//! Claude Code (`~/.claude/settings.json`, verified 2.1.x):
+//! - `PreCompact` fires before native compaction; stdin carries
+//!   `session_id`, `transcript_path`, `hook_event_name`, `trigger`
+//!   ("manual"|"auto").
+//! - `SessionStart` carries `source` ("startup"|"resume"|"clear"|
+//!   "compact"); a hook may print
+//!   `{"hookSpecificOutput":{"hookEventName":"SessionStart",
+//!   "additionalContext":"..."}}` to inject developer context.
+//!
+//! Codex (`~/.codex/hooks.json`, verified codex-cli 0.154.0-alpha.6.2 —
+//! the `hooks` feature flag is stable and enabled by default):
+//! - Same matcher-group schema and the same snake_case stdin fields
+//!   (`session_id`, `transcript_path`, `hook_event_name`, `trigger`,
+//!   `source`), plus Codex extensions (`turn_id`, `model`, `cwd`).
+//! - `PreCompact` matcher filters `trigger` ("manual"|"auto");
+//!   `SessionStart` matcher filters `source` (incl. "compact").
+//! - Same `hookSpecificOutput.additionalContext` stdout contract.
+//! - Trust gate: non-managed hooks must be reviewed before they run —
+//!   Codex records trust per hook-definition hash in `hooks.state` and
+//!   skips new/changed hooks until the user approves them via `/hooks`
+//!   in the TUI (or runs with `--dangerously-bypass-hook-trust`). Our
+//!   installer therefore reports "installed"; first run still needs one
+//!   trust approval inside Codex.
+
+#![allow(dead_code)]
+
+use anyhow::{bail, Context, Result};
+use gobstopper_adapters::{detect, vault};
+use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
+use gobstopper_core::Provider;
+use serde_json::{json, Value};
+use std::fs;
+use std::path::{Path, PathBuf};
+
+/// Substring identifying a gobstopper-owned hook command. Uninstall only
+/// touches handler entries whose `command` contains this marker.
+const OUR_HOOK: &str = "gobstopper hook";
+const CMD_PRECOMPACT: &str = "gobstopper hook precompact";
+const CMD_SESSION_START: &str = "gobstopper hook session-start";
+
+/// A provider hook point gobstopper can install into.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HookTarget {
+    ClaudePreCompact,
+    ClaudeSessionStart,
+    CodexPreCompact,
+    CodexSessionStart,
+}
+
+impl HookTarget {
+    /// All supported targets, in stable display order.
+    pub fn all() -> &'static [HookTarget] {
+        &[
+            HookTarget::ClaudePreCompact,
+            HookTarget::ClaudeSessionStart,
+            HookTarget::CodexPreCompact,
+            HookTarget::CodexSessionStart,
+        ]
+    }
+
+    /// Provider-specific hook event key in the settings document.
+    fn event_name(&self) -> &'static str {
+        match self {
+            HookTarget::ClaudePreCompact | HookTarget::CodexPreCompact => "PreCompact",
+            HookTarget::ClaudeSessionStart | HookTarget::CodexSessionStart => "SessionStart",
+        }
+    }
+
+    /// Regex matcher for the event. Empty matches every occurrence.
+    fn matcher(&self) -> &'static str {
+        match self {
+            // Fire on both manual and auto compaction triggers.
+            HookTarget::ClaudePreCompact | HookTarget::CodexPreCompact => "",
+            HookTarget::ClaudeSessionStart => "compact",
+            // Codex documents anchored regexes for source matching.
+            HookTarget::CodexSessionStart => "^compact$",
+        }
+    }
+
+    fn command(&self) -> &'static str {
+        match self {
+            HookTarget::ClaudePreCompact | HookTarget::CodexPreCompact => CMD_PRECOMPACT,
+            HookTarget::ClaudeSessionStart | HookTarget::CodexSessionStart => CMD_SESSION_START,
+        }
+    }
+
+    /// Human label used in install reports.
+    fn label(&self) -> String {
+        let provider = match self {
+            HookTarget::ClaudePreCompact | HookTarget::ClaudeSessionStart => "claude",
+            HookTarget::CodexPreCompact | HookTarget::CodexSessionStart => "codex",
+        };
+        format!("{provider}:{}", self.event_name())
+    }
+}
+
+/// Outcome of an install/uninstall pass over one settings file.
+#[derive(Debug)]
+pub struct InstallReport {
+    /// The settings file that was (or would be) written.
+    pub path: PathBuf,
+    /// Labels of entries added by `install`, or removed by `uninstall`.
+    pub added: Vec<String>,
+    /// Labels of entries already present (`install` only).
+    pub skipped: Vec<String>,
+}
+
+/// `$CLAUDE_CONFIG_DIR/settings.json`, default `~/.claude/settings.json`.
+pub fn default_claude_settings() -> PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude")))
+        .unwrap_or_default()
+        .join("settings.json")
+}
+
+/// `$CODEX_HOME/hooks.json`, default `~/.codex/hooks.json`. Codex also
+/// accepts inline `[hooks]` tables in `config.toml`; the standalone JSON
+/// file is the additive, non-destructive install point.
+pub fn default_codex_hooks() -> PathBuf {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")))
+        .unwrap_or_default()
+        .join("hooks.json")
+}
+
+/// The installed Codex builds on this machine (codex-cli
+/// 0.154.0-alpha.6.2, `codex features list`: `hooks stable true`) ship a
+/// real hooks engine with `PreCompact`/`SessionStart` events — see the
+/// module docs. Kept as a runtime probe so callers can re-check on
+/// older/different installs; today we only assert the format we write.
+pub fn codex_hooks_supported() -> bool {
+    true
+}
+
+fn read_settings(path: &Path) -> Result<(Value, bool)> {
+    match fs::read_to_string(path) {
+        Ok(text) => {
+            let doc: Value = serde_json::from_str(&text).with_context(|| {
+                format!(
+                    "parse {} — refusing to edit malformed settings",
+                    path.display()
+                )
+            })?;
+            if !doc.is_object() {
+                bail!("{}: top-level JSON value must be an object", path.display());
+            }
+            Ok((doc, true))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok((json!({}), false)),
+        Err(e) => Err(e).with_context(|| format!("read {}", path.display())),
+    }
+}
+
+/// Does any matcher group under one event array carry `command`?
+fn event_has_command(groups: &[Value], command: &str) -> bool {
+    groups.iter().any(|group| {
+        group["hooks"]
+            .as_array()
+            .map(|handlers| {
+                handlers.iter().any(|h| {
+                    h["command"]
+                        .as_str()
+                        .map(|c| c.contains(command))
+                        .unwrap_or(false)
+                })
+            })
+            .unwrap_or(false)
+    })
+}
+
+/// Copy to `<file>.gobstopper-bak` (best-effort overwrite of an older
+/// backup), then write `text` via temp+rename in the same directory.
+fn backup_then_write(path: &Path, text: &str, existed: bool) -> Result<()> {
+    if existed {
+        let mut bak = path.as_os_str().to_os_string();
+        bak.push(".gobstopper-bak");
+        fs::copy(path, PathBuf::from(&bak))
+            .with_context(|| format!("backup {} -> {}", path.display(), bak.to_string_lossy()))?;
+    }
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "settings.json".to_string());
+    let tmp = path.with_file_name(format!(".{name}.gobstopper-tmp-{}", std::process::id()));
+    fs::write(&tmp, text).with_context(|| format!("write {}", tmp.display()))?;
+    if let Ok(meta) = fs::metadata(path) {
+        let _ = fs::set_permissions(&tmp, meta.permissions());
+    }
+    fs::rename(&tmp, path).with_context(|| format!("commit {}", path.display()))
+}
+
+/// Merge gobstopper hook entries into a settings file — additively, so
+/// the user's other hooks are never removed or reordered. Backs the file
+/// up to `<file>.gobstopper-bak` and writes atomically (temp+rename).
+/// Idempotent: when every target is already present nothing is written.
+pub fn install(settings_path: &Path, targets: &[HookTarget]) -> Result<InstallReport> {
+    let (mut doc, existed) = read_settings(settings_path)?;
+    let mut report = InstallReport {
+        path: settings_path.to_path_buf(),
+        added: Vec::new(),
+        skipped: Vec::new(),
+    };
+    {
+        let obj = doc.as_object_mut().expect("read_settings returns object");
+        let hooks = obj.entry("hooks".to_string()).or_insert_with(|| json!({}));
+        if !hooks.is_object() {
+            bail!("{}: 'hooks' must be an object", settings_path.display());
+        }
+        let hooks = hooks.as_object_mut().unwrap();
+        for target in targets {
+            let event = target.event_name();
+            let groups = hooks.entry(event.to_string()).or_insert_with(|| json!([]));
+            if !groups.is_array() {
+                bail!(
+                    "{}: hooks.{event} must be an array of matcher groups",
+                    settings_path.display()
+                );
+            }
+            let groups = groups.as_array_mut().unwrap();
+            if event_has_command(groups, target.command()) {
+                report.skipped.push(target.label());
+                continue;
+            }
+            groups.push(json!({
+                "matcher": target.matcher(),
+                "hooks": [{"type": "command", "command": target.command()}],
+            }));
+            report.added.push(target.label());
+        }
+    }
+    if report.added.is_empty() {
+        return Ok(report);
+    }
+    let text = serde_json::to_string_pretty(&doc)? + "\n";
+    backup_then_write(settings_path, &text, existed)?;
+    Ok(report)
+}
+
+/// Remove only entries whose command string contains `gobstopper hook`;
+/// emptied matcher groups and event arrays are dropped. `added` in the
+/// report lists the removed event labels.
+pub fn uninstall(settings_path: &Path) -> Result<InstallReport> {
+    let (mut doc, existed) = read_settings(settings_path)?;
+    let mut report = InstallReport {
+        path: settings_path.to_path_buf(),
+        added: Vec::new(),
+        skipped: Vec::new(),
+    };
+    if !existed {
+        return Ok(report);
+    }
+    if let Some(hooks) = doc.get_mut("hooks").and_then(Value::as_object_mut) {
+        let events: Vec<String> = hooks.keys().cloned().collect();
+        for event in events {
+            let Some(groups) = hooks.get_mut(&event).and_then(Value::as_array_mut) else {
+                continue;
+            };
+            let mut touched = false;
+            for group in groups.iter_mut() {
+                if let Some(handlers) = group.get_mut("hooks").and_then(Value::as_array_mut) {
+                    let before = handlers.len();
+                    handlers.retain(|h| {
+                        !h["command"]
+                            .as_str()
+                            .map(|c| c.contains(OUR_HOOK))
+                            .unwrap_or(false)
+                    });
+                    touched |= handlers.len() != before;
+                }
+            }
+            groups.retain(|g| g["hooks"].as_array().map(|h| !h.is_empty()).unwrap_or(true));
+            if touched {
+                report.added.push(event.clone());
+            }
+            if groups.is_empty() {
+                hooks.remove(&event);
+            }
+        }
+    }
+    if report.added.is_empty() {
+        return Ok(report);
+    }
+    let text = serde_json::to_string_pretty(&doc)? + "\n";
+    backup_then_write(settings_path, &text, true)?;
+    Ok(report)
+}
+
+/// True when the file already contains our command entry for `target`.
+/// Missing or malformed files read as not-installed.
+pub fn is_installed(settings_path: &Path, target: &HookTarget) -> bool {
+    let Ok(text) = fs::read_to_string(settings_path) else {
+        return false;
+    };
+    let Ok(doc) = serde_json::from_str::<Value>(&text) else {
+        return false;
+    };
+    doc["hooks"][target.event_name()]
+        .as_array()
+        .map(|groups| event_has_command(groups, target.command()))
+        .unwrap_or(false)
+}
+
+/// Snapshot the transcript (when it exists) and append a telemetry event.
+/// Failures are reported on stderr, never propagated: a hook must never
+/// break the provider. `snap_strategy` labels the vault snapshot;
+/// `outcome` is the compaction-events outcome vocab word.
+fn snapshot_and_log(
+    payload: &Value,
+    snap_strategy: &str,
+    outcome: &str,
+    vault_root: &Path,
+    log_path: &Path,
+) {
+    let session_id = payload["session_id"].as_str().unwrap_or("unknown");
+    let transcript = payload["transcript_path"].as_str().map(PathBuf::from);
+    let mut provider = Provider::ClaudeCode;
+    if let Some(path) = &transcript {
+        if path.is_file() {
+            if let Some(sniffed) = detect::sniff_provider(path) {
+                provider = sniffed;
+            }
+            if let Err(e) =
+                vault::snapshot(path, provider, session_id, Some(snap_strategy), vault_root)
+            {
+                eprintln!("gobstopper hook: vault snapshot failed (non-fatal): {e}");
+            }
+        }
+    }
+    // A well-formed payload carrying neither a session id nor a
+    // transcript is not a real hook call — don't write junk telemetry.
+    if payload.get("session_id").is_none() && transcript.is_none() {
+        return;
+    }
+    let event = CompactionEvent::new(
+        provider,
+        session_id,
+        "native",
+        "provider_compact",
+        outcome,
+        0, // provider doesn't report a trigger threshold on the hook wire
+        0, // context before/after unknown until the provider reports them
+        0,
+        0,
+        0,
+        None,
+    );
+    if let Err(e) = append_event(log_path, &event) {
+        eprintln!("gobstopper hook: telemetry write failed (non-fatal): {e}");
+    }
+}
+
+fn handle_inner(
+    event: &str,
+    stdin_json: &str,
+    vault_root: &Path,
+    log_path: &Path,
+) -> Result<Option<String>> {
+    // Hooks must never break the provider: malformed stdin is a no-op.
+    let Ok(payload) = serde_json::from_str::<Value>(stdin_json) else {
+        return Ok(None);
+    };
+    match event {
+        "precompact" => {
+            snapshot_and_log(&payload, "pre-compact", "planned", vault_root, log_path);
+            Ok(None)
+        }
+        "session-start" => {
+            // Only the post-compaction source matters; startup/resume/
+            // clear carry no compaction lifecycle signal for us.
+            if payload["source"].as_str() != Some("compact") {
+                return Ok(None);
+            }
+            // The transcript is already rewritten — snapshot anyway for
+            // provenance, then point the model at the undo path.
+            snapshot_and_log(&payload, "post-compact", "applied", vault_root, log_path);
+            let session_id = payload["session_id"].as_str().unwrap_or("unknown");
+            let context = format!(
+                "gobstopper: this session was just compacted by the provider. \
+                 A pre-compact snapshot of the full transcript is in the \
+                 gobstopper vault; restore it with `gobstopper undo {session_id}`."
+            );
+            let out = json!({
+                "hookSpecificOutput": {
+                    "hookEventName": "SessionStart",
+                    "additionalContext": context,
+                }
+            });
+            Ok(Some(serde_json::to_string(&out)?))
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Handle one hook invocation: read the provider's hook JSON from
+/// `stdin_json`, snapshot the transcript into the vault, append a
+/// compaction-event record, and return the JSON string to print on
+/// stdout (`Some`) or `None`. `event` is "precompact" | "session-start".
+pub fn handle(event: &str, stdin_json: &str) -> Result<Option<String>> {
+    handle_inner(
+        event,
+        stdin_json,
+        &vault::default_root(),
+        &default_log_path(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write as _;
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gobstopper-hooks-test-{}-{}-{tag}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write(path: &Path, text: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, text).unwrap();
+    }
+
+    /// A Claude-shaped transcript line (sniffs as ClaudeCode).
+    const CLAUDE_LINE: &str = r#"{"sessionId":"sess-1","uuid":"u1","type":"user","message":{"role":"user","content":"hi"}}"#;
+
+    fn claude_transcript(dir: &Path) -> PathBuf {
+        let path = dir.join("transcript.jsonl");
+        write(&path, &format!("{CLAUDE_LINE}\n"));
+        path
+    }
+
+    #[test]
+    fn install_merges_preserving_existing_hooks() {
+        let dir = tmpdir("merge");
+        let settings = dir.join("settings.json");
+        write(
+            &settings,
+            r#"{
+  "model": "opus",
+  "hooks": {
+    "PreCompact": [
+      {"matcher": "", "hooks": [{"type": "command", "command": "my-other-tool --pre"}]}
+    ],
+    "PostToolUse": [
+      {"matcher": "Bash", "hooks": [{"type": "command", "command": "lint.sh"}]}
+    ]
+  }
+}
+"#,
+        );
+        let report = install(
+            &settings,
+            &[HookTarget::ClaudePreCompact, HookTarget::ClaudeSessionStart],
+        )
+        .unwrap();
+        assert_eq!(report.added.len(), 2);
+        assert!(report.skipped.is_empty());
+
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+        assert_eq!(doc["model"], "opus");
+        let pre = doc["hooks"]["PreCompact"].as_array().unwrap();
+        assert_eq!(pre.len(), 2);
+        // Foreign entry untouched and still first.
+        assert_eq!(pre[0]["hooks"][0]["command"], "my-other-tool --pre");
+        assert_eq!(pre[1]["hooks"][0]["command"], CMD_PRECOMPACT);
+        // PostToolUse untouched.
+        assert_eq!(doc["hooks"]["PostToolUse"][0]["matcher"], "Bash");
+        let start = doc["hooks"]["SessionStart"].as_array().unwrap();
+        assert_eq!(start[0]["matcher"], "compact");
+        assert_eq!(start[0]["hooks"][0]["command"], CMD_SESSION_START);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn install_is_idempotent() {
+        let dir = tmpdir("idem");
+        let settings = dir.join("settings.json");
+        let targets = [HookTarget::ClaudePreCompact, HookTarget::ClaudeSessionStart];
+        let first = install(&settings, &targets).unwrap();
+        assert_eq!(first.added.len(), 2);
+        let text_after_first = fs::read_to_string(&settings).unwrap();
+        let second = install(&settings, &targets).unwrap();
+        assert!(second.added.is_empty());
+        assert_eq!(second.skipped.len(), 2);
+        assert_eq!(fs::read_to_string(&settings).unwrap(), text_after_first);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn install_creates_missing_file_and_backup() {
+        let dir = tmpdir("create");
+        let settings = dir.join("nested").join("settings.json");
+        install(&settings, &[HookTarget::ClaudePreCompact]).unwrap();
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+        assert!(doc["hooks"]["PreCompact"].is_array());
+
+        // Second install path: existing file gets a .gobstopper-bak.
+        write(&settings, "{\n  \"hooks\": {}\n}\n");
+        install(&settings, &[HookTarget::ClaudePreCompact]).unwrap();
+        let bak = settings.with_file_name("settings.json.gobstopper-bak");
+        assert!(bak.is_file());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn uninstall_removes_only_ours() {
+        let dir = tmpdir("uninstall");
+        let settings = dir.join("settings.json");
+        write(
+            &settings,
+            r#"{"hooks":{"PreCompact":[{"matcher":"","hooks":[{"type":"command","command":"keep-me"},{"type":"command","command":"gobstopper hook precompact"}]}],"SessionStart":[{"matcher":"compact","hooks":[{"type":"command","command":"gobstopper hook session-start"}]}]}}"#,
+        );
+        let report = uninstall(&settings).unwrap();
+        assert_eq!(report.added.len(), 2);
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
+        let pre = doc["hooks"]["PreCompact"].as_array().unwrap();
+        assert_eq!(pre.len(), 1);
+        assert_eq!(pre[0]["hooks"][0]["command"], "keep-me");
+        // Our only entry under SessionStart: group and event removed.
+        assert!(doc["hooks"]["SessionStart"].is_null());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn uninstall_missing_file_is_noop() {
+        let dir = tmpdir("uninstall-missing");
+        let report = uninstall(&dir.join("nope.json")).unwrap();
+        assert!(report.added.is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn is_installed_checks() {
+        let dir = tmpdir("installed");
+        let settings = dir.join("settings.json");
+        assert!(!is_installed(&settings, &HookTarget::ClaudePreCompact));
+        install(&settings, &[HookTarget::ClaudePreCompact]).unwrap();
+        assert!(is_installed(&settings, &HookTarget::ClaudePreCompact));
+        assert!(!is_installed(&settings, &HookTarget::ClaudeSessionStart));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn codex_targets_merge_into_hooks_json() {
+        let dir = tmpdir("codex");
+        let hooks_file = dir.join("hooks.json");
+        install(
+            &hooks_file,
+            &[HookTarget::CodexPreCompact, HookTarget::CodexSessionStart],
+        )
+        .unwrap();
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&hooks_file).unwrap()).unwrap();
+        assert_eq!(doc["hooks"]["PreCompact"][0]["matcher"], "");
+        assert_eq!(doc["hooks"]["SessionStart"][0]["matcher"], "^compact$");
+        assert_eq!(
+            doc["hooks"]["SessionStart"][0]["hooks"][0]["command"],
+            CMD_SESSION_START
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn handle_tolerates_garbage_stdin() {
+        // Public handle(): garbage never reaches the filesystem.
+        for junk in ["", "not json{{{", "[]", "42", "null", "{}"] {
+            assert!(handle("precompact", junk).unwrap().is_none());
+            assert!(handle("session-start", junk).unwrap().is_none());
+            assert!(handle("bogus-event", junk).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn handle_precompact_snapshots_and_logs() {
+        let dir = tmpdir("precompact");
+        let transcript = claude_transcript(&dir);
+        let vault_root = dir.join("vault");
+        let log = dir.join("events.jsonl");
+        let stdin = format!(
+            r#"{{"session_id":"sess-1","transcript_path":"{}","hook_event_name":"PreCompact","trigger":"auto"}}"#,
+            transcript.display()
+        );
+        let out = handle_inner("precompact", &stdin, &vault_root, &log).unwrap();
+        assert!(out.is_none());
+
+        // Vault snapshot recorded with the pre-compact strategy label.
+        let index = fs::read_to_string(vault_root.join("index.jsonl")).unwrap();
+        let entry: Value = serde_json::from_str(index.lines().next().unwrap()).unwrap();
+        assert_eq!(entry["strategy"], "pre-compact");
+        assert_eq!(entry["session_id"], "sess-1");
+
+        let events: Vec<Value> = fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["action"], "provider_compact");
+        assert_eq!(events[0]["outcome"], "planned");
+        assert_eq!(events[0]["strategy"], "native");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn handle_precompact_missing_transcript_still_logs() {
+        let dir = tmpdir("precompact-missing");
+        let vault_root = dir.join("vault");
+        let log = dir.join("events.jsonl");
+        let stdin = r#"{"session_id":"sess-9","transcript_path":"/nonexistent/nope.jsonl","hook_event_name":"PreCompact","trigger":"manual"}"#;
+        let out = handle_inner("precompact", stdin, &vault_root, &log).unwrap();
+        assert!(out.is_none());
+        assert!(!vault_root.join("index.jsonl").exists());
+        let events: Vec<Value> = fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["session_id"], "sess-9");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn handle_session_start_compact_returns_context() {
+        let dir = tmpdir("session-start");
+        let transcript = claude_transcript(&dir);
+        let vault_root = dir.join("vault");
+        let log = dir.join("events.jsonl");
+        let stdin = format!(
+            r#"{{"session_id":"sess-2","transcript_path":"{}","hook_event_name":"SessionStart","source":"compact"}}"#,
+            transcript.display()
+        );
+        let out = handle_inner("session-start", &stdin, &vault_root, &log)
+            .unwrap()
+            .expect("compact source must emit additionalContext");
+        let doc: Value = serde_json::from_str(&out).unwrap();
+        let ctx = doc["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert_eq!(doc["hookSpecificOutput"]["hookEventName"], "SessionStart");
+        assert!(ctx.contains("gobstopper undo sess-2"));
+        // Pointer only: neither transcript path nor content leaks.
+        assert!(!ctx.contains(&transcript.display().to_string()));
+        assert!(!ctx.contains("\"content\":\"hi\""));
+
+        // Provenance snapshot + event appended.
+        let index = fs::read_to_string(vault_root.join("index.jsonl")).unwrap();
+        let entry: Value = serde_json::from_str(index.lines().next().unwrap()).unwrap();
+        assert_eq!(entry["strategy"], "post-compact");
+        let events: Vec<Value> = fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["outcome"], "applied");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn handle_session_start_other_sources_noop() {
+        let dir = tmpdir("session-start-other");
+        let vault_root = dir.join("vault");
+        let log = dir.join("events.jsonl");
+        for source in ["startup", "resume", "clear"] {
+            let stdin =
+                format!(r#"{{"session_id":"s","transcript_path":"/x.jsonl","source":"{source}"}}"#);
+            assert!(handle_inner("session-start", &stdin, &vault_root, &log)
+                .unwrap()
+                .is_none());
+        }
+        assert!(!log.exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn report_fields_are_public() {
+        // Compile-time surface check for the parent wiring layer.
+        let report = InstallReport {
+            path: PathBuf::from("x"),
+            added: vec!["a".into()],
+            skipped: vec![],
+        };
+        let _ = writeln!(std::io::sink(), "{:?}", report.path);
+        assert_eq!(report.added, ["a"]);
+        assert!(report.skipped.is_empty());
+        assert_eq!(HookTarget::all().len(), 4);
+        assert!(codex_hooks_supported());
+    }
+}

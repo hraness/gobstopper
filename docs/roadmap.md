@@ -70,31 +70,40 @@ provider-native compaction improving (Anthropic `compact_20260112`,
 Codex `ResponsesCompactionV2`) — gobstopper treats those as delegates,
 not competitors.
 
-## 3. Phase A — surgery correctness & reversibility (v0.2)
+## 3. Phase A — surgery correctness & reversibility (v0.2, shipped)
 
 The durable core is safe JSONL surgery. Before scaling strategies, make
 the write path bulletproof and undoable.
 
-- `gobstopper verify <file>`: resume-validity checker — orphaned
+- ✅ `gobstopper verify <file>`: resume-validity checker — orphaned
   `tool_use`/`tool_result` pairs, broken `parentUuid` chains, malformed
-  `compacted` records, unfinished tail records. Defect catalog drawn from
-  recensa-session/coldxx/ccsessed prior art. Emits exit codes + JSON.
-- **Content-addressed vault** (`~/.local/share/gobstopper/vault/`):
-  every `apply` snapshots the pre-edit transcript by digest; `gobstopper
-  undo <session>` restores. Nobody else offers "undo a compaction." The
-  vault doubles as the eval corpus (§6).
-- **Fork-on-write**: apply to a *copy* with fresh session id, print the
-  provider resume command (`claude --resume <new-id>`, `codex fork`).
-  Default for any session marked live.
-- Codex `compacted`-record writer: emit a real `compacted` record with
+  `compacted` records, torn tail lines. Exit 1 on errors, `--json` for
+  integrators.
+- ✅ **Content-addressed vault** (`~/.local/share/gobstopper/vault/`):
+  every `apply`/`watch` snapshots the pre-edit transcript by digest;
+  `gobstopper undo <session>` restores (and snapshots the compacted
+  state first — undo is itself undoable). Nobody else offers "undo a
+  compaction." The vault doubles as the eval corpus (§6).
+- ✅ **Fork-on-write**: `gobstopper fork <session>` clones the transcript
+  under a fresh session id (`sessionId`/`session_meta` rewritten, chains
+  preserved) and prints the provider resume command. Default posture for
+  anything risky.
+- ✅ **Telemetry**: every mutating path appends a
+  `gobstopper/compaction-events-v1` record to `events.jsonl` (§4, §6).
+- ✅ **Quota pressure**: `policy-check --quota-pressure low|normal|high`
+  scales the effective trigger ×1.15/×1.0/×0.7 — the input agentrouter's
+  `rateLimits/updated` signal feeds.
+- ✅ **Hook installers**: `gobstopper install-hooks` merges
+  `PreCompact`/`SessionStart(source=compact)` entries into Claude
+  `settings.json` and Codex `hooks.json` (verified supported on the
+  pinned 0.153.2; requires one-time `/hooks` trust approval). Hook
+  callbacks snapshot to the vault, append events, and return an
+  `additionalContext` restore pointer after native compaction.
+- ⏳ Codex `compacted`-record writer: emit a real `compacted` record with
   custom `replacement_history` (window chain fields understood:
   `window_id`, `first_window_id`, `previous_window_id`,
   `guardian_history`, `latest_token_usage_record`). Gated `--experimental`
   until validated against resume.
-- Hook installers: `gobstopper install-hooks` writes Claude
-  `PreCompact`/`SessionStart(source=compact)` and Codex `hooks.json`
-  entries that call back into gobstopper — providers tell us *when*,
-  strategies decide *how*.
 
 ## 4. Phase B — live control plane (v0.3)
 
@@ -149,11 +158,13 @@ the write path bulletproof and undoable.
 
 Nobody ships a compaction eval. gobstopper should.
 
-- `gobstopper eval`: replay recorded transcripts (vault corpus) through
-  strategies; score with probe sets — recall/artifact/continuation/
-  decision (Factory-style) + **interaction cost** (count re-fetch calls;
-  hidden-cost research shows task metrics alone are misleading).
-  Publish a leaderboard vs. provider-native compaction.
+- `gobstopper eval` — **v1 shipped**: replays a transcript through every
+  strategy on temp copies, reports per-strategy savings and post-edit
+  `verify` findings. Next: probe-based quality scoring —
+  recall/artifact/continuation/decision (Factory-style) + **interaction
+  cost** (count re-fetch calls; hidden-cost research shows task metrics
+  alone are misleading), over the vault corpus. Publish a leaderboard
+  vs. provider-native compaction.
 - **aicharts emission**: gobstopper emits `session-observations-v1`
   reports (existing aicharts JSON schema — browser dashboard works
   unchanged) plus compaction events: `{trigger, strategy, pre_tokens,

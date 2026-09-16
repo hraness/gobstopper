@@ -58,10 +58,13 @@ cargo install --path crates/gobstopper-cli   # or: cargo build --release
 
 gobstopper detect                  # sessions, context sizes, lifetime burn
 gobstopper plan <session>          # what would happen, under which strategy
+gobstopper eval <session>          # every strategy side-by-side on temp copies
 gobstopper apply <session>         # vault snapshot + rewrite (idle sessions)
 gobstopper verify <session>        # resume-validity check (exit 1 on errors)
+gobstopper fork <session>          # clone under a fresh session id + resume cmd
 gobstopper undo <session>          # restore the pre-compaction snapshot
 gobstopper vault                   # list snapshots in the undo vault
+gobstopper install-hooks           # Claude + Codex compaction lifecycle hooks
 gobstopper watch --dry-run         # the daemon path: poll, threshold, fire
 gobstopper explain                 # the economics math above
 ```

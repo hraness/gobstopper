@@ -217,7 +217,7 @@ pub fn list(root: &Path) -> anyhow::Result<Vec<VaultEntry>> {
     // Reverse first so equal timestamps still order newest-append first
     // under the stable sort.
     entries.reverse();
-    entries.sort_by(|a, b| b.ts.cmp(&a.ts));
+    entries.sort_by_key(|e| std::cmp::Reverse(e.ts));
     Ok(entries)
 }
 

@@ -1,16 +1,17 @@
 //! gobstopper: automatic context compaction for Codex and Claude Code.
 
 mod config;
+mod hooks;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use gobstopper_adapters::detect::{self, Discovered, Roots};
-use gobstopper_adapters::{vault, verify, AdapterError};
+use gobstopper_adapters::{eval, fork, vault, verify, AdapterError};
 use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
 use gobstopper_core::plan::{CompactionPlan, Edit};
 use gobstopper_core::strategy::{self, QuotaPressure};
 use gobstopper_core::Provider;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -89,6 +90,42 @@ enum Cmd {
         /// Skip the confirmation prompt.
         #[arg(long)]
         yes: bool,
+    },
+    /// Clone a session transcript under a fresh session id (fork-on-write)
+    /// and print the provider resume command.
+    Fork {
+        /// Session id prefix, or path to a transcript file.
+        session: String,
+    },
+    /// Replay a transcript through every strategy against temp copies:
+    /// report savings and post-edit verify findings without touching the
+    /// source file.
+    Eval {
+        /// Session id prefix, or path to a transcript file.
+        session: String,
+        /// Evaluate only this strategy id.
+        #[arg(long)]
+        strategy: Option<String>,
+        /// Override the trigger threshold (tokens).
+        #[arg(long)]
+        trigger: Option<u64>,
+        /// Emit JSON rows.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Install provider hook entries (Claude settings.json, Codex
+    /// hooks.json) that call back into `gobstopper hook <event>` at
+    /// compaction lifecycle points. Additive merge; never removes
+    /// existing hooks.
+    InstallHooks,
+    /// Remove gobstopper hook entries from provider config.
+    UninstallHooks,
+    /// Handle a provider hook callback (reads hook JSON on stdin).
+    /// Invoked by provider hook configs, not by users.
+    #[command(hide = true)]
+    Hook {
+        /// "precompact" | "session-start"
+        event: String,
     },
     /// List snapshots in the undo vault.
     Vault {
@@ -553,6 +590,122 @@ fn cmd_vault(cli: &Cli, cfg: &config::Config, session: Option<&str>, json: bool)
     Ok(())
 }
 
+fn cmd_install_hooks(uninstall: bool) -> Result<()> {
+    let claude_settings = hooks::default_claude_settings();
+    let claude_targets = [
+        hooks::HookTarget::ClaudePreCompact,
+        hooks::HookTarget::ClaudeSessionStart,
+    ];
+    let report = if uninstall {
+        hooks::uninstall(&claude_settings)?
+    } else {
+        hooks::install(&claude_settings, &claude_targets)?
+    };
+    println!("{}: +{} -{}", report.path.display(), report.added.len(), report.skipped.len());
+    for a in &report.added {
+        println!("  {} {a}", if uninstall { "removed" } else { "added" });
+    }
+    if hooks::codex_hooks_supported() {
+        let codex_hooks = hooks::default_codex_hooks();
+        let codex_targets = [
+            hooks::HookTarget::CodexPreCompact,
+            hooks::HookTarget::CodexSessionStart,
+        ];
+        let report = if uninstall {
+            hooks::uninstall(&codex_hooks)?
+        } else {
+            hooks::install(&codex_hooks, &codex_targets)?
+        };
+        println!("{}: +{} -{}", report.path.display(), report.added.len(), report.skipped.len());
+        for a in &report.added {
+            println!("  {} {a}", if uninstall { "removed" } else { "added" });
+        }
+        if !uninstall {
+            println!("note: codex requires one-time hook trust approval (/hooks in the TUI)");
+        }
+    } else {
+        println!("codex hooks: not supported by the installed codex version — skipped");
+    }
+    Ok(())
+}
+
+fn cmd_hook(event: &str) -> Result<()> {
+    let mut buf = String::new();
+    std::io::stdin().read_to_string(&mut buf)?;
+    if let Some(out) = hooks::handle(event, &buf)? {
+        println!("{out}");
+    }
+    Ok(())
+}
+
+fn cmd_fork(cli: &Cli, cfg: &config::Config, session: &str) -> Result<()> {
+    let d = find_session(cli, cfg, session)?;
+    let r = fork::fork(d.handle.provider, &d.handle.path, None)?;
+    println!("forked {} -> {}", d.handle.session_id, r.session_id);
+    println!("  {}", r.path.display());
+    println!("  resume: {}", r.resume_hint);
+    Ok(())
+}
+
+fn cmd_eval(
+    cli: &Cli,
+    cfg: &config::Config,
+    session: &str,
+    strategy_flag: Option<&str>,
+    trigger: Option<u64>,
+    json: bool,
+) -> Result<()> {
+    let d = find_session(cli, cfg, session)?;
+    let resolved = cfg.resolve(d.handle.provider, &d.handle.session_id, None, None)?;
+    let mut policy = resolved.policy;
+    if let Some(t) = trigger {
+        policy.trigger_tokens = t;
+    }
+    let rows = eval::eval_transcript(
+        d.handle.provider,
+        &d.handle.path,
+        &policy,
+        strategy_flag,
+    )?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    println!(
+        "{} {} — context ~{} tokens, effective trigger {}",
+        d.handle.provider.as_str(),
+        d.handle.session_id,
+        d.usage.context_tokens,
+        policy.effective_trigger(),
+    );
+    for row in &rows {
+        match (&row.plan, &row.error) {
+            (Some(plan), _) => {
+                let errors = row
+                    .findings
+                    .iter()
+                    .filter(|f| f.severity == verify::Severity::Error)
+                    .count();
+                println!(
+                    "  {:<11} {} -> ~{} (saves ~{}){}",
+                    row.strategy,
+                    plan.context_tokens_before,
+                    plan.context_tokens_after,
+                    row.est_reclaimed,
+                    if errors > 0 {
+                        format!("  ⚠ {errors} verify errors")
+                    } else {
+                        String::new()
+                    },
+                );
+            }
+            (None, Some(e)) => println!("  {:<11} error: {e}", row.strategy),
+            (None, None) => println!("  {:<11} no plan", row.strategy),
+        }
+    }
+    Ok(())
+}
+
 fn cmd_apply(
     cli: &Cli,
     cfg: &config::Config,
@@ -854,6 +1007,16 @@ fn main() -> Result<()> {
         Cmd::Undo { session, sha, yes } => {
             cmd_undo(&cli, &cfg, session, sha.as_deref(), *yes)
         }
+        Cmd::Fork { session } => cmd_fork(&cli, &cfg, session),
+        Cmd::Eval {
+            session,
+            strategy,
+            trigger,
+            json,
+        } => cmd_eval(&cli, &cfg, session, strategy.as_deref(), *trigger, *json),
+        Cmd::InstallHooks => cmd_install_hooks(false),
+        Cmd::UninstallHooks => cmd_install_hooks(true),
+        Cmd::Hook { event } => cmd_hook(event),
         Cmd::Vault { session, json } => cmd_vault(&cli, &cfg, session.as_deref(), *json),
         Cmd::Watch { interval, dry_run } => cmd_watch(&cli, &cfg, *interval, *dry_run),
         Cmd::PolicyCheck {
