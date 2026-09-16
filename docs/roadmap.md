@@ -106,8 +106,12 @@ the write path bulletproof and undoable.
   `window_id` chain advanced correctly, `compaction_response_id`,
   `latest_token_usage_record`, `ordinal` = line index). The one
   deliberately omitted field is the provider-encrypted `compaction`
-  item (unforgeable). Shape-verified; still needs a live resume
-  validation before it leaves the flag.
+  item (unforgeable). Shape-verified; partially resume-validated
+  2026-09-15: a fork carrying a gobstopper `compacted` record resumed
+  cleanly under `codex exec resume` on the pinned 0.153.2 — rollout
+  accepted, window chain parsed, turn attempted; the turn itself was
+  blocked by an account usage-limit, not a transcript rejection.
+  Remains gated until a quota-available resume completes an API call.
 - ✅ **Double-buffer watch**: `watch --double-buffer` stages a verified
   compacted copy at 60% of trigger; the trigger crossing is a vault
   snapshot + atomic rename — zero-stall compaction.
@@ -224,8 +228,9 @@ consumers need the same interface — is met.
   `init`. Oompa can drive live Claude compaction as a steering write on
   its existing client; no argv or restart needed.
 - Codex `compacted`-record acceptance rules on resume (window-id chain
-  validation) — the single highest-leverage unknown for custom
-  strategies on Codex.
+  validation) — partially answered 2026-09-15: rollout-level acceptance
+  verified (resume proceeded to a real turn attempt); API-level context
+  correctness still unproven pending account quota.
 - Whether Anthropic server-side compaction (`compact_20260112`)
   becomes a better default than transcript surgery for Claude — decided
   by the eval harness, not by guess.
