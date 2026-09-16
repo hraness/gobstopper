@@ -216,9 +216,12 @@ consumers need the same interface — is met.
 
 ## 9. Open questions
 
-- Whether `claude --input-format stream-json` admits `/compact` as a
-  steering write — determines if live Claude compaction needs hooks or
-  oompa argv only.
+- ~~Whether `claude --input-format stream-json` admits `/compact`~~ —
+  **answered (verified on 2.1.270)**: a `user` message carrying
+  `/compact` is accepted as a real slash command — the stream emits
+  `system/status: "compacting"`, then `compact_result` + a post-compact
+  `init`. Oompa can drive live Claude compaction as a steering write on
+  its existing client; no argv or restart needed.
 - Codex `compacted`-record acceptance rules on resume (window-id chain
   validation) — the single highest-leverage unknown for custom
   strategies on Codex.
