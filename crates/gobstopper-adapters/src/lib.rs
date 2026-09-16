@@ -8,6 +8,8 @@
 pub mod claude;
 pub mod codex;
 pub mod detect;
+pub mod verify;
+pub mod vault;
 
 pub use detect::{discover, Discovered, Roots};
 

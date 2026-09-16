@@ -9,7 +9,7 @@
 //! `Edit` objects on stdout. That is the custom-code escape hatch —
 //! strategies stay deterministic, experiments live in user space.
 
-use gobstopper_core::strategy::PolicyConfig;
+use gobstopper_core::strategy::{PolicyConfig, QuotaPressure};
 use gobstopper_core::Provider;
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -23,6 +23,8 @@ pub struct PolicyPatch {
     pub floor_tokens: Option<u64>,
     pub keep_recent_tool_outputs: Option<usize>,
     pub min_interval_secs: Option<u64>,
+    /// Provider quota pressure: `low` compacts later, `high` earlier.
+    pub quota_pressure: Option<QuotaPressure>,
     /// Userspace program: transcript JSON in, `Edit[]` JSON out.
     pub command: Option<String>,
 }
@@ -40,6 +42,9 @@ impl PolicyPatch {
         }
         if let Some(v) = self.min_interval_secs {
             policy.min_interval_secs = v;
+        }
+        if let Some(v) = self.quota_pressure {
+            policy.quota_pressure = v;
         }
     }
 }

@@ -3,11 +3,12 @@
 mod config;
 
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use gobstopper_adapters::detect::{self, Discovered, Roots};
-use gobstopper_adapters::AdapterError;
+use gobstopper_adapters::{vault, verify, AdapterError};
+use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
 use gobstopper_core::plan::{CompactionPlan, Edit};
-use gobstopper_core::strategy;
+use gobstopper_core::strategy::{self, QuotaPressure};
 use gobstopper_core::Provider;
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -64,9 +65,37 @@ enum Cmd {
         /// Skip the confirmation prompt.
         #[arg(long)]
         yes: bool,
-        /// Don't write a .gobstopper-bak backup (not recommended).
+        /// Don't snapshot the transcript into the undo vault first
+        /// (not recommended).
         #[arg(long)]
         no_backup: bool,
+    },
+    /// Check a transcript for resume-breaking defects (broken parent
+    /// chains, orphaned tool calls, malformed compaction records).
+    Verify {
+        /// Session id prefix, or path to a transcript file.
+        session: String,
+        /// Emit JSON findings.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Restore a transcript from the content-addressed snapshot vault.
+    Undo {
+        /// Session id prefix, or path to a transcript file.
+        session: String,
+        /// Snapshot sha256 prefix (default: latest snapshot for the file).
+        #[arg(long)]
+        sha: Option<String>,
+        /// Skip the confirmation prompt.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// List snapshots in the undo vault.
+    Vault {
+        /// Optional session id prefix or path to filter by.
+        session: Option<String>,
+        #[arg(long)]
+        json: bool,
     },
     /// Poll for sessions over threshold and compact them automatically.
     Watch {
@@ -86,6 +115,9 @@ enum Cmd {
         context_tokens: u64,
         #[arg(long, default_value = "false")]
         session_active: bool,
+        /// Provider quota pressure; scales the effective trigger.
+        #[arg(long, value_enum)]
+        quota_pressure: Option<QuotaArg>,
         #[arg(long)]
         preset: Option<String>,
         #[arg(long)]
@@ -95,6 +127,25 @@ enum Cmd {
     Presets,
     /// Print the economics model behind gobstopper's defaults.
     Explain,
+}
+
+/// CLI mirror of `QuotaPressure` (kept separate so the flag surface stays
+/// a closed vocabulary).
+#[derive(Clone, Copy, ValueEnum)]
+enum QuotaArg {
+    Low,
+    Normal,
+    High,
+}
+
+impl From<QuotaArg> for QuotaPressure {
+    fn from(q: QuotaArg) -> Self {
+        match q {
+            QuotaArg::Low => QuotaPressure::Low,
+            QuotaArg::Normal => QuotaPressure::Normal,
+            QuotaArg::High => QuotaPressure::High,
+        }
+    }
 }
 
 fn roots(cli: &Cli) -> Roots {
@@ -185,12 +236,13 @@ fn evaluate(
 /// Explain a `None` plan: under trigger vs. over trigger but nothing to cut.
 fn report_no_plan(transcript: &gobstopper_core::Transcript, resolved: &config::Resolved) {
     let ctx = transcript.context_tokens();
-    if ctx < resolved.policy.trigger_tokens {
-        println!("nothing to do: context ~{ctx} under trigger {}", resolved.policy.trigger_tokens);
+    let trigger = resolved.policy.effective_trigger();
+    if ctx < trigger {
+        println!("nothing to do: context ~{ctx} under trigger {trigger}");
     } else {
         println!(
-            "context ~{ctx} exceeds trigger {} but the '{}' strategy found no applicable edits",
-            resolved.policy.trigger_tokens, resolved.strategy
+            "context ~{ctx} exceeds trigger {trigger} but the '{}' strategy found no applicable edits",
+            resolved.strategy
         );
     }
 }
@@ -224,14 +276,52 @@ fn run_preset_command(
     Ok(serde_json::from_slice(&out.stdout)?)
 }
 
-fn backup(path: &std::path::Path) -> Result<PathBuf> {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let bak = path.with_extension(format!("gobstopper-bak-{stamp}"));
-    std::fs::copy(path, &bak).with_context(|| format!("backing up {}", path.display()))?;
-    Ok(bak)
+/// Snapshot into the content-addressed vault — the undo path.
+fn snapshot_before_edit(d: &Discovered, strategy: &str) -> Result<vault::VaultEntry> {
+    let entry = vault::snapshot(
+        &d.handle.path,
+        d.handle.provider,
+        &d.handle.session_id,
+        Some(strategy),
+        &vault::default_root(),
+    )?;
+    Ok(entry)
+}
+
+/// Emit a numeric compaction telemetry record (v1 schema). Telemetry is
+/// best-effort: a logging failure must never fail a compaction.
+fn emit_event(
+    d: &Discovered,
+    plan: &CompactionPlan,
+    action: &str,
+    outcome: &str,
+    trigger_tokens: u64,
+    duration_ms: u64,
+    error_code: Option<&str>,
+) {
+    let ev = CompactionEvent::new(
+        d.handle.provider,
+        &d.handle.session_id,
+        &plan.strategy,
+        action,
+        outcome,
+        trigger_tokens,
+        plan.context_tokens_before,
+        plan.context_tokens_after,
+        plan.edits
+            .iter()
+            .map(|e| match e {
+                Edit::Elide { line_indexes, .. } => line_indexes.len() as u64,
+                Edit::InjectDigest { digest } => digest.covers_items as u64,
+                Edit::ProviderCompact { .. } => 0,
+            })
+            .sum(),
+        duration_ms,
+        error_code.map(|s| s.to_string()),
+    );
+    if let Err(e) = append_event(&default_log_path(), &ev) {
+        eprintln!("telemetry write failed (non-fatal): {e}");
+    }
 }
 
 fn apply_edits(d: &Discovered, plan: &CompactionPlan) -> Result<u64> {
@@ -354,6 +444,115 @@ fn cmd_detect(cli: &Cli, all: bool, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn cmd_verify(cli: &Cli, cfg: &config::Config, session: &str, json: bool) -> Result<()> {
+    let d = find_session(cli, cfg, session)?;
+    let findings = verify::verify_path(d.handle.provider, &d.handle.path)
+        .with_context(|| format!("reading {}", d.handle.path.display()))?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&findings)?);
+    } else if findings.is_empty() {
+        println!("{}: clean", d.handle.path.display());
+    } else {
+        for f in &findings {
+            let sev = match f.severity {
+                verify::Severity::Error => "error",
+                verify::Severity::Warning => "warn ",
+            };
+            let line = f
+                .line_index
+                .map(|i| format!("line {}", i + 1))
+                .unwrap_or_else(|| "-".to_string());
+            println!("{sev} {line:<12} [{}] {}", f.code, f.message);
+        }
+    }
+    if findings
+        .iter()
+        .any(|f| f.severity == verify::Severity::Error)
+    {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn cmd_undo(
+    cli: &Cli,
+    cfg: &config::Config,
+    session: &str,
+    sha: Option<&str>,
+    yes: bool,
+) -> Result<()> {
+    let d = find_session(cli, cfg, session)?;
+    let root = vault::default_root();
+    let entry = match sha {
+        Some(prefix) => vault::list(&root)?
+            .into_iter()
+            .filter(|e| e.path == d.handle.path)
+            .find(|e| e.sha256.starts_with(prefix))
+            .ok_or_else(|| anyhow::anyhow!("no vault snapshot matching '{prefix}' for this session"))?,
+        None => vault::latest_for(&d.handle.path, &root)?.ok_or_else(|| {
+            anyhow::anyhow!("no vault snapshot for {}", d.handle.path.display())
+        })?,
+    };
+    println!(
+        "restore snapshot {} — {} bytes, session {}",
+        &entry.sha256[..16],
+        entry.bytes,
+        entry.session_id
+    );
+    if !yes {
+        print!("overwrite {}? [y/N] ", d.handle.path.display());
+        std::io::stdout().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        if !matches!(answer.trim(), "y" | "Y") {
+            println!("aborted");
+            return Ok(());
+        }
+    }
+    // Snapshot the current (post-compaction) state too, so undo is undoable.
+    if d.handle.path.is_file() {
+        let _ = vault::snapshot(
+            &d.handle.path,
+            d.handle.provider,
+            &d.handle.session_id,
+            Some("pre-undo"),
+            &root,
+        );
+    }
+    vault::restore(&entry.sha256, &d.handle.path, &root)?;
+    println!("restored {}", d.handle.path.display());
+    Ok(())
+}
+
+fn cmd_vault(cli: &Cli, cfg: &config::Config, session: Option<&str>, json: bool) -> Result<()> {
+    let root = vault::default_root();
+    let mut entries = vault::list(&root)?;
+    if let Some(q) = session {
+        let d = find_session(cli, cfg, q)?;
+        entries.retain(|e| e.path == d.handle.path);
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+        return Ok(());
+    }
+    println!(
+        "{:<18} {:<12} {:>10} {:<10} {:<12} PATH",
+        "SHA256", "PROVIDER", "BYTES", "STRATEGY", "SESSION"
+    );
+    for e in entries {
+        println!(
+            "{:<18} {:<12} {:>10} {:<10} {:<12} {}",
+            &e.sha256[..16],
+            e.provider.as_str(),
+            e.bytes,
+            e.strategy.as_deref().unwrap_or("-"),
+            &e.session_id[..e.session_id.len().min(12)],
+            e.path.display(),
+        );
+    }
+    Ok(())
+}
+
 fn cmd_apply(
     cli: &Cli,
     cfg: &config::Config,
@@ -403,17 +602,39 @@ fn cmd_apply(
         .filter(|e| !matches!(e, Edit::ProviderCompact { .. }))
         .cloned()
         .collect();
+    let started = std::time::Instant::now();
+    let trigger = resolved.policy.trigger_tokens;
     if !file_edits.is_empty() {
         if !no_backup {
-            let bak = backup(&d.handle.path)?;
-            eprintln!("backup: {}", bak.display());
+            let entry = snapshot_before_edit(&d, &plan.strategy)?;
+            eprintln!("snapshot: {} ({})", &entry.sha256[..12], entry.path.display());
         }
-        let reclaimed = apply_edits(&d, &plan)?;
-        println!("reclaimed ~{} bytes of tool output", reclaimed);
+        match apply_edits(&d, &plan) {
+            Ok(reclaimed) => {
+                emit_event(&d, &plan, "transcript_compact", "applied", trigger,
+                    started.elapsed().as_millis() as u64, None);
+                println!("reclaimed ~{} bytes of tool output", reclaimed);
+            }
+            Err(e) => {
+                emit_event(&d, &plan, "transcript_compact", "failed", trigger,
+                    started.elapsed().as_millis() as u64, Some("apply_failed"));
+                return Err(e);
+            }
+        }
     }
     if has_provider_compact {
-        provider_compact(&d)?;
-        println!("provider compaction requested");
+        match provider_compact(&d) {
+            Ok(()) => {
+                emit_event(&d, &plan, "provider_compact", "applied", trigger,
+                    started.elapsed().as_millis() as u64, None);
+                println!("provider compaction requested");
+            }
+            Err(e) => {
+                emit_event(&d, &plan, "provider_compact", "failed", trigger,
+                    started.elapsed().as_millis() as u64, Some("provider_rejected"));
+                return Err(e);
+            }
+        }
     }
     Ok(())
 }
@@ -431,7 +652,7 @@ fn cmd_watch(cli: &Cli, cfg: &config::Config, interval: u64, dry_run: bool) -> R
             ) else {
                 continue;
             };
-            if d.usage.context_tokens < resolved.policy.trigger_tokens {
+            if d.usage.context_tokens < resolved.policy.effective_trigger() {
                 continue;
             }
             if let Some(t) = last_fire.get(&d.handle.session_id) {
@@ -457,23 +678,32 @@ fn cmd_watch(cli: &Cli, cfg: &config::Config, interval: u64, dry_run: bool) -> R
                         );
                         continue;
                     }
-                    let r = if plan
+                    let started = std::time::Instant::now();
+                    let trigger = resolved.policy.trigger_tokens;
+                    let is_provider = plan
                         .edits
                         .iter()
-                        .any(|e| matches!(e, Edit::ProviderCompact { .. }))
-                    {
+                        .any(|e| matches!(e, Edit::ProviderCompact { .. }));
+                    let action = if is_provider { "provider_compact" } else { "transcript_compact" };
+                    let r = if is_provider {
                         provider_compact(&d)
                     } else {
-                        backup(&d.handle.path)
-                            .and_then(|_| apply_edits(&d, &plan))
+                        snapshot_before_edit(&d, &plan.strategy)
+                            .and_then(|_| apply_edits(&d, &plan).map_err(anyhow::Error::from))
                             .map(|_| ())
                     };
                     match r {
                         Ok(()) => {
                             last_fire.insert(d.handle.session_id.clone(), std::time::Instant::now());
+                            emit_event(&d, &plan, action, "applied", trigger,
+                                started.elapsed().as_millis() as u64, None);
                             eprintln!("compacted {}", d.handle.session_id);
                         }
-                        Err(e) => eprintln!("compact {} failed: {e}", d.handle.session_id),
+                        Err(e) => {
+                            emit_event(&d, &plan, action, "failed", trigger,
+                                started.elapsed().as_millis() as u64, Some("apply_failed"));
+                            eprintln!("compact {} failed: {e}", d.handle.session_id);
+                        }
                     }
                 }
                 Ok(None) => {}
@@ -489,6 +719,7 @@ fn cmd_policy_check(
     provider: &str,
     context_tokens: u64,
     session_active: bool,
+    quota_pressure: Option<QuotaArg>,
     preset: Option<&str>,
     json: bool,
 ) -> Result<()> {
@@ -497,8 +728,12 @@ fn cmd_policy_check(
         "claude" | "claude_code" => Provider::ClaudeCode,
         other => bail!("unknown provider '{other}'"),
     };
-    let resolved = cfg.resolve(provider, "", preset, None)?;
-    let over = context_tokens >= resolved.policy.trigger_tokens;
+    let mut resolved = cfg.resolve(provider, "", preset, None)?;
+    if let Some(q) = quota_pressure {
+        resolved.policy.quota_pressure = q.into();
+    }
+    let effective_trigger = resolved.policy.effective_trigger();
+    let over = context_tokens >= effective_trigger;
     // Mirror AutoStrategy::select without a transcript: live sessions get
     // provider compaction; idle sessions get the transcript-path default.
     let action = if !over {
@@ -520,6 +755,8 @@ fn cmd_policy_check(
                 "action": action,
                 "strategy": resolved.strategy,
                 "trigger_tokens": resolved.policy.trigger_tokens,
+                "effective_trigger_tokens": effective_trigger,
+                "quota_pressure": resolved.policy.quota_pressure,
                 "control": control,
             }))?
         );
@@ -613,11 +850,17 @@ fn main() -> Result<()> {
             *yes,
             *no_backup,
         ),
+        Cmd::Verify { session, json } => cmd_verify(&cli, &cfg, session, *json),
+        Cmd::Undo { session, sha, yes } => {
+            cmd_undo(&cli, &cfg, session, sha.as_deref(), *yes)
+        }
+        Cmd::Vault { session, json } => cmd_vault(&cli, &cfg, session.as_deref(), *json),
         Cmd::Watch { interval, dry_run } => cmd_watch(&cli, &cfg, *interval, *dry_run),
         Cmd::PolicyCheck {
             provider,
             context_tokens,
             session_active,
+            quota_pressure,
             preset,
             json,
         } => cmd_policy_check(
@@ -625,6 +868,7 @@ fn main() -> Result<()> {
             provider,
             *context_tokens,
             *session_active,
+            *quota_pressure,
             preset.as_deref(),
             *json,
         ),

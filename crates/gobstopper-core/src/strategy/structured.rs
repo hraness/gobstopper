@@ -26,7 +26,7 @@ impl Strategy for StructuredStrategy {
         policy: &PolicyConfig,
     ) -> Option<CompactionPlan> {
         let before = transcript.context_tokens();
-        if before < policy.trigger_tokens {
+        if before < policy.effective_trigger() {
             return None;
         }
 

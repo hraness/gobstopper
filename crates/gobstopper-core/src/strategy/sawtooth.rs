@@ -25,7 +25,7 @@ impl Strategy for SawtoothStrategy {
         policy: &PolicyConfig,
     ) -> Option<CompactionPlan> {
         let before = transcript.context_tokens();
-        if before < policy.trigger_tokens {
+        if before < policy.effective_trigger() {
             return None;
         }
         let control = match transcript.session.provider {

@@ -14,6 +14,21 @@ use crate::model::Transcript;
 use crate::plan::CompactionPlan;
 use serde::{Deserialize, Serialize};
 
+/// How close the session is to the provider's quota ceiling. Scales the
+/// configured trigger so gobstopper compacts earlier under pressure and
+/// later when there is headroom to spare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QuotaPressure {
+    /// Plenty of quota headroom — compact slightly later than configured.
+    Low,
+    /// No adjustment; the configured trigger applies as written.
+    #[default]
+    Normal,
+    /// Near the quota ceiling — compact earlier to stay under it.
+    High,
+}
+
 /// Resolved policy for one session evaluation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyConfig {
@@ -25,6 +40,9 @@ pub struct PolicyConfig {
     pub keep_recent_tool_outputs: usize,
     /// Minimum seconds between compactions of one session.
     pub min_interval_secs: u64,
+    /// Scales `trigger_tokens`; see [`PolicyConfig::effective_trigger`].
+    #[serde(default)]
+    pub quota_pressure: QuotaPressure,
 }
 
 impl Default for PolicyConfig {
@@ -36,7 +54,24 @@ impl Default for PolicyConfig {
             floor_tokens: 40_000,
             keep_recent_tool_outputs: 8,
             min_interval_secs: 300,
+            quota_pressure: QuotaPressure::Normal,
         }
+    }
+}
+
+impl PolicyConfig {
+    /// `trigger_tokens` adjusted for quota pressure: `High` fires at 70%
+    /// of the configured trigger (compact earlier), `Normal` at 100%,
+    /// `Low` at 115%. Result is floored at 1 so a nonzero context can
+    /// always trigger when a trigger is configured at all.
+    pub fn effective_trigger(&self) -> u64 {
+        let factor = match self.quota_pressure {
+            QuotaPressure::High => 0.7,
+            QuotaPressure::Normal => 1.0,
+            QuotaPressure::Low => 1.15,
+        };
+        // f64 -> u64 casts saturate on overflow; max(1) is the floor.
+        ((self.trigger_tokens as f64) * factor).round().max(1.0) as u64
     }
 }
 
@@ -44,8 +79,7 @@ impl Default for PolicyConfig {
 /// or `None` when the session is under threshold.
 pub trait Strategy {
     fn id(&self) -> &'static str;
-    fn evaluate(&self, transcript: &Transcript, policy: &PolicyConfig)
-        -> Option<CompactionPlan>;
+    fn evaluate(&self, transcript: &Transcript, policy: &PolicyConfig) -> Option<CompactionPlan>;
 }
 
 /// Every built-in strategy, in registry order.
@@ -64,4 +98,54 @@ pub fn strategy_by_id(id: &str) -> Option<Box<dyn Strategy>> {
     builtin_strategies()
         .into_iter()
         .find(|s| s.id() == id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn policy_with(pressure: QuotaPressure) -> PolicyConfig {
+        PolicyConfig {
+            trigger_tokens: 1_000,
+            quota_pressure: pressure,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn effective_trigger_scales_with_quota_pressure() {
+        assert_eq!(
+            policy_with(QuotaPressure::Normal).effective_trigger(),
+            1_000
+        );
+        // High compacts earlier: 70% of the configured trigger.
+        assert_eq!(policy_with(QuotaPressure::High).effective_trigger(), 700);
+        // Low waits for more headroom: 115%.
+        assert_eq!(policy_with(QuotaPressure::Low).effective_trigger(), 1_150);
+    }
+
+    #[test]
+    fn effective_trigger_floors_at_one() {
+        let mut p = policy_with(QuotaPressure::High);
+        p.trigger_tokens = 0;
+        assert_eq!(p.effective_trigger(), 1);
+        p.trigger_tokens = 1;
+        assert_eq!(p.effective_trigger(), 1); // 0.7 rounds to 1, floored
+    }
+
+    #[test]
+    fn quota_pressure_serializes_snake_case() {
+        assert_eq!(
+            serde_json::to_string(&QuotaPressure::High).unwrap(),
+            "\"high\""
+        );
+        let back: QuotaPressure = serde_json::from_str("\"low\"").unwrap();
+        assert_eq!(back, QuotaPressure::Low);
+        // PolicyConfig without the field still deserializes (additive).
+        let p: PolicyConfig = serde_json::from_str(
+            r#"{"trigger_tokens":1000,"floor_tokens":300,"keep_recent_tool_outputs":2,"min_interval_secs":0}"#,
+        )
+        .unwrap();
+        assert_eq!(p.quota_pressure, QuotaPressure::Normal);
+    }
 }

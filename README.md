@@ -58,10 +58,18 @@ cargo install --path crates/gobstopper-cli   # or: cargo build --release
 
 gobstopper detect                  # sessions, context sizes, lifetime burn
 gobstopper plan <session>          # what would happen, under which strategy
-gobstopper apply <session>         # backup + rewrite (idle sessions)
+gobstopper apply <session>         # vault snapshot + rewrite (idle sessions)
+gobstopper verify <session>        # resume-validity check (exit 1 on errors)
+gobstopper undo <session>          # restore the pre-compaction snapshot
+gobstopper vault                   # list snapshots in the undo vault
 gobstopper watch --dry-run         # the daemon path: poll, threshold, fire
 gobstopper explain                 # the economics math above
 ```
+
+Every `apply`/`watch` compaction snapshots the transcript into a
+content-addressed vault (`~/.local/share/gobstopper/vault/`) before
+writing and appends a numeric record to `events.jsonl` — the
+`gobstopper/compaction-events-v1` schema aicharts and oompa consume.
 
 Config: `~/.config/gobstopper/config.toml`
 
@@ -132,15 +140,19 @@ for fully custom summaries is the designed v0.2 path.
   JSONL dialects (parse + in-place rewrite; lines are never removed, so
   provider linkage is preserved).
 - `crates/gobstopper-cli` — `gobstopper` binary: detect / plan / apply /
-  watch / policy-check / presets / explain.
+  verify / undo / vault / watch / policy-check / presets / explain.
 
 ## Status
 
-v0.1: detection, planning, and transcript elision work against real
+v0.2: detection, planning, and transcript elision work against real
 session files. `sawtooth` routes to Codex's `thread/compact/start` via
-`codex app-server proxy` when the shared daemon is reachable. The agentic
-driver interface (`EditorDriver`, `EditorCall` schema) is defined and
-falls back to the `auto` rubric until a model backend is wired in.
+`codex app-server proxy` when the shared daemon is reachable. `verify`
+checks resume-validity, `undo`/`vault` give reversible compaction via a
+content-addressed snapshot store, `policy-check` accepts
+`--quota-pressure`, and every compaction emits a numeric
+`compaction-events-v1` record. The agentic driver interface
+(`EditorDriver`, `EditorCall` schema) is defined and falls back to the
+`auto` rubric until a model backend is wired in.
 
 See `docs/design.md` for the research basis and `docs/roadmap.md` for
 the phased plan — including how gobstopper shares foundations with

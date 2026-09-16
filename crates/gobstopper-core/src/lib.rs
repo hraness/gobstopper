@@ -1,19 +1,22 @@
 //! gobstopper-core: provider-neutral transcript model and the compaction
 //! strategy engine.
 //!
-//! The crate is intentionally I/O-free: adapters parse provider stores
-//! into [`model::Transcript`], strategies lower to [`plan::Edit`]
+//! The strategy engine is intentionally I/O-free: adapters parse provider
+//! stores into [`model::Transcript`], strategies lower to [`plan::Edit`]
 //! primitives, and adapters execute the edits. Nothing here knows about
-//! JSONL dialects, file watching, or provider CLIs.
+//! JSONL dialects, file watching, or provider CLIs. [`events`] is the one
+//! exception: it appends numeric-only compaction telemetry records.
 
 pub mod estimate;
+pub mod events;
 pub mod model;
 pub mod plan;
 pub mod strategy;
 
+pub use events::{append_event, default_log_path, read_events, CompactionEvent};
 pub use model::{ItemKind, Provider, SessionHandle, Transcript, TranscriptItem, UsageSample};
 pub use plan::{CompactionPlan, DigestBlock, Edit};
-pub use strategy::{builtin_strategies, strategy_by_id, PolicyConfig, Strategy};
+pub use strategy::{builtin_strategies, strategy_by_id, PolicyConfig, QuotaPressure, Strategy};
 
 #[cfg(test)]
 mod tests {
@@ -54,6 +57,7 @@ mod tests {
             floor_tokens: 300,
             keep_recent_tool_outputs: 2,
             min_interval_secs: 0,
+            quota_pressure: QuotaPressure::Normal,
         }
     }
 
@@ -70,6 +74,28 @@ mod tests {
         let t = transcript(vec![item(0, ItemKind::User, 100, false)], 5_000);
         let plan = SawtoothStrategy.evaluate(&t, &policy()).unwrap();
         assert!(matches!(plan.edits[0], Edit::ProviderCompact { .. }));
+    }
+
+    #[test]
+    fn high_quota_pressure_fires_below_configured_trigger() {
+        // Context 750 is under the configured 1_000 trigger but over the
+        // High-pressure effective trigger of 700.
+        let t = transcript(vec![item(0, ItemKind::User, 100, false)], 750);
+        assert!(SawtoothStrategy.evaluate(&t, &policy()).is_none());
+
+        let mut pressured = policy();
+        pressured.quota_pressure = QuotaPressure::High;
+        assert_eq!(pressured.effective_trigger(), 700);
+        assert!(SawtoothStrategy.evaluate(&t, &pressured).is_some());
+
+        // Same for a transcript-path strategy: enough elidable items to
+        // clear the keep_recent_tool_outputs tail guard.
+        let tool_items: Vec<TranscriptItem> = (0..5)
+            .map(|i| item(i, ItemKind::ToolResult, 400, true))
+            .collect();
+        let tool_heavy = transcript(tool_items, 750);
+        assert!(ElideStrategy.evaluate(&tool_heavy, &policy()).is_none());
+        assert!(ElideStrategy.evaluate(&tool_heavy, &pressured).is_some());
     }
 
     #[test]
