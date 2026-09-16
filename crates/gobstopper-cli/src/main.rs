@@ -428,50 +428,149 @@ fn resolve_codex_bin(flag: Option<&std::path::Path>) -> PathBuf {
     PathBuf::from("codex")
 }
 
-/// Ask the shared Codex app-server daemon to compact a thread.
-/// Speaks JSON-RPC over `codex app-server proxy` stdio.
+/// Ask a private Codex app-server to compact a thread.
+///
+/// Spawns `codex app-server --listen stdio://` — a self-contained JSON-RPC
+/// server, no daemon or standalone install required — resumes the thread into
+/// it (`thread/resume`, `excludeTurns` per the pinned pagination contract), then
+/// issues `thread/compact/start`. Request acceptance is the success boundary:
+/// compaction runs as a provider-side turn whose `contextCompaction` item and
+/// `turn/completed` arrive asynchronously; gobstopper reports the observed
+/// outcome when it lands inside a bounded wait.
 fn codex_compact(codex_bin: &std::path::Path, thread_id: &str) -> Result<()> {
+    use std::io::BufRead;
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
     let mut child = Command::new(codex_bin)
-        .args(["app-server", "proxy"])
+        .args([
+            "app-server",
+            "--listen",
+            "stdio://",
+            "--config",
+            "cli_auth_credentials_store=\"file\"",
+            "--config",
+            "mcp_oauth_credentials_store=\"file\"",
+        ])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .with_context(|| {
             format!(
-                "spawning `{} app-server proxy` (set --codex-bin or $GOBSTOPPER_CODEX_BIN)",
+                "spawning `{} app-server --listen stdio://` (set --codex-bin or $GOBSTOPPER_CODEX_BIN)",
                 codex_bin.display()
             )
         })?;
     let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let (tx, rx) = mpsc::channel::<serde_json::Value>();
+    std::thread::spawn(move || {
+        for line in std::io::BufReader::new(stdout).lines() {
+            match line {
+                Ok(text) => {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                        if tx.send(v).is_err() {
+                            return;
+                        }
+                    }
+                }
+                Err(_) => return,
+            }
+        }
+    });
     let mut send = |v: serde_json::Value| -> Result<()> {
         stdin.write_all(v.to_string().as_bytes())?;
         stdin.write_all(b"\n")?;
         stdin.flush()?;
         Ok(())
     };
-    send(serde_json::json!({
-        "method": "initialize", "id": 0,
-        "params": {"clientInfo": {"name": "gobstopper", "version": env!("CARGO_PKG_VERSION")}}
-    }))?;
-    send(serde_json::json!({
-        "method": "thread/compact/start", "id": 1,
-        "params": {"threadId": thread_id}
-    }))?;
+    let deadline = |ms: u64| Instant::now() + Duration::from_millis(ms);
+    // Read frames until `id` answers or the deadline passes; notifications are
+    // skipped here — the outcome window below reads them after acceptance.
+    let await_response = |id: i64, until: Instant| -> Result<serde_json::Value> {
+        loop {
+            let left = until.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                bail!("codex app-server timed out waiting for response id {id}");
+            }
+            match rx.recv_timeout(left.min(Duration::from_millis(500))) {
+                Ok(v) if v.get("id").and_then(|i| i.as_i64()) == Some(id) => {
+                    if let Some(err) = v.get("error") {
+                        let msg = err
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("unknown app-server error");
+                        bail!("codex app-server: {msg}");
+                    }
+                    return Ok(v);
+                }
+                Ok(_) => continue,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    bail!("codex app-server closed its stream before answering id {id}")
+                }
+            }
+        }
+    };
+
+    let outcome = (|| -> Result<String> {
+        let boot = deadline(15_000);
+        send(serde_json::json!({
+            "method": "initialize", "id": 0,
+            "params": {"clientInfo": {"name": "gobstopper", "version": env!("CARGO_PKG_VERSION")}}
+        }))?;
+        await_response(0, boot)?;
+        send(serde_json::json!({"method": "initialized"}))?;
+        send(serde_json::json!({
+            "method": "thread/resume", "id": 1,
+            "params": {"threadId": thread_id, "excludeTurns": true}
+        }))?;
+        await_response(1, deadline(60_000))?;
+        send(serde_json::json!({
+            "method": "thread/compact/start", "id": 2,
+            "params": {"threadId": thread_id}
+        }))?;
+        await_response(2, deadline(30_000))?;
+        // Compaction accepted. Give the provider-side turn a bounded window to
+        // report its outcome so the CLI can say what happened.
+        let end = deadline(90_000);
+        loop {
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Ok("requested (provider turn still running at 90s bound)".to_string());
+            }
+            match rx.recv_timeout(left.min(Duration::from_millis(500))) {
+                Ok(v) => {
+                    let is_our_turn = v.get("method").and_then(|m| m.as_str()) == Some("turn/completed")
+                        && v.pointer("/params/threadId").and_then(|s| s.as_str()) == Some(thread_id);
+                    if is_our_turn {
+                        let status = v
+                            .pointer("/params/turn/status")
+                            .and_then(|s| s.as_str())
+                            .unwrap_or("unknown");
+                        let detail = v
+                            .pointer("/params/turn/error/message")
+                            .and_then(|s| s.as_str())
+                            .map(|m| format!(": {}", &m[..m.len().min(160)]))
+                            .unwrap_or_default();
+                        if status == "completed" || status == "interrupted" {
+                            return Ok(format!("compaction turn {status}{detail}"));
+                        }
+                        bail!("codex compaction turn {status}{detail}");
+                    }
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    return Ok("requested (server closed before outcome)".to_string())
+                }
+            }
+        }
+    })();
+    let _ = child.kill();
+    let _ = child.wait();
     drop(stdin);
-    let out = child.wait_with_output()?;
-    let text = String::from_utf8_lossy(&out.stdout);
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        bail!(
-            "`codex app-server proxy` failed (is the codex app-server daemon running? \
-             `codex app-server daemon status`): {}",
-            &stderr[..stderr.len().min(300)]
-        );
-    }
-    if text.contains("\"error\"") {
-        bail!("codex app-server rejected compaction: {}", &text[..text.len().min(400)]);
-    }
+    println!("codex provider compaction: {}", outcome?);
     Ok(())
 }
 

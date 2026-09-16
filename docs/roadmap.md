@@ -120,9 +120,18 @@ the write path bulletproof and undoable.
 
 ## 4. Phase B — live control plane (v0.3)
 
-- **Codex app-server attach**: `thread/compact/start` client via
-  `codex app-server proxy` (exists, minimal) + `codex agents` discovery
-  for daemon-registered sessions.
+- **Codex app-server attach**: ✅ 2026-09-16 — `thread/compact/start`
+  works over a **private** `codex app-server --listen stdio://` (no
+  daemon or standalone install needed — `app-server proxy` requires the
+  installer's managed layout). Verified flow: `initialize` →
+  `initialized` → `thread/resume {threadId, excludeTurns:true}` →
+  `thread/compact/start` accepted `{}`; compaction runs as a provider
+  turn surfacing a `contextCompaction` item + `turn/completed` (the
+  deprecated `thread/compacted` notification did not fire). Observed
+  quota rejection surfaces as `turn/completed status=failed` with
+  `usageLimitExceeded` — compaction is itself a provider call.
+  gobstopper reports the observed turn outcome within a 90s bound and
+  records it honestly in telemetry.
 - **oompa managed sessions** (the primary integration):
   - oompa already records `token_usage` (`totalTokens`,
     `modelContextWindow`) into its neutral timeline; the insertion point
