@@ -127,6 +127,18 @@ enum Cmd {
         /// "precompact" | "session-start"
         event: String,
     },
+    /// Show compaction telemetry: recent events and cumulative savings.
+    Events {
+        /// Filter to one session id prefix.
+        #[arg(long)]
+        session: Option<String>,
+        /// Only the last N events (default 20).
+        #[arg(long, default_value = "20")]
+        tail: usize,
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// List snapshots in the undo vault.
     Vault {
         /// Optional session id prefix or path to filter by.
@@ -142,6 +154,10 @@ enum Cmd {
         /// Report plans without applying them.
         #[arg(long)]
         dry_run: bool,
+        /// Precompute compacted transcripts at 60% of trigger and swap
+        /// atomically at the trigger — zero-stall compaction.
+        #[arg(long)]
+        double_buffer: bool,
     },
     /// Pure policy check for integrators (oompa): give the numbers, get
     /// the action. Reads no transcript files.
@@ -638,6 +654,42 @@ fn cmd_hook(event: &str) -> Result<()> {
     Ok(())
 }
 
+fn cmd_events(session: Option<&str>, tail: usize, json: bool) -> Result<()> {
+    let path = default_log_path();
+    let mut events = gobstopper_core::events::read_events(&path).unwrap_or_default();
+    if let Some(prefix) = session {
+        events.retain(|e| e.session_id.starts_with(prefix));
+    }
+    if json {
+        println!("{}", serde_json::to_string_pretty(&events)?);
+        return Ok(());
+    }
+    let applied: Vec<&CompactionEvent> = events
+        .iter()
+        .filter(|e| e.outcome == "applied")
+        .collect();
+    let reclaimed: u64 = applied.iter().map(|e| e.est_reclaimed_tokens).sum();
+    println!(
+        "{} events ({} applied) — ~{} tokens reclaimed lifetime",
+        events.len(),
+        applied.len(),
+        reclaimed
+    );
+    for e in events.iter().rev().take(tail).rev() {
+        println!(
+            "  {} {:<12} {:<10} {:<18} {:<8} {} -> {}",
+            e.ts,
+            e.provider.as_str(),
+            e.strategy,
+            e.action,
+            e.outcome,
+            e.context_tokens_before,
+            e.context_tokens_after,
+        );
+    }
+    Ok(())
+}
+
 fn cmd_fork(cli: &Cli, cfg: &config::Config, session: &str) -> Result<()> {
     let d = find_session(cli, cfg, session)?;
     let r = fork::fork(d.handle.provider, &d.handle.path, None)?;
@@ -792,8 +844,74 @@ fn cmd_apply(
     Ok(())
 }
 
-fn cmd_watch(cli: &Cli, cfg: &config::Config, interval: u64, dry_run: bool) -> Result<()> {
+/// A fully-applied transcript copy waiting to be swapped in at trigger.
+struct Staged {
+    path: PathBuf,
+    /// Byte length of the source file when staged — if it changed, the
+    /// staged copy is missing appended records and must be discarded.
+    source_len: u64,
+    plan: CompactionPlan,
+}
+
+/// Build a compacted copy of the transcript ahead of the trigger.
+/// Returns None when there is nothing to stage (no plan, or the plan
+/// only delegates to the provider — that path is instant anyway).
+fn stage_compaction(d: &Discovered, resolved: &config::Resolved) -> Option<Staged> {
+    let transcript = detect::load(d).ok()?;
+    let plan = evaluate(&transcript, resolved).ok()??;
+    let file_edits: Vec<Edit> = plan
+        .edits
+        .iter()
+        .filter(|e| !matches!(e, Edit::ProviderCompact { .. }))
+        .cloned()
+        .collect();
+    if file_edits.is_empty() {
+        return None;
+    }
+    let staged_path = d.handle.path.with_extension("gobstopper-staged");
+    std::fs::copy(&d.handle.path, &staged_path).ok()?;
+    let staged_d = Discovered {
+        handle: gobstopper_core::SessionHandle {
+            path: staged_path.clone(),
+            ..d.handle.clone()
+        },
+        usage: d.usage,
+    };
+    let staged_plan = CompactionPlan {
+        edits: file_edits,
+        ..plan.clone()
+    };
+    let clean = apply_edits(&staged_d, &staged_plan).is_ok()
+        && std::fs::read(&staged_path)
+            .ok()
+            .map(|b| {
+                !verify::verify(d.handle.provider, &b)
+                    .iter()
+                    .any(|f| f.severity == verify::Severity::Error)
+            })
+            .unwrap_or(false);
+    if !clean {
+        let _ = std::fs::remove_file(&staged_path);
+        return None;
+    }
+    let source_len = std::fs::metadata(&d.handle.path).ok()?.len();
+    Some(Staged {
+        path: staged_path,
+        source_len,
+        plan,
+    })
+}
+
+fn cmd_watch(
+    cli: &Cli,
+    cfg: &config::Config,
+    interval: u64,
+    dry_run: bool,
+    double_buffer: bool,
+) -> Result<()> {
     let mut last_fire: std::collections::HashMap<String, std::time::Instant> =
+        std::collections::HashMap::new();
+    let mut staged: std::collections::HashMap<String, Staged> =
         std::collections::HashMap::new();
     loop {
         for d in detect::discover(&roots(cli), 0) {
@@ -805,13 +923,44 @@ fn cmd_watch(cli: &Cli, cfg: &config::Config, interval: u64, dry_run: bool) -> R
             ) else {
                 continue;
             };
-            if d.usage.context_tokens < resolved.policy.effective_trigger() {
+            let trigger = resolved.policy.effective_trigger();
+            let ctx = d.usage.context_tokens;
+            if ctx < trigger {
+                // Below trigger: optionally precompute the compacted file
+                // so the trigger crossing is a rename, not a rewrite.
+                if double_buffer && !dry_run && ctx >= trigger * 6 / 10
+                    && !staged.contains_key(&d.handle.session_id)
+                {
+                    if let Some(s) = stage_compaction(&d, &resolved) {
+                        staged.insert(d.handle.session_id.clone(), s);
+                    }
+                }
                 continue;
             }
             if let Some(t) = last_fire.get(&d.handle.session_id) {
                 if t.elapsed().as_secs() < resolved.policy.min_interval_secs {
                     continue;
                 }
+            }
+            // Staged fast path: source unchanged since staging -> swap.
+            if let Some(s) = staged.remove(&d.handle.session_id) {
+                let cur_len = std::fs::metadata(&d.handle.path).map(|m| m.len()).unwrap_or(0);
+                if !dry_run && cur_len == s.source_len {
+                    let started = std::time::Instant::now();
+                    match snapshot_before_edit(&d, &s.plan.strategy)
+                        .and_then(|_| std::fs::rename(&s.path, &d.handle.path).map_err(anyhow::Error::from))
+                    {
+                        Ok(()) => {
+                            last_fire.insert(d.handle.session_id.clone(), std::time::Instant::now());
+                            emit_event(&d, &s.plan, "transcript_compact", "applied",
+                                trigger, started.elapsed().as_millis() as u64, None);
+                            eprintln!("compacted {} (staged swap)", d.handle.session_id);
+                            continue;
+                        }
+                        Err(e) => eprintln!("staged swap {} failed: {e}", d.handle.session_id),
+                    }
+                }
+                let _ = std::fs::remove_file(&s.path); // stale or dry-run
             }
             let transcript = match detect::load(&d) {
                 Ok(t) => t,
@@ -1017,8 +1166,17 @@ fn main() -> Result<()> {
         Cmd::InstallHooks => cmd_install_hooks(false),
         Cmd::UninstallHooks => cmd_install_hooks(true),
         Cmd::Hook { event } => cmd_hook(event),
+        Cmd::Events {
+            session,
+            tail,
+            json,
+        } => cmd_events(session.as_deref(), *tail, *json),
         Cmd::Vault { session, json } => cmd_vault(&cli, &cfg, session.as_deref(), *json),
-        Cmd::Watch { interval, dry_run } => cmd_watch(&cli, &cfg, *interval, *dry_run),
+        Cmd::Watch {
+            interval,
+            dry_run,
+            double_buffer,
+        } => cmd_watch(&cli, &cfg, *interval, *dry_run, *double_buffer),
         Cmd::PolicyCheck {
             provider,
             context_tokens,
