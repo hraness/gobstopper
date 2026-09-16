@@ -33,3 +33,10 @@ trigger_tokens = 180_000
 # stdin, returns {"edits": [...]} on stdout.
 # [presets.my-script]
 # command = "python3 ~/bin/compactor.py"
+
+# Agentic preset backed by agentrouter's bounded editor profile: a cheap
+# model emits keep/elide/summarize/defer calls, the shim lowers them to
+# Edit[]. Requires an Anthropic API key (see packages/agentrouter README).
+# [presets.agentrouter]
+# strategy = "agentic"
+# command = "bun /path/to/textbutler/packages/agentrouter/src/gobstopper-editor.ts"
