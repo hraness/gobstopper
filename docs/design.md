@@ -113,6 +113,11 @@ understood (`window_id`, `first/previous_window_id`, `guardian_history`,
 `latest_token_usage_record`); correctness requires replaying the window
 chain faithfully, so it is gated as experimental until validated.
 
+See `docs/roadmap.md` for the full phased plan: transcript surgery +
+undo vault, the oompa `session.compact` effect path, the agentrouter
+`EditorDriver` backend, the aicharts measurement loop, and the proposed
+`transcript-foundation` shared crate.
+
 ## Presets as userspace code
 
 `preset.command` runs a user program: normalized transcript JSON on

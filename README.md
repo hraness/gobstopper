@@ -142,7 +142,10 @@ session files. `sawtooth` routes to Codex's `thread/compact/start` via
 driver interface (`EditorDriver`, `EditorCall` schema) is defined and
 falls back to the `auto` rubric until a model backend is wired in.
 
-See `docs/design.md` for the research basis and the roadmap.
+See `docs/design.md` for the research basis and `docs/roadmap.md` for
+the phased plan — including how gobstopper shares foundations with
+oompa (control plane), aicharts (measurement), and the agentrouter task
+runtime (editor-model backend for the `agentic` strategy).
 
 ## License
 
