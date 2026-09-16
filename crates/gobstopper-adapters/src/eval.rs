@@ -7,19 +7,21 @@
 //! delegate to the provider (`ProviderCompact`) rewrite nothing, so they
 //! report zero findings and zero apply duration.
 //!
-//! This is the honest v1 of strategy scoring: savings + safety.
-//! Probe-based quality scoring (can the compacted session still answer
-//! questions about what was elided) is a later phase.
+//! Scoring has two halves: savings + safety (`est_reclaimed`, post-edit
+//! `verify` findings) and quality — probe-based recall scoring checks
+//! which verbatim strings extracted from the source transcript survive
+//! each rewrite (see `gobstopper_core::probe`).
 
 use anyhow::Context;
 use gobstopper_core::plan::{CompactionPlan, Edit};
+use gobstopper_core::probe::{extract_probes, score_probes, Probe, ProbeScore};
 use gobstopper_core::strategy::{builtin_strategies, strategy_by_id, PolicyConfig, Strategy};
 use gobstopper_core::{Provider, SessionHandle, Transcript};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
-use crate::verify::{self, VerifyFinding};
+use crate::verify::{self, Severity, VerifyFinding};
 
 /// Temp-copy suffix counter, process-wide so concurrent evals and tests
 /// never collide on a scratch path.
@@ -38,6 +40,14 @@ pub struct EvalRow {
     /// Post-edit verify findings on the temp copy (empty when plan is
     /// None or the strategy is provider-delegating — no file rewrite).
     pub findings: Vec<VerifyFinding>,
+    /// Error-severity findings — rollup of `findings` for sorting.
+    pub verify_errors: usize,
+    /// Warning-severity findings — rollup of `findings`.
+    pub verify_warnings: usize,
+    /// Probe-based quality score on the rewritten temp copy: which
+    /// verbatim probes extracted from the source survived. `None` when
+    /// no rewrite ran — no plan, provider-delegated, or apply failure.
+    pub probe_score: Option<ProbeScore>,
     /// Apply duration on the temp copy.
     pub duration_ms: u64,
     /// Per-strategy failure (temp copy, apply, or read-back). One bad
@@ -85,20 +95,54 @@ fn apply(provider: Provider, path: &Path, edits: &[Edit]) -> Result<u64, crate::
     }
 }
 
-/// Copy `src` to `tmp`, run the plan's file edits against the copy, and
-/// verify the result. Returns (apply duration ms, findings).
+/// First raw line of the protected tail: from the oldest still-kept
+/// recent tool output to EOF. Mirrors what transcript-rewriting
+/// strategies promise verbatim — the `keep_recent_tool_outputs` newest
+/// elidable items plus everything after them. Falls back to the last
+/// item's line, and to `usize::MAX` (nothing is tail) for an empty
+/// transcript.
+fn protected_tail_start(transcript: &Transcript, policy: &PolicyConfig) -> usize {
+    let elidable: Vec<usize> = transcript
+        .items
+        .iter()
+        .filter(|i| i.elidable_bytes.is_some())
+        .map(|i| i.line_index)
+        .collect();
+    elidable
+        .get(
+            elidable
+                .len()
+                .saturating_sub(policy.keep_recent_tool_outputs),
+        )
+        .copied()
+        .unwrap_or_else(|| {
+            transcript
+                .items
+                .last()
+                .map(|i| i.line_index)
+                .unwrap_or(usize::MAX)
+        })
+}
+
+/// Copy `src` to `tmp`, run the plan's file edits against the copy,
+/// verify the result, and score probe recall. Returns (apply duration
+/// ms, findings, probe score).
 fn run_on_copy(
     provider: Provider,
     src: &Path,
     tmp: &Path,
     plan: &CompactionPlan,
-) -> anyhow::Result<(u64, Vec<VerifyFinding>)> {
+    probes: &[Probe],
+    tail_start_line: usize,
+) -> anyhow::Result<(u64, Vec<VerifyFinding>, ProbeScore)> {
     std::fs::copy(src, tmp).with_context(|| format!("copy {} to temp eval file", src.display()))?;
     let started = Instant::now();
     apply(provider, tmp, &plan.edits).map_err(|e| anyhow::anyhow!(e))?;
     let duration_ms = started.elapsed().as_millis() as u64;
     let bytes = std::fs::read(tmp).with_context(|| "reading back temp eval file")?;
-    Ok((duration_ms, verify::verify(provider, &bytes)))
+    let findings = verify::verify(provider, &bytes);
+    let score = score_probes(probes, &String::from_utf8_lossy(&bytes), tail_start_line);
+    Ok((duration_ms, findings, score))
 }
 
 /// Evaluate every built-in strategy (or `only` when set) against one
@@ -111,6 +155,22 @@ pub fn eval_transcript(
     only: Option<&str>,
 ) -> anyhow::Result<Vec<EvalRow>> {
     let transcript = load(provider, src)?;
+    let source_bytes = std::fs::read(src)
+        .with_context(|| format!("reading {} for probe extraction", src.display()))?;
+
+    // One probe set shared by every strategy keeps scores comparable.
+    // Probes come only from context-carrying lines: `est_tokens > 0`
+    // excludes provably dead branches and zero-cost bookkeeping.
+    let live_lines: std::collections::HashSet<usize> = transcript
+        .items
+        .iter()
+        .filter(|i| i.est_tokens > 0)
+        .map(|i| i.line_index)
+        .collect();
+    let mut probes = extract_probes(&String::from_utf8_lossy(&source_bytes));
+    probes.retain(|p| live_lines.contains(&p.line_index));
+    let tail_start = protected_tail_start(&transcript, policy);
+
     let strategies: Vec<Box<dyn Strategy>> = match only {
         Some(id) => {
             vec![strategy_by_id(id).ok_or_else(|| anyhow::anyhow!("unknown strategy '{id}'"))?]
@@ -125,6 +185,9 @@ pub fn eval_transcript(
             plan: None,
             est_reclaimed: 0,
             findings: Vec::new(),
+            verify_errors: 0,
+            verify_warnings: 0,
+            probe_score: None,
             duration_ms: 0,
             error: None,
         };
@@ -140,16 +203,25 @@ pub fn eval_transcript(
                     std::process::id(),
                     NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
                 ));
-                let outcome = run_on_copy(provider, src, &tmp, &plan);
+                let outcome = run_on_copy(provider, src, &tmp, &plan, &probes, tail_start);
                 // Always clean up: the temp copy itself, plus the
                 // intermediate an adapter may have written before a
                 // failed rename.
                 let _ = std::fs::remove_file(&tmp);
                 let _ = std::fs::remove_file(tmp.with_extension("jsonl.gobstopper-tmp"));
                 match outcome {
-                    Ok((duration_ms, findings)) => {
+                    Ok((duration_ms, findings, score)) => {
                         row.duration_ms = duration_ms;
+                        row.verify_errors = findings
+                            .iter()
+                            .filter(|f| f.severity == Severity::Error)
+                            .count();
+                        row.verify_warnings = findings
+                            .iter()
+                            .filter(|f| f.severity == Severity::Warning)
+                            .count();
                         row.findings = findings;
+                        row.probe_score = Some(score);
                     }
                     Err(e) => row.error = Some(e.to_string()),
                 }
@@ -217,6 +289,52 @@ mod tests {
                 "message": {"role": "user", "content": [
                     {"type": "tool_result", "tool_use_id": format!("t{i}"),
                      "content": "x".repeat(3_000)}
+                ]}
+            }));
+        }
+        lines.push(serde_json::json!({
+            "type": "assistant", "uuid": "u8", "parentUuid": "u7",
+            "message": {"role": "assistant", "content": [{"type": "text", "text": "done"}]}
+        }));
+        let path = dir.join("session.jsonl");
+        let mut text = String::new();
+        for line in &lines {
+            text.push_str(&line.to_string());
+            text.push('\n');
+        }
+        fs::write(&path, text).unwrap();
+        path
+    }
+
+    /// Probe-bearing variant: each tool_result payload carries distinct
+    /// probe text (error signature, command, path, decision), so eliding
+    /// early results loses their probes while the kept tail result —
+    /// `keep_recent_tool_outputs: 1` — keeps its own.
+    fn write_probe_transcript(dir: &Path) -> PathBuf {
+        let mut lines = vec![serde_json::json!({
+            "type": "user", "uuid": "u1",
+            "message": {"role": "user", "content": "please fix the build in /project/src/main.rs"}
+        })];
+        let bodies = [
+            "error[E0308]: mismatched types in /project/crates/core/src/lib.rs FAILED",
+            "ran git status; decided to keep /project/docs/design.md",
+            "cargo build --release finished for /project/src/tail_keeper.rs",
+        ];
+        for (i, body) in bodies.iter().enumerate() {
+            let call = format!("u{}", 2 + i * 2);
+            let result = format!("u{}", 3 + i * 2);
+            lines.push(serde_json::json!({
+                "type": "assistant", "uuid": call, "parentUuid": format!("u{}", 1 + i * 2),
+                "message": {"role": "assistant", "content": [
+                    {"type": "tool_use", "id": format!("t{i}"), "name": "Bash",
+                     "input": {"command": "cargo test"}}
+                ]}
+            }));
+            lines.push(serde_json::json!({
+                "type": "user", "uuid": result, "parentUuid": call,
+                "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": format!("t{i}"),
+                     "content": format!("{body}\n{}", "x".repeat(3_000))}
                 ]}
             }));
         }
@@ -353,6 +471,49 @@ mod tests {
         assert!(rows[0].est_reclaimed > 0);
 
         assert!(eval_transcript(Provider::ClaudeCode, &src, &low_policy(), Some("nope")).is_err());
+    }
+
+    #[test]
+    fn elide_row_carries_probe_score_and_verify_counts() {
+        let _guard = EVAL_LOCK.lock().unwrap();
+        let dir = TestDir::new();
+        let src = write_probe_transcript(&dir.0);
+
+        let rows = eval_transcript(Provider::ClaudeCode, &src, &low_policy(), None).unwrap();
+        let elide = row(&rows, "elide");
+        assert!(elide.error.is_none());
+
+        let score = elide
+            .probe_score
+            .as_ref()
+            .expect("elide rewrites a temp copy and scores it");
+        assert!(score.probes_total > 0);
+        // Early tool payloads were elided: their probes are gone.
+        assert!(score.probes_recalled < score.probes_total);
+        assert!(score.recall < 1.0 && score.recall > 0.0);
+        // The newest tool output is the protected tail: intact.
+        assert!(
+            score.tail_intact,
+            "tail probes should survive elision: {:?}",
+            score.missed_probes
+        );
+        assert!(score.tail_probes_total > 0);
+        assert!(score.missed_probes.len() <= 8);
+        assert!(score
+            .missed_probes
+            .iter()
+            .any(|m| m.contains("error[E0308]")));
+        assert!(score.by_kind.iter().any(|k| k.total > 0));
+
+        // Verify rollups are consistent with the findings vec.
+        assert_eq!(elide.verify_errors, 0);
+        assert_eq!(
+            elide.verify_errors + elide.verify_warnings,
+            elide.findings.len()
+        );
+
+        // Delegating strategies never rewrite the file: no score.
+        assert!(row(&rows, "sawtooth").probe_score.is_none());
     }
 
     #[test]

@@ -792,19 +792,25 @@ fn cmd_eval(
     for row in &rows {
         match (&row.plan, &row.error) {
             (Some(plan), _) => {
-                let errors = row
-                    .findings
-                    .iter()
-                    .filter(|f| f.severity == verify::Severity::Error)
-                    .count();
+                let probe = match &row.probe_score {
+                    Some(s) if s.probes_total > 0 => format!(
+                        "  recall {:.0}% ({}/{}){}",
+                        s.recall * 100.0,
+                        s.probes_recalled,
+                        s.probes_total,
+                        if s.tail_intact { "" } else { ", tail lost" },
+                    ),
+                    _ => String::new(),
+                };
                 println!(
-                    "  {:<11} {} -> ~{} (saves ~{}){}",
+                    "  {:<11} {} -> ~{} (saves ~{}){}{}",
                     row.strategy,
                     plan.context_tokens_before,
                     plan.context_tokens_after,
                     row.est_reclaimed,
-                    if errors > 0 {
-                        format!("  ⚠ {errors} verify errors")
+                    probe,
+                    if row.verify_errors > 0 {
+                        format!("  ⚠ {} verify errors", row.verify_errors)
                     } else {
                         String::new()
                     },

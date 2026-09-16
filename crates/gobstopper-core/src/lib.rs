@@ -11,11 +11,13 @@ pub mod estimate;
 pub mod events;
 pub mod model;
 pub mod plan;
+pub mod probe;
 pub mod strategy;
 
 pub use events::{append_event, default_log_path, read_events, CompactionEvent};
 pub use model::{ItemKind, Provider, SessionHandle, Transcript, TranscriptItem, UsageSample};
 pub use plan::{CompactionPlan, DigestBlock, Edit};
+pub use probe::{KindTally, Probe, ProbeKind, ProbeScore};
 pub use strategy::{builtin_strategies, strategy_by_id, PolicyConfig, QuotaPressure, Strategy};
 
 #[cfg(test)]
