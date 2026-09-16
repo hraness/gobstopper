@@ -138,9 +138,10 @@ the write path bulletproof and undoable.
   drops `account/rateLimits/updated` (the quota-pressure signal).
   Additive `policy-check` flag `--quota-pressure low|normal|high` lets
   rate-limit state shift the effective trigger.
-- **Double-buffer compaction** (Aider/Compresr pattern): at ~60% of
-  trigger, build the compacted transcript on a clone in background; swap
-  atomically at trigger — zero-stall compaction at the file layer.
+- ✅ **Double-buffer compaction** (Aider/Compresr pattern): `watch
+  --double-buffer` stages a verified compacted copy at ~60% of trigger
+  and swaps atomically at the trigger — zero-stall compaction at the
+  file layer.
 
 ## 5. Phase C — the agentic strategy, wired (v0.4)
 
@@ -174,13 +175,13 @@ Nobody ships a compaction eval. gobstopper should.
   cost** (count re-fetch calls; hidden-cost research shows task metrics
   alone are misleading), over the vault corpus. Publish a leaderboard
   vs. provider-native compaction.
-- **aicharts emission**: gobstopper emits `session-observations-v1`
-  reports (existing aicharts JSON schema — browser dashboard works
-  unchanged) plus compaction events: `{trigger, strategy, pre_tokens,
-  post_tokens, items_covered, digest}` — numeric-only, keyed-ID'd per
-  aicharts privacy doctrine. This resolves aicharts' known ambiguity
-  (`codex_cumulative_regression` can't tell compaction from reset) and
-  gives the "did gobstopper actually save tokens" answer a dashboard.
+- **aicharts emission** — ✅ `gobstopper report` emits
+  `session-observations-v1` (verified against the real
+  `parseSessionReport`; `--strict` for direct ingest, extension key
+  carries compaction stats otherwise). `compaction-events-v1` records
+  resolve aicharts' known ambiguity (`codex_cumulative_regression`
+  can't tell compaction from reset) and feed the occupancy-over-time
+  story. Next: aicharts-side ingest + dashboards.
 - `Usage.context_tier` in AICU is a reserved field designed for a price
   registry — gobstopper's per-compaction reclaimed-token events are the
   first real producer of occupancy-over-time data.
