@@ -304,7 +304,7 @@ fn apply_elide(path: &Path, line_indexes: &[usize], stub_template: &str) -> Resu
     Ok(reclaimed)
 }
 
-fn digest_text(digest: &DigestBlock) -> String {
+pub(crate) fn digest_text(digest: &DigestBlock) -> String {
     let mut s = String::from("[gobstopper state card]\n");
     if let Some(goal) = &digest.goal {
         s.push_str(&format!("goal: {goal}\n"));

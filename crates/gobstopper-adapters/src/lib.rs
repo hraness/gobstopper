@@ -7,6 +7,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod codex_compact;
 pub mod detect;
 pub mod eval;
 pub mod fork;

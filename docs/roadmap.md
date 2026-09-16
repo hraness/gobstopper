@@ -99,11 +99,20 @@ the write path bulletproof and undoable.
   pinned 0.153.2; requires one-time `/hooks` trust approval). Hook
   callbacks snapshot to the vault, append events, and return an
   `additionalContext` restore pointer after native compaction.
-- ⏳ Codex `compacted`-record writer: emit a real `compacted` record with
-  custom `replacement_history` (window chain fields understood:
-  `window_id`, `first_window_id`, `previous_window_id`,
-  `guardian_history`, `latest_token_usage_record`). Gated `--experimental`
-  until validated against resume.
+- ✅ **Codex `compacted`-record writer** (gated `apply
+  --experimental-compacted`): emits a real `compacted` record with
+  custom `replacement_history` — field-for-field verified against live
+  rollouts (`window_number`/`first_window_id`/`previous_window_id`/
+  `window_id` chain advanced correctly, `compaction_response_id`,
+  `latest_token_usage_record`, `ordinal` = line index). The one
+  deliberately omitted field is the provider-encrypted `compaction`
+  item (unforgeable). Shape-verified; still needs a live resume
+  validation before it leaves the flag.
+- ✅ **Double-buffer watch**: `watch --double-buffer` stages a verified
+  compacted copy at 60% of trigger; the trigger crossing is a vault
+  snapshot + atomic rename — zero-stall compaction.
+- ✅ **`gobstopper events`**: telemetry readback — recent activity +
+  cumulative reclaimed-token totals.
 
 ## 4. Phase B — live control plane (v0.3)
 

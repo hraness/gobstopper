@@ -70,6 +70,12 @@ enum Cmd {
         /// (not recommended).
         #[arg(long)]
         no_backup: bool,
+        /// Codex only: emit a real `compacted` record (provider window
+        /// chain + replacement_history) instead of a plain digest line.
+        /// Experimental — shape is verified against real rollouts but
+        /// not yet validated against live resume.
+        #[arg(long)]
+        experimental_compacted: bool,
     },
     /// Check a transcript for resume-breaking defects (broken parent
     /// chains, orphaned tool calls, malformed compaction records).
@@ -767,6 +773,7 @@ fn cmd_apply(
     trigger: Option<u64>,
     yes: bool,
     no_backup: bool,
+    experimental_compacted: bool,
 ) -> Result<()> {
     let d = find_session(cli, cfg, session)?;
     let mut resolved = cfg.resolve(
@@ -809,16 +816,53 @@ fn cmd_apply(
         .collect();
     let started = std::time::Instant::now();
     let trigger = resolved.policy.trigger_tokens;
+    // Experimental Codex path: an InjectDigest edit becomes a real
+    // `compacted` record (window chain + replacement_history) appended
+    // to the rollout — the provider's own resume mechanism performs the
+    // swap. Elide edits in the same plan still apply normally first.
+    let digest_for_compacted = if experimental_compacted && d.handle.provider == Provider::Codex {
+        plan.edits.iter().find_map(|e| match e {
+            Edit::InjectDigest { digest } => Some(digest.clone()),
+            _ => None,
+        })
+    } else {
+        None
+    };
+    let mut applied_plan = plan.clone();
+    if digest_for_compacted.is_some() {
+        applied_plan.edits.retain(|e| !matches!(e, Edit::InjectDigest { .. }));
+    }
     if !file_edits.is_empty() {
         if !no_backup {
             let entry = snapshot_before_edit(&d, &plan.strategy)?;
             eprintln!("snapshot: {} ({})", &entry.sha256[..12], entry.path.display());
         }
-        match apply_edits(&d, &plan) {
+        let file_result = if digest_for_compacted.is_some() {
+            let elide_result = if applied_plan.edits.is_empty() {
+                Ok(0)
+            } else {
+                apply_edits(&d, &applied_plan)
+            };
+            elide_result.and_then(|n| {
+                gobstopper_adapters::codex_compact::compact_with_digest(
+                    &d.handle.path,
+                    &digest_for_compacted.clone().unwrap(),
+                    8,
+                )
+                .map(|_| n)
+                .map_err(|e| anyhow::anyhow!(e))
+            })
+        } else {
+            apply_edits(&d, &plan)
+        };
+        match file_result {
             Ok(reclaimed) => {
                 emit_event(&d, &plan, "transcript_compact", "applied", trigger,
                     started.elapsed().as_millis() as u64, None);
                 println!("reclaimed ~{} bytes of tool output", reclaimed);
+                if digest_for_compacted.is_some() {
+                    println!("emitted compacted record (window chain advanced; resume performs the swap)");
+                }
             }
             Err(e) => {
                 emit_event(&d, &plan, "transcript_compact", "failed", trigger,
@@ -1142,6 +1186,7 @@ fn main() -> Result<()> {
             trigger,
             yes,
             no_backup,
+            experimental_compacted,
         } => cmd_apply(
             &cli,
             &cfg,
@@ -1151,6 +1196,7 @@ fn main() -> Result<()> {
             *trigger,
             *yes,
             *no_backup,
+            *experimental_compacted,
         ),
         Cmd::Verify { session, json } => cmd_verify(&cli, &cfg, session, *json),
         Cmd::Undo { session, sha, yes } => {
