@@ -25,6 +25,9 @@ struct Cli {
     /// Claude state root (default: $CLAUDE_CONFIG_DIR or ~/.claude).
     #[arg(long, global = true)]
     claude_home: Option<PathBuf>,
+    /// Codex CLI binary for provider controls (default: $GOBSTOPPER_CODEX_BIN or `codex` on PATH).
+    #[arg(long, global = true)]
+    codex_bin: Option<PathBuf>,
     #[command(subcommand)]
     command: Cmd,
 }
@@ -402,9 +405,9 @@ fn apply_edits(d: &Discovered, plan: &CompactionPlan) -> Result<u64> {
 }
 
 /// Route a `ProviderCompact` edit to the provider's own machinery.
-fn provider_compact(d: &Discovered) -> Result<()> {
+fn provider_compact(d: &Discovered, codex_bin: &std::path::Path) -> Result<()> {
     match d.handle.provider {
-        Provider::Codex => codex_compact(&d.handle.session_id),
+        Provider::Codex => codex_compact(codex_bin, &d.handle.session_id),
         Provider::ClaudeCode => bail!(
             "claude sessions compact via /compact in-session or --autocompact at launch; \
              gobstopper cannot inject into a running TUI"
@@ -412,16 +415,34 @@ fn provider_compact(d: &Discovered) -> Result<()> {
     }
 }
 
+/// Resolve the Codex CLI binary: explicit flag > $GOBSTOPPER_CODEX_BIN > PATH.
+fn resolve_codex_bin(flag: Option<&std::path::Path>) -> PathBuf {
+    if let Some(p) = flag {
+        return p.to_path_buf();
+    }
+    if let Ok(env) = std::env::var("GOBSTOPPER_CODEX_BIN") {
+        if !env.is_empty() {
+            return PathBuf::from(env);
+        }
+    }
+    PathBuf::from("codex")
+}
+
 /// Ask the shared Codex app-server daemon to compact a thread.
 /// Speaks JSON-RPC over `codex app-server proxy` stdio.
-fn codex_compact(thread_id: &str) -> Result<()> {
-    let mut child = Command::new("codex")
+fn codex_compact(codex_bin: &std::path::Path, thread_id: &str) -> Result<()> {
+    let mut child = Command::new(codex_bin)
         .args(["app-server", "proxy"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::piped())
         .spawn()
-        .context("spawning `codex app-server proxy` (is the codex daemon running?)")?;
+        .with_context(|| {
+            format!(
+                "spawning `{} app-server proxy` (set --codex-bin or $GOBSTOPPER_CODEX_BIN)",
+                codex_bin.display()
+            )
+        })?;
     let mut stdin = child.stdin.take().unwrap();
     let mut send = |v: serde_json::Value| -> Result<()> {
         stdin.write_all(v.to_string().as_bytes())?;
@@ -440,6 +461,14 @@ fn codex_compact(thread_id: &str) -> Result<()> {
     drop(stdin);
     let out = child.wait_with_output()?;
     let text = String::from_utf8_lossy(&out.stdout);
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        bail!(
+            "`codex app-server proxy` failed (is the codex app-server daemon running? \
+             `codex app-server daemon status`): {}",
+            &stderr[..stderr.len().min(300)]
+        );
+    }
     if text.contains("\"error\"") {
         bail!("codex app-server rejected compaction: {}", &text[..text.len().min(400)]);
     }
@@ -897,7 +926,7 @@ fn cmd_apply(
         }
     }
     if has_provider_compact {
-        match provider_compact(&d) {
+        match provider_compact(&d, &resolve_codex_bin(cli.codex_bin.as_deref())) {
             Ok(()) => {
                 emit_event(&d, &plan, "provider_compact", "applied", trigger,
                     started.elapsed().as_millis() as u64, None);
@@ -1057,7 +1086,7 @@ fn cmd_watch(
                         .any(|e| matches!(e, Edit::ProviderCompact { .. }));
                     let action = if is_provider { "provider_compact" } else { "transcript_compact" };
                     let r = if is_provider {
-                        provider_compact(&d)
+                        provider_compact(&d, &resolve_codex_bin(cli.codex_bin.as_deref()))
                     } else {
                         snapshot_before_edit(&d, &plan.strategy)
                             .and_then(|_| apply_edits(&d, &plan))
