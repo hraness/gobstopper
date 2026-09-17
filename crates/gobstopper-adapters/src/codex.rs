@@ -75,27 +75,84 @@ fn output_text(payload: &Value) -> Option<String> {
     }
 }
 
-/// Short tail snippet of a tool output, used for digests. At most a few
-/// hundred bytes so the compacted record can recall the conclusion of an
-/// elided command without carrying its full payload.
-fn output_summary(payload: &Value) -> Option<String> {
+/// Short opening of a user message, for digest `goal` generation.
+fn user_prompt_summary(payload: &Value) -> Option<String> {
+    const MAX_SUMMARY: usize = 200;
+    let text = crate::payload::text(payload.get("content")?);
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() <= MAX_SUMMARY {
+        return Some(text);
+    }
+    Some(text.chars().take(MAX_SUMMARY).collect())
+}
+
+/// Short tail snippet of a tool output, annotated with the matching call
+/// name and arguments.
+fn annotated_output_summary(
+    payload: &Value,
+    calls: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    const MAX_SUMMARY: usize = 240;
+    const TAIL: usize = 180;
     let text = output_text(payload)?;
     if text.is_empty() {
         return None;
     }
-    const MAX_SUMMARY: usize = 200;
-    if text.chars().count() <= MAX_SUMMARY {
-        return Some(text);
-    }
-    Some(
-        text.chars()
+    let call_id = payload
+        .get("call_id")
+        .or_else(|| payload.get("tool_call_id"))
+        .or_else(|| payload.get("id"))
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let call = calls.get(call_id).map(String::as_str).unwrap_or("?");
+    let tail = if text.chars().count() <= TAIL {
+        text
+    } else {
+        let tail = text
+            .chars()
             .rev()
-            .take(MAX_SUMMARY)
+            .take(TAIL)
             .collect::<String>()
             .chars()
             .rev()
-            .collect(),
-    )
+            .collect::<String>();
+        format!("...{tail}")
+    };
+    let full = format!("{call} => {tail}");
+    if full.chars().count() <= MAX_SUMMARY {
+        return Some(full);
+    }
+    Some(full.chars().take(MAX_SUMMARY).collect())
+}
+
+fn call_id(payload: &Value) -> Option<String> {
+    payload
+        .get("call_id")
+        .or_else(|| payload.get("tool_call_id"))
+        .or_else(|| payload.get("id"))
+        .and_then(Value::as_str)
+        .map(str::to_string)
+}
+
+fn call_label(payload: &Value) -> String {
+    let name = payload
+        .get("name")
+        .or_else(|| payload.get("command"))
+        .and_then(Value::as_str)
+        .unwrap_or("?");
+    let args = match payload.get("arguments").or_else(|| payload.get("input")) {
+        Some(Value::String(s)) => s.clone(),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    };
+    let args = if args.chars().count() > 80 {
+        args.chars().take(80).collect::<String>() + "..."
+    } else {
+        args
+    };
+    format!("{name}({args})")
 }
 
 /// Elidable payload bytes: tool output bodies only.
@@ -119,6 +176,7 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
     let mut items: Vec<TranscriptItem> = Vec::new();
     let mut window_start = 0;
     let mut usage = UsageSample::default();
+    let mut calls: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     for (line_index, line) in BufReader::new(file).lines().enumerate() {
         let line = line.map_err(|e| AdapterError::Io {
             path: handle.path.clone(),
@@ -136,13 +194,23 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                 let kind = classify(ptype, role);
                 let elidable = elidable_bytes(payload);
                 let est = estimate_tokens(value_len(payload));
+                if kind == ItemKind::ToolCall {
+                    if let Some(id) = call_id(payload) {
+                        calls.insert(id, call_label(payload));
+                    }
+                }
+                let summary = match kind {
+                    ItemKind::User => user_prompt_summary(payload),
+                    ItemKind::ToolResult => annotated_output_summary(payload, &calls),
+                    _ => None,
+                };
                 items.push(TranscriptItem {
                     line_index,
                     kind,
                     est_tokens: est,
                     elidable_bytes: elidable,
                     label: format!("{ptype}@{line_index}"),
-                    summary: output_summary(payload),
+                    summary,
                 });
             }
             Some("compacted") => {

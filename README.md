@@ -97,6 +97,7 @@ gobstopper explain                 # the occupancy math above
 gobstopper recall --query <q>      # search state-card digests across all archived sessions
 gobstopper history <session>       # every archived state of one session
 gobstopper diff <sha-a> <sha-b>    # structural comparison of two vault snapshots
+gobstopper bench                   # benchmark every strategy across discovered sessions
 ```
 
 Every `apply`/`watch` compaction snapshots the source transcript into a

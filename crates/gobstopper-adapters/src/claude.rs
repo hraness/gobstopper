@@ -52,38 +52,10 @@ fn has_tool_result(message: &Value) -> bool {
     tool_result_bytes(message) > 256
 }
 
-/// Short tail snippet of the tool_result blocks inside a user line.
-fn tool_result_summary(message: &Value) -> Option<String> {
-    const MAX_SUMMARY: usize = 200;
-    let text: String = message
-        .get("content")
-        .and_then(Value::as_array)?
-        .iter()
-        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
-        .filter_map(|b| b.get("content"))
-        .map(crate::payload::text)
-        .collect();
-    if text.is_empty() {
-        return None;
-    }
-    if text.chars().count() <= MAX_SUMMARY {
-        return Some(text);
-    }
-    Some(
-        text.chars()
-            .rev()
-            .take(MAX_SUMMARY)
-            .collect::<String>()
-            .chars()
-            .rev()
-            .collect(),
-    )
-}
-
 /// Short opening of a plain user prompt, for digest `goal` generation.
 fn user_prompt_summary(message: &Value) -> Option<String> {
     const MAX_SUMMARY: usize = 200;
-    let text = crate::payload::text(message);
+    let text = crate::payload::text(message.get("content")?);
     if text.is_empty() {
         return None;
     }
@@ -91,6 +63,95 @@ fn user_prompt_summary(message: &Value) -> Option<String> {
         return Some(text);
     }
     Some(text.chars().take(MAX_SUMMARY).collect())
+}
+
+/// Collect every assistant `tool_use` block by its `id`, returning a short
+/// "name(input)" label for the matching `tool_result` summary.
+fn collect_tool_uses(records: &[(usize, Value)]) -> std::collections::HashMap<String, String> {
+    let mut map = std::collections::HashMap::new();
+    for (_, record) in records {
+        if record.get("type").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        let Some(content) = record
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(Value::as_array)
+        else {
+            continue;
+        };
+        for block in content {
+            if block.get("type").and_then(Value::as_str) != Some("tool_use") {
+                continue;
+            }
+            let Some(id) = block.get("id").and_then(Value::as_str) else {
+                continue;
+            };
+            let name = block.get("name").and_then(Value::as_str).unwrap_or("?");
+            let input = match block.get("input").cloned().unwrap_or(Value::Null) {
+                Value::String(s) => s,
+                other => other.to_string(),
+            };
+            let input = if input.chars().count() > 80 {
+                input.chars().take(80).collect::<String>() + "..."
+            } else {
+                input
+            };
+            map.insert(id.to_string(), format!("{name}({input})"));
+        }
+    }
+    map
+}
+
+/// Short tail snippet of the tool_result blocks inside a user line,
+/// annotated with the matching tool_use name and input.
+fn tool_result_summary(
+    message: &Value,
+    tool_uses: &std::collections::HashMap<String, String>,
+) -> Option<String> {
+    const MAX_SUMMARY: usize = 240;
+    const TAIL: usize = 120;
+    let content = message.get("content").and_then(Value::as_array)?;
+    let mut parts = Vec::new();
+    for block in content {
+        if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+            continue;
+        }
+        let tool_use_id = block
+            .get("tool_use_id")
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        let call = tool_uses
+            .get(tool_use_id)
+            .map(String::as_str)
+            .unwrap_or("?");
+        let output = block
+            .get("content")
+            .map(crate::payload::text)
+            .unwrap_or_default();
+        let tail = if output.chars().count() <= TAIL {
+            output
+        } else {
+            let tail = output
+                .chars()
+                .rev()
+                .take(TAIL)
+                .collect::<String>()
+                .chars()
+                .rev()
+                .collect::<String>();
+            format!("...{tail}")
+        };
+        parts.push(format!("{call} => {tail}"));
+    }
+    if parts.is_empty() {
+        return None;
+    }
+    let full = parts.join("; ");
+    if full.chars().count() <= MAX_SUMMARY {
+        return Some(full);
+    }
+    Some(full.chars().take(MAX_SUMMARY).collect())
 }
 
 fn absorb_usage(line: &Value, sample: &mut UsageSample) {
@@ -192,6 +253,7 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
         .as_deref()
         .map(|leaf| live_branch(&links, leaf))
         .unwrap_or_default();
+    let tool_uses = collect_tool_uses(&records);
 
     let mut items = Vec::new();
     for (line_index, record) in &records {
@@ -222,7 +284,7 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
         let est = estimate_tokens(value_len(&record["message"]));
         let summary = match kind {
             ItemKind::User => user_prompt_summary(&record["message"]),
-            _ => tool_result_summary(&record["message"]),
+            _ => tool_result_summary(&record["message"], &tool_uses),
         };
         items.push(TranscriptItem {
             line_index: *line_index,

@@ -37,7 +37,7 @@ impl Strategy for CompactedStrategy {
         for idx in &elided_indexes {
             if let Some(item) = transcript.items.iter().find(|i| i.line_index == *idx) {
                 if let Some(summary) = &item.summary {
-                    decisions.push(format!("{}: {}", item.label, summary));
+                    decisions.push(summary.clone());
                 } else {
                     decisions.push(format!(
                         "{} elided ({} bytes)",
@@ -46,7 +46,7 @@ impl Strategy for CompactedStrategy {
                     ));
                 }
                 if item.kind == ItemKind::ToolResult {
-                    files_touched.push(item.label.clone());
+                    files_touched.push(item.summary.clone().unwrap_or_else(|| item.label.clone()));
                 }
             }
         }
@@ -61,8 +61,13 @@ impl Strategy for CompactedStrategy {
             .items
             .iter()
             .rev()
-            .find(|i| i.kind == ItemKind::User)
-            .map(|i| i.summary.clone().unwrap_or_else(|| i.label.clone()));
+            .find(|i| {
+                i.kind == ItemKind::User
+                    && i.summary.as_ref().is_some_and(|s| {
+                        !s.starts_with('<') && !s.starts_with("[gobstopper state card]")
+                    })
+            })
+            .and_then(|i| i.summary.clone());
 
         let digest = DigestBlock {
             goal: goal.clone(),

@@ -436,3 +436,9 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
   keyword relevance, and supports `--limit` and `--json`. The same content-addressed
   vault that keeps every compaction state also serves as the retrieval layer for
   agent "infinite memory."
+- Smarter digests and offline benchmark 2026-09-19: `claude` and `codex` adapters
+  now pair `tool_use`/`function_call` records with their outputs, so `compacted`
+  digests carry `bash(seq 1 100) => ...` instead of raw tail snippets. The user
+  prompt is also extracted for `goal`, skipping system notifications. `gobstopper bench`
+  runs `gobstopper eval` over every discovered session and emits a CSV of projected
+  savings, verify errors, and probe recall per strategy.

@@ -211,6 +211,19 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Benchmark every built-in strategy across all discovered sessions.
+    /// Emits CSV rows of projected savings, verify findings, and probe recall.
+    Bench {
+        /// Include inactive sessions too.
+        #[arg(long)]
+        all: bool,
+        /// Override the token trigger for the benchmark run.
+        #[arg(long)]
+        trigger: Option<u64>,
+        /// Write CSV to this file instead of stdout.
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Store the current transcript state in the vault without compacting.
     Snapshot {
         /// Session id prefix, or path to a transcript file.
@@ -1356,6 +1369,81 @@ fn cmd_eval(
     Ok(())
 }
 
+fn cmd_bench(
+    cli: &Cli,
+    all: bool,
+    trigger: Option<u64>,
+    output: Option<&std::path::Path>,
+) -> Result<()> {
+    let max_age = if all {
+        0
+    } else {
+        detect::default_max_age_secs()
+    };
+    let sessions = detect::discover(&roots(cli), max_age);
+    let cfg = config::load()?;
+    let mut csv = String::new();
+    csv.push_str(
+        "provider,session,strategy,context_before,context_after,est_reclaimed,verify_errors,verify_warnings,probes_total,probes_recalled,recall,tail_intact,duration_ms\n",
+    );
+    for d in sessions {
+        let mut resolved = match cfg.resolve(d.handle.provider, &d.handle.session_id, None, None) {
+            Ok(r) => r,
+            Err(_) => continue,
+        };
+        if let Some(t) = trigger {
+            resolved.policy.trigger_tokens = t;
+        }
+        let rows = match eval::eval_transcript(
+            d.handle.provider,
+            &d.handle.path,
+            &resolved.policy,
+            None,
+        ) {
+            Ok(rows) => rows,
+            Err(_) => continue,
+        };
+        for row in rows {
+            let plan = row.plan.as_ref();
+            let before = plan
+                .map(|p| p.context_tokens_before)
+                .unwrap_or(d.usage.context_tokens);
+            let after = plan.map(|p| p.context_tokens_after).unwrap_or(before);
+            let (probes_total, probes_recalled, recall, tail_intact) =
+                row.probe_score.as_ref().map_or((0, 0, 0.0, false), |s| {
+                    (s.probes_total, s.probes_recalled, s.recall, s.tail_intact)
+                });
+            csv.push_str(&format!(
+                "{},{},{},{},{},{},{},{},{},{},{:.2},{},{}\n",
+                d.handle.provider.as_str(),
+                d.handle.session_id,
+                row.strategy,
+                before,
+                after,
+                row.est_reclaimed,
+                row.verify_errors,
+                row.verify_warnings,
+                probes_total,
+                probes_recalled,
+                recall,
+                tail_intact,
+                row.duration_ms
+            ));
+        }
+    }
+    if let Some(path) = output {
+        std::fs::write(path, csv.as_bytes())?;
+        println!(
+            "wrote {} rows to {}",
+            csv.lines().count().saturating_sub(1),
+            path.display()
+        );
+    } else {
+        print!("{}", csv);
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_apply(
     cli: &Cli,
@@ -2061,6 +2149,11 @@ fn main() -> Result<()> {
             *json,
         ),
         Cmd::Diff { a, b, json } => cmd_diff(a, b, *json),
+        Cmd::Bench {
+            all,
+            trigger,
+            output,
+        } => cmd_bench(&cli, *all, *trigger, output.as_deref()),
         Cmd::Snapshot { session, label } => cmd_snapshot(&cli, &cfg, session, label.as_deref()),
         Cmd::Watch {
             interval,
