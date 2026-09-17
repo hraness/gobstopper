@@ -27,34 +27,34 @@ const footnote =
 const primitives = [
   {
     label: "Session detection",
-    summary: "Scans Codex and Claude Code transcript stores for live and idle sessions, reading each provider's own token-usage records — real context size, not an estimate.",
+    summary: "Scans Codex and Claude Code transcript stores for live and idle sessions, reading each provider's own token-usage records — real context size where available, with a fallback estimate otherwise.",
   },
   {
     label: "A small edit IR",
-    summary: "Every strategy lowers to the same edits — elide, inject digest, provider compact — applied in place so parent chains and ordinals never break.",
+    summary: "Every strategy lowers to the same edits — elide, inject digest, provider compact — and the host validates the candidate before publication. Provider linkage (parent chains, ordinals) is never removed, only rewritten in place within a line.",
   },
   {
     label: "Strategies",
-    summary: "auto picks by transcript shape; sawtooth delegates to the provider's native compaction; elide masks stale tool output; structured writes a state-card digest; agentic hands bounded keep/elide/summarize tools to a small editor model.",
+    summary: "auto picks by transcript shape; sawtooth delegates to the provider's native compaction; elide masks stale tool output; structured emits a conservative state-card placeholder; agentic is reserved for a bounded editor-model backend.",
   },
   {
-    label: "Presets and config",
-    summary: "Global defaults, per-provider and per-session overrides, named presets, and a preset.command escape hatch that runs your own edit program over normalized transcript JSON.",
+    label: "Presets, plugins and config",
+    summary: "Global defaults, per-provider and per-session overrides, named presets, an explicitly-trusted legacy command hook, and versioned plugin bundles with exact artifact identity and host-side edit validation.",
   },
   {
     label: "Undo vault",
-    summary: "Every apply snapshots the transcript into a content-addressed vault first. gobstopper undo restores byte-identical — and the undo itself is snapshotted.",
+    summary: "Every apply snapshots the transcript into a content-addressed vault first. gobstopper undo restores byte-identical bytes into a new fork — the original transcript is never overwritten by a standalone compaction.",
   },
   {
     label: "Telemetry and eval",
-    summary: "Every mutation emits a compaction event for dashboards. gobstopper eval runs all strategies on temp copies and scores what the compacted session still recalls.",
+    summary: "Every mutation emits a compaction event for dashboards. gobstopper eval runs all strategies on temp copies and scores structural retention; it is a regression signal, not a live cost measurement.",
   },
 ] as const;
 
 const trust = [
   {
     label: "Transcripts are never destroyed",
-    detail: "Rewrites are in-place stubs, not deletions — provider resume chains stay valid. A verified snapshot exists before any byte changes, and gobstopper verify checks structural integrity after.",
+    detail: "Rewrites replace payload content inside existing lines, never deleting records, so provider resume chains stay valid. Standalone compaction publishes a separate, verified transcript copy; the source file is left unchanged. A verified snapshot exists before any byte changes, and gobstopper verify checks structural integrity after.",
   },
   {
     label: "Provider keeps live authority",
@@ -62,22 +62,22 @@ const trust = [
   },
   {
     label: "Honest outcomes",
-    detail: "A provider-side compaction that fails is recorded as failed — quota rejections included. Eval reports probe recall and verify findings, not just token deltas.",
+    detail: "A provider-side compaction that fails is recorded as failed — quota rejections included. Eval reports structural retention and verify findings, not measured subscription savings. Public claims distinguish occupancy models from completed benchmarks.",
   },
 ] as const;
 
 const questions = [
   {
     question: "How much does it actually save?",
-    answer: "Compaction is a sawtooth: steady-state cost per turn is roughly (trigger+floor)/2. Against a 1M-window provider default (~480k average input), a 250k trigger lands near 3.3x fewer input tokens; an aggressive 150k/20k setting near 5.6x. The best case — long tool-heavy sessions where elision drives the floor toward zero — approaches 10x.",
+    answer: "Compaction lowers context occupancy in a sawtooth model: average context per turn is roughly (trigger+floor)/2. A 250k/40k policy is ~3.3x lower occupancy than a 1M-window default, and 150k/20k is ~5.6x lower. These are occupancy projections, not measured subscription savings: real cost depends on cache hit rates, billing for summary turns, re-fetches from lost detail, and how often compaction runs. We report file-byte changes and observed provider usage where available; we do not claim dollar or quota savings without a completed benchmark.",
   },
   {
     question: "Does it edit my live session?",
-    answer: "No. For a session the provider is actively serving, Gobstopper delegates to provider-native compaction — Codex thread/compact/start over the app-server protocol, Claude /compact through stream-json. Local rewrites only touch idle transcripts, and always with a vault snapshot first.",
+    answer: "Standalone `apply` or `watch` produces a separate, validated transcript copy and leaves the source unchanged. For a session the provider is actively serving, Gobstopper delegates to provider-native compaction — Codex thread/compact/start over the app-server protocol, Claude /compact through stream-json. Local rewrites only touch idle transcripts, and always with a vault snapshot first.",
   },
   {
     question: "What if a compaction loses something important?",
-    answer: "gobstopper undo restores the exact bytes. gobstopper eval replays every strategy against a transcript copy and reports probe recall — which verbatim details survived — plus post-rewrite integrity findings, so you can pick a strategy with evidence before trusting it live.",
+    answer: "gobstopper undo restores the exact bytes into a new fork, leaving the current transcript untouched. gobstopper eval replays every strategy against a transcript copy and reports probe recall — which verbatim details survived — plus post-rewrite integrity findings, so you can pick a strategy with evidence before trusting it live.",
   },
   {
     question: "Which agents does it support?",
@@ -85,7 +85,7 @@ const questions = [
   },
   {
     question: "Can I run my own compaction logic?",
-    answer: "Yes — preset.command pipes normalized transcript JSON to any program and applies the edits it returns. The agentic preset uses the same seam: a bounded editor model that may keep, elide, summarize, or defer each item.",
+    answer: "Yes — a `preset.command` pipes normalized transcript JSON to a program and applies the edits it returns, or a versioned `gobstopper-plugin.json` bundle declares capabilities and a checked executable. Host-side validation bounds every proposal: no edit can grow the transcript, skip protected recent output, bypass linkage checks, or exceed digest size. Trusted subprocesses are not security sandboxes, so explicit trust and artifact identity are required.",
   },
   {
     question: "Who made it?",

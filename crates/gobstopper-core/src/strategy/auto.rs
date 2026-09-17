@@ -1,5 +1,5 @@
 use super::{ElideStrategy, PolicyConfig, SawtoothStrategy, Strategy, StructuredStrategy};
-use crate::model::{ItemKind, Transcript};
+use crate::model::Transcript;
 use crate::plan::CompactionPlan;
 
 /// Auto: the default. Selects the concrete strategy per evaluation from
@@ -23,12 +23,7 @@ impl AutoStrategy {
     /// output and the oompa seam can report the decision, not just the plan.
     pub fn select<'a>(transcript: &Transcript) -> &'a str {
         let total = transcript.context_tokens().max(1);
-        let tool_tokens: u64 = transcript
-            .items
-            .iter()
-            .filter(|i| i.kind == ItemKind::ToolResult)
-            .map(|i| i.est_tokens)
-            .sum();
+        let tool_tokens = transcript.elidable_tokens();
         if transcript.items.is_empty() || transcript.session.is_active() {
             "sawtooth"
         } else if tool_tokens as f64 / total as f64 >= TOOL_DOMINANCE {

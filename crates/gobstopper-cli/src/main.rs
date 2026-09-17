@@ -7,7 +7,7 @@ mod report;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use gobstopper_adapters::detect::{self, Discovered, Roots};
-use gobstopper_adapters::{eval, fork, vault, verify, AdapterError};
+use gobstopper_adapters::{copy, eval, fork, plugins, vault, verify, AdapterError};
 use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
 use gobstopper_core::plan::{CompactionPlan, Edit};
 use gobstopper_core::strategy::{self, QuotaPressure};
@@ -198,6 +198,24 @@ enum Cmd {
     Presets,
     /// Print the economics model behind gobstopper's defaults.
     Explain,
+    Plugin {
+        #[command(subcommand)]
+        command: PluginCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum PluginCmd {
+    Check { manifest: PathBuf },
+    Inspect {
+        manifest: PathBuf,
+        #[arg(long)]
+        trusted_sha256: String,
+        #[arg(long)]
+        provider: String,
+        #[arg(long)]
+        source: PathBuf,
+    },
 }
 
 /// CLI mirror of `QuotaPressure` (kept separate so the flag surface stays
@@ -279,8 +297,26 @@ fn evaluate(
     transcript: &gobstopper_core::Transcript,
     resolved: &config::Resolved,
 ) -> Result<Option<CompactionPlan>> {
+    let before = transcript.context_tokens();
+    if before < resolved.policy.effective_trigger() { return Ok(None); }
+    if let Some(selection) = &resolved.plugin {
+        let checked = plugins::check(&selection.manifest)?;
+        let bytes = gobstopper_adapters::transaction::read(&transcript.session.path)?;
+        let content = if checked.manifest.capabilities.contains(&plugins::Capability::ReadContent) {
+            Some(std::str::from_utf8(&bytes)?.lines().map(str::to_string).collect())
+        } else { None };
+        let request = plugins::Request {
+            protocol_version: 1, operation: plugins::Capability::Strategy,
+            provider_id: transcript.session.provider.as_str().into(), source_sha256: copy::sha256(&bytes),
+            items: transcript.items.clone(), usage: transcript.usage,
+            policy: Some(resolved.policy.clone()), content,
+        };
+        let response = plugins::invoke(&selection.manifest, &selection.trusted_sha256, &request)?;
+        return external_plan(transcript, resolved, response.edits);
+    }
     // Userspace command preset: feed the normalized transcript, read edits.
     if let Some(command) = &resolved.command {
+        if !resolved.trusted_legacy_command { bail!("legacy command execution is not explicitly trusted"); }
         let plan_json = run_preset_command(command, transcript)?;
         let edits: Vec<Edit> = serde_json::from_value(plan_json["edits"].clone())
             .context("preset command returned invalid edits")?;
@@ -289,24 +325,35 @@ fn evaluate(
         if edits.is_empty() {
             return Ok(None);
         }
-        let before = transcript.context_tokens();
-        if before < resolved.policy.trigger_tokens {
-            return Ok(None);
-        }
-        let after = plan_json["context_tokens_after"]
-            .as_u64()
-            .unwrap_or(resolved.policy.floor_tokens);
-        return Ok(Some(CompactionPlan {
-            strategy: format!("preset:{}", resolved.strategy),
-            rationale: "userspace preset command".to_string(),
-            edits,
-            context_tokens_before: before,
-            context_tokens_after: after,
-        }));
+        return external_plan(transcript, resolved, edits);
     }
     let strat = strategy::strategy_by_id(&resolved.strategy)
         .ok_or_else(|| anyhow::anyhow!("unknown strategy '{}'", resolved.strategy))?;
-    Ok(strat.evaluate(transcript, &resolved.policy))
+    let plan = strat.evaluate(transcript, &resolved.policy);
+    if let Some(plan) = &plan {
+        gobstopper_core::validation::validate_edits(transcript, &resolved.policy, &plan.edits).map_err(anyhow::Error::msg)?;
+    }
+    Ok(plan)
+}
+
+fn external_plan(transcript: &gobstopper_core::Transcript, resolved: &config::Resolved, edits: Vec<Edit>) -> Result<Option<CompactionPlan>> {
+    if edits.is_empty() { return Ok(None); }
+    gobstopper_core::validation::validate_edits(transcript, &resolved.policy, &edits).map_err(anyhow::Error::msg)?;
+    let before = transcript.context_tokens();
+    let mut after = before;
+    for edit in &edits {
+        match edit {
+            Edit::Elide { line_indexes, .. } => {
+                for item in transcript.items.iter().filter(|item| line_indexes.contains(&item.line_index)) {
+                    after = after.saturating_sub(item.estimated_elision_savings());
+                }
+            }
+            Edit::InjectDigest { digest } => after = after.saturating_add(gobstopper_core::estimate::estimate_tokens(serde_json::to_vec(digest)?.len())),
+            Edit::ProviderCompact { .. } => bail!("external strategy plugins cannot dispatch provider controls"),
+        }
+    }
+    if after >= before { return Ok(None); }
+    Ok(Some(CompactionPlan { strategy: format!("preset:{}", resolved.strategy), rationale: "validated userspace proposal; savings are projected".into(), edits, context_tokens_before: before, context_tokens_after: after }))
 }
 
 /// Explain a `None` plan: under trigger vs. over trigger but nothing to cut.
@@ -327,29 +374,17 @@ fn run_preset_command(
     command: &str,
     transcript: &gobstopper_core::Transcript,
 ) -> Result<serde_json::Value> {
-    let mut child = Command::new("sh")
-        .args(["-c", command])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()
-        .with_context(|| format!("spawning preset command '{command}'"))?;
+    if command.len() > 4096 { bail!("legacy command exceeds byte limit"); }
+    let mut process = Command::new("sh");
+    process.args(["-c", command]);
     let payload = serde_json::json!({
         "session_id": transcript.session.session_id,
         "provider": transcript.session.provider,
         "items": transcript.items,
         "usage": transcript.usage,
     });
-    child
-        .stdin
-        .as_mut()
-        .unwrap()
-        .write_all(payload.to_string().as_bytes())?;
-    let out = child.wait_with_output()?;
-    if !out.status.success() {
-        bail!("preset command exited {}", out.status);
-    }
-    Ok(serde_json::from_slice(&out.stdout)?)
+    let output = plugins::run_bounded(process, serde_json::to_vec(&payload)?, 30_000, 1024 * 1024)?;
+    serde_json::from_slice(&output).map_err(|_| anyhow::anyhow!("legacy command returned invalid JSON"))
 }
 
 /// Snapshot into the content-addressed vault — the undo path.
@@ -410,9 +445,9 @@ fn apply_edits(d: &Discovered, plan: &CompactionPlan) -> Result<u64> {
 }
 
 /// Route a `ProviderCompact` edit to the provider's own machinery.
-fn provider_compact(d: &Discovered, codex_bin: &std::path::Path) -> Result<()> {
+fn provider_compact(d: &Discovered, codex_bin: &std::path::Path, codex_home: &std::path::Path) -> Result<()> {
     match d.handle.provider {
-        Provider::Codex => codex_compact(codex_bin, &d.handle.session_id),
+        Provider::Codex => codex_compact(codex_bin, &d.handle.session_id, Some(codex_home)),
         Provider::ClaudeCode => bail!(
             "claude sessions compact via /compact in-session or --autocompact at launch; \
              gobstopper cannot inject into a running TUI"
@@ -442,7 +477,7 @@ fn resolve_codex_bin(flag: Option<&std::path::Path>) -> PathBuf {
 /// compaction runs as a provider-side turn whose `contextCompaction` item and
 /// `turn/completed` arrive asynchronously; gobstopper reports the observed
 /// outcome when it lands inside a bounded wait.
-fn codex_compact(codex_bin: &std::path::Path, thread_id: &str) -> Result<()> {
+fn codex_compact(codex_bin: &std::path::Path, thread_id: &str, codex_home: Option<&std::path::Path>) -> Result<()> {
     use std::io::BufRead;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
@@ -452,11 +487,8 @@ fn codex_compact(codex_bin: &std::path::Path, thread_id: &str) -> Result<()> {
             "app-server",
             "--listen",
             "stdio://",
-            "--config",
-            "cli_auth_credentials_store=\"file\"",
-            "--config",
-            "mcp_oauth_credentials_store=\"file\"",
         ])
+        .envs(codex_home.map(|home| ("CODEX_HOME", home)))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -469,9 +501,11 @@ fn codex_compact(codex_bin: &std::path::Path, thread_id: &str) -> Result<()> {
         })?;
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
-    let (tx, rx) = mpsc::channel::<serde_json::Value>();
+    let stderr = child.stderr.take().unwrap();
+    std::thread::spawn(move || { let _ = std::io::copy(&mut stderr.take(64 * 1024), &mut std::io::sink()); });
+    let (tx, rx) = mpsc::sync_channel::<serde_json::Value>(64);
     std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stdout).lines() {
+        for line in std::io::BufReader::new(stdout.take(4 * 1024 * 1024)).lines() {
             match line {
                 Ok(text) => {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -506,7 +540,12 @@ fn codex_compact(codex_bin: &std::path::Path, thread_id: &str) -> Result<()> {
                             .get("message")
                             .and_then(|m| m.as_str())
                             .unwrap_or("unknown app-server error");
-                        bail!("codex app-server: {msg}");
+                        if msg.contains("thread not found") {
+                            bail!("codex app-server: {msg}");
+                        }
+                        let code = if msg.contains("cannot resume") { "cannot resume provider thread" }
+                            else if msg.contains("usage limit") { "usage limit exceeded" } else { "provider_rejected" };
+                        bail!("codex app-server: {code}");
                     }
                     return Ok(v);
                 }
@@ -543,7 +582,7 @@ fn codex_compact(codex_bin: &std::path::Path, thread_id: &str) -> Result<()> {
         loop {
             let left = end.saturating_duration_since(Instant::now());
             if left.is_zero() {
-                return Ok("requested (provider turn still running at 90s bound)".to_string());
+                bail!("provider outcome unknown at deadline; do not replay automatically");
             }
             match rx.recv_timeout(left.min(Duration::from_millis(500))) {
                 Ok(v) => {
@@ -557,17 +596,18 @@ fn codex_compact(codex_bin: &std::path::Path, thread_id: &str) -> Result<()> {
                         let detail = v
                             .pointer("/params/turn/error/message")
                             .and_then(|s| s.as_str())
-                            .map(|m| format!(": {}", &m[..m.len().min(160)]))
+                            .map(|m| if m.contains("usage limit") { ": usage limit exceeded".to_string() } else { ": provider_error".to_string() })
                             .unwrap_or_default();
-                        if status == "completed" || status == "interrupted" {
-                            return Ok(format!("compaction turn {status}{detail}"));
+                        if status == "completed" {
+                            return Ok("compaction turn completed".into());
                         }
+                        let status = match status { "failed" => "failed", "interrupted" => "interrupted", _ => "unknown" };
                         bail!("codex compaction turn {status}{detail}");
                     }
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    return Ok("requested (server closed before outcome)".to_string())
+                    bail!("provider outcome unknown after disconnect; do not replay automatically")
                 }
             }
         }
@@ -690,7 +730,7 @@ fn cmd_undo(
             .filter(|e| e.path == d.handle.path)
             .find(|e| e.sha256.starts_with(prefix))
             .ok_or_else(|| anyhow::anyhow!("no vault snapshot matching '{prefix}' for this session"))?,
-        None => vault::latest_for(&d.handle.path, &root)?.ok_or_else(|| {
+        None => vault::latest_pre_compaction(&d.handle.path, &root)?.ok_or_else(|| {
             anyhow::anyhow!("no vault snapshot for {}", d.handle.path.display())
         })?,
     };
@@ -701,7 +741,7 @@ fn cmd_undo(
         entry.session_id
     );
     if !yes {
-        print!("overwrite {}? [y/N] ", d.handle.path.display());
+        print!("restore snapshot into a separate fork of {}? [y/N] ", d.handle.path.display());
         std::io::stdout().flush()?;
         let mut answer = String::new();
         std::io::stdin().read_line(&mut answer)?;
@@ -712,16 +752,16 @@ fn cmd_undo(
     }
     // Snapshot the current (post-compaction) state too, so undo is undoable.
     if d.handle.path.is_file() {
-        let _ = vault::snapshot(
+        vault::snapshot(
             &d.handle.path,
             d.handle.provider,
             &d.handle.session_id,
             Some("pre-undo"),
             &root,
-        );
+        )?;
     }
-    vault::restore(&entry.sha256, &d.handle.path, &root)?;
-    println!("restored {}", d.handle.path.display());
+    let restored = fork::restore_copy(d.handle.provider, &d.handle.path, &entry.sha256, &root)?;
+    println!("restored copy {}\n{}", restored.path.display(), restored.resume_hint);
     Ok(())
 }
 
@@ -941,6 +981,8 @@ fn cmd_apply(
     no_backup: bool,
     experimental_compacted: bool,
 ) -> Result<()> {
+    if no_backup { bail!("snapshots are mandatory; --no-backup is no longer supported"); }
+    if experimental_compacted { bail!("custom compacted records are quarantined pending live qualification"); }
     let d = find_session(cli, cfg, session)?;
     let mut resolved = cfg.resolve(
         d.handle.provider,
@@ -951,14 +993,14 @@ fn cmd_apply(
     if let Some(t) = trigger {
         resolved.policy.trigger_tokens = t;
     }
-    let transcript = detect::load(&d)?;
+    let (transcript, source_sha256) = copy::load_bound(d.handle.clone())?;
     let Some(plan) = evaluate(&transcript, &resolved)? else {
         report_no_plan(&transcript, &resolved);
         return Ok(());
     };
     print_plan(&d, &plan, false)?;
     if d.handle.is_active() {
-        println!("session appears live; transcript edits apply on next resume");
+        println!("session appears live; only a separate fork will be prepared; the source remains unchanged");
     }
     if !yes {
         print!("apply? [y/N] ");
@@ -994,33 +1036,13 @@ fn cmd_apply(
     } else {
         None
     };
-    let mut applied_plan = plan.clone();
-    if digest_for_compacted.is_some() {
-        applied_plan.edits.retain(|e| !matches!(e, Edit::InjectDigest { .. }));
-    }
     if !file_edits.is_empty() {
-        if !no_backup {
-            let entry = snapshot_before_edit(&d, &plan.strategy)?;
-            eprintln!("snapshot: {} ({})", &entry.sha256[..12], entry.path.display());
-        }
-        let file_result = if digest_for_compacted.is_some() {
-            let elide_result = if applied_plan.edits.is_empty() {
-                Ok(0)
-            } else {
-                apply_edits(&d, &applied_plan)
-            };
-            elide_result.and_then(|n| {
-                gobstopper_adapters::codex_compact::compact_with_digest(
-                    &d.handle.path,
-                    &digest_for_compacted.clone().unwrap(),
-                    8,
-                )
-                .map(|_| n)
-                .map_err(|e| anyhow::anyhow!(e))
-            })
-        } else {
-            apply_edits(&d, &plan)
-        };
+        if digest_for_compacted.is_some() { bail!("custom replacement history is not qualified"); }
+        let file_result = copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root()).map(|receipt| {
+            println!("prepared {}", receipt.path.display());
+            println!("resume the new session: {} {}", if d.handle.provider == Provider::Codex { "codex resume" } else { "claude --resume" }, receipt.session_id);
+            receipt.reclaimed_bytes
+        });
         match file_result {
             Ok(reclaimed) => {
                 emit_event(&d, &plan, "transcript_compact", "applied", trigger,
@@ -1038,7 +1060,14 @@ fn cmd_apply(
         }
     }
     if has_provider_compact {
-        match provider_compact(&d, &resolve_codex_bin(cli.codex_bin.as_deref())) {
+        if d.handle.provider == Provider::ClaudeCode { bail!("live Claude compaction must be dispatched by its session owner; use /compact in that session"); }
+        let snapshot = snapshot_before_edit(&d, &plan.strategy)?;
+        if snapshot.sha256 != source_sha256 { bail!("source changed before native fork preparation"); }
+        let forked = fork::restore_copy(d.handle.provider, &d.handle.path, &snapshot.sha256, &vault::default_root())?;
+        println!("native compaction targets a separate fork: {}", forked.resume_hint);
+        let d = Discovered { handle: gobstopper_core::SessionHandle { path: forked.path, session_id: forked.session_id, ..d.handle.clone() }, usage: d.usage };
+        emit_event(&d, &plan, "provider_compact", "planned", trigger, 0, None);
+        match provider_compact(&d, &resolve_codex_bin(cli.codex_bin.as_deref()), &roots(cli).codex_home) {
             Ok(()) => {
                 emit_event(&d, &plan, "provider_compact", "applied", trigger,
                     started.elapsed().as_millis() as u64, None);
@@ -1123,17 +1152,22 @@ fn stage_compaction(d: &Discovered, resolved: &config::Resolved) -> Option<Stage
 
 fn cmd_watch(
     cli: &Cli,
-    cfg: &config::Config,
+    _cfg: &config::Config,
     interval: u64,
     dry_run: bool,
     double_buffer: bool,
 ) -> Result<()> {
+    if interval == 0 { bail!("watch interval must be positive"); }
+    if double_buffer { bail!("in-place double-buffer swapping is retired; use copy-only watch without --double-buffer"); }
     let mut last_fire: std::collections::HashMap<String, std::time::Instant> =
         std::collections::HashMap::new();
     let mut staged: std::collections::HashMap<String, Staged> =
         std::collections::HashMap::new();
+    let mut discovery_cache = detect::DiscoveryCache::default();
     loop {
-        for d in detect::discover(&roots(cli), 0) {
+        let cfg = config::load()?;
+        for d in detect::discover_cached(&roots(cli), 0, &mut discovery_cache) {
+            let session_key = format!("{}:{}", d.handle.provider.as_str(), d.handle.path.display());
             let Ok(resolved) = cfg.resolve(
                 d.handle.provider,
                 &d.handle.session_id,
@@ -1143,7 +1177,9 @@ fn cmd_watch(
                 continue;
             };
             let trigger = resolved.policy.effective_trigger();
-            let ctx = d.usage.context_tokens;
+            let ctx = if d.usage.context_tokens > 0 { d.usage.context_tokens } else {
+                detect::load(&d).map(|t| t.estimated_context_tokens()).unwrap_or(0)
+            };
             if ctx < trigger {
                 // Below trigger: optionally precompute the compacted file
                 // so the trigger crossing is a rename, not a rewrite.
@@ -1156,7 +1192,7 @@ fn cmd_watch(
                 }
                 continue;
             }
-            if let Some(t) = last_fire.get(&d.handle.session_id) {
+            if let Some(t) = last_fire.get(&session_key) {
                 if t.elapsed().as_secs() < resolved.policy.min_interval_secs {
                     continue;
                 }
@@ -1168,11 +1204,11 @@ fn cmd_watch(
                     .unwrap_or(false);
                 if !dry_run && unchanged {
                     let started = std::time::Instant::now();
-                    match snapshot_before_edit(&d, &s.plan.strategy)
-                        .and_then(|_| std::fs::rename(&s.path, &d.handle.path).map_err(anyhow::Error::from))
+                    match copy::compact(&d.handle, &s.source_sha256, &s.plan, &vault::default_root())
+                        .map(|_| ())
                     {
                         Ok(()) => {
-                            last_fire.insert(d.handle.session_id.clone(), std::time::Instant::now());
+                            last_fire.insert(session_key.clone(), std::time::Instant::now());
                             emit_event(&d, &s.plan, "transcript_compact", "applied",
                                 trigger, started.elapsed().as_millis() as u64, None);
                             eprintln!("compacted {} (staged swap)", d.handle.session_id);
@@ -1183,7 +1219,7 @@ fn cmd_watch(
                 }
                 let _ = std::fs::remove_file(&s.path); // stale or dry-run
             }
-            let transcript = match detect::load(&d) {
+            let (transcript, source_sha256) = match copy::load_bound(d.handle.clone()) {
                 Ok(t) => t,
                 Err(e) => {
                     eprintln!("load {} failed: {e}", d.handle.session_id);
@@ -1208,16 +1244,17 @@ fn cmd_watch(
                         .iter()
                         .any(|e| matches!(e, Edit::ProviderCompact { .. }));
                     let action = if is_provider { "provider_compact" } else { "transcript_compact" };
+                    if last_fire.len() >= 4096 { last_fire.clear(); }
+                    last_fire.insert(session_key.clone(), std::time::Instant::now());
                     let r = if is_provider {
-                        provider_compact(&d, &resolve_codex_bin(cli.codex_bin.as_deref()))
+                        Err(anyhow::anyhow!("native compaction requires the session owner; watch will not create a second writer"))
                     } else {
-                        snapshot_before_edit(&d, &plan.strategy)
-                            .and_then(|_| apply_edits(&d, &plan))
-                            .map(|_| ())
+                        copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root())
+                            .map(|receipt| { eprintln!("prepared copy {}", receipt.path.display()); })
                     };
                     match r {
                         Ok(()) => {
-                            last_fire.insert(d.handle.session_id.clone(), std::time::Instant::now());
+                            last_fire.insert(session_key.clone(), std::time::Instant::now());
                             emit_event(&d, &plan, action, "applied", trigger,
                                 started.elapsed().as_millis() as u64, None);
                             eprintln!("compacted {}", d.handle.session_id);
@@ -1325,10 +1362,35 @@ fn cmd_explain() {
     );
 }
 
+fn cmd_plugin(command: &PluginCmd) -> Result<()> {
+    match command {
+        PluginCmd::Check { manifest } => {
+            let checked = plugins::check(manifest)?;
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
+                "protocol_version": 1, "id": checked.manifest.id, "version": checked.manifest.version,
+                "manifest_sha256": checked.manifest_sha256, "capabilities": checked.manifest.capabilities,
+                "code_executed": false, "trusted": false,
+            }))?);
+        }
+        PluginCmd::Inspect { manifest, trusted_sha256, provider, source } => {
+            let bytes = gobstopper_adapters::transaction::read(source)?;
+            let request = plugins::Request {
+                protocol_version:1, operation:plugins::Capability::ProviderRead, provider_id:provider.clone(),
+                source_sha256:copy::sha256(&bytes), items:Vec::new(), usage:Default::default(),
+                policy:None, content:Some(std::str::from_utf8(&bytes)?.lines().map(str::to_string).collect()),
+            };
+            let response = plugins::invoke(manifest, trusted_sha256, &request)?;
+            println!("{}", serde_json::to_string_pretty(&response.inspection)?);
+        }
+    }
+    Ok(())
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
-    let cfg = config::load();
+    let cfg = config::load()?;
     match &cli.command {
+        Cmd::Plugin { command } => cmd_plugin(command),
         Cmd::Detect { all, json } => cmd_detect(&cli, *all, *json),
         Cmd::Plan {
             session,
@@ -1496,7 +1558,7 @@ done
     fn codex_compact_initializes_resumes_then_compacts() {
         let dir = tempdir("happy");
         let stub = stub_codex(&dir);
-        codex_compact(&stub, "ok-thread").unwrap();
+        codex_compact(&stub, "ok-thread", None).unwrap();
         let log = fs::read_to_string(dir.join("requests.log")).unwrap();
         let methods: Vec<String> = log
             .lines()
@@ -1518,7 +1580,7 @@ done
     fn codex_compact_reports_failed_turn_as_error() {
         let dir = tempdir("failed");
         let stub = stub_codex(&dir);
-        let err = codex_compact(&stub, "fail-thread").unwrap_err();
+        let err = codex_compact(&stub, "fail-thread", None).unwrap_err();
         assert!(err.to_string().contains("failed"), "got: {err}");
         assert!(err.to_string().contains("usage limit"), "got: {err}");
         let _ = fs::remove_dir_all(&dir);
@@ -1528,9 +1590,9 @@ done
     fn codex_compact_propagates_request_errors() {
         let dir = tempdir("err");
         let stub = stub_codex(&dir);
-        let err = codex_compact(&stub, "bad-resume").unwrap_err();
+        let err = codex_compact(&stub, "bad-resume", None).unwrap_err();
         assert!(err.to_string().contains("cannot resume"), "got: {err}");
-        let err = codex_compact(&stub, "error-thread").unwrap_err();
+        let err = codex_compact(&stub, "error-thread", None).unwrap_err();
         assert!(err.to_string().contains("thread not found"), "got: {err}");
         let _ = fs::remove_dir_all(&dir);
     }
@@ -1564,10 +1626,13 @@ done
         config::Resolved {
             policy: gobstopper_core::strategy::PolicyConfig {
                 trigger_tokens: 1_000,
+                keep_recent_tool_outputs: 0,
                 ..Default::default()
             },
             strategy: "agentic".to_string(),
             command: Some(command.to_string()),
+            trusted_legacy_command: true,
+            plugin: None,
         }
     }
 
@@ -1592,7 +1657,8 @@ done
         .unwrap()
         .expect("edits must produce a plan");
         assert_eq!(plan.strategy, "preset:agentic");
-        assert_eq!(plan.context_tokens_after, 1200);
+        assert_eq!(plan.context_tokens_after, 50_000 - preset_transcript().items[0].estimated_elision_savings());
+        assert_ne!(plan.context_tokens_after, 1200);
         assert!(matches!(plan.edits.as_slice(), [Edit::Elide { .. }]));
     }
 

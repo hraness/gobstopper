@@ -247,16 +247,10 @@ pub fn fork(
 
     // Temp file + rename in the same directory: a killed fork never
     // leaves a half-written transcript behind the new id's name.
-    let tmp = dir.join(format!(
-        ".{name}.gobstopper-fork-{}-{}",
-        std::process::id(),
-        FORK_COUNTER.fetch_add(1, Ordering::Relaxed)
-    ));
-    fs::write(&tmp, out.as_bytes()).with_context(|| format!("write {}", tmp.display()))?;
-    if let Err(e) = fs::rename(&tmp, &target) {
-        let _ = fs::remove_file(&tmp);
-        return Err(e).with_context(|| format!("rename to {}", target.display()));
+    if crate::transaction::read(src)? != raw.as_bytes() {
+        bail!("source changed while preparing fork");
     }
+    crate::transaction::publish_new(&target, out.as_bytes())?;
 
     let resume_hint = match provider {
         Provider::ClaudeCode => format!("claude --resume {new_id}"),
@@ -267,6 +261,37 @@ pub fn fork(
         session_id: new_id,
         resume_hint,
     })
+}
+
+pub fn restore_copy(provider: Provider, source: &Path, sha256: &str, root: &Path) -> anyhow::Result<ForkResult> {
+    let bytes = crate::vault::read_object(sha256, root)?;
+    if crate::verify::verify(provider, &bytes).iter().any(|f| f.severity == crate::verify::Severity::Error) {
+        bail!("snapshot has structural errors; source was not modified");
+    }
+    let session_id = generate_session_id(source);
+    let output = rewrite_identity(provider, std::str::from_utf8(&bytes)?, &session_id);
+    let path = target_path(provider, source, &session_id);
+    crate::transaction::publish_new(&path, output.as_bytes())?;
+    let resume_hint = match provider {
+        Provider::Codex => format!("codex resume {session_id}"),
+        Provider::ClaudeCode => format!("claude --resume {session_id}"),
+    };
+    Ok(ForkResult { path, session_id, resume_hint })
+}
+
+pub(crate) fn rewrite_identity(provider: Provider, raw: &str, id: &str) -> String {
+    match provider {
+        Provider::Codex => fork_codex(raw, id),
+        Provider::ClaudeCode => fork_claude(raw, id),
+    }
+}
+
+pub(crate) fn target_path(provider: Provider, source: &Path, id: &str) -> PathBuf {
+    let name = match provider {
+        Provider::ClaudeCode => format!("{id}.jsonl"),
+        Provider::Codex => codex_fork_name(source, crate::codex::scan_meta(source).0.as_deref(), id),
+    };
+    source.parent().unwrap_or_else(|| Path::new(".")).join(name)
 }
 
 #[cfg(test)]

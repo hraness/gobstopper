@@ -15,7 +15,7 @@ use gobstopper_core::plan::{DigestBlock, Edit};
 use gobstopper_core::{Provider, Transcript};
 use serde_json::Value;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use crate::AdapterError;
@@ -38,7 +38,7 @@ fn tool_result_bytes(message: &Value) -> u64 {
             blocks
                 .iter()
                 .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
-                .map(|b| b.get("content").map(value_len).unwrap_or(0) as u64)
+                .map(|b| b.get("content").map(crate::payload::eligible_bytes).unwrap_or(0))
                 .sum()
         })
         .unwrap_or(0)
@@ -56,17 +56,14 @@ fn absorb_usage(line: &Value, sample: &mut UsageSample) {
         return;
     };
     let get = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
-    let context = get("input_tokens")
-        + get("cache_read_input_tokens")
-        + get("cache_creation_input_tokens")
-        + get("output_tokens");
+    let input = get("input_tokens").saturating_add(get("cache_read_input_tokens"))
+        .saturating_add(get("cache_creation_input_tokens"));
+    let context = input.saturating_add(get("output_tokens"));
     if context > 0 {
         sample.context_tokens = context;
     }
-    sample.lifetime_input_tokens += get("input_tokens")
-        + get("cache_read_input_tokens")
-        + get("cache_creation_input_tokens");
-    sample.lifetime_cached_tokens += get("cache_read_input_tokens");
+    sample.lifetime_input_tokens = sample.lifetime_input_tokens.saturating_add(input);
+    sample.lifetime_cached_tokens = sample.lifetime_cached_tokens.saturating_add(get("cache_read_input_tokens"));
 }
 
 /// Parse a full session file into a normalized transcript.
@@ -76,10 +73,13 @@ fn absorb_usage(line: &Value, sample: &mut UsageSample) {
 /// branches (edited prompts, abandoned retries) occupy file bytes but no
 /// context tokens, so they are excluded from estimates and elision.
 pub fn load(handle: SessionHandle) -> Result<Transcript, AdapterError> {
-    let file = fs::File::open(&handle.path).map_err(|e| AdapterError::Io {
-        path: handle.path.clone(),
-        source: e,
-    })?;
+    let bytes = crate::transaction::read(&handle.path)?;
+    load_bytes(handle, &bytes)
+}
+
+pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, AdapterError> {
+    if bytes.len() as u64 > crate::transaction::MAX_TRANSCRIPT_BYTES { return Err(AdapterError::InvalidEdit("transcript exceeds byte limit")); }
+    let file = std::io::Cursor::new(bytes);
     let mut items = Vec::new();
     let mut usage = UsageSample::default();
     // (line_index, uuid, parent_uuid) for live-branch resolution.
@@ -110,7 +110,7 @@ pub fn load(handle: SessionHandle) -> Result<Transcript, AdapterError> {
                 let elidable = has_tool_result(message)
                     .then(|| tool_result_bytes(message))
                     .filter(|b| *b > 0);
-                (ItemKind::User, elidable)
+                (if elidable.is_some() { ItemKind::ToolResult } else { ItemKind::User }, elidable)
             }
             "assistant" => (ItemKind::Assistant, None),
             "system" => (ItemKind::System, None),
@@ -120,9 +120,7 @@ pub fn load(handle: SessionHandle) -> Result<Transcript, AdapterError> {
         if matches!(kind, ItemKind::Meta) && !matches!(ltype, "attachment") {
             continue; // bookkeeping lines never reach the context window
         }
-        let est = elidable
-            .map(|b| estimate_tokens(b as usize))
-            .unwrap_or_else(|| estimate_tokens(line.len()));
+        let est = estimate_tokens(value_len(&record["message"]));
         items.push(TranscriptItem {
             line_index,
             kind,
@@ -188,21 +186,8 @@ fn live_branch(links: &[(usize, String, Option<String>)]) -> std::collections::H
 /// Cheap usage pass for `detect`: read only the tail of the file.
 pub fn scan_usage(path: &Path) -> UsageSample {
     let mut sample = UsageSample::default();
-    let Ok(mut file) = fs::File::open(path) else {
-        return sample;
-    };
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    if file.seek(SeekFrom::Start(len.saturating_sub(TAIL_SCAN_BYTES))).is_err() {
-        return sample;
-    }
-    let mut buf = String::new();
-    if file.read_to_string(&mut buf).is_err() {
-        return sample;
-    }
-    for line in buf.lines() {
-        if let Ok(record) = serde_json::from_str::<Value>(line) {
-            absorb_usage(&record, &mut sample);
-        }
+    for record in crate::tail_records(path, TAIL_SCAN_BYTES) {
+        absorb_usage(&record, &mut sample);
     }
     sample
 }
@@ -259,25 +244,19 @@ fn elide_line(line: &str, stub_template: &str) -> (String, u64) {
         if block.get("type").and_then(Value::as_str) != Some("tool_result") {
             continue;
         }
-        let old = block.get("content").map(value_len).unwrap_or(0) as u64;
-        if old <= 256 {
-            continue;
-        }
-        block["content"] = Value::String(stub_for(stub_template, old, "tool_result"));
-        reclaimed += old;
+        let Some(content) = block.get_mut("content") else { continue };
+        let old = crate::payload::eligible_bytes(content);
+        reclaimed += crate::payload::elide(content, stub_for(stub_template, old, "tool_result"));
     }
+    if reclaimed == 0 { return (line.to_string(), 0); }
     (
         serde_json::to_string(&record).unwrap_or_else(|_| line.to_string()),
         reclaimed,
     )
 }
 
-fn apply_elide(path: &Path, line_indexes: &[usize], stub_template: &str) -> Result<u64, AdapterError> {
+fn apply_elide(raw: &str, line_indexes: &[usize], stub_template: &str) -> (String, u64) {
     let targets: std::collections::HashSet<usize> = line_indexes.iter().copied().collect();
-    let raw = fs::read_to_string(path).map_err(|e| AdapterError::Io {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
     let mut reclaimed = 0u64;
     let mut out = String::with_capacity(raw.len());
     for (idx, line) in raw.split_inclusive('\n').enumerate() {
@@ -292,8 +271,7 @@ fn apply_elide(path: &Path, line_indexes: &[usize], stub_template: &str) -> Resu
             out.push('\n');
         }
     }
-    crate::write_if_unchanged(path, raw.as_bytes(), &out)?;
-    Ok(reclaimed)
+    (out, reclaimed)
 }
 
 fn digest_text(digest: &DigestBlock) -> String {
@@ -317,41 +295,41 @@ fn digest_text(digest: &DigestBlock) -> String {
 /// Execute a plan's edits against a session file. `ProviderCompact` is a
 /// no-op here — the CLI routes it to the provider instead.
 pub fn apply(path: &Path, edits: &[Edit]) -> Result<u64, AdapterError> {
-    let mut reclaimed = 0u64;
+    crate::transaction::apply(Provider::ClaudeCode, path, |candidate| apply_inner(candidate, edits))
+}
+
+fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
+    let mut raw = original.to_string();
     for edit in edits {
         match edit {
             Edit::Elide {
                 line_indexes,
                 stub_template,
-            } => reclaimed += apply_elide(path, line_indexes, stub_template)?,
+            } => raw = apply_elide(&raw, line_indexes, stub_template).0,
             Edit::InjectDigest { digest } => {
                 // Appended as a synthetic user line. Fresh uuid, no parent:
                 // Claude tolerates orphan tips on resume and the state card
                 // lands in the next turn's context.
                 let text = digest_text(digest);
+                let parent = raw.lines().rev().filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                    .find_map(|record| record.get("uuid").and_then(Value::as_str).map(str::to_string));
+                let session_id = raw.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
+                    .find_map(|record| record.get("sessionId").and_then(Value::as_str).map(str::to_string));
                 let line = serde_json::json!({
                     "type": "user",
+                    "parentUuid": parent,
+                    "sessionId": session_id,
                     "uuid": format!("gobstopper-{:016x}", std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
                         .map(|d| d.as_nanos() as u64).unwrap_or(0)),
                     "message": {"role": "user", "content": text},
                 });
-                let mut f = fs::OpenOptions::new()
-                    .append(true)
-                    .open(path)
-                    .map_err(|e| AdapterError::Io {
-                        path: path.to_path_buf(),
-                        source: e,
-                    })?;
-                writeln!(f, "{line}").map_err(|e| AdapterError::Io {
-                    path: path.to_path_buf(),
-                    source: e,
-                })?;
+                crate::transaction::append_record(&mut raw, &line)?;
             }
             Edit::ProviderCompact { .. } => {}
         }
     }
-    Ok(reclaimed)
+    Ok(raw)
 }
 
 pub fn provider() -> Provider {

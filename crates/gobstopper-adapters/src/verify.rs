@@ -48,7 +48,7 @@
 
 use gobstopper_core::Provider;
 use serde_json::Value;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 /// How badly a finding hurts resumability.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -93,7 +93,9 @@ fn warning(line_index: Option<usize>, code: &'static str, message: &str) -> Veri
 
 /// Verify a transcript held in memory. Pure: no I/O, no provider calls.
 pub fn verify(provider: Provider, bytes: &[u8]) -> Vec<VerifyFinding> {
-    let text = String::from_utf8_lossy(bytes);
+    let Ok(text) = std::str::from_utf8(bytes) else {
+        return vec![error(None, "invalid_utf8", "transcript contains invalid UTF-8")];
+    };
     let lines: Vec<&str> = text.lines().collect();
     if lines.is_empty() {
         return vec![warning(None, "empty", "file is empty")];
@@ -109,7 +111,12 @@ pub fn verify(provider: Provider, bytes: &[u8]) -> Vec<VerifyFinding> {
             continue;
         }
         match serde_json::from_str::<Value>(line) {
-            Ok(v) => records.push(Some(v)),
+            Ok(v) => {
+                if !v.is_object() || !v.get("type").is_some_and(Value::is_string) {
+                    findings.push(error(Some(i), "invalid_record", "record must be an object with a string type"));
+                }
+                records.push(Some(v));
+            },
             Err(_) => {
                 bad_lines.push(i);
                 records.push(None);
@@ -201,10 +208,12 @@ fn verify_claude(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
         }
     }
 
+    let mut first_use: HashMap<&str, usize> = HashMap::new();
+    let mut last_result: HashMap<&str, usize> = HashMap::new();
+    for &(id, line) in &tool_uses { first_use.entry(id).or_insert(line); }
+    for &(id, line) in &tool_results { last_result.insert(id, line); }
     for &(id, line) in &tool_uses {
-        let answered = tool_results
-            .iter()
-            .any(|&(rid, rline)| rline > line && rid == id);
+        let answered = last_result.get(id).is_some_and(|&rline| rline > line);
         if !answered {
             findings.push(error(
                 Some(line),
@@ -214,7 +223,7 @@ fn verify_claude(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
         }
     }
     for &(id, line) in &tool_results {
-        let preceded = tool_uses.iter().any(|&(uid, uline)| uline < line && uid == id);
+        let preceded = first_use.get(id).is_some_and(|&uline| uline < line);
         if !preceded {
             findings.push(warning(
                 Some(line),

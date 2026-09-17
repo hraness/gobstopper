@@ -100,14 +100,28 @@ pub struct Transcript {
     pub usage: UsageSample,
 }
 
+impl TranscriptItem {
+    pub fn estimated_elision_savings(&self) -> u64 {
+        self.elidable_bytes.map(|bytes| {
+            let stub_budget = (bytes / 257).max(1).saturating_mul(96);
+            crate::estimate::estimate_tokens(bytes as usize)
+                .saturating_sub(crate::estimate::estimate_tokens(stub_budget as usize))
+        }).unwrap_or(0)
+    }
+}
+
 impl Transcript {
+    pub fn estimated_context_tokens(&self) -> u64 {
+        self.items.iter().fold(0u64, |total, item| total.saturating_add(item.est_tokens))
+    }
+
     /// Estimated context occupancy: prefer the provider's own accounting,
     /// fall back to summing item estimates.
     pub fn context_tokens(&self) -> u64 {
         if self.usage.context_tokens > 0 {
             self.usage.context_tokens
         } else {
-            self.items.iter().map(|i| i.est_tokens).sum()
+            self.estimated_context_tokens()
         }
     }
 
@@ -115,8 +129,8 @@ impl Transcript {
     pub fn elidable_tokens(&self) -> u64 {
         self.items
             .iter()
-            .filter(|i| i.elidable_bytes.is_some())
-            .map(|i| i.est_tokens)
-            .sum()
+            .filter_map(|i| i.elidable_bytes)
+            .map(|bytes| crate::estimate::estimate_tokens(bytes as usize))
+            .fold(0u64, u64::saturating_add)
     }
 }

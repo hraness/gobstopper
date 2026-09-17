@@ -13,12 +13,18 @@ pub mod eval;
 pub mod fork;
 pub mod verify;
 pub mod vault;
+pub mod transaction;
+pub mod copy;
+mod payload;
+pub mod plugins;
 
 pub use detect::{discover, Discovered, Roots};
 
+#[cfg(test)]
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
+#[cfg(test)]
+use std::path::Path;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdapterError {
@@ -32,6 +38,8 @@ pub enum AdapterError {
     ChangedDuringWrite { path: PathBuf },
     #[error("unsupported provider for this operation")]
     UnsupportedProvider,
+    #[error("invalid edit: {0}")]
+    InvalidEdit(&'static str),
 }
 
 /// Replace `path` with `new_content` via a tmp file + atomic rename, but
@@ -40,30 +48,25 @@ pub enum AdapterError {
 /// would be silently lost, and the vault snapshot taken beforehand cannot
 /// contain it. Re-reading before the rename shrinks the race window to
 /// the rename syscall itself.
+#[cfg(test)]
 pub(crate) fn write_if_unchanged(
     path: &Path,
     original: &[u8],
     new_content: &str,
 ) -> Result<(), AdapterError> {
-    let io = |e: std::io::Error| AdapterError::Io {
-        path: path.to_path_buf(),
-        source: e,
-    };
-    let tmp = path.with_extension("jsonl.gobstopper-tmp");
-    fs::File::create(&tmp)
-        .and_then(|mut f| f.write_all(new_content.as_bytes()))
-        .map_err(|e| AdapterError::Io {
-            path: tmp.clone(),
-            source: e,
-        })?;
-    let now = fs::read(path).map_err(io)?;
-    if now != original {
-        let _ = fs::remove_file(&tmp);
-        return Err(AdapterError::ChangedDuringWrite {
-            path: path.to_path_buf(),
-        });
-    }
-    fs::rename(&tmp, path).map_err(io)
+    transaction::replace(path, original, new_content.as_bytes())
+}
+
+pub(crate) fn tail_records(path: &std::path::Path, limit: u64) -> Vec<serde_json::Value> {
+    use std::io::{Read, Seek, SeekFrom};
+    let Ok(mut file) = std::fs::File::open(path) else { return Vec::new() };
+    let Ok(meta) = file.metadata() else { return Vec::new() };
+    let start = meta.len().saturating_sub(limit);
+    if file.seek(SeekFrom::Start(start)).is_err() { return Vec::new(); }
+    let mut bytes = Vec::new();
+    if file.take(limit).read_to_end(&mut bytes).is_err() { return Vec::new(); }
+    let start = if start == 0 { 0 } else { bytes.iter().position(|b| *b == b'\n').map(|i| i + 1).unwrap_or(bytes.len()) };
+    bytes[start..].split(|b| *b == b'\n').filter_map(|line| serde_json::from_slice(line).ok()).collect()
 }
 
 #[cfg(test)]

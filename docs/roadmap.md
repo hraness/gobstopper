@@ -261,3 +261,111 @@ consumers need the same interface — is met.
 - Whether Anthropic server-side compaction (`compact_20260112`)
   becomes a better default than transcript surgery for Claude — decided
   by the eval harness, not by guess.
+
+## 10. Correctness and qualification remediation
+
+This section supersedes earlier completion claims about safe live file rewriting,
+structured summarization, double buffering, measured savings, and plugin bounds.
+The audit baseline is `c6d91a8`. Existing passing tests did not establish those claims.
+
+### Constraints
+
+- Source transcripts remain unchanged by standalone compaction. Publish a separate
+  validated fork; only the provider owner may compact a live session in place.
+- All safety tests use synthetic isolated homes. Paid APIs and account switching
+  are excluded; live trials may use existing subscriptions only.
+- Strategies propose edits; host validation, snapshots, publication and telemetry
+  remain outside plugin authority. Trusted subprocesses are not security sandboxes.
+- Preserve existing JSON fields additively; distinguish projections from observations.
+- Each phase includes regressions and focused tests. Final gate: `cargo test
+  --workspace --locked` and `cargo clippy --workspace --all-targets --all-features
+  --locked -- -D warnings`, plus relevant site tests for changed public claims.
+- Execute sequentially in the current checkout. No phase delegates concurrent edits.
+
+### Phases
+
+| Phase | Deliverable | Depends on | Status |
+|---|---|---|---|
+| R1 | Transactional private copy publication and recovery | none | Complete |
+| R2 | Effective context, eligibility, convergence and verification | R1 | Complete |
+| R3 | Validated configuration and bounded versioned plugins | R2 | Complete |
+| R4 | Safe CLI/watch/native control and honest public surfaces | R1–R3 | Complete |
+| R5 | Comparative evaluation and fault/property regression gates | R1–R4 | Not started |
+| R6 | Subscription-only live qualification and benchmark pilot | R5 | Not started |
+
+### R1: Transactional private copy publication and recovery
+
+- **Scope:** adapter transaction, fork, vault and rewrite entry points.
+- **Objective:** failures never publish partial plans or overwrite source transcripts.
+- **Approach:** private unique temporary files, whole-plan candidate validation,
+  durable no-clobber publication, exact-source binding, checked vault deduplication.
+- **Acceptance:** missing-newline digest stays valid; Claude digest extends the
+  original chain; failed later edits leave originals unchanged; permissions never
+  broaden; corrupted snapshots abort admission; open provider handles remain valid.
+- **Validation:** focused adapter regression and Hegel integration tests.
+
+### R2: Effective context, eligibility, convergence and verification
+
+- **Scope:** core model/strategies/probes and provider loading/verification.
+- **Objective:** plans describe effective context and never repeatedly grow it.
+- **Approach:** project only the active Codex window; share block eligibility;
+  retain protected tails; replace placeholder structured generation with explicit
+  conservative behavior until a content-authorized summarizer is configured.
+- **Acceptance:** chat-only passes reach no-plan; Claude tool dominance routes
+  correctly; scan survives UTF-8 boundaries; tool pairing is linear; measured net
+  bytes include stubs; historical usage is not presented as observed post-edit usage.
+- **Validation:** generated multi-window/block/tail cases and bounded scaling checks.
+
+### R3: Validated configuration and bounded versioned plugins
+
+- **Scope:** core plugin contracts, CLI config and adapter subprocess host.
+- **Objective:** user-authored extensions cannot bypass host edit admission.
+- **Approach:** strict versioned manifests, exact implementation digest, bounded
+  argv/stdin/stdout/deadline, explicit trusted-code configuration, closed capabilities,
+  snapshot-bound proposals and common host validation. Provider extensions must
+  describe semantic read/plan operations rather than arbitrary mutation commands.
+- **Acceptance:** malformed config fails visibly; invalid bounds/unknown fields fail;
+  oversized/duplicate/protected edits fail; timeout children are reaped; no unsupported
+  provider capability is advertised as qualified.
+- **Validation:** adversarial fixture executables and protocol/property tests.
+
+### R4: Safe CLI/watch/native control and honest public surfaces
+
+- **Scope:** CLI commands/hooks/reporting, README, design, site claims.
+- **Objective:** consistent JSON and execution semantics without implicit source writes.
+- **Acceptance:** apply and undo publish separate forks; watch is copy-producing and
+  idempotent by source identity; no-op JSON is valid; provider homes bind execution;
+  interrupted/unknown native outcomes never count as applied; hook recovery points to
+  the exact pre-compact snapshot; unsupported staging and savings claims are removed.
+- **Validation:** isolated CLI end-to-end tests, provider stubs, site tests.
+
+### R5: Comparative evaluation and fault/property regression gates
+
+- **Scope:** evaluation/benchmark contracts and tests.
+- **Objective:** reproducible cost-quality evidence rather than planned savings.
+- **Acceptance:** distinguish offline structural/retention proxies from live solve
+  rate; accept bounded task receipts with model/version/config/usage/cost/latency/
+  refetch/completion evidence; compare default, tuned-native, masking and hybrid
+  policies; incomplete trials cannot establish superiority. Retain audit regressions.
+- **Validation:** fixture benchmark results, full locked workspace and lint gates.
+
+### R6: Subscription-only live qualification and benchmark pilot
+
+- **Scope:** isolated task/fork trials, no paid APIs or account switching.
+- **Objective:** prove provider resume/continuation separately from artifact admission.
+- **Acceptance:** completed API-backed continuation on qualified provider versions,
+  preserved task facts/tool pairs, recorded subscription usage and explicit unknowns.
+  Quota/auth/unsupported-provider blockers remain open; no leadership claim without
+  comparable completed-task evidence and uncertainty estimates.
+- **Validation:** bounded subscription trials after all source gates pass.
+
+### Implementation log
+
+- Audit reproduced malformed digest append, Claude branch loss, no-op growth,
+  permission broadening, stale usage, unchecked custom plans, incorrect native
+  outcomes and quadratic verification. Baseline: 114 tests and strict Clippy passed.
+- R1–R4 implemented: copy-based publication with vault snapshot, source binding,
+  stale-plan rejection, permission preservation, no-clobber publication, bounded
+  versioned plugins with host validation, honest README/roadmap status, CLI copy
+  semantics for `apply`/`watch`/`undo`, corrected native Codex error propagation,
+  and SessionStart pre-compact snapshot wiring. Workspace tests and Clippy pass.

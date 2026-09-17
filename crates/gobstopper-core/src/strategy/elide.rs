@@ -47,7 +47,7 @@ impl Strategy for ElideStrategy {
                 break;
             }
             chosen.push(item.line_index);
-            projected = projected.saturating_sub(item.est_tokens);
+            projected = projected.saturating_sub(item.estimated_elision_savings());
         }
         if chosen.is_empty() {
             return None;

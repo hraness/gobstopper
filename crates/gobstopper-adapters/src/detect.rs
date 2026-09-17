@@ -97,6 +97,42 @@ fn handle_for(
 /// Find all sessions under the configured roots, newest first.
 /// `max_age_secs` bounds reported age; `0` reports everything.
 pub fn discover(roots: &Roots, max_age_secs: u64) -> Vec<Discovered> {
+    discover_cached(roots, max_age_secs, &mut DiscoveryCache::default())
+}
+
+#[derive(Default)]
+pub struct DiscoveryCache(std::collections::HashMap<(Provider, PathBuf), CachedSession>);
+struct CachedSession {
+    fingerprint: (u64, Option<SystemTime>, u64, u64, i64, i64),
+    sampled: std::time::Instant,
+    meta: (Option<String>, Option<PathBuf>),
+    usage: UsageSample,
+}
+impl DiscoveryCache {
+    fn inspect(&mut self, provider: Provider, path: &Path) -> ((Option<String>, Option<PathBuf>), UsageSample) {
+        let metadata = fs::metadata(path).ok();
+        let mut fingerprint = (metadata.as_ref().map(|m| m.len()).unwrap_or(0), metadata.as_ref().and_then(|m| m.modified().ok()), 0, 0, 0, 0);
+        #[cfg(unix)] {
+            use std::os::unix::fs::MetadataExt;
+            if let Some(meta) = &metadata { fingerprint.2 = meta.dev(); fingerprint.3 = meta.ino(); fingerprint.4 = meta.ctime(); fingerprint.5 = meta.ctime_nsec(); }
+        }
+        let key = (provider, path.to_path_buf());
+        if let Some(entry) = self.0.get(&key) {
+            if entry.fingerprint == fingerprint && entry.sampled.elapsed().as_secs() < 60 {
+                return (entry.meta.clone(), entry.usage);
+            }
+        }
+        let (meta, usage) = match provider {
+            Provider::Codex => (codex::scan_meta(path), codex::scan_usage(path)),
+            Provider::ClaudeCode => (claude::scan_meta(path), claude::scan_usage(path)),
+        };
+        if self.0.len() >= 4096 { self.0.clear(); }
+        self.0.insert(key, CachedSession { fingerprint, sampled: std::time::Instant::now(), meta: meta.clone(), usage });
+        (meta, usage)
+    }
+}
+
+pub fn discover_cached(roots: &Roots, max_age_secs: u64, cache: &mut DiscoveryCache) -> Vec<Discovered> {
     let limit = if max_age_secs == 0 {
         u64::MAX
     } else {
@@ -111,11 +147,9 @@ pub fn discover(roots: &Roots, max_age_secs: u64) -> Vec<Discovered> {
         if age > limit {
             continue;
         }
-        let handle = handle_for(Provider::Codex, path.clone(), codex::scan_meta(&path), age);
-        found.push(Discovered {
-            usage: codex::scan_usage(&path),
-            handle,
-        });
+        let (meta, usage) = cache.inspect(Provider::Codex, &path);
+        let handle = handle_for(Provider::Codex, path, meta, age);
+        found.push(Discovered { usage, handle });
     }
 
     let mut claude_files = Vec::new();
@@ -125,16 +159,9 @@ pub fn discover(roots: &Roots, max_age_secs: u64) -> Vec<Discovered> {
         if age > limit {
             continue;
         }
-        let handle = handle_for(
-            Provider::ClaudeCode,
-            path.clone(),
-            claude::scan_meta(&path),
-            age,
-        );
-        found.push(Discovered {
-            usage: claude::scan_usage(&path),
-            handle,
-        });
+        let (meta, usage) = cache.inspect(Provider::ClaudeCode, &path);
+        let handle = handle_for(Provider::ClaudeCode, path, meta, age);
+        found.push(Discovered { usage, handle });
     }
 
     found.sort_by_key(|d| d.handle.age_secs);

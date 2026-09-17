@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 /// strategy lowers to these primitives and every adapter knows how to
 /// execute them against its own store.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "op", rename_all = "snake_case")]
+#[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Edit {
     /// Replace the payload of the given items with a short stub.
     /// Executed in place; the record's structural linkage is preserved.
@@ -34,6 +34,7 @@ pub enum Edit {
 /// compaction. Field-oriented rather than prose so the resumed agent can
 /// trust it as state, not narrative.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct DigestBlock {
     pub goal: Option<String>,
     pub decisions: Vec<String>,

@@ -13,6 +13,7 @@ serde_json = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }
 sha2 = { workspace = true }
+fs2 = "=0.4.3"
 
 [dev-dependencies]
 hegeltest = "0.46.1"

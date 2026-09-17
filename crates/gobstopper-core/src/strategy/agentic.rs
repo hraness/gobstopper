@@ -54,12 +54,21 @@ impl AgenticStrategy {
         let before = transcript.context_tokens();
         let mut edits = Vec::new();
         let mut projected = before;
+        if calls.len() > crate::validation::MAX_EDITS { return None; }
+        let mut kept = std::collections::HashSet::new();
+        for call in calls {
+            if let EditorCall::Keep { from_item, to_item } = call {
+                if from_item >= to_item || *to_item > transcript.items.len() { return None; }
+                kept.extend(*from_item..*to_item);
+            }
+        }
 
         for call in calls {
             match call {
                 EditorCall::Defer { .. } => return None,
                 EditorCall::Keep { .. } => {}
                 EditorCall::Elide { items } => {
+                    if items.iter().any(|i| kept.contains(i) || *i >= transcript.items.len()) { return None; }
                     let valid: Vec<usize> = items
                         .iter()
                         .filter_map(|&i| transcript.items.get(i))
@@ -70,7 +79,7 @@ impl AgenticStrategy {
                         if let Some(item) =
                             transcript.items.iter().find(|i| i.line_index == line)
                         {
-                            projected = projected.saturating_sub(item.est_tokens);
+                            projected = projected.saturating_sub(item.estimated_elision_savings());
                         }
                     }
                     if !valid.is_empty() {
@@ -85,9 +94,10 @@ impl AgenticStrategy {
                     to_item,
                     digest,
                 } => {
-                    if to_item <= from_item || *to_item >= transcript.items.len() {
-                        continue;
+                    if to_item <= from_item || *to_item > transcript.items.len() {
+                        return None;
                     }
+                    projected = projected.saturating_add(crate::estimate::estimate_tokens(digest.len()));
                     edits.push(Edit::InjectDigest {
                         digest: crate::plan::DigestBlock {
                             goal: Some(digest.clone()),
@@ -101,7 +111,7 @@ impl AgenticStrategy {
             }
         }
 
-        if edits.is_empty() {
+        if edits.is_empty() || crate::validation::validate_edits(transcript, policy, &edits).is_err() {
             return None;
         }
         Some(CompactionPlan {

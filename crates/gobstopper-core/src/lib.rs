@@ -13,6 +13,7 @@ pub mod model;
 pub mod plan;
 pub mod probe;
 pub mod strategy;
+pub mod validation;
 
 pub use events::{append_event, default_log_path, read_events, CompactionEvent};
 pub use model::{ItemKind, Provider, SessionHandle, Transcript, TranscriptItem, UsageSample};
