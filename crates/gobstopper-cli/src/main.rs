@@ -981,6 +981,13 @@ fn cmd_apply(
 ) -> Result<()> {
     if no_backup { bail!("snapshots are mandatory; --no-backup is no longer supported"); }
     let d = find_session(cli, cfg, session)?;
+    if d.handle.provider == Provider::Codex {
+        if let Some(parent) = codex::parent_thread(&d.handle.path) {
+            if parent != d.handle.session_id {
+                println!("warning: this Codex session is a sub-agent/fork of {parent}; resume the parent with: codex resume {parent}");
+            }
+        }
+    }
     let mut resolved = cfg.resolve(
         d.handle.provider,
         &d.handle.session_id,

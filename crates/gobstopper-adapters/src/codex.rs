@@ -196,6 +196,40 @@ pub fn scan_usage(path: &Path) -> UsageSample {
     sample
 }
 
+/// Read the parent thread id from a Codex session head, if this is a
+/// sub-agent or forked thread. Returns `None` for a root/user thread.
+pub fn parent_thread(path: &Path) -> Option<String> {
+    let file = fs::File::open(path).ok()?;
+    for line in BufReader::new(file).lines().take(64) {
+        let Ok(line) = line else { break };
+        let Ok(record) = serde_json::from_str::<Value>(&line) else { continue };
+        if record.get("type").and_then(Value::as_str) != Some("session_meta") {
+            continue;
+        }
+        let payload = &record["payload"];
+        // Native fork/subagent fields.
+        if let Some(parent) = payload
+            .get("parent_thread_id")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .or_else(|| payload.get("forked_from_id").and_then(Value::as_str).map(str::to_string))
+        {
+            return Some(parent);
+        }
+        // Multi-agent `source.subagent.thread_spawn.parent_thread_id`.
+        if let Some(parent) = payload
+            .get("source")
+            .and_then(|s| s.get("subagent"))
+            .and_then(|s| s.get("thread_spawn"))
+            .and_then(|s| s.get("parent_thread_id"))
+            .and_then(Value::as_str)
+        {
+            return Some(parent.to_string());
+        }
+    }
+    None
+}
+
 /// Read session identity from the head of the file.
 pub fn scan_meta(path: &Path) -> (Option<String>, Option<PathBuf>) {
     let Ok(file) = fs::File::open(path) else {
