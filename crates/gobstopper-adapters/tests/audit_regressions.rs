@@ -40,7 +40,12 @@ fn digest_starts_a_new_record_without_trailing_newline() {
         fs::write(&path, record.to_string()).unwrap();
         apply(provider, &path, &[digest()]).unwrap();
         let raw = fs::read_to_string(&path).unwrap();
-        assert_eq!(raw.lines().count(), 2);
+        let expected_lines = match provider {
+            Provider::Codex => 2,
+            // Claude now appends a synthetic user, a fresh last-prompt, and a mode record.
+            Provider::ClaudeCode => 4,
+        };
+        assert_eq!(raw.lines().count(), expected_lines);
         assert!(raw.lines().all(|line| serde_json::from_str::<Value>(line).is_ok()));
         assert!(verify::verify(provider, raw.as_bytes()).is_empty());
     }
@@ -55,9 +60,21 @@ fn claude_digest_preserves_the_live_branch() {
     let transcript = claude::load(handle(Provider::ClaudeCode, &path)).unwrap();
     assert_eq!(transcript.items.iter().filter(|i| i.est_tokens > 0).count(), 3);
     let raw = fs::read_to_string(&path).unwrap();
-    let tail: Value = serde_json::from_str(raw.lines().last().unwrap()).unwrap();
-    assert_eq!(tail["parentUuid"], "a1");
-    assert_eq!(tail["sessionId"], "audit");
+    let digest_user = raw
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|r| r.get("type").and_then(Value::as_str) == Some("user") && r.get("uuid").and_then(Value::as_str).is_some_and(|u| u.starts_with("gobstopper-")))
+        .expect("synthetic user digest line");
+    let last_prompt = raw
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|r| r.get("type").and_then(Value::as_str) == Some("last-prompt"))
+        .expect("last-prompt tail");
+    assert_eq!(digest_user["parentUuid"], "a1");
+    assert_eq!(digest_user["sessionId"], "audit");
+    assert_eq!(last_prompt["leafUuid"], digest_user["uuid"]);
+    assert_eq!(last_prompt["parentUuid"], "a1");
+    assert_eq!(last_prompt["sessionId"], "audit");
 }
 
 #[test]

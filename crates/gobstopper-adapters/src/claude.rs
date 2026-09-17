@@ -328,24 +328,59 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
                 stub_template,
             } => raw = apply_elide(&raw, line_indexes, stub_template).0,
             Edit::InjectDigest { digest } => {
-                // Appended as a synthetic user line. Fresh uuid, parented to
-                // the last assistant: the live branch is preserved because
-                // `parentUuid` chains back to the original turn.
+                // Append the digest as a synthetic user line and follow it
+                // with a fresh `last-prompt`/`mode` tail. Claude's resume
+                // indexer expects this tail to recognize the fork; without it
+                // the file is discoverable but `claude --resume` reports that
+                // no conversation exists.
                 let text = digest_text(digest);
-                let parent = raw.lines().rev().filter_map(|line| serde_json::from_str::<Value>(line).ok())
-                    .find_map(|record| record.get("uuid").and_then(Value::as_str).map(str::to_string));
-                let session_id = raw.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok())
-                    .find_map(|record| record.get("sessionId").and_then(Value::as_str).map(str::to_string));
-                let line = serde_json::json!({
+                let parsed: Vec<Value> = raw
+                    .lines()
+                    .filter_map(|line| serde_json::from_str(line).ok())
+                    .collect();
+                let last_leaf = parsed.iter().rev().find(|r| {
+                    matches!(
+                        r.get("type").and_then(Value::as_str),
+                        Some("user") | Some("assistant")
+                    )
+                });
+                let last_mode = parsed.iter().rev().find(|r| {
+                    r.get("type").and_then(Value::as_str) == Some("mode")
+                });
+                let parent = last_leaf
+                    .and_then(|r| r.get("uuid").and_then(Value::as_str))
+                    .map(str::to_string);
+                let session_id = parsed
+                    .iter()
+                    .find_map(|r| r.get("sessionId").and_then(Value::as_str).map(str::to_string));
+                let mode = last_mode
+                    .and_then(|r| r.get("mode").and_then(Value::as_str))
+                    .unwrap_or("auto");
+                let digest_uuid = format!("gobstopper-{:016x}", std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos() as u64).unwrap_or(0));
+                let digest_user = serde_json::json!({
                     "type": "user",
+                    "uuid": &digest_uuid,
                     "parentUuid": parent,
                     "sessionId": session_id,
-                    "uuid": format!("gobstopper-{:016x}", std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map(|d| d.as_nanos() as u64).unwrap_or(0)),
                     "message": {"role": "user", "content": text},
                 });
-                crate::transaction::append_record(&mut raw, &line)?;
+                crate::transaction::append_record(&mut raw, &digest_user)?;
+                let last_prompt = serde_json::json!({
+                    "type": "last-prompt",
+                    "lastPrompt": text,
+                    "leafUuid": &digest_uuid,
+                    "parentUuid": parent,
+                    "sessionId": session_id,
+                });
+                crate::transaction::append_record(&mut raw, &last_prompt)?;
+                let mode_rec = serde_json::json!({
+                    "type": "mode",
+                    "mode": mode,
+                    "sessionId": session_id,
+                });
+                crate::transaction::append_record(&mut raw, &mode_rec)?;
             }
             Edit::ProviderCompact { .. } => {}
         }

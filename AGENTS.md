@@ -14,3 +14,14 @@
 - Every mutating path (`apply`, `watch`) snapshots into the vault before writing and emits a `compaction-events-v1` record after; telemetry failures are non-fatal, snapshot failures abort the edit.
 - The `auto` strategy must always prefer provider delegation for live sessions; file surgery is for idle transcripts.
 - Keep dependency count small; prefer `std` + `serde_json` over new crates.
+
+# Local development and install
+
+For fast iteration, build and install the release binary once instead of running `cargo run` each time:
+
+```bash
+cargo build --release
+cargo install --path crates/gobstopper-cli --locked
+```
+
+`~/.cargo/bin/gobstopper` is then on `$PATH` after a shell restart and `gobstopper --version` reflects the current checkout.

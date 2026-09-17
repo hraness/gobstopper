@@ -455,7 +455,7 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                 let _ = again;
                 no_errors(provider, &path);
             }
-            // Inject a digest line (one appended tip, linkage untouched).
+            // Inject a digest at the live branch.
             1 => {
                 let before = read_lines(&path);
                 let edits = vec![Edit::InjectDigest {
@@ -466,7 +466,13 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                     Provider::ClaudeCode => claude::apply(&path, &edits).unwrap(),
                 };
                 let after = read_lines(&path);
-                assert_eq!(before.len() + 1, after.len(), "inject did not append exactly one line");
+                let expected = before.len() + match provider {
+                    // Codex injects a single compacted response item.
+                    Provider::Codex => 1,
+                    // Claude injects a synthetic user, a last-prompt tail, and a mode record.
+                    Provider::ClaudeCode => 3,
+                };
+                assert_eq!(expected, after.len(), "inject did not append the expected number of lines");
                 for (i, (old, new)) in before.iter().zip(after.iter()).enumerate() {
                     assert_eq!(old, new, "inject rewrote existing line {i}");
                 }
@@ -1350,10 +1356,16 @@ fn hostile_digest_injects_as_one_line(tc: TestCase) {
         Provider::ClaudeCode => claude::apply(&path, &[Edit::InjectDigest { digest }]).unwrap(),
     };
     let after = read_lines(&path);
-    assert_eq!(before + 1, after.len(), "digest injected more than one line");
-    let last: Value = serde_json::from_str(after.last().unwrap())
-        .expect("injected line is not valid JSON");
-    assert!(last.is_object());
+    let expected_delta = match provider {
+        Provider::Codex => 1,
+        Provider::ClaudeCode => 3,
+    };
+    assert_eq!(before + expected_delta, after.len(), "digest injected the wrong number of lines");
+    for line in after.iter().skip(before) {
+        let parsed: Value = serde_json::from_str(line)
+            .expect("injected line is not valid JSON");
+        assert!(parsed.is_object());
+    }
     no_errors(provider, &path);
 }
 
