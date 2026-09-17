@@ -442,3 +442,10 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
   prompt is also extracted for `goal`, skipping system notifications. `gobstopper bench`
   runs `gobstopper eval` over every discovered session and emits a CSV of projected
   savings, verify errors, and probe recall per strategy.
+- Live API-token benchmark 2026-09-17: on a 333k-token Claude session, the same
+  resume question was asked under four conditions. `gobstopper elide` and
+  `compacted` both reduced observed resume input tokens by ~30% (312,722 → ~220,000)
+  while correctly recalling the stalled npm/rename task. `claude --resume --autocompact 100`
+  consumed only 56,300 input tokens (~82% reduction) but answered incorrectly,
+  claiming the renames were already completed and published. The README and
+  `/benchmarks` page now report this head-to-head.

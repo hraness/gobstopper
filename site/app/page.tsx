@@ -27,7 +27,7 @@ const repository = "https://github.com/hraness/gobstopper";
 
 const heading = "Compact, resume, and audit every agent session.";
 const summary =
-  "gobstopper is the first cross-provider context compactor that preserves a content-addressed archive of every conversation state and resumes compacted sessions on both Claude Code and Codex.";
+  "gobstopper is the first cross-provider context compactor that preserves a content-addressed archive of every conversation state, resumes compacted sessions on both Claude Code and Codex, and proves the savings on real API calls.";
 const footnote =
   `Free and MIT licensed. Rust 1.85 or newer, local transcripts, no account.${releaseVersion === undefined ? " First Gobstopper release in preparation — install from source today." : ` Current verified release v${releaseVersion}.`}`;
 

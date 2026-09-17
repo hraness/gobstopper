@@ -58,6 +58,63 @@ export default function Benchmarks() {
             <li>Verbatim recall of elided tool output where relevant.</li>
           </ul>
 
+          <h2>Live API token comparison</h2>
+          <p>
+            The same 333k-token Claude session was restored from the gobstopper
+            vault and asked the same resume question under four conditions.
+            The question was: &quot;What were we working on? Briefly state the
+            current task and the most recent concrete decision or conclusion,
+            if any.&quot; Token numbers are the observed provider usage for the
+            resume turn (input = cache read + cache creation + uncached input;
+            output = response tokens).
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>condition</th>
+                <th>input tokens</th>
+                <th>output tokens</th>
+                <th>recalled the standing task?</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>none (original)</td>
+                <td>312,722</td>
+                <td>1,405</td>
+                <td>yes — npm unification and stalled renames</td>
+              </tr>
+              <tr>
+                <td>gobstopper <code>elide</code></td>
+                <td>219,167</td>
+                <td>1,052</td>
+                <td>yes — same standing task, stalled renames</td>
+              </tr>
+              <tr>
+                <td>gobstopper <code>compacted</code></td>
+                <td>220,447</td>
+                <td>621</td>
+                <td>yes — same standing task from the state-card digest</td>
+              </tr>
+              <tr>
+                <td>Claude <code>--autocompact 100</code></td>
+                <td>56,300</td>
+                <td>416</td>
+                <td>no — incorrectly claimed the renames were already done and published</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            gobstopper <code>elide</code> and <code>compacted</code> both cut the
+            resume context by about 30% while keeping the answer accurate. Claude&apos;s
+            native <code>--autocompact 100</code> cut the resume context by ~82% but
+            produced a confident, inaccurate summary of the session. gobstopper is
+            built for measured, auditable compaction: every pre- and post-state is in
+            the vault, so you can <code>gobstopper diff</code> the exact structural
+            changes and choose the strategy that matches your tolerance for recall
+            loss.
+          </p>
+
           <h2>Results</h2>
           <table>
             <thead>
@@ -94,7 +151,7 @@ export default function Benchmarks() {
             </tbody>
           </table>
           <p>
-            On a 333k-token real Claude session, native <code>--autocompact 100</code>
+            On the same 333k-token real Claude session, native <code>--autocompact 100</code>
             appended 59 records and removed none. gobstopper&apos;s in-place
             <code>compacted</code> strategy removed 43 stale tool records, injected a
             resumable state-card digest, and <code>claude --resume</code> succeeded

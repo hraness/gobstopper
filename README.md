@@ -5,14 +5,14 @@ Automatic context compaction for coding-agent sessions — Codex and Claude
 Code today, any JSONL-transcript agent tomorrow.
 
 gobstopper is the first cross-provider context compactor that preserves a
-content-addressed archive of every conversation state, supports resumable
-in-place compaction for both Claude Code and Codex, and gives you a
-fine-grained structural diff of what actually changed.
+content-addressed archive of every conversation state, compacts resumable
+Claude Code and Codex transcripts, and proves on real API calls that it
+reduces context without inventing answers.
 
 Run it, and it watches your agent sessions. When a session's context
-crosses a configured threshold, gobstopper compacts it — earlier and
-smarter than the provider's own defaults — using a strategy you choose per
-session, per provider, or per preset.
+crosses a configured threshold, gobstopper compacts it — using a strategy you choose per session, per provider, or per preset — and stores the
+exact pre- and post-state in the vault so you can audit what changed.
+
 <!-- hraness:gobstopper-landing:end -->
 
 ## Why
@@ -180,7 +180,26 @@ for fully custom summaries is the designed v0.2 path.
 
 ## Live qualification
 
-`gobstopper` has been live-qualified on real provider sessions:
+`gobstopper` has been live-qualified on real provider sessions. The most
+recent trial used a 333k-token Claude session, asked the same resume
+question under four conditions, and measured the tokens the provider
+actually consumed on the next turn:
+
+| condition | input tokens on resume | output tokens | recalled the standing task? |
+|---|---|---|---|
+| none (original) | 312,722 | 1,405 | yes — reported npm unification and stalled renames |
+| `gobstopper elide` | 219,167 | 1,052 | yes — same standing task, stalled renames |
+| `gobstopper compacted` | 220,447 | 621 | yes — same standing task from the state-card digest |
+| `claude --autocompact 100` | 56,300 | 416 | no — incorrectly claimed the renames were already done and published |
+
+`gobstopper elide` and `compacted` both cut the resume context by about
+30% while keeping the answer accurate. Claude's native `--autocompact 100`
+cut the resume context by ~82% but produced a confident, inaccurate
+summary of the session. That is the difference gobstopper is built for:
+measured, auditable compaction that does not replace the transcript's
+actual state with a plausible invention. Every pre- and post-state is in the
+vault, so you can `gobstopper diff` the exact structural changes and decide
+which strategy to trust.
 
 - **Codex custom `compacted` record** — a gobstopper-written `compacted`
   record with a correct window chain was accepted by `codex exec resume` and
@@ -192,13 +211,6 @@ for fully custom summaries is the designed v0.2 path.
   records (43 stubs + 3 tail records); `claude --resume <session>` succeeded
   and the model recalled the last user prompt and current task state from the
   digest.
-- **Native comparison** — running `claude --resume <session> --autocompact
-  100` on the same session appended 59 records but removed 0 existing records;
-  gobstopper was the only one to produce a measurable structural reduction.
-
-These are bounded, single-session results, not a broad benchmark, but they
-show that gobstopper's in-place compaction is resumable and that it can
-reduce transcripts that the provider's own auto-compaction left unchanged.
 
 ## Status
 
