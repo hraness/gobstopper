@@ -389,9 +389,7 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
                 let mode = last_mode
                     .and_then(|r| r.get("mode").and_then(Value::as_str))
                     .unwrap_or("auto");
-                let digest_uuid = format!("gobstopper-{:016x}", std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_nanos() as u64).unwrap_or(0));
+                let digest_uuid = crate::fork::generate_session_id(Path::new("claude-digest"));
                 let digest_user = serde_json::json!({
                     "type": "user",
                     "uuid": &digest_uuid,

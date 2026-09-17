@@ -43,7 +43,7 @@ static FORK_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Pseudo-uuid v4: SHA-256 over (time, pid, counter, source path, stack
 /// address) with the version/variant bits forced — no uuid crate needed.
-fn generate_session_id(seed: &Path) -> String {
+pub(crate) fn generate_session_id(seed: &Path) -> String {
     use sha2::{Digest, Sha256};
     use std::fmt::Write as _;
 

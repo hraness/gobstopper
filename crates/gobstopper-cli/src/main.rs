@@ -7,7 +7,7 @@ mod report;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use gobstopper_adapters::detect::{self, Discovered, Roots};
-use gobstopper_adapters::{copy, eval, fork, plugins, vault, verify, AdapterError};
+use gobstopper_adapters::{claude, codex, copy, eval, fork, plugins, vault, verify, AdapterError};
 use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
 use gobstopper_core::plan::{CompactionPlan, Edit};
 use gobstopper_core::strategy::{self, QuotaPressure};
@@ -70,6 +70,10 @@ enum Cmd {
         /// Skip the confirmation prompt.
         #[arg(long)]
         yes: bool,
+        /// Apply elide/digest edits to the original transcript instead of forking.
+        /// Useful for resuming the same Claude/Codex session id after compaction.
+        #[arg(long)]
+        in_place: bool,
         /// Don't snapshot the transcript into the undo vault first
         /// (not recommended).
         #[arg(long)]
@@ -972,6 +976,7 @@ fn cmd_apply(
     preset: Option<&str>,
     trigger: Option<u64>,
     yes: bool,
+    in_place: bool,
     no_backup: bool,
 ) -> Result<()> {
     if no_backup { bail!("snapshots are mandatory; --no-backup is no longer supported"); }
@@ -1028,6 +1033,9 @@ fn cmd_apply(
     // to the rollout — the provider's own resume mechanism performs the
     // context swap. Elide edits in the same plan still apply normally first.
     let is_compacted = resolved.strategy == "compacted" && d.handle.provider == Provider::Codex;
+    if in_place && is_compacted {
+        bail!("--in-place is not supported for Codex compacted records; the provider expects a forked rollout");
+    }
     let digest_for_compacted = if is_compacted {
         plan.edits.iter().find_map(|e| match e {
             Edit::InjectDigest { digest } => Some(digest.clone()),
@@ -1062,11 +1070,22 @@ fn cmd_apply(
             }
         }
     } else if !file_edits.is_empty() {
-        let file_result = copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root()).map(|receipt| {
-            println!("prepared {}", receipt.path.display());
-            println!("resume the new session: {} {}", if d.handle.provider == Provider::Codex { "codex resume" } else { "claude --resume" }, receipt.session_id);
-            receipt.reclaimed_bytes
-        });
+        let file_result: anyhow::Result<u64> = if in_place {
+            vault::snapshot(&d.handle.path, d.handle.provider, &d.handle.session_id, Some(&plan.strategy), &vault::default_root())?;
+            let reclaimed = match d.handle.provider {
+                Provider::Codex => codex::apply(&d.handle.path, &file_edits)?,
+                Provider::ClaudeCode => claude::apply(&d.handle.path, &file_edits)?,
+            };
+            println!("applied in place; source session id preserved");
+            println!("resume the same session: {} {}", if d.handle.provider == Provider::Codex { "codex resume" } else { "claude --resume" }, d.handle.session_id);
+            Ok(reclaimed)
+        } else {
+            copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root()).map(|receipt| {
+                println!("prepared {}", receipt.path.display());
+                println!("resume the new session: {} {}", if d.handle.provider == Provider::Codex { "codex resume" } else { "claude --resume" }, receipt.session_id);
+                receipt.reclaimed_bytes
+            })
+        };
         match file_result {
             Ok(reclaimed) => {
                 emit_event(&d, &plan, "transcript_compact", "applied", trigger,
@@ -1445,6 +1464,7 @@ fn main() -> Result<()> {
             preset,
             trigger,
             yes,
+            in_place,
             no_backup,
         } => cmd_apply(
             &cli,
@@ -1454,6 +1474,7 @@ fn main() -> Result<()> {
             preset.as_deref(),
             *trigger,
             *yes,
+            *in_place,
             *no_backup,
         ),
         Cmd::Verify { session, json } => cmd_verify(&cli, &cfg, session, *json),

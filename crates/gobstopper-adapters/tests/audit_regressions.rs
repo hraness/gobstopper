@@ -63,7 +63,7 @@ fn claude_digest_preserves_the_live_branch() {
     let digest_user = raw
         .lines()
         .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-        .find(|r| r.get("type").and_then(Value::as_str) == Some("user") && r.get("uuid").and_then(Value::as_str).is_some_and(|u| u.starts_with("gobstopper-")))
+        .find(|r| r.get("type").and_then(Value::as_str) == Some("user") && r.get("parentUuid").and_then(Value::as_str) == Some("a1"))
         .expect("synthetic user digest line");
     let last_prompt = raw
         .lines()
