@@ -519,16 +519,6 @@ mod tests {
         }
     }
 
-    /// Response-item payloads (the shape replacement_history items take).
-    fn response_payloads(lines: &[String]) -> Vec<Value> {
-        lines
-            .iter()
-            .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-            .filter(|r| r.get("type").and_then(Value::as_str) == Some("response_item"))
-            .filter_map(|r| r.get("payload").cloned())
-            .collect()
-    }
-
     fn payload_of(line: &str) -> Value {
         let rec: Value = serde_json::from_str(line).unwrap();
         assert_eq!(rec.get("type").and_then(Value::as_str), Some("compacted"));
