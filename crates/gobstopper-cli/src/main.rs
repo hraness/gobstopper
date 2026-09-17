@@ -1631,6 +1631,7 @@ done
                 est_tokens: 500,
                 elidable_bytes: Some(2000),
                 label: "tool output".to_string(),
+                summary: Some("fake output".to_string()),
             }],
             usage: gobstopper_core::model::UsageSample {
                 context_tokens: 50_000,

@@ -34,6 +34,7 @@ mod tests {
             est_tokens,
             elidable_bytes: elidable.then_some(est_tokens * 4),
             label: format!("item-{line}"),
+            summary: None,
         }
     }
 

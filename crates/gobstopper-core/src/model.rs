@@ -77,6 +77,9 @@ pub struct TranscriptItem {
     pub elidable_bytes: Option<u64>,
     /// Short sanitized label for plan output (never contains payload text).
     pub label: String,
+    /// Optional short summary of the item's payload for digest generation.
+    /// Never includes the full payload; at most a few hundred bytes.
+    pub summary: Option<String>,
 }
 
 /// Point-in-time token accounting extracted from provider records.

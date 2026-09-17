@@ -46,13 +46,43 @@ fn value_len(v: &Value) -> usize {
     v.to_string().len()
 }
 
-/// Elidable payload bytes: tool output bodies only. `output` is a string
-/// on `function_call_output` and an array of `input_text` blocks on
-/// `custom_tool_call_output`.
+/// Concatenated text of a tool `output` payload, whether it is a plain
+/// string (`function_call_output`) or an array of `input_text` blocks
+/// (`custom_tool_call_output`).
+fn output_text(payload: &Value) -> Option<String> {
+    match payload.get("type").and_then(Value::as_str)? {
+        "function_call_output" => payload.get("output").and_then(Value::as_str).map(String::from),
+        "custom_tool_call_output" => payload.get("output").and_then(Value::as_array).map(|blocks| {
+            blocks
+                .iter()
+                .filter_map(|b| match b.get("type").and_then(Value::as_str) {
+                    Some("input_text") => b.get("text").and_then(Value::as_str).map(String::from),
+                    _ => None,
+                })
+                .collect()
+        }),
+        _ => None,
+    }
+}
+
+/// Short tail snippet of a tool output, used for digests. At most a few
+/// hundred bytes so the compacted record can recall the conclusion of an
+/// elided command without carrying its full payload.
+fn output_summary(payload: &Value) -> Option<String> {
+    let text = output_text(payload)?;
+    if text.is_empty() { return None; }
+    const MAX_SUMMARY: usize = 200;
+    if text.chars().count() <= MAX_SUMMARY {
+        return Some(text);
+    }
+    Some(text.chars().rev().take(MAX_SUMMARY).collect::<String>().chars().rev().collect())
+}
+
+/// Elidable payload bytes: tool output bodies only.
 fn elidable_bytes(payload: &Value) -> Option<u64> {
-    if !matches!(payload.get("type").and_then(Value::as_str), Some("function_call_output" | "custom_tool_call_output")) { return None; }
-    let bytes = elidable_output_bytes(payload.get("output")?);
-    (bytes > 0).then_some(bytes)
+    let text = output_text(payload)?;
+    let bytes = text.len() as u64;
+    (bytes > 256).then_some(bytes)
 }
 
 /// Parse a full rollout file into a normalized transcript.
@@ -90,6 +120,7 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                     est_tokens: est,
                     elidable_bytes: elidable,
                     label: format!("{ptype}@{line_index}"),
+                    summary: output_summary(payload),
                 });
             }
             Some("compacted") => {
@@ -124,6 +155,7 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
 
                     elidable_bytes: elidable,
                     label: format!("compacted@{line_index}"),
+                    summary: None,
                 });
             }
             _ => {}
@@ -189,11 +221,6 @@ pub fn scan_meta(path: &Path) -> (Option<String>, Option<PathBuf>) {
         }
     }
     (None, None)
-}
-
-/// Byte size of an `output` field, shared by classify and rewrite paths.
-fn elidable_output_bytes(output: &Value) -> u64 {
-    crate::payload::eligible_bytes(output)
 }
 
 fn stub_for(template: &str, bytes: u64, kind: &str) -> String {

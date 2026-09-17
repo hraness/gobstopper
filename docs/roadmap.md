@@ -394,6 +394,13 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
   with elided tool outputs (the model recalled the six commands). Claude
   digest-injected fork is not yet resumable; the synthetic `user` record
   lacks the `last-prompt`/`mode` tail Claude's resume indexer expects.
+- Built-in `compacted` strategy and meaningful digests: `CompactedStrategy`
+  now fills `DigestBlock.goal` (latest user turn label), `decisions` (tail
+  summaries of elided tool outputs), and `files_touched` from the elided
+  `ToolResult` items. Adapter loaders (`codex`, `claude`) extract a bounded
+  tail snippet from each tool output and store it in `TranscriptItem.summary`;
+  the compacted record carries that summary so resumed sessions can recall the
+  conclusion of elided commands (e.g., the last numbers of a `seq` run).
 - R6 benchmark pilot 2026-09-17: ran a two-phase `count.py` task on Codex
   (gpt-6-astra) across three conditions on the same `test.txt`:
   | condition | phase-1 tokens | phase-2 tokens | count_lines correct? | recall last `seq` numbers? | notes |

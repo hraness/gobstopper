@@ -4,6 +4,19 @@ fn text_block(block: &Value) -> bool {
     matches!(block.get("type").and_then(Value::as_str), Some("text" | "input_text" | "output_text"))
 }
 
+/// Concatenate the text content of a string or an array of text blocks.
+pub fn text(value: &Value) -> String {
+    match value {
+        Value::String(s) => s.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter(|b| text_block(b))
+            .filter_map(|b| b.get("text").and_then(Value::as_str))
+            .collect(),
+        _ => String::new(),
+    }
+}
+
 pub fn text_bytes(value: &Value) -> u64 {
     match value {
         Value::String(s) => s.len() as u64,

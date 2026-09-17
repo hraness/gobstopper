@@ -48,6 +48,26 @@ fn has_tool_result(message: &Value) -> bool {
     tool_result_bytes(message) > 256
 }
 
+/// Short tail snippet of the tool_result blocks inside a user line.
+fn tool_result_summary(message: &Value) -> Option<String> {
+    const MAX_SUMMARY: usize = 200;
+    let text: String = message
+        .get("content")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
+        .filter_map(|b| b.get("content"))
+        .map(crate::payload::text)
+        .collect();
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() <= MAX_SUMMARY {
+        return Some(text);
+    }
+    Some(text.chars().rev().take(MAX_SUMMARY).collect::<String>().chars().rev().collect())
+}
+
 fn absorb_usage(line: &Value, sample: &mut UsageSample) {
     if line.get("type").and_then(Value::as_str) != Some("assistant") {
         return;
@@ -127,6 +147,7 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
             est_tokens: est,
             elidable_bytes: elidable,
             label: format!("{ltype}@{line_index}"),
+            summary: tool_result_summary(&record["message"]),
         });
     }
     let live = live_branch(&links);
