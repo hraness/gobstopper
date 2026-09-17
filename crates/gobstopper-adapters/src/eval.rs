@@ -48,6 +48,10 @@ pub struct EvalRow {
     /// verbatim probes extracted from the source survived. `None` when
     /// no rewrite ran — no plan, provider-delegated, or apply failure.
     pub probe_score: Option<ProbeScore>,
+    /// Estimated tokens left byte-identical before the first in-place edit.
+    /// A larger number means more of the provider's prompt cache prefix
+    /// is preserved on the next resume.
+    pub prefix_tokens: u64,
     /// Apply duration on the temp copy.
     pub duration_ms: u64,
     /// Per-strategy failure (temp copy, apply, or read-back). One bad
@@ -124,6 +128,35 @@ fn protected_tail_start(transcript: &Transcript, policy: &PolicyConfig) -> usize
         })
 }
 
+/// Estimated tokens that remain byte-identical before the first in-place
+/// edit in `plan`. Provider-compact plans touch no local file, so the
+/// whole transcript is considered preserved. A larger number means more
+/// of the provider's prefix cache survives the rewrite.
+fn prefix_tokens(transcript: &Transcript, plan: &CompactionPlan) -> u64 {
+    if plan
+        .edits
+        .iter()
+        .any(|e| matches!(e, Edit::ProviderCompact { .. }))
+    {
+        return plan.context_tokens_before;
+    }
+    let first_changed = plan
+        .edits
+        .iter()
+        .filter_map(|e| match e {
+            Edit::Elide { line_indexes, .. } => line_indexes.iter().min().copied(),
+            _ => None,
+        })
+        .min()
+        .unwrap_or(usize::MAX);
+    transcript
+        .items
+        .iter()
+        .filter(|i| i.line_index < first_changed)
+        .map(|i| i.est_tokens)
+        .fold(0u64, u64::saturating_add)
+}
+
 /// Copy `src` to `tmp`, run the plan's file edits against the copy,
 /// verify the result, and score probe recall. Returns (apply duration
 /// ms, findings, probe score).
@@ -188,11 +221,13 @@ pub fn eval_transcript(
             verify_errors: 0,
             verify_warnings: 0,
             probe_score: None,
+            prefix_tokens: 0,
             duration_ms: 0,
             error: None,
         };
         if let Some(plan) = strat.evaluate(&transcript, policy) {
             row.est_reclaimed = plan.est_savings();
+            row.prefix_tokens = prefix_tokens(&transcript, &plan);
             let needs_rewrite = plan
                 .edits
                 .iter()
@@ -524,7 +559,7 @@ mod tests {
         policy.trigger_tokens = u64::MAX;
 
         let rows = eval_transcript(Provider::ClaudeCode, &src, &policy, None).unwrap();
-        assert_eq!(rows.len(), 6);
+        assert_eq!(rows.len(), 7);
         for r in &rows {
             assert!(r.plan.is_none(), "{} should not fire", r.strategy);
             assert_eq!(r.est_reclaimed, 0);

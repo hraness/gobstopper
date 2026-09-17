@@ -45,13 +45,17 @@ execution, standalone `hraness/agentmixer` repo — formerly the
   `message.usage`) — context occupancy + lifetime burn, no transcript
   content needed.
 - `Edit` IR (`Elide` / `InjectDigest` / `ProviderCompact`), strategies
-  `auto | sawtooth | elide | structured | agentic(scaffold)`, layered
+  `auto | sawtooth | elide | compacted | cache_aware | structured | agentic(scaffold)`, layered
   config (`policy → provider → preset → session`), userspace `command`
   presets, `policy-check` JSON seam, `watch` loop.
 - Verified against real session files: in-place elision preserves Claude
   `parentUuid` chains and Codex `ordinal` order; live-branch-only
   accounting for Claude's tree-shaped transcripts; `compacted` records'
   `replacement_history` covered.
+- `cache_aware` strategy elides the *latest* stale tool outputs before
+  the protected tail so the conversation prefix stays byte-identical;
+  `gobstopper bench` reports `prefix_tokens` so cache preservation is
+  visible next to projected savings.
 
 ## 2. Landscape position (why this is a real niche)
 
@@ -292,6 +296,7 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
 | R4 | Safe CLI/watch/native control and honest public surfaces | R1–R3 | Complete |
 | R5 | Comparative evaluation and fault/property regression gates | R1–R4 | Local proxy complete |
 | R6 | Subscription-only live qualification and benchmark pilot | R5 | Complete: Codex custom `compacted` record and Claude `compacted`/digest resume both qualified live; head-to-head `diff` vs. Claude `--autocompact` on a 333k-token session shows gobstopper producing measurable structural reduction while native autocompact did not remove records |
+|| R7 | Cache-aware suffix elision and prefix preservation metrics | R6 | Complete: `cache_aware` strategy elides the latest stale tool outputs before the protected tail and `gobstopper bench` reports `prefix_tokens` per strategy |
 
 ### R1: Transactional private copy publication and recovery
 
@@ -358,6 +363,19 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
   Quota/auth/unsupported-provider blockers remain open; no leadership claim without
   comparable completed-task evidence and uncertainty estimates.
 - **Validation:** bounded subscription trials after all source gates pass.
+
+### R7: Cache-aware suffix elision and prefix preservation metrics
+
+- **Scope:** `cache_aware` strategy and `gobstopper bench` prefix-token reporting.
+- **Objective:** keep the provider's prompt-cache prefix byte-identical by
+  eliding the latest stale outputs before the protected tail, and make the
+  cache/preservation trade-off measurable.
+- **Acceptance:** `cache_aware` is the default for tool-heavy idle sessions;
+  it reduces context by at least as much as `elide` while keeping more of the
+  early conversation unchanged; `gobstopper bench` reports `prefix_tokens`
+  alongside `est_reclaimed`.
+- **Validation:** `gobstopper plan --strategy cache_aware` produces a valid
+  plan on a real tool-heavy Claude session; workspace tests and Clippy pass.
 
 ### Implementation log
 

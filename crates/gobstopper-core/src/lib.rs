@@ -125,7 +125,7 @@ mod tests {
             items.push(item(i, ItemKind::ToolResult, 500, true));
         }
         let t = transcript(items, 9_500);
-        assert_eq!(AutoStrategy::select(&t), "elide");
+        assert_eq!(AutoStrategy::select(&t), "cache_aware");
         assert!(AutoStrategy.evaluate(&t, &policy()).is_some());
     }
 

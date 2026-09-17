@@ -1,3 +1,4 @@
 target/
 *.gobstopper-tmp
 *.gobstopper-bak-*
+.vercel/

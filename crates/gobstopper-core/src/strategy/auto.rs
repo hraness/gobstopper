@@ -1,4 +1,4 @@
-use super::{ElideStrategy, PolicyConfig, SawtoothStrategy, Strategy, StructuredStrategy};
+use super::{CacheAwareStrategy, PolicyConfig, SawtoothStrategy, Strategy, StructuredStrategy};
 use crate::model::Transcript;
 use crate::plan::CompactionPlan;
 
@@ -8,7 +8,9 @@ use crate::plan::CompactionPlan;
 ///
 /// Selection rules (each grounded in the compaction literature):
 ///   - tool-result-dominated transcripts lose almost nothing to
-///     observation masking -> `elide`
+///     observation masking; keep the conversation prefix in cache by
+///     eliding the latest stale outputs and carrying a state-card digest
+///     -> `cache_aware`
 ///   - mixed/chatty transcripts need state carried forward -> `structured`
 ///   - transcripts without parseable items (or on live sessions where
 ///     transcript surgery is unsafe) delegate to the provider -> `sawtooth`
@@ -27,7 +29,7 @@ impl AutoStrategy {
         if transcript.items.is_empty() || transcript.session.is_active() {
             "sawtooth"
         } else if tool_tokens as f64 / total as f64 >= TOOL_DOMINANCE {
-            "elide"
+            "cache_aware"
         } else {
             "structured"
         }
@@ -41,7 +43,7 @@ impl Strategy for AutoStrategy {
 
     fn evaluate(&self, transcript: &Transcript, policy: &PolicyConfig) -> Option<CompactionPlan> {
         let mut plan = match Self::select(transcript) {
-            "elide" => ElideStrategy.evaluate(transcript, policy),
+            "cache_aware" => CacheAwareStrategy.evaluate(transcript, policy),
             "structured" => StructuredStrategy.evaluate(transcript, policy),
             _ => SawtoothStrategy.evaluate(transcript, policy),
         }?;

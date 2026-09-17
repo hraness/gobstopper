@@ -64,9 +64,11 @@ right boundary."
 
 | id | kind | what it does |
 |---|---|---|
-| `auto` (default) | dynamic | selects per-session from transcript composition: tool-heavy → `elide`, chatty → `structured`, live/empty → `sawtooth` |
+| `auto` (default) | dynamic | selects per-session from transcript composition: tool-heavy → `cache_aware`, chatty → `structured`, live/empty → `sawtooth` |
 | `sawtooth` | provider | fires the provider's own compaction early (`thread/compact/start` on Codex app-server; `/compact` or `--autocompact` on Claude) |
 | `elide` | transcript | stubs stale tool outputs oldest-first until the floor; deterministic, no model call |
+|| `cache_aware` | transcript | elides the *latest* stale tool outputs before the protected tail, then injects a state-card digest. Keeps the conversation prefix byte-identical so the provider's prompt-cache hit rate is preserved |
+|| `compacted` | transcript | same digest as `cache_aware` but elides stale outputs oldest-first. On Codex the digest is lowered to a provider-native `compacted` record; on Claude it appends as a synthetic `user` turn |
 | `structured` | transcript | placeholder state-card digest (`goal`/`decisions`/`files`/`todos`); currently emits item labels, not a real summary. Safe for chat-only sessions but should not be mistaken for a semantic compressor |
 | `agentic` | transcript | reserved for a bounded editor-model backend; today `preset.command` is the only extension point and is treated as untrusted code |
 

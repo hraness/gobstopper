@@ -1384,7 +1384,7 @@ fn cmd_bench(
     let cfg = config::load()?;
     let mut csv = String::new();
     csv.push_str(
-        "provider,session,strategy,context_before,context_after,est_reclaimed,verify_errors,verify_warnings,probes_total,probes_recalled,recall,tail_intact,duration_ms\n",
+        "provider,session,strategy,context_before,context_after,est_reclaimed,prefix_tokens,verify_errors,verify_warnings,probes_total,probes_recalled,recall,tail_intact,duration_ms\n",
     );
     for d in sessions {
         let mut resolved = match cfg.resolve(d.handle.provider, &d.handle.session_id, None, None) {
@@ -1414,13 +1414,14 @@ fn cmd_bench(
                     (s.probes_total, s.probes_recalled, s.recall, s.tail_intact)
                 });
             csv.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{},{},{:.2},{},{}\n",
+                "{},{},{},{},{},{},{},{},{},{},{},{:.2},{},{}\n",
                 d.handle.provider.as_str(),
                 d.handle.session_id,
                 row.strategy,
                 before,
                 after,
                 row.est_reclaimed,
+                row.prefix_tokens,
                 row.verify_errors,
                 row.verify_warnings,
                 probes_total,

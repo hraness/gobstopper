@@ -1,5 +1,6 @@
 mod agentic;
 mod auto;
+mod cache_aware;
 mod compacted;
 mod elide;
 mod sawtooth;
@@ -7,6 +8,7 @@ mod structured;
 
 pub use agentic::{AgenticStrategy, EditorCall, EditorDriver};
 pub use auto::AutoStrategy;
+pub use cache_aware::CacheAwareStrategy;
 pub use compacted::CompactedStrategy;
 pub use elide::ElideStrategy;
 pub use sawtooth::SawtoothStrategy;
@@ -88,6 +90,7 @@ pub trait Strategy {
 pub fn builtin_strategies() -> Vec<Box<dyn Strategy>> {
     vec![
         Box::new(AutoStrategy),
+        Box::new(CacheAwareStrategy),
         Box::new(SawtoothStrategy),
         Box::new(ElideStrategy),
         Box::new(CompactedStrategy),
