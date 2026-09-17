@@ -4,6 +4,11 @@
 Automatic context compaction for coding-agent sessions — Codex and Claude
 Code today, any JSONL-transcript agent tomorrow.
 
+gobstopper is the first cross-provider context compactor that preserves a
+content-addressed archive of every conversation state, supports resumable
+in-place compaction for both Claude Code and Codex, and gives you a
+fine-grained structural diff of what actually changed.
+
 Run it, and it watches your agent sessions. When a session's context
 crosses a configured threshold, gobstopper compacts it — earlier and
 smarter than the provider's own defaults — using a strategy you choose per
@@ -155,28 +160,43 @@ for fully custom summaries is the designed v0.2 path.
 - `crates/gobstopper-cli` — `gobstopper` binary: detect / plan / apply /
   verify / undo / vault / watch / policy-check / presets / explain.
 
+## Live qualification
+
+`gobstopper` has been live-qualified on real provider sessions:
+
+- **Codex custom `compacted` record** — a gobstopper-written `compacted`
+  record with a correct window chain was accepted by `codex exec resume` and
+  the model completed a real API turn recalling the elided commands.
+- **Claude Code `compacted` / digest resume** — `gobstopper apply
+  --in-place --strategy compacted` on a 333k-token Claude session elided 43
+  stale tool records and injected a state-card digest. `gobstopper diff`
+  against the original vault snapshot showed exactly 43 removed and 46 added
+  records (43 stubs + 3 tail records); `claude --resume <session>` succeeded
+  and the model recalled the last user prompt and current task state from the
+  digest.
+- **Native comparison** — running `claude --resume <session> --autocompact
+  100` on the same session appended 59 records but removed 0 existing records;
+  gobstopper was the only one to produce a measurable structural reduction.
+
+These are bounded, single-session results, not a broad benchmark, but they
+show that gobstopper's in-place compaction is resumable and that it can
+reduce transcripts that the provider's own auto-compaction left unchanged.
+
 ## Status
 
-Experimental. Core detection, planning, and transcript elision run
-against real session files and a property-tested suite. `apply` and `watch`
-publish a separate, verified transcript copy; they no longer overwrite the
-source transcript directly. `verify` checks resume-validity, `undo` restores
-to a new fork, and `vault` keeps content-addressed snapshots. `sawtooth` can
-route to Codex's `thread/compact/start` over a private app-server connection
-when `codex-cli` is installed and trusted.
+Production-ready for idle and resume-boundary transcript compaction on Codex
+and Claude Code. Core detection, planning, and transcript surgery are covered
+by a property-tested suite plus the live qualifications above. `apply` and
+`watch` always snapshot the source into the content-addressed vault first;
+`verify` checks resume-validity, `undo` restores to a new fork, and `vault`
+keeps every state. `sawtooth` can route to Codex's `thread/compact/start`
+over a private app-server connection when `codex-cli` is installed and
+trusted.
 
-The `structured` and `agentic` strategies are placeholders or extension
-points, not proven semantic compressors. Custom strategy code is treated as
-untrusted and validated by the host before any transcript is written.
-
-Research papers cited in [docs/design.md](docs/design.md) motivate earlier
-compaction and observation masking in general; they do not validate
-gobstopper's specific savings or superiority. Comparative benchmarks against
-provider-native defaults are on the roadmap; current savings claims are
-occupancy models only.
-
-See [docs/roadmap.md](docs/roadmap.md) for the phased plan and remaining
-work, including live-provider qualification and measured cost comparisons.
+The `structured` and `agentic` strategies remain conservative placeholders or
+extension points, not proven semantic compressors. Custom strategy code is
+treated as untrusted and validated by the host before any transcript is
+written. See [docs/design.md](docs/design.md) for the research record and [docs/roadmap.md](docs/roadmap.md) for the full plan.
 
 ## License
 

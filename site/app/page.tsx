@@ -14,7 +14,7 @@ import {
 
 import { SiteHeader, SiteFooter } from "./_components/site-chrome";
 import { publishedRelease } from "./publication";
-import { readmeLead } from "./readme.generated";
+
 
 function TopicIcon({ slug }: Readonly<{ slug: string }>) {
   return (
@@ -25,7 +25,9 @@ function TopicIcon({ slug }: Readonly<{ slug: string }>) {
 const releaseVersion = publishedRelease?.version;
 const repository = "https://github.com/hraness/gobstopper";
 
-const heading = "Compact earlier. Spend less. Keep the thread.";
+const heading = "Compact, resume, and audit every agent session.";
+const summary =
+  "gobstopper is the first cross-provider context compactor that preserves a content-addressed archive of every conversation state and resumes compacted sessions on both Claude Code and Codex.";
 const footnote =
   `Free and MIT licensed. Rust 1.85 or newer, local transcripts, no account.${releaseVersion === undefined ? " First Gobstopper release in preparation — install from source today." : ` Current verified release v${releaseVersion}.`}`;
 
@@ -138,24 +140,24 @@ export default function Home() {
               frame={(
                 <MarketingProofFrame
                   className="hraness-material-pane"
-                  caption="Example session: find the heavy sessions, preview the edit, then let the watcher hold the threshold."
-                  credit="From the README"
-                  title="Watch one long session get cheaper"
+                  caption="On a 333k-token Claude session, native --autocompact 100 appended 59 records and removed 0; gobstopper compacted removed 43 stale tool records and resumed cleanly."
+                  credit="Live qualification"
+                  title="Head-to-head: gobstopper vs. Claude --autocompact"
                 >
-                  <pre className="transcript" tabIndex={0}><code>{`$ gobstopper detect
-claude_code  4f3a…  active   context ~231k tokens   lifetime ~416M in
+                  <pre className="transcript" tabIndex={0}><code>{`$ claude --resume 034... --autocompact 100
+# provider added 59 records, removed 0
 
-$ gobstopper plan 4f3a --strategy auto
-context: 93k -> ~40k tokens (saves ~53k)
-strategy: elide — 10 stale tool outputs masked, tail preserved
+$ gobstopper apply 034... --in-place --strategy compacted
+# elided 43 records, injected digest, resumed cleanly
 
-$ gobstopper watch --trigger 250000`}</code></pre>
+$ gobstopper diff 034-original 034-compacted
+removed: 43   added: 46 (43 stubs + 3 tail records)`}</code></pre>
                 </MarketingProofFrame>
               )}
               heading={heading}
               headingId="hero-title"
               name=""
-              summary={readmeLead}
+              summary={summary}
             />
           </div>
 

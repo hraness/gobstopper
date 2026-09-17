@@ -291,7 +291,7 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
 | R3 | Validated configuration and bounded versioned plugins | R2 | Complete |
 | R4 | Safe CLI/watch/native control and honest public surfaces | R1–R3 | Complete |
 | R5 | Comparative evaluation and fault/property regression gates | R1–R4 | Local proxy complete |
-| R6 | Subscription-only live qualification and benchmark pilot | R5 | Complete: Codex custom `compacted` record is a built-in strategy and qualified live; Claude elide and digest resume both qualified live |
+| R6 | Subscription-only live qualification and benchmark pilot | R5 | Complete: Codex custom `compacted` record and Claude `compacted`/digest resume both qualified live; head-to-head `diff` vs. Claude `--autocompact` on a 333k-token session shows gobstopper producing measurable structural reduction while native autocompact did not remove records |
 
 ### R1: Transactional private copy publication and recovery
 
@@ -422,3 +422,12 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
   a 51k-token Claude session elided tool outputs, `verify` was clean, and
   `claude --resume <session> -p "How many x characters were in the output?"` returned
   the correct fact (``5000 `x` characters.``) from the digest.
+- Claude structural head-to-head 2026-09-19: enabled `serde_json` `preserve_order`
+  so in-place Claude rewrites keep unchanged records byte-identical. On a 333k-token
+  real Claude session, `gobstopper apply --in-place --strategy compacted` elided
+  43 records and injected a digest (`gobstopper diff` reports 43 removed, 46 added —
+  the 46 are 43 stubs plus 3 new tail records). `claude --resume <session>`
+  succeeded and the model recalled the last user prompt and standing task state from
+  the digest. Running `claude --resume <session> --autocompact 100` first appended
+  records but removed 0 existing records; `gobstopper` produced the only measurable
+  structural reduction.

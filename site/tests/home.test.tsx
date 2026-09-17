@@ -33,7 +33,7 @@ test("every public route has one optional support footer without product signup"
 test("the homepage leads with the README identity and the verified install command", () => {
   const html = renderToStaticMarkup(<Home />);
   expect(html.match(/<h1\b/gu)).toHaveLength(1);
-  expect(html).toContain("Compact earlier. Spend less. Keep the thread.");
+  expect(html).toContain("Compact, resume, and audit every agent session.");
   if (publishedRelease === null) {
     expect(html).toContain("First Gobstopper release in preparation");
     expect(html).not.toContain("--tag v");
@@ -65,6 +65,6 @@ test("scopes the editorial preset to the homepage header and real command exampl
     })
     .transform(html);
   expect(elements).toEqual(["header", "proof"]);
-  expect(html).toContain("gobstopper plan 4f3a --strategy auto");
-  expect(html).toContain("Example session:");
+  expect(html).toContain("gobstopper apply 034... --in-place --strategy compacted");
+  expect(html).toContain("On a 333k-token Claude session");
 });

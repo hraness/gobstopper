@@ -62,6 +62,18 @@ export default function Methodology() {
             <li><strong>sawtooth</strong> delegates to the provider&apos;s own compaction.</li>
           </ul>
 
+          <h2>Structural diff and the undo vault</h2>
+          <p>
+            Every mutation is stored in a content-addressed vault. Records are
+            shared by hash, so unchanged content is never duplicated. The
+            <code>gobstopper diff</code> command compares two snapshots by record
+            hash and reports exactly which records were added, removed, and kept
+            — not a line-by-line text diff. With <code>serde_json</code>
+            {' '}<code>preserve_order</code> enabled, in-place rewrites keep
+            unchanged records byte-identical, so the diff reflects only the
+            intended structural change.
+          </p>
+
           <h2>Honest measurement</h2>
           <p>
             We report file-byte changes and observed provider usage where

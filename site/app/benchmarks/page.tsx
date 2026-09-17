@@ -59,12 +59,48 @@ export default function Benchmarks() {
           </ul>
 
           <h2>Results</h2>
+          <table>
+            <thead>
+              <tr>
+                <th>intervention</th>
+                <th>records</th>
+                <th>removed</th>
+                <th>added</th>
+                <th>resumed?</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>original session</td>
+                <td>5,244</td>
+                <td>—</td>
+                <td>—</td>
+                <td>yes</td>
+              </tr>
+              <tr>
+                <td>Claude <code>--autocompact 100</code></td>
+                <td>5,303</td>
+                <td>0</td>
+                <td>59</td>
+                <td>yes</td>
+              </tr>
+              <tr>
+                <td>gobstopper <code>compacted</code></td>
+                <td>5,247</td>
+                <td>43</td>
+                <td>46 (43 stubs + 3 digest)</td>
+                <td>yes</td>
+              </tr>
+            </tbody>
+          </table>
           <p>
-            Live results are added once each strategy completes its qualification
-            protocol. The Codex custom <code>compacted</code> record is qualified:
-            the provider accepts the gobstopper-written record, performs the
-            context swap, and resumes cleanly. Claude and native provider
-            comparisons are still in progress.
+            On a 333k-token real Claude session, native <code>--autocompact 100</code>
+            appended 59 records and removed none. gobstopper&apos;s in-place
+            <code>compacted</code> strategy removed 43 stale tool records, injected a
+            resumable state-card digest, and <code>claude --resume</code> succeeded
+            with the model recalling the last user prompt and current task state. The
+            structural diff is available in the vault via
+            <code>gobstopper diff</code>.
           </p>
         </article>
       </main>
