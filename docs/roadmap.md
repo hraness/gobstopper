@@ -141,12 +141,15 @@ the write path bulletproof and undoable.
     idempotency. A provider-neutral `compaction` timeline event records
     `outcome`/`trigger` (`manual`/`policy`/`provider`), and uncertain
     dispatches reconcile against the event stream without replay.
-  - 🚧 In flight — opt-in auto-compaction: `evaluateAutoCompact` +
-    per-session `session.compact-policy` config (`enabled` default off,
+  - ✅ 2026-09-17 — opt-in auto-compaction open as hraness/oompa#252
+    (main-based; schema v62 `session_compact_policies` since main's v61
+    is the Devin readmission): `evaluateAutoCompact` + per-session
+    `session.compact-policy` config (`enabled` default off,
     `triggerTokens` 250k, `minIntervalMs` 300s) wired at the
     `token_usage` persistence boundary; a crossing enqueues one durable
     `session.compact` per usage bucket with `trigger: "policy"`, never
-    mid-turn.
+    mid-turn. Devin sessions compact via the pinned CLI's `/compact`
+    slash command over ACP `session/prompt`.
   - oompa already records `token_usage` (`totalTokens`,
     `modelContextWindow`) into its neutral timeline; the insertion point
     is `#persistSessionEventWrites` — one `policy-check` call per event,
@@ -207,9 +210,9 @@ Nobody ships a compaction eval. gobstopper should.
   carries compaction stats otherwise). `compaction-events-v1` records
   resolve aicharts' known ambiguity (`codex_cumulative_regression`
   can't tell compaction from reset) and feed the occupancy-over-time
-  story. 🚧 aicharts-side ingest is open as hraness/aicharts#278 —
+  story. ✅ aicharts-side ingest merged as hraness/aicharts#278 —
   `compaction-events-v1` decoder, session join, aggregate strip, and a
-  per-session column on the usage dashboard.
+  per-session column on the usage dashboard, verified in production.
 - `Usage.context_tier` in AICU is a reserved field designed for a price
   registry — gobstopper's per-compaction reclaimed-token events are the
   first real producer of occupancy-over-time data.

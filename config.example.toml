@@ -34,9 +34,9 @@ trigger_tokens = 180_000
 # [presets.my-script]
 # command = "python3 ~/bin/compactor.py"
 
-# Agentic preset backed by agentrouter's bounded editor profile: a cheap
+# Agentic preset backed by agentmixer's bounded editor profile: a cheap
 # model emits keep/elide/summarize/defer calls, the shim lowers them to
-# Edit[]. Requires an Anthropic API key (see packages/agentrouter README).
-# [presets.agentrouter]
+# Edit[]. Requires an Anthropic API key (see the agentmixer repo README).
+# [presets.agentmixer]
 # strategy = "agentic"
-# command = "bun /path/to/textbutler/packages/agentrouter/src/gobstopper-editor.ts"
+# command = "bun /path/to/agentmixer/src/gobstopper-editor.ts"
