@@ -4,8 +4,9 @@ gobstopper is the context-compaction layer for the Hraness agent stack.
 This document is the engineering map: what exists, what comes next, and
 how the work shares foundations with **oompa** (session control plane),
 **aicharts** (usage measurement + evidence), **textbutler** (local agent
-runtime + skill distribution), and **agentrouter** (brokered agent task
-execution, inside the textbutler repo).
+runtime + skill distribution), and **agentmixer** (brokered agent task
+execution, standalone `hraness/agentmixer` repo — formerly the
+`agentrouter` package inside textbutler).
 
 ---
 
@@ -26,8 +27,8 @@ execution, inside the textbutler repo).
  └──────────────┘   compact on its  │        └───────────▲────────────┘
                     own connections │                    │ EditorDriver
  ┌──────────────┐                   │        ┌───────────┴───────────┐
- │ agentrouter  │ ── editor model ──►────────►│  (capability profile: │
- │ (textbutler) │    task runtime   │        │   keep/elide/summarize│
+ │  agentmixer  │ ── editor model ──►────────►│  (capability profile: │
+ │ (standalone) │    task runtime   │        │   keep/elide/summarize│
  └──────────────┘                   │        │   /defer)             │
                                     │        └───────────────────────┘
  shared: transcript-foundation crate (codex/claude JSONL dialects,
@@ -91,7 +92,7 @@ the write path bulletproof and undoable.
 - ✅ **Telemetry**: every mutating path appends a
   `gobstopper/compaction-events-v1` record to `events.jsonl` (§4, §6).
 - ✅ **Quota pressure**: `policy-check --quota-pressure low|normal|high`
-  scales the effective trigger ×1.15/×1.0/×0.7 — the input agentrouter's
+  scales the effective trigger ×1.15/×1.0/×0.7 — the input agentmixer's
   `rateLimits/updated` signal feeds.
 - ✅ **Hook installers**: `gobstopper install-hooks` merges
   `PreCompact`/`SessionStart(source=compact)` entries into Claude
@@ -133,24 +134,33 @@ the write path bulletproof and undoable.
   gobstopper reports the observed turn outcome within a 90s bound and
   records it honestly in telemetry.
 - **oompa managed sessions** (the primary integration):
+  - ✅ 2026-09-16 — `oompa session compact <session>` is live
+    (oompa `devin/session-compaction` @ `5501d83a`): Codex dispatches
+    `thread/compact/start` on the daemon's own connection, Claude gets a
+    `/compact` steering write, both behind receipt-before-dispatch +
+    idempotency. A provider-neutral `compaction` timeline event records
+    `outcome`/`trigger` (`manual`/`policy`/`provider`), and uncertain
+    dispatches reconcile against the event stream without replay.
+  - 🚧 In flight — opt-in auto-compaction: `evaluateAutoCompact` +
+    per-session `session.compact-policy` config (`enabled` default off,
+    `triggerTokens` 250k, `minIntervalMs` 300s) wired at the
+    `token_usage` persistence boundary; a crossing enqueues one durable
+    `session.compact` per usage bucket with `trigger: "policy"`, never
+    mid-turn.
   - oompa already records `token_usage` (`totalTokens`,
     `modelContextWindow`) into its neutral timeline; the insertion point
     is `#persistSessionEventWrites` — one `policy-check` call per event,
     or an external watcher on `oompa session events --jsonl`.
-  - Effect side: new `session.compact` command →
-    `thread/compact/start` on the daemon's own Codex connection;
-    Claude gets `--autocompact` in `buildPinnedClaudeRuntimeArgv` or a
-    `/compact` steering write. Follows oompa's receipt-before-dispatch +
-    idempotency discipline; `thread/compacted` should become a routed
-    timeline event.
   - Known gap: Claude's `modelContextWindow` is `null` in oompa events —
     gobstopper's trigger needs an absolute token threshold anyway, so
     this is acceptable, but worth fixing upstream.
-- **agentrouter telemetry**: it already parses `tokenUsage/updated`
-  incl. `modelContextWindow` (currently dropped — one-line retain) and
-  drops `account/rateLimits/updated` (the quota-pressure signal).
-  Additive `policy-check` flag `--quota-pressure low|normal|high` lets
-  rate-limit state shift the effective trigger.
+- **agentmixer telemetry** (formerly `agentrouter`; the package moved to
+  the standalone `hraness/agentmixer` repository): it already parses
+  `tokenUsage/updated` incl. `modelContextWindow` (currently dropped —
+  one-line retain) and drops `account/rateLimits/updated` (the
+  quota-pressure signal). Additive `policy-check` flag
+  `--quota-pressure low|normal|high` lets rate-limit state shift the
+  effective trigger.
 - ✅ **Double-buffer compaction** (Aider/Compresr pattern): `watch
   --double-buffer` stages a verified compacted copy at ~60% of trigger
   and swaps atomically at the trigger — zero-stall compaction at the
@@ -160,11 +170,14 @@ the write path bulletproof and undoable.
 
 `agentic`'s `EditorDriver` gets its first real backend:
 
-- **agentrouter `runTask`** with a `CapabilityProfile` exposing exactly
-  `keep`, `elide`, `summarize`, `defer` — serialized, bounded, revocable,
-  digest-bound tool calls. `calls_to_plan()` already disposes. Ships as a
-  `preset.command` Bun shim today (zero Rust integration needed); a
-  native driver later.
+- ✅ 2026-09-16 — **agentmixer `runAgentTask`** via `preset.command`:
+  `src/gobstopper-editor.ts` in the standalone repo
+  (hraness/agentmixer#7) exposes exactly `keep`, `elide`, `summarize`,
+  `defer` through the capability broker — no shell, filesystem, or
+  network tools — and writes gobstopper `Edit` JSON. Gobstopper-side,
+  `run_preset_command` pipes `{session_id, provider, items, usage}` and
+  treats an empty edit list as `defer`, not a phantom applied plan
+  (`c5de379`). A native driver remains future work.
 - **Model selection** via `selectClassifierModel()` semantics — cheapest
   eligible model under a fixed workload; the editor should cost ~1% of
   the tokens it saves.
@@ -194,7 +207,9 @@ Nobody ships a compaction eval. gobstopper should.
   carries compaction stats otherwise). `compaction-events-v1` records
   resolve aicharts' known ambiguity (`codex_cumulative_regression`
   can't tell compaction from reset) and feed the occupancy-over-time
-  story. Next: aicharts-side ingest + dashboards.
+  story. 🚧 aicharts-side ingest is open as hraness/aicharts#278 —
+  `compaction-events-v1` decoder, session join, aggregate strip, and a
+  per-session column on the usage dashboard.
 - `Usage.context_tier` in AICU is a reserved field designed for a price
   registry — gobstopper's per-compaction reclaimed-token events are the
   first real producer of occupancy-over-time data.
