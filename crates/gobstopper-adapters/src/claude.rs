@@ -307,9 +307,9 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
                 stub_template,
             } => raw = apply_elide(&raw, line_indexes, stub_template).0,
             Edit::InjectDigest { digest } => {
-                // Appended as a synthetic user line. Fresh uuid, no parent:
-                // Claude tolerates orphan tips on resume and the state card
-                // lands in the next turn's context.
+                // Appended as a synthetic user line. Fresh uuid, parented to
+                // the last assistant: the live branch is preserved because
+                // `parentUuid` chains back to the original turn.
                 let text = digest_text(digest);
                 let parent = raw.lines().rev().filter_map(|line| serde_json::from_str::<Value>(line).ok())
                     .find_map(|record| record.get("uuid").and_then(Value::as_str).map(str::to_string));
