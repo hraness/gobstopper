@@ -94,7 +94,11 @@ fn warning(line_index: Option<usize>, code: &'static str, message: &str) -> Veri
 /// Verify a transcript held in memory. Pure: no I/O, no provider calls.
 pub fn verify(provider: Provider, bytes: &[u8]) -> Vec<VerifyFinding> {
     let Ok(text) = std::str::from_utf8(bytes) else {
-        return vec![error(None, "invalid_utf8", "transcript contains invalid UTF-8")];
+        return vec![error(
+            None,
+            "invalid_utf8",
+            "transcript contains invalid UTF-8",
+        )];
     };
     let lines: Vec<&str> = text.lines().collect();
     if lines.is_empty() {
@@ -113,10 +117,14 @@ pub fn verify(provider: Provider, bytes: &[u8]) -> Vec<VerifyFinding> {
         match serde_json::from_str::<Value>(line) {
             Ok(v) => {
                 if !v.is_object() || !v.get("type").is_some_and(Value::is_string) {
-                    findings.push(error(Some(i), "invalid_record", "record must be an object with a string type"));
+                    findings.push(error(
+                        Some(i),
+                        "invalid_record",
+                        "record must be an object with a string type",
+                    ));
                 }
                 records.push(Some(v));
-            },
+            }
             Err(_) => {
                 bad_lines.push(i);
                 records.push(None);
@@ -210,8 +218,12 @@ fn verify_claude(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
 
     let mut first_use: HashMap<&str, usize> = HashMap::new();
     let mut last_result: HashMap<&str, usize> = HashMap::new();
-    for &(id, line) in &tool_uses { first_use.entry(id).or_insert(line); }
-    for &(id, line) in &tool_results { last_result.insert(id, line); }
+    for &(id, line) in &tool_uses {
+        first_use.entry(id).or_insert(line);
+    }
+    for &(id, line) in &tool_results {
+        last_result.insert(id, line);
+    }
     for &(id, line) in &tool_uses {
         let answered = last_result.get(id).is_some_and(|&rline| rline > line);
         if !answered {
@@ -348,10 +360,7 @@ mod tests {
     fn blank_lines_warn() {
         let raw = b"{\"type\":\"user\"}\n\n   \n{\"type\":\"user\"}\n";
         let findings = verify(Provider::ClaudeCode, raw);
-        let blanks: Vec<_> = findings
-            .iter()
-            .filter(|f| f.code == "blank_line")
-            .collect();
+        let blanks: Vec<_> = findings.iter().filter(|f| f.code == "blank_line").collect();
         assert_eq!(blanks.len(), 2);
         assert_eq!(blanks[0].line_index, Some(1));
         assert_eq!(blanks[1].line_index, Some(2));
@@ -491,8 +500,7 @@ mod tests {
 
     #[test]
     fn codex_compacted_history_wrong_type() {
-        let raw =
-            "{\"type\":\"compacted\",\"payload\":{\"replacement_history\":\"nope\"}}\n";
+        let raw = "{\"type\":\"compacted\",\"payload\":{\"replacement_history\":\"nope\"}}\n";
         let findings = verify(Provider::Codex, raw.as_bytes());
         assert!(has(&findings, Severity::Error, "malformed_compacted"));
     }

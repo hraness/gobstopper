@@ -431,3 +431,8 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
   the digest. Running `claude --resume <session> --autocompact 100` first appended
   records but removed 0 existing records; `gobstopper` produced the only measurable
   structural reduction.
+- Agent-addressable vault search 2026-09-19: `gobstopper recall --query <q>`
+  searches all archived state-card digests across sessions, scores results by
+  keyword relevance, and supports `--limit` and `--json`. The same content-addressed
+  vault that keeps every compaction state also serves as the retrieval layer for
+  agent "infinite memory."

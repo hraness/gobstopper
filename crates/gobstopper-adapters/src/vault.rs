@@ -46,9 +46,7 @@ pub struct VaultEntry {
 pub fn default_root() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
-        })
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
         .unwrap_or_default();
     base.join("gobstopper").join("vault")
 }
@@ -102,7 +100,7 @@ fn read_index(root: &Path) -> anyhow::Result<Vec<VaultEntry>> {
         Ok(f) => {
             fs2::FileExt::try_lock_shared(&f)?;
             f
-        },
+        }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e).with_context(|| format!("open {}", index.display())),
     };
@@ -127,7 +125,8 @@ fn append_index(root: &Path, entry: &VaultEntry) -> anyhow::Result<()> {
     }
     let mut options = fs::OpenOptions::new();
     options.create(true).append(true).read(true);
-    #[cfg(unix)] {
+    #[cfg(unix)]
+    {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
@@ -140,7 +139,9 @@ fn append_index(root: &Path, entry: &VaultEntry) -> anyhow::Result<()> {
         file.seek(SeekFrom::End(-1))?;
         let mut last = [0];
         file.read_exact(&mut last)?;
-        if last[0] != b'\n' { file.write_all(b"\n")?; }
+        if last[0] != b'\n' {
+            file.write_all(b"\n")?;
+        }
     }
     file.write_all(line.as_bytes())?;
     file.sync_all()?;
@@ -191,8 +192,9 @@ pub fn snapshot(
         let record_path = records.join(&record_sha);
         if fs::symlink_metadata(&record_path).is_err() {
             match crate::transaction::publish_new(&record_path, line) {
-                Ok(()) => {},
-                Err(crate::AdapterError::Io { source, .. }) if source.kind() == std::io::ErrorKind::AlreadyExists => {},
+                Ok(()) => {}
+                Err(crate::AdapterError::Io { source, .. })
+                    if source.kind() == std::io::ErrorKind::AlreadyExists => {}
                 Err(e) => return Err(e.into()),
             }
         }
@@ -211,8 +213,9 @@ pub fn snapshot(
     let manifest_path = manifests.join(&manifest_sha);
     if fs::symlink_metadata(&manifest_path).is_err() {
         match crate::transaction::publish_new(&manifest_path, &manifest_bytes) {
-            Ok(()) => {},
-            Err(crate::AdapterError::Io { source, .. }) if source.kind() == std::io::ErrorKind::AlreadyExists => {},
+            Ok(()) => {}
+            Err(crate::AdapterError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::AlreadyExists => {}
             Err(e) => return Err(e.into()),
         }
     }
@@ -320,30 +323,41 @@ pub fn list(root: &Path) -> anyhow::Result<Vec<VaultEntry>> {
 }
 
 pub fn read_object(sha256: &str, root: &Path) -> anyhow::Result<Vec<u8>> {
-    if sha256.len() != 64 || !is_hex(sha256) { bail!("invalid snapshot digest"); }
+    if sha256.len() != 64 || !is_hex(sha256) {
+        bail!("invalid snapshot digest");
+    }
 
     // Try a record-addressed manifest first.
     let manifest_path = manifests_dir(root).join(sha256);
     if manifest_path.exists() {
         let bytes = crate::transaction::read(&manifest_path)?;
-        if sha256_hex(&bytes) != sha256 { bail!("manifest failed integrity verification"); }
+        if sha256_hex(&bytes) != sha256 {
+            bail!("manifest failed integrity verification");
+        }
         return reconstruct_manifest(&bytes, root);
     }
 
     // Fall back to a legacy full-byte object.
     let bytes = crate::transaction::read(&objects_dir(root).join(sha256))?;
-    if sha256_hex(&bytes) != sha256 { bail!("vault object failed integrity verification"); }
+    if sha256_hex(&bytes) != sha256 {
+        bail!("vault object failed integrity verification");
+    }
     Ok(bytes)
 }
 
 pub fn latest_pre_compaction(path: &Path, root: &Path) -> anyhow::Result<Option<VaultEntry>> {
-    Ok(list(root)?.into_iter().find(|entry| entry.path == path
-        && !matches!(entry.strategy.as_deref(), Some("post-compact" | "pre-undo"))))
+    Ok(list(root)?.into_iter().find(|entry| {
+        entry.path == path
+            && !matches!(entry.strategy.as_deref(), Some("post-compact" | "pre-undo"))
+    }))
 }
 
 /// All snapshots for a session id (newest first). Accepts a prefix.
 pub fn for_session(session_id: &str, root: &Path) -> anyhow::Result<Vec<VaultEntry>> {
-    Ok(list(root)?.into_iter().filter(|e| e.session_id.starts_with(session_id)).collect())
+    Ok(list(root)?
+        .into_iter()
+        .filter(|e| e.session_id.starts_with(session_id))
+        .collect())
 }
 
 fn record_type(record: &[u8]) -> String {
@@ -359,7 +373,9 @@ fn record_type(record: &[u8]) -> String {
 /// type for each side. Identical records are shared, so the diff is cheap:
 /// only the manifest hash lists are compared.
 pub fn diff(sha1: &str, sha2: &str, root: &Path) -> anyhow::Result<DiffSummary> {
-    if !is_hex(sha1) || !is_hex(sha2) { bail!("invalid sha256 digest"); }
+    if !is_hex(sha1) || !is_hex(sha2) {
+        bail!("invalid sha256 digest");
+    }
 
     fn load_manifest(sha: &str, root: &Path) -> anyhow::Result<(Vec<String>, serde_json::Value)> {
         let p = manifests_dir(root).join(sha);
@@ -369,14 +385,20 @@ pub fn diff(sha1: &str, sha2: &str, root: &Path) -> anyhow::Result<DiffSummary> 
             // Legacy full-object snapshot: treat the whole transcript as one record.
             return Ok((vec![sha.to_string()], serde_json::Value::Null));
         };
-        if sha256_hex(&bytes) != sha { bail!("manifest {sha} failed integrity verification"); }
+        if sha256_hex(&bytes) != sha {
+            bail!("manifest {sha} failed integrity verification");
+        }
         let manifest: serde_json::Value = serde_json::from_slice(&bytes)?;
         let records = manifest
             .get("records")
             .and_then(|v| v.as_array())
             .context("missing records in manifest")?
             .iter()
-            .map(|v| v.as_str().map(str::to_string).context("record hash is not a string"))
+            .map(|v| {
+                v.as_str()
+                    .map(str::to_string)
+                    .context("record hash is not a string")
+            })
             .collect::<anyhow::Result<Vec<_>>>()?;
         Ok((records, manifest))
     }
@@ -421,10 +443,14 @@ pub fn diff(sha1: &str, sha2: &str, root: &Path) -> anyhow::Result<DiffSummary> 
 
 /// Read a single record object by hash.
 pub fn read_record(sha: &str, root: &Path) -> anyhow::Result<Vec<u8>> {
-    if !is_hex(sha) { bail!("invalid record digest"); }
+    if !is_hex(sha) {
+        bail!("invalid record digest");
+    }
     let p = records_dir(root).join(sha);
     let bytes = fs::read(&p).with_context(|| format!("read record {}", p.display()))?;
-    if sha256_hex(&bytes) != sha { bail!("record {sha} is corrupt"); }
+    if sha256_hex(&bytes) != sha {
+        bail!("record {sha} is corrupt");
+    }
     Ok(bytes)
 }
 
@@ -438,6 +464,138 @@ pub struct DiffSummary {
     pub removed: Vec<String>,
     pub type_summary_a: std::collections::BTreeMap<String, usize>,
     pub type_summary_b: std::collections::BTreeMap<String, usize>,
+}
+
+/// One gobstopper state-card digest recovered from a vault snapshot.
+/// This is the agent-addressable memory surface: high-level state, no
+/// verbatim tool output.
+#[derive(Debug, Clone)]
+pub struct RecallDigest {
+    pub snapshot_sha: String,
+    pub ts: u64,
+    pub provider: Provider,
+    pub session_id: String,
+    pub record_index: usize,
+    /// Query-relevance score: higher means more keyword matches.
+    pub score: usize,
+    pub digest: gobstopper_core::plan::DigestBlock,
+}
+
+/// Search the vault for state-card digests belonging to `session`.
+///
+/// `session` is a session-id prefix or a transcript path. `query`, if
+/// given, is a case-insensitive substring matched against goal, decisions,
+/// files, and open tasks. `sha` restricts the search to one snapshot.
+/// Results are newest-first by snapshot timestamp, then by record order.
+pub fn recall(
+    session: &str,
+    query: Option<&str>,
+    sha: Option<&str>,
+    root: &Path,
+) -> anyhow::Result<Vec<RecallDigest>> {
+    let mut entries = list(root)?;
+    if let Some(prefix) = sha {
+        entries.retain(|e| e.sha256.starts_with(prefix));
+    } else if session != "*" && !session.is_empty() {
+        entries.retain(|e| {
+            e.session_id.starts_with(session) || e.path.to_string_lossy().contains(session)
+        });
+    }
+    entries.sort_by_key(|b| std::cmp::Reverse(b.ts));
+
+    // The same manifest may be indexed more than once under different
+    // strategy labels (e.g. "compacted" and "gobstopper-compacted").
+    let mut seen = std::collections::HashSet::new();
+    let mut deduped = Vec::with_capacity(entries.len());
+    for e in entries {
+        if seen.insert(e.sha256.clone()) {
+            deduped.push(e);
+        }
+    }
+    let entries = deduped;
+
+    let needle = query.map(|q| q.to_lowercase());
+    let mut out = Vec::new();
+    for entry in entries {
+        let data = read_object(&entry.sha256, root)?;
+        for (idx, line) in data.split(|&b| b == b'\n').enumerate() {
+            if line.is_empty() {
+                continue;
+            }
+            let Some(text) = extract_digest_text(line) else {
+                continue;
+            };
+            let Some(digest) = gobstopper_core::plan::DigestBlock::parse(&text) else {
+                continue;
+            };
+            let hay = [
+                digest.goal.as_deref().unwrap_or(""),
+                &digest.decisions.join("\n"),
+                &digest.files_touched.join("\n"),
+                &digest.open_tasks.join("\n"),
+            ]
+            .join("\n")
+            .to_lowercase();
+            let score = needle.as_ref().map(|n| hay.matches(n).count()).unwrap_or(0);
+            if needle.is_some() && score == 0 {
+                continue;
+            }
+            out.push(RecallDigest {
+                snapshot_sha: entry.sha256.clone(),
+                ts: entry.ts,
+                provider: entry.provider,
+                session_id: entry.session_id.clone(),
+                record_index: idx,
+                score,
+                digest,
+            });
+        }
+    }
+    out.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| b.ts.cmp(&a.ts)));
+    Ok(out)
+}
+
+/// Extract the gobstopper state-card text from a single transcript record
+/// bytes, if one exists. Claude carries it in a `user` message; Codex
+/// carries it as the first `replacement_history` item of a `compacted`
+/// record.
+fn extract_digest_text(line: &[u8]) -> Option<String> {
+    let record: serde_json::Value = serde_json::from_slice(line).ok()?;
+
+    // Claude: a user record with a plain string message.content.
+    if record.get("type").and_then(|v| v.as_str()) == Some("user") {
+        if let Some(text) = record
+            .get("message")
+            .and_then(|m| m.get("content"))
+            .and_then(|c| c.as_str())
+        {
+            if text.starts_with(gobstopper_core::plan::DigestBlock::MARKER) {
+                return Some(text.to_string());
+            }
+        }
+    }
+
+    // Codex: a compacted record whose first replacement_history item is
+    // a user-shaped message with input_text content.
+    if record.get("type").and_then(|v| v.as_str()) == Some("compacted") {
+        if let Some(text) = record
+            .get("payload")
+            .and_then(|p| p.get("replacement_history"))
+            .and_then(|h| h.as_array())
+            .and_then(|a| a.first())
+            .and_then(|first| first.get("content"))
+            .and_then(|c| c.as_array())
+            .and_then(|a| a.first())
+            .and_then(|first| first.get("text"))
+            .and_then(|t| t.as_str())
+        {
+            if text.starts_with(gobstopper_core::plan::DigestBlock::MARKER) {
+                return Some(text.to_string());
+            }
+        }
+    }
+
+    None
 }
 
 #[cfg(test)]

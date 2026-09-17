@@ -139,7 +139,18 @@ mod tests {
     #[test]
     fn auto_picks_structured_for_chatty() {
         let items = (0..60)
-            .map(|i| item(i, if i % 2 == 0 { ItemKind::User } else { ItemKind::Assistant }, 100, false))
+            .map(|i| {
+                item(
+                    i,
+                    if i % 2 == 0 {
+                        ItemKind::User
+                    } else {
+                        ItemKind::Assistant
+                    },
+                    100,
+                    false,
+                )
+            })
             .collect();
         let t = transcript(items, 6_000);
         assert_eq!(AutoStrategy::select(&t), "structured");

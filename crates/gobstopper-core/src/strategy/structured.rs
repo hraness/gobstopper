@@ -20,11 +20,7 @@ impl Strategy for StructuredStrategy {
         "structured"
     }
 
-    fn evaluate(
-        &self,
-        transcript: &Transcript,
-        policy: &PolicyConfig,
-    ) -> Option<CompactionPlan> {
+    fn evaluate(&self, transcript: &Transcript, policy: &PolicyConfig) -> Option<CompactionPlan> {
         let before = transcript.context_tokens();
         if before < policy.effective_trigger() {
             return None;
@@ -38,11 +34,18 @@ impl Strategy for StructuredStrategy {
 
         // Elide every elidable item inside the covered region; the digest
         // stands in for their content. Recent tail stays untouched.
-        let protected: std::collections::HashSet<usize> = transcript.items.iter().rev()
-            .filter(|i| i.elidable_bytes.is_some()).take(policy.keep_recent_tool_outputs)
-            .map(|i| i.line_index).collect();
-        let eligible: Vec<_> = covered.iter()
-            .filter(|i| i.elidable_bytes.is_some() && !protected.contains(&i.line_index)).collect();
+        let protected: std::collections::HashSet<usize> = transcript
+            .items
+            .iter()
+            .rev()
+            .filter(|i| i.elidable_bytes.is_some())
+            .take(policy.keep_recent_tool_outputs)
+            .map(|i| i.line_index)
+            .collect();
+        let eligible: Vec<_> = covered
+            .iter()
+            .filter(|i| i.elidable_bytes.is_some() && !protected.contains(&i.line_index))
+            .collect();
         let covered_lines: Vec<usize> = eligible.iter().map(|i| i.line_index).collect();
         let elided_tokens: u64 = eligible.iter().map(|i| i.estimated_elision_savings()).sum();
 
@@ -53,7 +56,9 @@ impl Strategy for StructuredStrategy {
                 stub_template: super::elide::DEFAULT_STUB.to_string(),
             });
         }
-        if edits.is_empty() { return None; }
+        if edits.is_empty() {
+            return None;
+        }
 
         Some(CompactionPlan {
             strategy: self.id().to_string(),

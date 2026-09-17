@@ -17,7 +17,11 @@ use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
 #[derive(Parser)]
-#[command(name = "gobstopper", version, about = "Automatic context compaction for coding-agent sessions")]
+#[command(
+    name = "gobstopper",
+    version,
+    about = "Automatic context compaction for coding-agent sessions"
+)]
 struct Cli {
     /// Codex state root (default: $CODEX_HOME or ~/.codex).
     #[arg(long, global = true)]
@@ -177,6 +181,27 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Recall state-card digests from the vault.
+    /// Agent-addressable memory: high-level summaries, no verbatim output.
+    /// With no session, searches every archived session.
+    Recall {
+        /// Session id prefix, or path to a transcript file. Searches all
+        /// sessions if omitted.
+        session: Option<String>,
+        /// Case-insensitive substring to match against goal, decisions,
+        /// files, or open tasks.
+        #[arg(long)]
+        query: Option<String>,
+        /// Restrict to one snapshot by sha256 prefix.
+        #[arg(long)]
+        sha: Option<String>,
+        /// Maximum results to return (default 20).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Compare two vault snapshots structurally.
     Diff {
         /// SHA256 prefix of the first snapshot.
@@ -236,7 +261,9 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum PluginCmd {
-    Check { manifest: PathBuf },
+    Check {
+        manifest: PathBuf,
+    },
     Inspect {
         manifest: PathBuf,
         #[arg(long)]
@@ -328,25 +355,44 @@ fn evaluate(
     resolved: &config::Resolved,
 ) -> Result<Option<CompactionPlan>> {
     let before = transcript.context_tokens();
-    if before < resolved.policy.effective_trigger() { return Ok(None); }
+    if before < resolved.policy.effective_trigger() {
+        return Ok(None);
+    }
     if let Some(selection) = &resolved.plugin {
         let checked = plugins::check(&selection.manifest)?;
         let bytes = gobstopper_adapters::transaction::read(&transcript.session.path)?;
-        let content = if checked.manifest.capabilities.contains(&plugins::Capability::ReadContent) {
-            Some(std::str::from_utf8(&bytes)?.lines().map(str::to_string).collect())
-        } else { None };
+        let content = if checked
+            .manifest
+            .capabilities
+            .contains(&plugins::Capability::ReadContent)
+        {
+            Some(
+                std::str::from_utf8(&bytes)?
+                    .lines()
+                    .map(str::to_string)
+                    .collect(),
+            )
+        } else {
+            None
+        };
         let request = plugins::Request {
-            protocol_version: 1, operation: plugins::Capability::Strategy,
-            provider_id: transcript.session.provider.as_str().into(), source_sha256: copy::sha256(&bytes),
-            items: transcript.items.clone(), usage: transcript.usage,
-            policy: Some(resolved.policy.clone()), content,
+            protocol_version: 1,
+            operation: plugins::Capability::Strategy,
+            provider_id: transcript.session.provider.as_str().into(),
+            source_sha256: copy::sha256(&bytes),
+            items: transcript.items.clone(),
+            usage: transcript.usage,
+            policy: Some(resolved.policy.clone()),
+            content,
         };
         let response = plugins::invoke(&selection.manifest, &selection.trusted_sha256, &request)?;
         return external_plan(transcript, resolved, response.edits);
     }
     // Userspace command preset: feed the normalized transcript, read edits.
     if let Some(command) = &resolved.command {
-        if !resolved.trusted_legacy_command { bail!("legacy command execution is not explicitly trusted"); }
+        if !resolved.trusted_legacy_command {
+            bail!("legacy command execution is not explicitly trusted");
+        }
         let plan_json = run_preset_command(command, transcript)?;
         let edits: Vec<Edit> = serde_json::from_value(plan_json["edits"].clone())
             .context("preset command returned invalid edits")?;
@@ -361,29 +407,55 @@ fn evaluate(
         .ok_or_else(|| anyhow::anyhow!("unknown strategy '{}'", resolved.strategy))?;
     let plan = strat.evaluate(transcript, &resolved.policy);
     if let Some(plan) = &plan {
-        gobstopper_core::validation::validate_edits(transcript, &resolved.policy, &plan.edits).map_err(anyhow::Error::msg)?;
+        gobstopper_core::validation::validate_edits(transcript, &resolved.policy, &plan.edits)
+            .map_err(anyhow::Error::msg)?;
     }
     Ok(plan)
 }
 
-fn external_plan(transcript: &gobstopper_core::Transcript, resolved: &config::Resolved, edits: Vec<Edit>) -> Result<Option<CompactionPlan>> {
-    if edits.is_empty() { return Ok(None); }
-    gobstopper_core::validation::validate_edits(transcript, &resolved.policy, &edits).map_err(anyhow::Error::msg)?;
+fn external_plan(
+    transcript: &gobstopper_core::Transcript,
+    resolved: &config::Resolved,
+    edits: Vec<Edit>,
+) -> Result<Option<CompactionPlan>> {
+    if edits.is_empty() {
+        return Ok(None);
+    }
+    gobstopper_core::validation::validate_edits(transcript, &resolved.policy, &edits)
+        .map_err(anyhow::Error::msg)?;
     let before = transcript.context_tokens();
     let mut after = before;
     for edit in &edits {
         match edit {
             Edit::Elide { line_indexes, .. } => {
-                for item in transcript.items.iter().filter(|item| line_indexes.contains(&item.line_index)) {
+                for item in transcript
+                    .items
+                    .iter()
+                    .filter(|item| line_indexes.contains(&item.line_index))
+                {
                     after = after.saturating_sub(item.estimated_elision_savings());
                 }
             }
-            Edit::InjectDigest { digest } => after = after.saturating_add(gobstopper_core::estimate::estimate_tokens(serde_json::to_vec(digest)?.len())),
-            Edit::ProviderCompact { .. } => bail!("external strategy plugins cannot dispatch provider controls"),
+            Edit::InjectDigest { digest } => {
+                after = after.saturating_add(gobstopper_core::estimate::estimate_tokens(
+                    serde_json::to_vec(digest)?.len(),
+                ))
+            }
+            Edit::ProviderCompact { .. } => {
+                bail!("external strategy plugins cannot dispatch provider controls")
+            }
         }
     }
-    if after >= before { return Ok(None); }
-    Ok(Some(CompactionPlan { strategy: format!("preset:{}", resolved.strategy), rationale: "validated userspace proposal; savings are projected".into(), edits, context_tokens_before: before, context_tokens_after: after }))
+    if after >= before {
+        return Ok(None);
+    }
+    Ok(Some(CompactionPlan {
+        strategy: format!("preset:{}", resolved.strategy),
+        rationale: "validated userspace proposal; savings are projected".into(),
+        edits,
+        context_tokens_before: before,
+        context_tokens_after: after,
+    }))
 }
 
 /// Explain a `None` plan: under trigger vs. over trigger but nothing to cut.
@@ -404,7 +476,9 @@ fn run_preset_command(
     command: &str,
     transcript: &gobstopper_core::Transcript,
 ) -> Result<serde_json::Value> {
-    if command.len() > 4096 { bail!("legacy command exceeds byte limit"); }
+    if command.len() > 4096 {
+        bail!("legacy command exceeds byte limit");
+    }
     let mut process = Command::new("sh");
     process.args(["-c", command]);
     let payload = serde_json::json!({
@@ -414,7 +488,8 @@ fn run_preset_command(
         "usage": transcript.usage,
     });
     let output = plugins::run_bounded(process, serde_json::to_vec(&payload)?, 30_000, 1024 * 1024)?;
-    serde_json::from_slice(&output).map_err(|_| anyhow::anyhow!("legacy command returned invalid JSON"))
+    serde_json::from_slice(&output)
+        .map_err(|_| anyhow::anyhow!("legacy command returned invalid JSON"))
 }
 
 /// Snapshot into the content-addressed vault — the undo path.
@@ -475,7 +550,11 @@ fn apply_edits(d: &Discovered, plan: &CompactionPlan) -> Result<u64> {
 }
 
 /// Route a `ProviderCompact` edit to the provider's own machinery.
-fn provider_compact(d: &Discovered, codex_bin: &std::path::Path, codex_home: &std::path::Path) -> Result<()> {
+fn provider_compact(
+    d: &Discovered,
+    codex_bin: &std::path::Path,
+    codex_home: &std::path::Path,
+) -> Result<()> {
     match d.handle.provider {
         Provider::Codex => codex_compact(codex_bin, &d.handle.session_id, Some(codex_home)),
         Provider::ClaudeCode => bail!(
@@ -507,7 +586,11 @@ fn resolve_codex_bin(flag: Option<&std::path::Path>) -> PathBuf {
 /// compaction runs as a provider-side turn whose `contextCompaction` item and
 /// `turn/completed` arrive asynchronously; gobstopper reports the observed
 /// outcome when it lands inside a bounded wait.
-fn codex_compact(codex_bin: &std::path::Path, thread_id: &str, codex_home: Option<&std::path::Path>) -> Result<()> {
+fn codex_compact(
+    codex_bin: &std::path::Path,
+    thread_id: &str,
+    codex_home: Option<&std::path::Path>,
+) -> Result<()> {
     use std::io::BufRead;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
@@ -532,7 +615,9 @@ fn codex_compact(codex_bin: &std::path::Path, thread_id: &str, codex_home: Optio
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let stderr = child.stderr.take().unwrap();
-    std::thread::spawn(move || { let _ = std::io::copy(&mut stderr.take(64 * 1024), &mut std::io::sink()); });
+    std::thread::spawn(move || {
+        let _ = std::io::copy(&mut stderr.take(64 * 1024), &mut std::io::sink());
+    });
     let (tx, rx) = mpsc::sync_channel::<serde_json::Value>(64);
     std::thread::spawn(move || {
         for line in std::io::BufReader::new(stdout.take(4 * 1024 * 1024)).lines() {
@@ -573,8 +658,13 @@ fn codex_compact(codex_bin: &std::path::Path, thread_id: &str, codex_home: Optio
                         if msg.contains("thread not found") {
                             bail!("codex app-server: {msg}");
                         }
-                        let code = if msg.contains("cannot resume") { "cannot resume provider thread" }
-                            else if msg.contains("usage limit") { "usage limit exceeded" } else { "provider_rejected" };
+                        let code = if msg.contains("cannot resume") {
+                            "cannot resume provider thread"
+                        } else if msg.contains("usage limit") {
+                            "usage limit exceeded"
+                        } else {
+                            "provider_rejected"
+                        };
                         bail!("codex app-server: {code}");
                     }
                     return Ok(v);
@@ -616,8 +706,10 @@ fn codex_compact(codex_bin: &std::path::Path, thread_id: &str, codex_home: Optio
             }
             match rx.recv_timeout(left.min(Duration::from_millis(500))) {
                 Ok(v) => {
-                    let is_our_turn = v.get("method").and_then(|m| m.as_str()) == Some("turn/completed")
-                        && v.pointer("/params/threadId").and_then(|s| s.as_str()) == Some(thread_id);
+                    let is_our_turn = v.get("method").and_then(|m| m.as_str())
+                        == Some("turn/completed")
+                        && v.pointer("/params/threadId").and_then(|s| s.as_str())
+                            == Some(thread_id);
                     if is_our_turn {
                         let status = v
                             .pointer("/params/turn/status")
@@ -626,12 +718,22 @@ fn codex_compact(codex_bin: &std::path::Path, thread_id: &str, codex_home: Optio
                         let detail = v
                             .pointer("/params/turn/error/message")
                             .and_then(|s| s.as_str())
-                            .map(|m| if m.contains("usage limit") { ": usage limit exceeded".to_string() } else { ": provider_error".to_string() })
+                            .map(|m| {
+                                if m.contains("usage limit") {
+                                    ": usage limit exceeded".to_string()
+                                } else {
+                                    ": provider_error".to_string()
+                                }
+                            })
                             .unwrap_or_default();
                         if status == "completed" {
                             return Ok("compaction turn completed".into());
                         }
-                        let status = match status { "failed" => "failed", "interrupted" => "interrupted", _ => "unknown" };
+                        let status = match status {
+                            "failed" => "failed",
+                            "interrupted" => "interrupted",
+                            _ => "unknown",
+                        };
                         bail!("codex compaction turn {status}{detail}");
                     }
                 }
@@ -658,7 +760,11 @@ fn print_plan(d: &Discovered, plan: &CompactionPlan, json: bool) -> Result<()> {
         "{} {} ({})\n  context: {} -> ~{} tokens (saves ~{})\n  strategy: {}\n  {}",
         d.handle.provider.as_str(),
         d.handle.session_id,
-        if d.handle.is_active() { "active" } else { "idle" },
+        if d.handle.is_active() {
+            "active"
+        } else {
+            "idle"
+        },
         plan.context_tokens_before,
         plan.context_tokens_after,
         plan.est_savings(),
@@ -680,7 +786,11 @@ fn print_plan(d: &Discovered, plan: &CompactionPlan, json: bool) -> Result<()> {
 }
 
 fn cmd_detect(cli: &Cli, all: bool, json: bool) -> Result<()> {
-    let max_age = if all { 0 } else { detect::default_max_age_secs() };
+    let max_age = if all {
+        0
+    } else {
+        detect::default_max_age_secs()
+    };
     let sessions = detect::discover(&roots(cli), max_age);
     if json {
         let out: Vec<serde_json::Value> = sessions
@@ -700,7 +810,10 @@ fn cmd_detect(cli: &Cli, all: bool, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
-    println!("{:<12} {:<38} {:<6} {:>12} {:>14}  PATH", "PROVIDER", "SESSION", "STATE", "CTX TOKENS", "LIFETIME IN");
+    println!(
+        "{:<12} {:<38} {:<6} {:>12} {:>14}  PATH",
+        "PROVIDER", "SESSION", "STATE", "CTX TOKENS", "LIFETIME IN"
+    );
     for d in sessions {
         println!(
             "{:<12} {:<38} {:<6} {:>12} {:>14}  {}",
@@ -759,10 +872,11 @@ fn cmd_undo(
             .into_iter()
             .filter(|e| e.path == d.handle.path)
             .find(|e| e.sha256.starts_with(prefix))
-            .ok_or_else(|| anyhow::anyhow!("no vault snapshot matching '{prefix}' for this session"))?,
-        None => vault::latest_pre_compaction(&d.handle.path, &root)?.ok_or_else(|| {
-            anyhow::anyhow!("no vault snapshot for {}", d.handle.path.display())
-        })?,
+            .ok_or_else(|| {
+                anyhow::anyhow!("no vault snapshot matching '{prefix}' for this session")
+            })?,
+        None => vault::latest_pre_compaction(&d.handle.path, &root)?
+            .ok_or_else(|| anyhow::anyhow!("no vault snapshot for {}", d.handle.path.display()))?,
     };
     println!(
         "restore snapshot {} — {} bytes, session {}",
@@ -771,7 +885,10 @@ fn cmd_undo(
         entry.session_id
     );
     if !yes {
-        print!("restore snapshot into a separate fork of {}? [y/N] ", d.handle.path.display());
+        print!(
+            "restore snapshot into a separate fork of {}? [y/N] ",
+            d.handle.path.display()
+        );
         std::io::stdout().flush()?;
         let mut answer = String::new();
         std::io::stdin().read_line(&mut answer)?;
@@ -791,7 +908,11 @@ fn cmd_undo(
         )?;
     }
     let restored = fork::restore_copy(d.handle.provider, &d.handle.path, &entry.sha256, &root)?;
-    println!("restored copy {}\n{}", restored.path.display(), restored.resume_hint);
+    println!(
+        "restored copy {}\n{}",
+        restored.path.display(),
+        restored.resume_hint
+    );
     Ok(())
 }
 
@@ -866,9 +987,12 @@ fn cmd_show(cli: &Cli, cfg: &config::Config, target: &str, json: bool) -> Result
     };
 
     let data = vault::read_object(&entry.sha256, &root)?;
-    let mut type_counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut type_counts: std::collections::BTreeMap<String, usize> =
+        std::collections::BTreeMap::new();
     for line in data.split(|&b| b == b'\n') {
-        if line.is_empty() { continue; }
+        if line.is_empty() {
+            continue;
+        }
         if let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) {
             let t = v.get("type").and_then(|t| t.as_str()).unwrap_or("unknown");
             *type_counts.entry(t.to_string()).or_default() += 1;
@@ -903,6 +1027,88 @@ fn cmd_show(cli: &Cli, cfg: &config::Config, target: &str, json: bool) -> Result
     Ok(())
 }
 
+fn cmd_recall(
+    cli: &Cli,
+    cfg: &config::Config,
+    session: Option<&str>,
+    query: Option<&str>,
+    sha: Option<&str>,
+    limit: usize,
+    json: bool,
+) -> Result<()> {
+    let root = vault::default_root();
+    let session_key = match session {
+        Some(s) => {
+            let d = find_session(cli, cfg, s)?;
+            if d.handle.session_id.starts_with(s) {
+                s.to_string()
+            } else {
+                d.handle.session_id.clone()
+            }
+        }
+        None => "*".to_string(),
+    };
+    let mut digests = vault::recall(&session_key, query, sha, &root)?;
+    digests.truncate(limit);
+    if json {
+        let rows: Vec<_> = digests
+            .into_iter()
+            .map(|r| {
+                serde_json::json!({
+                    "snapshot_sha": r.snapshot_sha,
+                    "ts": r.ts,
+                    "provider": r.provider.as_str(),
+                    "session_id": r.session_id,
+                    "record_index": r.record_index,
+                    "score": r.score,
+                    "goal": r.digest.goal,
+                    "decisions": r.digest.decisions,
+                    "files_touched": r.digest.files_touched,
+                    "open_tasks": r.digest.open_tasks,
+                    "covers_items": r.digest.covers_items,
+                })
+            })
+            .collect();
+        println!("{}", serde_json::to_string_pretty(&rows)?);
+        return Ok(());
+    }
+    if digests.is_empty() {
+        println!("no state-card digests found");
+        return Ok(());
+    }
+    println!("found {} state-card digest(s)", digests.len());
+    for r in digests {
+        println!("\n---");
+        println!("snapshot:   {}", &r.snapshot_sha[..16]);
+        println!("session:    {}", r.session_id);
+        println!("record:     {}", r.record_index);
+        println!("relevance:  {}", r.score);
+        println!("covers:     {} earlier records", r.digest.covers_items);
+        if let Some(g) = &r.digest.goal {
+            println!("goal:\n  {}", g);
+        }
+        if !r.digest.decisions.is_empty() {
+            println!("decisions:");
+            for d in &r.digest.decisions {
+                println!("  - {}", d);
+            }
+        }
+        if !r.digest.files_touched.is_empty() {
+            println!("files:");
+            for f in &r.digest.files_touched {
+                println!("  - {}", f);
+            }
+        }
+        if !r.digest.open_tasks.is_empty() {
+            println!("todos:");
+            for t in &r.digest.open_tasks {
+                println!("  - {}", t);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn cmd_diff(a: &str, b: &str, json: bool) -> Result<()> {
     let root = vault::default_root();
     let entries = vault::list(&root)?;
@@ -932,8 +1138,14 @@ fn cmd_diff(a: &str, b: &str, json: bool) -> Result<()> {
             }))?
         );
     } else {
-        println!("snapshot a: {} ({} records)", summary.sha1, summary.record_count_a);
-        println!("snapshot b: {} ({} records)", summary.sha2, summary.record_count_b);
+        println!(
+            "snapshot a: {} ({} records)",
+            summary.sha1, summary.record_count_a
+        );
+        println!(
+            "snapshot b: {} ({} records)",
+            summary.sha2, summary.record_count_b
+        );
         println!("added records:  {}", summary.added.len());
         println!("removed records: {}", summary.removed.len());
         println!("\ntype counts in a:");
@@ -950,7 +1162,13 @@ fn cmd_diff(a: &str, b: &str, json: bool) -> Result<()> {
 
 fn cmd_snapshot(cli: &Cli, cfg: &config::Config, session: &str, label: Option<&str>) -> Result<()> {
     let d = find_session(cli, cfg, session)?;
-    let entry = vault::snapshot(&d.handle.path, d.handle.provider, &d.handle.session_id, label, &vault::default_root())?;
+    let entry = vault::snapshot(
+        &d.handle.path,
+        d.handle.provider,
+        &d.handle.session_id,
+        label,
+        &vault::default_root(),
+    )?;
     println!(
         "snapshotted {} -> {} ({} bytes, {} records)",
         d.handle.path.display(),
@@ -972,7 +1190,12 @@ fn cmd_install_hooks(uninstall: bool, roots: &Roots) -> Result<()> {
     } else {
         hooks::install(&claude_settings, &claude_targets)?
     };
-    println!("{}: +{} -{}", report.path.display(), report.added.len(), report.skipped.len());
+    println!(
+        "{}: +{} -{}",
+        report.path.display(),
+        report.added.len(),
+        report.skipped.len()
+    );
     for a in &report.added {
         println!("  {} {a}", if uninstall { "removed" } else { "added" });
     }
@@ -989,7 +1212,12 @@ fn cmd_install_hooks(uninstall: bool, roots: &Roots) -> Result<()> {
         } else {
             hooks::install(&codex_hooks, &codex_targets)?
         };
-        println!("{}: +{} -{}", report.path.display(), report.added.len(), report.skipped.len());
+        println!(
+            "{}: +{} -{}",
+            report.path.display(),
+            report.added.len(),
+            report.skipped.len()
+        );
         for a in &report.added {
             println!("  {} {a}", if uninstall { "removed" } else { "added" });
         }
@@ -1036,10 +1264,7 @@ fn cmd_events(session: Option<&str>, tail: usize, json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&events)?);
         return Ok(());
     }
-    let applied: Vec<&CompactionEvent> = events
-        .iter()
-        .filter(|e| e.outcome == "applied")
-        .collect();
+    let applied: Vec<&CompactionEvent> = events.iter().filter(|e| e.outcome == "applied").collect();
     let reclaimed: u64 = applied.iter().map(|e| e.est_reclaimed_tokens).sum();
     println!(
         "{} events ({} applied) — ~{} tokens reclaimed lifetime",
@@ -1085,12 +1310,7 @@ fn cmd_eval(
     if let Some(t) = trigger {
         policy.trigger_tokens = t;
     }
-    let rows = eval::eval_transcript(
-        d.handle.provider,
-        &d.handle.path,
-        &policy,
-        strategy_flag,
-    )?;
+    let rows = eval::eval_transcript(d.handle.provider, &d.handle.path, &policy, strategy_flag)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
@@ -1148,7 +1368,9 @@ fn cmd_apply(
     in_place: bool,
     no_backup: bool,
 ) -> Result<()> {
-    if no_backup { bail!("snapshots are mandatory; --no-backup is no longer supported"); }
+    if no_backup {
+        bail!("snapshots are mandatory; --no-backup is no longer supported");
+    }
     let d = find_session(cli, cfg, session)?;
     if d.handle.provider == Provider::Codex {
         if let Some(parent) = codex::parent_thread(&d.handle.path) {
@@ -1157,12 +1379,7 @@ fn cmd_apply(
             }
         }
     }
-    let mut resolved = cfg.resolve(
-        d.handle.provider,
-        &d.handle.session_id,
-        preset,
-        strategy,
-    )?;
+    let mut resolved = cfg.resolve(d.handle.provider, &d.handle.session_id, preset, strategy)?;
     if let Some(t) = trigger {
         resolved.policy.trigger_tokens = t;
     }
@@ -1228,70 +1445,166 @@ fn cmd_apply(
             &digest,
             copy::COMPACTED_KEEP_TAIL,
             &vault::default_root(),
-        ).inspect(|receipt| {
+        )
+        .inspect(|receipt| {
             println!("prepared {}", receipt.path.display());
-            println!("resume the new session: codex resume {}", receipt.session_id);
+            println!(
+                "resume the new session: codex resume {}",
+                receipt.session_id
+            );
         });
         match file_result {
             Ok(receipt) => {
-                emit_event(&d, &plan, "transcript_compact", "applied", trigger,
-                    started.elapsed().as_millis() as u64, None);
-                println!("emitted compacted record (window chain advanced; resume performs the swap)");
-                println!("reclaimed ~{} bytes of tool output", receipt.reclaimed_bytes);
+                emit_event(
+                    &d,
+                    &plan,
+                    "transcript_compact",
+                    "applied",
+                    trigger,
+                    started.elapsed().as_millis() as u64,
+                    None,
+                );
+                println!(
+                    "emitted compacted record (window chain advanced; resume performs the swap)"
+                );
+                println!(
+                    "reclaimed ~{} bytes of tool output",
+                    receipt.reclaimed_bytes
+                );
             }
             Err(e) => {
-                emit_event(&d, &plan, "transcript_compact", "failed", trigger,
-                    started.elapsed().as_millis() as u64, Some("apply_failed"));
+                emit_event(
+                    &d,
+                    &plan,
+                    "transcript_compact",
+                    "failed",
+                    trigger,
+                    started.elapsed().as_millis() as u64,
+                    Some("apply_failed"),
+                );
                 return Err(e);
             }
         }
     } else if !file_edits.is_empty() {
         let file_result: anyhow::Result<u64> = if in_place {
-            vault::snapshot(&d.handle.path, d.handle.provider, &d.handle.session_id, Some(&plan.strategy), &vault::default_root())?;
+            vault::snapshot(
+                &d.handle.path,
+                d.handle.provider,
+                &d.handle.session_id,
+                Some(&plan.strategy),
+                &vault::default_root(),
+            )?;
             let reclaimed = match d.handle.provider {
                 Provider::Codex => codex::apply(&d.handle.path, &file_edits)?,
                 Provider::ClaudeCode => claude::apply(&d.handle.path, &file_edits)?,
             };
             println!("applied in place; source session id preserved");
-            println!("resume the same session: {} {}", if d.handle.provider == Provider::Codex { "codex resume" } else { "claude --resume" }, d.handle.session_id);
+            println!(
+                "resume the same session: {} {}",
+                if d.handle.provider == Provider::Codex {
+                    "codex resume"
+                } else {
+                    "claude --resume"
+                },
+                d.handle.session_id
+            );
             Ok(reclaimed)
         } else {
             copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root()).map(|receipt| {
                 println!("prepared {}", receipt.path.display());
-                println!("resume the new session: {} {}", if d.handle.provider == Provider::Codex { "codex resume" } else { "claude --resume" }, receipt.session_id);
+                println!(
+                    "resume the new session: {} {}",
+                    if d.handle.provider == Provider::Codex {
+                        "codex resume"
+                    } else {
+                        "claude --resume"
+                    },
+                    receipt.session_id
+                );
                 receipt.reclaimed_bytes
             })
         };
         match file_result {
             Ok(reclaimed) => {
-                emit_event(&d, &plan, "transcript_compact", "applied", trigger,
-                    started.elapsed().as_millis() as u64, None);
+                emit_event(
+                    &d,
+                    &plan,
+                    "transcript_compact",
+                    "applied",
+                    trigger,
+                    started.elapsed().as_millis() as u64,
+                    None,
+                );
                 println!("reclaimed ~{} bytes of tool output", reclaimed);
             }
             Err(e) => {
-                emit_event(&d, &plan, "transcript_compact", "failed", trigger,
-                    started.elapsed().as_millis() as u64, Some("apply_failed"));
+                emit_event(
+                    &d,
+                    &plan,
+                    "transcript_compact",
+                    "failed",
+                    trigger,
+                    started.elapsed().as_millis() as u64,
+                    Some("apply_failed"),
+                );
                 return Err(e);
             }
         }
     }
     if has_provider_compact {
-        if d.handle.provider == Provider::ClaudeCode { bail!("live Claude compaction must be dispatched by its session owner; use /compact in that session"); }
+        if d.handle.provider == Provider::ClaudeCode {
+            bail!("live Claude compaction must be dispatched by its session owner; use /compact in that session");
+        }
         let snapshot = snapshot_before_edit(&d, &plan.strategy)?;
-        if snapshot.sha256 != source_sha256 { bail!("source changed before native fork preparation"); }
-        let forked = fork::restore_copy(d.handle.provider, &d.handle.path, &snapshot.sha256, &vault::default_root())?;
-        println!("native compaction targets a separate fork: {}", forked.resume_hint);
-        let d = Discovered { handle: gobstopper_core::SessionHandle { path: forked.path, session_id: forked.session_id, ..d.handle.clone() }, usage: d.usage };
+        if snapshot.sha256 != source_sha256 {
+            bail!("source changed before native fork preparation");
+        }
+        let forked = fork::restore_copy(
+            d.handle.provider,
+            &d.handle.path,
+            &snapshot.sha256,
+            &vault::default_root(),
+        )?;
+        println!(
+            "native compaction targets a separate fork: {}",
+            forked.resume_hint
+        );
+        let d = Discovered {
+            handle: gobstopper_core::SessionHandle {
+                path: forked.path,
+                session_id: forked.session_id,
+                ..d.handle.clone()
+            },
+            usage: d.usage,
+        };
         emit_event(&d, &plan, "provider_compact", "planned", trigger, 0, None);
-        match provider_compact(&d, &resolve_codex_bin(cli.codex_bin.as_deref()), &roots(cli).codex_home) {
+        match provider_compact(
+            &d,
+            &resolve_codex_bin(cli.codex_bin.as_deref()),
+            &roots(cli).codex_home,
+        ) {
             Ok(()) => {
-                emit_event(&d, &plan, "provider_compact", "applied", trigger,
-                    started.elapsed().as_millis() as u64, None);
+                emit_event(
+                    &d,
+                    &plan,
+                    "provider_compact",
+                    "applied",
+                    trigger,
+                    started.elapsed().as_millis() as u64,
+                    None,
+                );
                 println!("provider compaction requested");
             }
             Err(e) => {
-                emit_event(&d, &plan, "provider_compact", "failed", trigger,
-                    started.elapsed().as_millis() as u64, Some("provider_rejected"));
+                emit_event(
+                    &d,
+                    &plan,
+                    "provider_compact",
+                    "failed",
+                    trigger,
+                    started.elapsed().as_millis() as u64,
+                    Some("provider_rejected"),
+                );
                 return Err(e);
             }
         }
@@ -1373,33 +1686,38 @@ fn cmd_watch(
     dry_run: bool,
     double_buffer: bool,
 ) -> Result<()> {
-    if interval == 0 { bail!("watch interval must be positive"); }
-    if double_buffer { bail!("in-place double-buffer swapping is retired; use copy-only watch without --double-buffer"); }
+    if interval == 0 {
+        bail!("watch interval must be positive");
+    }
+    if double_buffer {
+        bail!("in-place double-buffer swapping is retired; use copy-only watch without --double-buffer");
+    }
     let mut last_fire: std::collections::HashMap<String, std::time::Instant> =
         std::collections::HashMap::new();
-    let mut staged: std::collections::HashMap<String, Staged> =
-        std::collections::HashMap::new();
+    let mut staged: std::collections::HashMap<String, Staged> = std::collections::HashMap::new();
     let mut discovery_cache = detect::DiscoveryCache::default();
     loop {
         let cfg = config::load()?;
         for d in detect::discover_cached(&roots(cli), 0, &mut discovery_cache) {
             let session_key = format!("{}:{}", d.handle.provider.as_str(), d.handle.path.display());
-            let Ok(resolved) = cfg.resolve(
-                d.handle.provider,
-                &d.handle.session_id,
-                None,
-                None,
-            ) else {
+            let Ok(resolved) = cfg.resolve(d.handle.provider, &d.handle.session_id, None, None)
+            else {
                 continue;
             };
             let trigger = resolved.policy.effective_trigger();
-            let ctx = if d.usage.context_tokens > 0 { d.usage.context_tokens } else {
-                detect::load(&d).map(|t| t.estimated_context_tokens()).unwrap_or(0)
+            let ctx = if d.usage.context_tokens > 0 {
+                d.usage.context_tokens
+            } else {
+                detect::load(&d)
+                    .map(|t| t.estimated_context_tokens())
+                    .unwrap_or(0)
             };
             if ctx < trigger {
                 // Below trigger: optionally precompute the compacted file
                 // so the trigger crossing is a rename, not a rewrite.
-                if double_buffer && !dry_run && ctx >= trigger * 6 / 10
+                if double_buffer
+                    && !dry_run
+                    && ctx >= trigger * 6 / 10
                     && !staged.contains_key(&d.handle.session_id)
                 {
                     if let Some(s) = stage_compaction(&d, &resolved) {
@@ -1420,13 +1738,25 @@ fn cmd_watch(
                     .unwrap_or(false);
                 if !dry_run && unchanged {
                     let started = std::time::Instant::now();
-                    match copy::compact(&d.handle, &s.source_sha256, &s.plan, &vault::default_root())
-                        .map(|_| ())
+                    match copy::compact(
+                        &d.handle,
+                        &s.source_sha256,
+                        &s.plan,
+                        &vault::default_root(),
+                    )
+                    .map(|_| ())
                     {
                         Ok(()) => {
                             last_fire.insert(session_key.clone(), std::time::Instant::now());
-                            emit_event(&d, &s.plan, "transcript_compact", "applied",
-                                trigger, started.elapsed().as_millis() as u64, None);
+                            emit_event(
+                                &d,
+                                &s.plan,
+                                "transcript_compact",
+                                "applied",
+                                trigger,
+                                started.elapsed().as_millis() as u64,
+                                None,
+                            );
                             eprintln!("compacted {} (staged swap)", d.handle.session_id);
                             continue;
                         }
@@ -1459,25 +1789,48 @@ fn cmd_watch(
                         .edits
                         .iter()
                         .any(|e| matches!(e, Edit::ProviderCompact { .. }));
-                    let action = if is_provider { "provider_compact" } else { "transcript_compact" };
-                    if last_fire.len() >= 4096 { last_fire.clear(); }
+                    let action = if is_provider {
+                        "provider_compact"
+                    } else {
+                        "transcript_compact"
+                    };
+                    if last_fire.len() >= 4096 {
+                        last_fire.clear();
+                    }
                     last_fire.insert(session_key.clone(), std::time::Instant::now());
                     let r = if is_provider {
                         Err(anyhow::anyhow!("native compaction requires the session owner; watch will not create a second writer"))
                     } else {
-                        copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root())
-                            .map(|receipt| { eprintln!("prepared copy {}", receipt.path.display()); })
+                        copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root()).map(
+                            |receipt| {
+                                eprintln!("prepared copy {}", receipt.path.display());
+                            },
+                        )
                     };
                     match r {
                         Ok(()) => {
                             last_fire.insert(session_key.clone(), std::time::Instant::now());
-                            emit_event(&d, &plan, action, "applied", trigger,
-                                started.elapsed().as_millis() as u64, None);
+                            emit_event(
+                                &d,
+                                &plan,
+                                action,
+                                "applied",
+                                trigger,
+                                started.elapsed().as_millis() as u64,
+                                None,
+                            );
                             eprintln!("compacted {}", d.handle.session_id);
                         }
                         Err(e) => {
-                            emit_event(&d, &plan, action, "failed", trigger,
-                                started.elapsed().as_millis() as u64, Some("apply_failed"));
+                            emit_event(
+                                &d,
+                                &plan,
+                                action,
+                                "failed",
+                                trigger,
+                                started.elapsed().as_millis() as u64,
+                                Some("apply_failed"),
+                            );
                             eprintln!("compact {} failed: {e}", d.handle.session_id);
                         }
                     }
@@ -1582,18 +1935,36 @@ fn cmd_plugin(command: &PluginCmd) -> Result<()> {
     match command {
         PluginCmd::Check { manifest } => {
             let checked = plugins::check(manifest)?;
-            println!("{}", serde_json::to_string_pretty(&serde_json::json!({
-                "protocol_version": 1, "id": checked.manifest.id, "version": checked.manifest.version,
-                "manifest_sha256": checked.manifest_sha256, "capabilities": checked.manifest.capabilities,
-                "code_executed": false, "trusted": false,
-            }))?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "protocol_version": 1, "id": checked.manifest.id, "version": checked.manifest.version,
+                    "manifest_sha256": checked.manifest_sha256, "capabilities": checked.manifest.capabilities,
+                    "code_executed": false, "trusted": false,
+                }))?
+            );
         }
-        PluginCmd::Inspect { manifest, trusted_sha256, provider, source } => {
+        PluginCmd::Inspect {
+            manifest,
+            trusted_sha256,
+            provider,
+            source,
+        } => {
             let bytes = gobstopper_adapters::transaction::read(source)?;
             let request = plugins::Request {
-                protocol_version:1, operation:plugins::Capability::ProviderRead, provider_id:provider.clone(),
-                source_sha256:copy::sha256(&bytes), items:Vec::new(), usage:Default::default(),
-                policy:None, content:Some(std::str::from_utf8(&bytes)?.lines().map(str::to_string).collect()),
+                protocol_version: 1,
+                operation: plugins::Capability::ProviderRead,
+                provider_id: provider.clone(),
+                source_sha256: copy::sha256(&bytes),
+                items: Vec::new(),
+                usage: Default::default(),
+                policy: None,
+                content: Some(
+                    std::str::from_utf8(&bytes)?
+                        .lines()
+                        .map(str::to_string)
+                        .collect(),
+                ),
             };
             let response = plugins::invoke(manifest, trusted_sha256, &request)?;
             println!("{}", serde_json::to_string_pretty(&response.inspection)?);
@@ -1654,9 +2025,7 @@ fn main() -> Result<()> {
             *no_backup,
         ),
         Cmd::Verify { session, json } => cmd_verify(&cli, &cfg, session, *json),
-        Cmd::Undo { session, sha, yes } => {
-            cmd_undo(&cli, &cfg, session, sha.as_deref(), *yes)
-        }
+        Cmd::Undo { session, sha, yes } => cmd_undo(&cli, &cfg, session, sha.as_deref(), *yes),
         Cmd::Fork { session } => cmd_fork(&cli, &cfg, session),
         Cmd::Eval {
             session,
@@ -1676,10 +2045,23 @@ fn main() -> Result<()> {
         Cmd::Vault { session, json } => cmd_vault(&cli, &cfg, session.as_deref(), *json),
         Cmd::History { session, json } => cmd_history(&cli, &cfg, session, *json),
         Cmd::Show { target, json } => cmd_show(&cli, &cfg, target, *json),
+        Cmd::Recall {
+            session,
+            query,
+            sha,
+            limit,
+            json,
+        } => cmd_recall(
+            &cli,
+            &cfg,
+            session.as_deref(),
+            query.as_deref(),
+            sha.as_deref(),
+            *limit,
+            *json,
+        ),
         Cmd::Diff { a, b, json } => cmd_diff(a, b, *json),
-        Cmd::Snapshot { session, label } => {
-            cmd_snapshot(&cli, &cfg, session, label.as_deref())
-        }
+        Cmd::Snapshot { session, label } => cmd_snapshot(&cli, &cfg, session, label.as_deref()),
         Cmd::Watch {
             interval,
             dry_run,
@@ -1767,10 +2149,8 @@ done
     }
 
     fn tempdir(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!(
-            "gobstopper-test-{}-{tag}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("gobstopper-test-{}-{tag}", std::process::id()));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
@@ -1789,12 +2169,23 @@ done
             .collect();
         assert_eq!(
             methods,
-            ["initialize", "initialized", "thread/resume", "thread/compact/start"].map(String::from)
+            [
+                "initialize",
+                "initialized",
+                "thread/resume",
+                "thread/compact/start"
+            ]
+            .map(String::from)
         );
-        let resume: serde_json::Value =
-            serde_json::from_str(log.lines().nth(2).unwrap()).unwrap();
-        assert_eq!(resume.pointer("/params/excludeTurns"), Some(&serde_json::json!(true)));
-        assert_eq!(resume.pointer("/params/threadId"), Some(&serde_json::json!("ok-thread")));
+        let resume: serde_json::Value = serde_json::from_str(log.lines().nth(2).unwrap()).unwrap();
+        assert_eq!(
+            resume.pointer("/params/excludeTurns"),
+            Some(&serde_json::json!(true))
+        );
+        assert_eq!(
+            resume.pointer("/params/threadId"),
+            Some(&serde_json::json!("ok-thread"))
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -1880,7 +2271,10 @@ done
         .unwrap()
         .expect("edits must produce a plan");
         assert_eq!(plan.strategy, "preset:agentic");
-        assert_eq!(plan.context_tokens_after, 50_000 - preset_transcript().items[0].estimated_elision_savings());
+        assert_eq!(
+            plan.context_tokens_after,
+            50_000 - preset_transcript().items[0].estimated_elision_savings()
+        );
         assert_ne!(plan.context_tokens_after, 1200);
         assert!(matches!(plan.edits.as_slice(), [Edit::Elide { .. }]));
     }

@@ -70,9 +70,7 @@ pub struct Config {
 pub fn config_path() -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config"))
-        })
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".config")))
         .unwrap_or_default()
         .join("gobstopper/config.toml")
 }
@@ -86,13 +84,20 @@ pub fn load() -> anyhow::Result<Config> {
     };
     let mut text = String::new();
     file.take(64 * 1024 + 1).read_to_string(&mut text)?;
-    if text.len() > 64 * 1024 { anyhow::bail!("configuration exceeds byte limit"); }
+    if text.len() > 64 * 1024 {
+        anyhow::bail!("configuration exceeds byte limit");
+    }
     parse(&text)
 }
 
 pub fn parse(text: &str) -> anyhow::Result<Config> {
-    let config: Config = toml::from_str(text).map_err(|_| anyhow::anyhow!("invalid configuration syntax, field or type"))?;
-    if config.provider.keys().any(|p| !matches!(p.as_str(), "codex" | "claude_code")) {
+    let config: Config = toml::from_str(text)
+        .map_err(|_| anyhow::anyhow!("invalid configuration syntax, field or type"))?;
+    if config
+        .provider
+        .keys()
+        .any(|p| !matches!(p.as_str(), "codex" | "claude_code"))
+    {
         anyhow::bail!("unknown provider configuration key; expected codex or claude_code");
     }
     Ok(config)
@@ -120,34 +125,81 @@ impl Config {
         let mut command = None;
         let mut plugin = None;
         let mut trusted_legacy_command = false;
-        let preset_patch = preset.map(|name| self.presets.get(name).ok_or_else(|| anyhow::anyhow!("unknown preset"))).transpose()?;
-        for patch in [Some(&self.policy), self.provider.get(provider.as_str()), preset_patch, self.sessions.get(session_id)].into_iter().flatten() {
+        let preset_patch = preset
+            .map(|name| {
+                self.presets
+                    .get(name)
+                    .ok_or_else(|| anyhow::anyhow!("unknown preset"))
+            })
+            .transpose()?;
+        for patch in [
+            Some(&self.policy),
+            self.provider.get(provider.as_str()),
+            preset_patch,
+            self.sessions.get(session_id),
+        ]
+        .into_iter()
+        .flatten()
+        {
             patch.apply(&mut policy);
-            if let Some(value) = &patch.strategy { strategy = value.clone(); }
-            if patch.command.is_some() && patch.plugin.is_some() { anyhow::bail!("choose command or plugin, not both"); }
-            if let Some(value) = &patch.command { command = Some(value.clone()); plugin = None; trusted_legacy_command = false; }
-            if let Some(value) = &patch.plugin { plugin = Some(value.clone()); command = None; }
-            if let Some(value) = patch.trusted_legacy_command { trusted_legacy_command = value; }
+            if let Some(value) = &patch.strategy {
+                strategy = value.clone();
+            }
+            if patch.command.is_some() && patch.plugin.is_some() {
+                anyhow::bail!("choose command or plugin, not both");
+            }
+            if let Some(value) = &patch.command {
+                command = Some(value.clone());
+                plugin = None;
+                trusted_legacy_command = false;
+            }
+            if let Some(value) = &patch.plugin {
+                plugin = Some(value.clone());
+                command = None;
+            }
+            if let Some(value) = patch.trusted_legacy_command {
+                trusted_legacy_command = value;
+            }
         }
         if let Some(flag) = strategy_flag {
-            strategy = flag.to_string(); command = None; plugin = None;
+            strategy = flag.to_string();
+            command = None;
+            plugin = None;
         }
         if gobstopper_core::strategy::strategy_by_id(&strategy).is_none() {
             anyhow::bail!("unknown strategy");
         }
-        if policy.trigger_tokens == 0 || policy.trigger_tokens > 10_000_000
-            || policy.floor_tokens >= policy.trigger_tokens || policy.keep_recent_tool_outputs > 100_000
-            || policy.min_interval_secs > 86400 {
+        if policy.trigger_tokens == 0
+            || policy.trigger_tokens > 10_000_000
+            || policy.floor_tokens >= policy.trigger_tokens
+            || policy.keep_recent_tool_outputs > 100_000
+            || policy.min_interval_secs > 86400
+        {
             anyhow::bail!("invalid policy bounds: require 0 <= floor < trigger <= 10000000");
         }
-        if command.is_some() && !trusted_legacy_command { anyhow::bail!("legacy command requires trusted_legacy_command=true; prefer an exact-identity plugin"); }
+        if command.is_some() && !trusted_legacy_command {
+            anyhow::bail!("legacy command requires trusted_legacy_command=true; prefer an exact-identity plugin");
+        }
         if let Some(selection) = &plugin {
-            if !selection.manifest.is_absolute() || selection.trusted_sha256.len() != 64
-                || !selection.trusted_sha256.bytes().all(|b| b.is_ascii_hexdigit()) {
-                anyhow::bail!("plugin requires an absolute manifest path and exact trusted SHA-256");
+            if !selection.manifest.is_absolute()
+                || selection.trusted_sha256.len() != 64
+                || !selection
+                    .trusted_sha256
+                    .bytes()
+                    .all(|b| b.is_ascii_hexdigit())
+            {
+                anyhow::bail!(
+                    "plugin requires an absolute manifest path and exact trusted SHA-256"
+                );
             }
         }
-        Ok(Resolved { policy, strategy, command, trusted_legacy_command, plugin })
+        Ok(Resolved {
+            policy,
+            strategy,
+            command,
+            trusted_legacy_command,
+            plugin,
+        })
     }
 }
 
@@ -165,11 +217,15 @@ mod tests {
     #[test]
     fn layers_and_explicit_strategy_override_are_deterministic() {
         let cfg = parse("[policy]\ntrigger_tokens = 200000\n[provider.codex]\ntrigger_tokens = 180000\n[presets.fast]\ntrigger_tokens = 120000\n[sessions.s]\ntrigger_tokens = 100000\ncommand = 'custom'\ntrusted_legacy_command = true").unwrap();
-        let resolved = cfg.resolve(Provider::Codex, "s", Some("fast"), Some("elide")).unwrap();
+        let resolved = cfg
+            .resolve(Provider::Codex, "s", Some("fast"), Some("elide"))
+            .unwrap();
         assert_eq!(resolved.policy.trigger_tokens, 100000);
         assert_eq!(resolved.strategy, "elide");
         assert!(resolved.command.is_none());
-        assert!(cfg.resolve(Provider::Codex, "s", Some("unknown"), None).is_err());
+        assert!(cfg
+            .resolve(Provider::Codex, "s", Some("unknown"), None)
+            .is_err());
     }
 
     #[test]

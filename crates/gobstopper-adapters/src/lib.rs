@@ -8,23 +8,23 @@
 pub mod claude;
 pub mod codex;
 pub mod codex_compact;
+pub mod copy;
 pub mod detect;
 pub mod eval;
 pub mod fork;
-pub mod verify;
-pub mod vault;
-pub mod transaction;
-pub mod copy;
 mod payload;
 pub mod plugins;
+pub mod transaction;
+pub mod vault;
+pub mod verify;
 
 pub use detect::{discover, Discovered, Roots};
 
 #[cfg(test)]
 use std::fs;
-use std::path::PathBuf;
 #[cfg(test)]
 use std::path::Path;
+use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdapterError {
@@ -59,14 +59,33 @@ pub(crate) fn write_if_unchanged(
 
 pub(crate) fn tail_records(path: &std::path::Path, limit: u64) -> Vec<serde_json::Value> {
     use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut file) = std::fs::File::open(path) else { return Vec::new() };
-    let Ok(meta) = file.metadata() else { return Vec::new() };
+    let Ok(mut file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(meta) = file.metadata() else {
+        return Vec::new();
+    };
     let start = meta.len().saturating_sub(limit);
-    if file.seek(SeekFrom::Start(start)).is_err() { return Vec::new(); }
+    if file.seek(SeekFrom::Start(start)).is_err() {
+        return Vec::new();
+    }
     let mut bytes = Vec::new();
-    if file.take(limit).read_to_end(&mut bytes).is_err() { return Vec::new(); }
-    let start = if start == 0 { 0 } else { bytes.iter().position(|b| *b == b'\n').map(|i| i + 1).unwrap_or(bytes.len()) };
-    bytes[start..].split(|b| *b == b'\n').filter_map(|line| serde_json::from_slice(line).ok()).collect()
+    if file.take(limit).read_to_end(&mut bytes).is_err() {
+        return Vec::new();
+    }
+    let start = if start == 0 {
+        0
+    } else {
+        bytes
+            .iter()
+            .position(|b| *b == b'\n')
+            .map(|i| i + 1)
+            .unwrap_or(bytes.len())
+    };
+    bytes[start..]
+        .split(|b| *b == b'\n')
+        .filter_map(|line| serde_json::from_slice(line).ok())
+        .collect()
 }
 
 #[cfg(test)]

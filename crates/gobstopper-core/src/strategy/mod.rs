@@ -98,9 +98,7 @@ pub fn builtin_strategies() -> Vec<Box<dyn Strategy>> {
 
 /// Look up a built-in strategy by id.
 pub fn strategy_by_id(id: &str) -> Option<Box<dyn Strategy>> {
-    builtin_strategies()
-        .into_iter()
-        .find(|s| s.id() == id)
+    builtin_strategies().into_iter().find(|s| s.id() == id)
 }
 
 #[cfg(test)]

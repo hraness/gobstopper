@@ -17,11 +17,7 @@ impl Strategy for ElideStrategy {
         "elide"
     }
 
-    fn evaluate(
-        &self,
-        transcript: &Transcript,
-        policy: &PolicyConfig,
-    ) -> Option<CompactionPlan> {
+    fn evaluate(&self, transcript: &Transcript, policy: &PolicyConfig) -> Option<CompactionPlan> {
         let before = transcript.context_tokens();
         if before < policy.effective_trigger() {
             return None;

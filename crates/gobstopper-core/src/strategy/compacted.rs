@@ -1,6 +1,6 @@
 use super::{ElideStrategy, PolicyConfig, Strategy};
 use crate::estimate::estimate_tokens;
-use crate::model::{Transcript, ItemKind};
+use crate::model::{ItemKind, Transcript};
 use crate::plan::{CompactionPlan, DigestBlock, Edit};
 
 /// Compacted: observation masking plus a Codex `compacted` record.
@@ -17,11 +17,7 @@ impl Strategy for CompactedStrategy {
         "compacted"
     }
 
-    fn evaluate(
-        &self,
-        transcript: &Transcript,
-        policy: &PolicyConfig,
-    ) -> Option<CompactionPlan> {
+    fn evaluate(&self, transcript: &Transcript, policy: &PolicyConfig) -> Option<CompactionPlan> {
         let mut plan = ElideStrategy.evaluate(transcript, policy)?;
         let elided_indexes: Vec<usize> = plan
             .edits
@@ -66,7 +62,7 @@ impl Strategy for CompactedStrategy {
             .iter()
             .rev()
             .find(|i| i.kind == ItemKind::User)
-            .map(|i| i.label.clone());
+            .map(|i| i.summary.clone().unwrap_or_else(|| i.label.clone()));
 
         let digest = DigestBlock {
             goal: goal.clone(),
@@ -93,9 +89,7 @@ impl Strategy for CompactedStrategy {
             policy.trigger_tokens,
             elided_indexes.len()
         );
-        plan.context_tokens_after = plan
-            .context_tokens_after
-            .saturating_add(digest_overhead);
+        plan.context_tokens_after = plan.context_tokens_after.saturating_add(digest_overhead);
         Some(plan)
     }
 }

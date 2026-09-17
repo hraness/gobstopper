@@ -54,11 +54,15 @@ impl AgenticStrategy {
         let before = transcript.context_tokens();
         let mut edits = Vec::new();
         let mut projected = before;
-        if calls.len() > crate::validation::MAX_EDITS { return None; }
+        if calls.len() > crate::validation::MAX_EDITS {
+            return None;
+        }
         let mut kept = std::collections::HashSet::new();
         for call in calls {
             if let EditorCall::Keep { from_item, to_item } = call {
-                if from_item >= to_item || *to_item > transcript.items.len() { return None; }
+                if from_item >= to_item || *to_item > transcript.items.len() {
+                    return None;
+                }
                 kept.extend(*from_item..*to_item);
             }
         }
@@ -68,7 +72,12 @@ impl AgenticStrategy {
                 EditorCall::Defer { .. } => return None,
                 EditorCall::Keep { .. } => {}
                 EditorCall::Elide { items } => {
-                    if items.iter().any(|i| kept.contains(i) || *i >= transcript.items.len()) { return None; }
+                    if items
+                        .iter()
+                        .any(|i| kept.contains(i) || *i >= transcript.items.len())
+                    {
+                        return None;
+                    }
                     let valid: Vec<usize> = items
                         .iter()
                         .filter_map(|&i| transcript.items.get(i))
@@ -76,9 +85,7 @@ impl AgenticStrategy {
                         .map(|item| item.line_index)
                         .collect();
                     for &line in &valid {
-                        if let Some(item) =
-                            transcript.items.iter().find(|i| i.line_index == line)
-                        {
+                        if let Some(item) = transcript.items.iter().find(|i| i.line_index == line) {
                             projected = projected.saturating_sub(item.estimated_elision_savings());
                         }
                     }
@@ -97,7 +104,8 @@ impl AgenticStrategy {
                     if to_item <= from_item || *to_item > transcript.items.len() {
                         return None;
                     }
-                    projected = projected.saturating_add(crate::estimate::estimate_tokens(digest.len()));
+                    projected =
+                        projected.saturating_add(crate::estimate::estimate_tokens(digest.len()));
                     edits.push(Edit::InjectDigest {
                         digest: crate::plan::DigestBlock {
                             goal: Some(digest.clone()),
@@ -111,7 +119,9 @@ impl AgenticStrategy {
             }
         }
 
-        if edits.is_empty() || crate::validation::validate_edits(transcript, policy, &edits).is_err() {
+        if edits.is_empty()
+            || crate::validation::validate_edits(transcript, policy, &edits).is_err()
+        {
             return None;
         }
         Some(CompactionPlan {
@@ -133,11 +143,7 @@ impl Strategy for AgenticStrategy {
         "agentic"
     }
 
-    fn evaluate(
-        &self,
-        transcript: &Transcript,
-        policy: &PolicyConfig,
-    ) -> Option<CompactionPlan> {
+    fn evaluate(&self, transcript: &Transcript, policy: &PolicyConfig) -> Option<CompactionPlan> {
         // Without a configured driver, `agentic` defers to `auto`'s rubric
         // rather than guessing — matching the SelfCompact finding that the
         // tool alone is unreliable without the scaffold deciding for it.
@@ -145,8 +151,10 @@ impl Strategy for AgenticStrategy {
             .evaluate(transcript, policy)
             .map(|mut plan| {
                 plan.strategy = self.id().to_string();
-                plan.rationale =
-                    format!("agentic (no driver configured, rubric fallback): {}", plan.rationale);
+                plan.rationale = format!(
+                    "agentic (no driver configured, rubric fallback): {}",
+                    plan.rationale
+                );
                 plan
             })
     }

@@ -41,6 +41,20 @@ gobstopper reports measured file-byte changes and observed provider usage
 where available; it does not project dollar or quota savings into its
 public claims.
 
+## Infinite memory
+
+Every compaction writes the pre- and post-state into a content-addressed
+vault (`~/.local/share/gobstopper/vault/`). The same record appears once
+across every version it participates in, so keeping every state does not
+explode storage.
+
+`gobstopper recall --query <q>` turns that vault into agent-addressable
+memory: it searches every archived state-card digest, ranks results by
+query relevance, and returns the high-level state of the matching turns.
+The agent does not need to remember session IDs — it can ask for the last
+time it worked on a file, a goal, or a decision and get a ranked summary
+with a snapshot SHA it can `show` or `diff`.
+
 Compaction itself isn't free — each cycle costs one large input call and
 risks losing detail — so strategy matters. That is the actual product
 here: not "compact earlier" but "compact with the right strategy at the
@@ -80,6 +94,9 @@ gobstopper vault                   # list snapshots in the undo vault
 gobstopper install-hooks           # Claude + Codex compaction lifecycle hooks
 gobstopper watch --dry-run         # the daemon path: poll, threshold, prepare copy
 gobstopper explain                 # the occupancy math above
+gobstopper recall --query <q>      # search state-card digests across all archived sessions
+gobstopper history <session>       # every archived state of one session
+gobstopper diff <sha-a> <sha-b>    # structural comparison of two vault snapshots
 ```
 
 Every `apply`/`watch` compaction snapshots the source transcript into a

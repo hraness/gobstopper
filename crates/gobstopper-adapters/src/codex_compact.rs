@@ -194,8 +194,7 @@ fn rfc3339_now() -> String {
 /// Read a rollout file into lines (trailing newline not included), the
 /// `src_lines` input shape [`build_compacted_record`] expects.
 pub fn read_rollout_lines(path: &Path) -> anyhow::Result<Vec<String>> {
-    let raw = fs::read_to_string(path)
-        .with_context(|| format!("read {}", path.display()))?;
+    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     Ok(raw.lines().map(str::to_string).collect())
 }
 
@@ -259,10 +258,7 @@ fn digest_item(digest: &DigestBlock, tail_items: &[Value]) -> Value {
 /// Lower an [`Edit::InjectDigest`](gobstopper_core::plan::Edit) to a
 /// `replacement_history`: the digest as a leading user message followed
 /// by the last-N verbatim tail items the caller wants to keep live.
-pub fn digest_to_replacement_history(
-    digest: &DigestBlock,
-    tail_items: &[Value],
-) -> Vec<Value> {
+pub fn digest_to_replacement_history(digest: &DigestBlock, tail_items: &[Value]) -> Vec<Value> {
     let mut history = Vec::with_capacity(tail_items.len() + 1);
     history.push(digest_item(digest, tail_items));
     history.extend(tail_items.iter().cloned());
@@ -317,11 +313,7 @@ pub fn build_compacted_record(
         .unwrap_or(b"gobstopper-empty");
     let (window_number, first_window_id, previous_window_id) = match &prev {
         Some(p) => {
-            let number = p
-                .get("window_number")
-                .and_then(Value::as_u64)
-                .unwrap_or(0)
-                + 1;
+            let number = p.get("window_number").and_then(Value::as_u64).unwrap_or(0) + 1;
             let first = p
                 .get("first_window_id")
                 .and_then(Value::as_str)
@@ -581,8 +573,7 @@ mod tests {
             .unwrap()
             .starts_with("resp_"));
         // The file's freshest usage record is embedded, not a stale one.
-        let src_usage: Value =
-            serde_json::from_str::<Value>(&lines[5]).unwrap()["payload"].clone();
+        let src_usage: Value = serde_json::from_str::<Value>(&lines[5]).unwrap()["payload"].clone();
         assert_eq!(p["latest_token_usage_record"], src_usage);
         // Minimal path omits the optional envelope fields.
         assert!(p.get("guardian_history").is_none());
@@ -631,7 +622,10 @@ mod tests {
         // Window chain advanced one step, never duplicated.
         assert_eq!(p["window_number"], 4);
         assert_eq!(p["first_window_id"], "11111111-1111-7111-8111-111111111111");
-        assert_eq!(p["previous_window_id"], "33333333-3333-7333-8333-333333333333");
+        assert_eq!(
+            p["previous_window_id"],
+            "33333333-3333-7333-8333-333333333333"
+        );
         let wid = p["window_id"].as_str().unwrap();
         assert_ne!(wid, "33333333-3333-7333-8333-333333333333");
         assert_eq!(wid.len(), 36);
@@ -712,10 +706,15 @@ mod tests {
         .unwrap();
         let kinds: Vec<_> = transcript.items.iter().map(|i| i.kind).collect();
         assert_eq!(kinds.len(), 5);
-        assert_eq!(kinds.last(), Some(&gobstopper_core::model::ItemKind::ToolResult));
+        assert_eq!(
+            kinds.last(),
+            Some(&gobstopper_core::model::ItemKind::ToolResult)
+        );
         assert_eq!(transcript.items.last().unwrap().line_index, lines.len());
         assert_eq!(transcript.usage.context_tokens, 0);
-        assert!(transcript.items[..4].iter().all(|i| i.est_tokens == 0 && i.elidable_bytes.is_none()));
+        assert!(transcript.items[..4]
+            .iter()
+            .all(|i| i.est_tokens == 0 && i.elidable_bytes.is_none()));
         assert!(transcript.estimated_context_tokens() > 0);
     }
 
@@ -724,7 +723,11 @@ mod tests {
         let dir = TestDir::new();
         let path = dir.0.join("rollout-torn.jsonl");
         // A file whose last line lacks a newline (torn tail write).
-        fs::write(&path, "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\"}}").unwrap();
+        fs::write(
+            &path,
+            "{\"type\":\"response_item\",\"payload\":{\"type\":\"message\"}}",
+        )
+        .unwrap();
 
         let line = build_compacted_record(
             &read_rollout_lines(&path).unwrap(),

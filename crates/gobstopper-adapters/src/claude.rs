@@ -38,7 +38,11 @@ fn tool_result_bytes(message: &Value) -> u64 {
             blocks
                 .iter()
                 .filter(|b| b.get("type").and_then(Value::as_str) == Some("tool_result"))
-                .map(|b| b.get("content").map(crate::payload::eligible_bytes).unwrap_or(0))
+                .map(|b| {
+                    b.get("content")
+                        .map(crate::payload::eligible_bytes)
+                        .unwrap_or(0)
+                })
                 .sum()
         })
         .unwrap_or(0)
@@ -65,7 +69,28 @@ fn tool_result_summary(message: &Value) -> Option<String> {
     if text.chars().count() <= MAX_SUMMARY {
         return Some(text);
     }
-    Some(text.chars().rev().take(MAX_SUMMARY).collect::<String>().chars().rev().collect())
+    Some(
+        text.chars()
+            .rev()
+            .take(MAX_SUMMARY)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect(),
+    )
+}
+
+/// Short opening of a plain user prompt, for digest `goal` generation.
+fn user_prompt_summary(message: &Value) -> Option<String> {
+    const MAX_SUMMARY: usize = 200;
+    let text = crate::payload::text(message);
+    if text.is_empty() {
+        return None;
+    }
+    if text.chars().count() <= MAX_SUMMARY {
+        return Some(text);
+    }
+    Some(text.chars().take(MAX_SUMMARY).collect())
 }
 
 fn absorb_usage(line: &Value, sample: &mut UsageSample) {
@@ -76,14 +101,17 @@ fn absorb_usage(line: &Value, sample: &mut UsageSample) {
         return;
     };
     let get = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
-    let input = get("input_tokens").saturating_add(get("cache_read_input_tokens"))
+    let input = get("input_tokens")
+        .saturating_add(get("cache_read_input_tokens"))
         .saturating_add(get("cache_creation_input_tokens"));
     let context = input.saturating_add(get("output_tokens"));
     if context > 0 {
         sample.context_tokens = context;
     }
     sample.lifetime_input_tokens = sample.lifetime_input_tokens.saturating_add(input);
-    sample.lifetime_cached_tokens = sample.lifetime_cached_tokens.saturating_add(get("cache_read_input_tokens"));
+    sample.lifetime_cached_tokens = sample
+        .lifetime_cached_tokens
+        .saturating_add(get("cache_read_input_tokens"));
 }
 
 /// Parse a full session file into a normalized transcript.
@@ -98,7 +126,9 @@ pub fn load(handle: SessionHandle) -> Result<Transcript, AdapterError> {
 }
 
 pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, AdapterError> {
-    if bytes.len() as u64 > crate::transaction::MAX_TRANSCRIPT_BYTES { return Err(AdapterError::InvalidEdit("transcript exceeds byte limit")); }
+    if bytes.len() as u64 > crate::transaction::MAX_TRANSCRIPT_BYTES {
+        return Err(AdapterError::InvalidEdit("transcript exceeds byte limit"));
+    }
     let file = std::io::Cursor::new(bytes);
     let mut usage = UsageSample::default();
     let mut records: Vec<(usize, Value)> = Vec::new();
@@ -150,7 +180,10 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                     Some("user") | Some("assistant") | Some("attachment")
                 )
             {
-                leaf_uuid = record.get("uuid").and_then(Value::as_str).map(str::to_string);
+                leaf_uuid = record
+                    .get("uuid")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
                 break;
             }
         }
@@ -169,7 +202,14 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                 let elidable = has_tool_result(message)
                     .then(|| tool_result_bytes(message))
                     .filter(|b| *b > 0);
-                (if elidable.is_some() { ItemKind::ToolResult } else { ItemKind::User }, elidable)
+                (
+                    if elidable.is_some() {
+                        ItemKind::ToolResult
+                    } else {
+                        ItemKind::User
+                    },
+                    elidable,
+                )
             }
             "assistant" => (ItemKind::Assistant, None),
             "system" => (ItemKind::System, None),
@@ -180,19 +220,22 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
             continue; // bookkeeping lines never reach the context window
         }
         let est = estimate_tokens(value_len(&record["message"]));
+        let summary = match kind {
+            ItemKind::User => user_prompt_summary(&record["message"]),
+            _ => tool_result_summary(&record["message"]),
+        };
         items.push(TranscriptItem {
             line_index: *line_index,
             kind,
             est_tokens: est,
             elidable_bytes: elidable,
             label: format!("{ltype}@{line_index}"),
-            summary: tool_result_summary(&record["message"]),
+            summary,
         });
     }
     // Only uuid-bearing lines can be proven dead; lines without linkage
     // (attachments, system notices) stay conservatively live.
-    let linked: std::collections::HashSet<usize> =
-        links.iter().map(|(l, _, _)| *l).collect();
+    let linked: std::collections::HashSet<usize> = links.iter().map(|(l, _, _)| *l).collect();
     for item in &mut items {
         let provably_dead = linked.contains(&item.line_index)
             && !live.is_empty()
@@ -211,16 +254,16 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
 }
 
 /// Line indexes on the branch from the named leaf back to the root.
-fn live_branch(links: &[(usize, String, Option<String>)], leaf: &str) -> std::collections::HashSet<usize> {
+fn live_branch(
+    links: &[(usize, String, Option<String>)],
+    leaf: &str,
+) -> std::collections::HashSet<usize> {
     use std::collections::{HashMap, HashSet};
     let parent_of: HashMap<&str, Option<&str>> = links
         .iter()
         .map(|(_, u, p)| (u.as_str(), p.as_deref()))
         .collect();
-    let line_of: HashMap<&str, usize> = links
-        .iter()
-        .map(|(l, u, _)| (u.as_str(), *l))
-        .collect();
+    let line_of: HashMap<&str, usize> = links.iter().map(|(l, u, _)| (u.as_str(), *l)).collect();
     let mut live = HashSet::new();
     let mut cursor = Some(leaf);
     let mut steps = 0usize;
@@ -298,11 +341,15 @@ fn elide_line(line: &str, stub_template: &str) -> (String, u64) {
         if block.get("type").and_then(Value::as_str) != Some("tool_result") {
             continue;
         }
-        let Some(content) = block.get_mut("content") else { continue };
+        let Some(content) = block.get_mut("content") else {
+            continue;
+        };
         let old = crate::payload::eligible_bytes(content);
         reclaimed += crate::payload::elide(content, stub_for(stub_template, old, "tool_result"));
     }
-    if reclaimed == 0 { return (line.to_string(), 0); }
+    if reclaimed == 0 {
+        return (line.to_string(), 0);
+    }
     (
         serde_json::to_string(&record).unwrap_or_else(|_| line.to_string()),
         reclaimed,
@@ -342,14 +389,19 @@ fn digest_text(digest: &DigestBlock) -> String {
     for t in &digest.open_tasks {
         s.push_str(&format!("todo: {t}\n"));
     }
-    s.push_str(&format!("(covers {} earlier records)\n", digest.covers_items));
+    s.push_str(&format!(
+        "(covers {} earlier records)\n",
+        digest.covers_items
+    ));
     s
 }
 
 /// Execute a plan's edits against a session file. `ProviderCompact` is a
 /// no-op here — the CLI routes it to the provider instead.
 pub fn apply(path: &Path, edits: &[Edit]) -> Result<u64, AdapterError> {
-    crate::transaction::apply(Provider::ClaudeCode, path, |candidate| apply_inner(candidate, edits))
+    crate::transaction::apply(Provider::ClaudeCode, path, |candidate| {
+        apply_inner(candidate, edits)
+    })
 }
 
 fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
@@ -377,18 +429,22 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
                         Some("user") | Some("assistant")
                     )
                 });
-                let last_user = parsed.iter().rev().find(|r| {
-                    r.get("type").and_then(Value::as_str) == Some("user")
-                });
-                let last_mode = parsed.iter().rev().find(|r| {
-                    r.get("type").and_then(Value::as_str) == Some("mode")
-                });
+                let last_user = parsed
+                    .iter()
+                    .rev()
+                    .find(|r| r.get("type").and_then(Value::as_str) == Some("user"));
+                let last_mode = parsed
+                    .iter()
+                    .rev()
+                    .find(|r| r.get("type").and_then(Value::as_str) == Some("mode"));
                 let parent = last_leaf
                     .and_then(|r| r.get("uuid").and_then(Value::as_str))
                     .map(str::to_string);
-                let session_id = parsed
-                    .iter()
-                    .find_map(|r| r.get("sessionId").and_then(Value::as_str).map(str::to_string));
+                let session_id = parsed.iter().find_map(|r| {
+                    r.get("sessionId")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                });
                 let mode = last_mode
                     .and_then(|r| r.get("mode").and_then(Value::as_str))
                     .unwrap_or("auto");
@@ -399,7 +455,8 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
                         .map(str::to_string)
                 };
                 let digest_uuid = crate::fork::generate_session_id(Path::new("claude-digest"));
-                let last_prompt_uuid = crate::fork::generate_session_id(Path::new("claude-last-prompt"));
+                let last_prompt_uuid =
+                    crate::fork::generate_session_id(Path::new("claude-last-prompt"));
                 let prompt_id = crate::fork::generate_session_id(Path::new("claude-prompt"));
                 let mode_uuid = crate::fork::generate_session_id(Path::new("claude-mode"));
                 let digest_user = serde_json::json!({

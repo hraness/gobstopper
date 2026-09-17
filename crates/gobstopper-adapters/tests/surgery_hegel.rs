@@ -212,13 +212,16 @@ fn gen_claude_transcript(tc: &TestCase) -> Vec<String> {
     for call_id in open_calls.drain(..) {
         let uuid = format!("u{}", uuids.len());
         let size = tc.draw(gs::integers::<usize>().max_value(1500));
-        lines.push(serde_json::to_string(&json!({
-            "type": "user", "uuid": uuid,
-            "parentUuid": uuids.last(), "sessionId": session,
-            "message": {"role": "user", "content": [
-                {"type": "tool_result", "tool_use_id": call_id, "content": "x".repeat(size)}
-            ]}
-        })).unwrap());
+        lines.push(
+            serde_json::to_string(&json!({
+                "type": "user", "uuid": uuid,
+                "parentUuid": uuids.last(), "sessionId": session,
+                "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": call_id, "content": "x".repeat(size)}
+                ]}
+            }))
+            .unwrap(),
+        );
         uuids.push(uuid);
     }
     lines
@@ -267,7 +270,11 @@ fn gen_codex_transcript(tc: &TestCase, with_windows: bool) -> Vec<String> {
                     let w = format!("w{i}");
                     payload["window_number"] = json!(compact_round);
                     payload["first_window_id"] = json!("first-w");
-                    payload["previous_window_id"] = json!(if compact_round == 1 { "first-w" } else { "w-prev" });
+                    payload["previous_window_id"] = json!(if compact_round == 1 {
+                        "first-w"
+                    } else {
+                        "w-prev"
+                    });
                     payload["window_id"] = json!(w);
                 }
                 json!({
@@ -323,7 +330,10 @@ fn gen_digest(_tc: &TestCase, covers: usize) -> DigestBlock {
 /// by following parentUuid. Dead branches stay provably dead.
 fn claude_live_lines(
     lines: &[String],
-) -> (std::collections::HashSet<usize>, std::collections::HashSet<usize>) {
+) -> (
+    std::collections::HashSet<usize>,
+    std::collections::HashSet<usize>,
+) {
     use std::collections::{HashMap, HashSet};
     let mut links: Vec<(usize, String, Option<String>)> = Vec::new();
     for (i, line) in lines.iter().enumerate() {
@@ -348,10 +358,7 @@ fn claude_live_lines(
         .iter()
         .map(|(_, u, p)| (u.as_str(), p.as_deref()))
         .collect();
-    let line_of: HashMap<&str, usize> = links
-        .iter()
-        .map(|(l, u, _)| (u.as_str(), *l))
-        .collect();
+    let line_of: HashMap<&str, usize> = links.iter().map(|(l, u, _)| (u.as_str(), *l)).collect();
     let mut cursor = Some(links.last().unwrap().1.as_str());
     let mut steps = 0usize;
     while let Some(uuid) = cursor {
@@ -430,11 +437,7 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                     Provider::ClaudeCode => claude::apply(&path, &edits).unwrap(),
                 };
                 let after = read_lines(&path);
-                assert_eq!(
-                    before.len(),
-                    after.len(),
-                    "elide changed the record count"
-                );
+                assert_eq!(before.len(), after.len(), "elide changed the record count");
                 for (i, (old, new)) in before.iter().zip(after.iter()).enumerate() {
                     assert_eq!(
                         linkage(provider, old),
@@ -466,13 +469,18 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                     Provider::ClaudeCode => claude::apply(&path, &edits).unwrap(),
                 };
                 let after = read_lines(&path);
-                let expected = before.len() + match provider {
-                    // Codex injects a single compacted response item.
-                    Provider::Codex => 1,
-                    // Claude injects a synthetic user, a last-prompt tail, and a mode record.
-                    Provider::ClaudeCode => 3,
-                };
-                assert_eq!(expected, after.len(), "inject did not append the expected number of lines");
+                let expected = before.len()
+                    + match provider {
+                        // Codex injects a single compacted response item.
+                        Provider::Codex => 1,
+                        // Claude injects a synthetic user, a last-prompt tail, and a mode record.
+                        Provider::ClaudeCode => 3,
+                    };
+                assert_eq!(
+                    expected,
+                    after.len(),
+                    "inject did not append the expected number of lines"
+                );
                 for (i, (old, new)) in before.iter().zip(after.iter()).enumerate() {
                     assert_eq!(old, new, "inject rewrote existing line {i}");
                 }
@@ -481,14 +489,9 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
             // Vault snapshot, apply an elide, restore, compare bytes.
             2 => {
                 let before = fs::read(&path).unwrap();
-                let entry = vault::snapshot(
-                    &path,
-                    provider,
-                    "hegel-session",
-                    Some("hegel"),
-                    &vault_root,
-                )
-                .unwrap();
+                let entry =
+                    vault::snapshot(&path, provider, "hegel-session", Some("hegel"), &vault_root)
+                        .unwrap();
                 let indexes = draw_line_indexes(&tc, read_lines(&path).len());
                 let edits = vec![Edit::Elide {
                     line_indexes: indexes,
@@ -521,9 +524,9 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                     Provider::ClaudeCode => {
                         // Parent onto the last uuid-bearing line so the chain stays valid.
                         let last_uuid = lines.iter().rev().find_map(|l| {
-                            serde_json::from_str::<Value>(l)
-                                .ok()
-                                .and_then(|v| v.get("uuid").and_then(Value::as_str).map(str::to_string))
+                            serde_json::from_str::<Value>(l).ok().and_then(|v| {
+                                v.get("uuid").and_then(Value::as_str).map(str::to_string)
+                            })
                         });
                         serde_json::to_string(&json!({
                             "type": "user", "uuid": format!("n{count}"),
@@ -904,9 +907,7 @@ fn dirty_transcript_surgery_adds_no_findings(tc: TestCase) {
     // Every dirty line survived verbatim: the dirty candidates we know
     // we wrote must appear at their positions unchanged.
     for (i, (want, got)) in lines.iter().zip(after_lines.iter()).enumerate() {
-        if serde_json::from_str::<Value>(want).is_err()
-            || !want.trim_start().starts_with('{')
-        {
+        if serde_json::from_str::<Value>(want).is_err() || !want.trim_start().starts_with('{') {
             assert_eq!(want, got, "dirty line {i} was not passed through verbatim");
         }
     }
@@ -1029,7 +1030,11 @@ fn compacted_records_chain_cleanly(tc: TestCase) {
         let keep = tc.draw(gs::integers::<usize>().max_value(4));
         compact_with_digest_entry(&path, keep);
         let after = codex_compact::read_rollout_lines(&path).unwrap();
-        assert_eq!(before.len() + 1, after.len(), "compaction did not append exactly one record");
+        assert_eq!(
+            before.len() + 1,
+            after.len(),
+            "compaction did not append exactly one record"
+        );
         // Untouched prefix: every prior line is byte-identical.
         for (i, (a, b)) in before.iter().zip(after.iter()).enumerate() {
             assert_eq!(a, b, "compaction rewrote existing line {i}");
@@ -1055,7 +1060,10 @@ fn compacted_records_chain_cleanly(tc: TestCase) {
             .and_then(|p| p.get("window_number").and_then(Value::as_u64))
             .unwrap_or(0)
             + 1;
-        assert_eq!(number, expected_number, "window_number did not advance by one");
+        assert_eq!(
+            number, expected_number,
+            "window_number did not advance by one"
+        );
         let first = payload["first_window_id"].as_str().unwrap();
         if let Some(ef) = prior
             .as_ref()
@@ -1068,7 +1076,10 @@ fn compacted_records_chain_cleanly(tc: TestCase) {
             .as_ref()
             .and_then(|p| p.get("window_id").and_then(Value::as_str))
             .unwrap_or(first);
-        assert_eq!(prev_wid, expected_prev, "previous_window_id is not the prior window_id");
+        assert_eq!(
+            prev_wid, expected_prev,
+            "previous_window_id is not the prior window_id"
+        );
         let wid = payload["window_id"].as_str().unwrap().to_string();
         assert!(!seen_windows.contains(&wid), "window_id reused: {wid}");
         seen_windows.push(wid);
@@ -1139,7 +1150,11 @@ fn eval_never_mutates_source(tc: TestCase) {
         quota_pressure: gobstopper_core::strategy::QuotaPressure::Normal,
     };
     let rows = eval::eval_transcript(provider, &path, &policy, None).unwrap();
-    assert_eq!(fs::read(&path).unwrap(), before, "eval rewrote the source transcript");
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        before,
+        "eval rewrote the source transcript"
+    );
     assert!(!rows.is_empty());
     for row in &rows {
         assert_eq!(
@@ -1198,7 +1213,11 @@ fn fork_is_additive_and_linkage_preserving(tc: TestCase) {
     let original = fs::read(&path).unwrap();
 
     let result = fork::fork(provider, &path, None).unwrap();
-    assert_eq!(fs::read(&path).unwrap(), original, "fork modified the source");
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        original,
+        "fork modified the source"
+    );
     let forked = read_lines(&result.path);
     assert_eq!(forked.len(), lines.len(), "fork changed the record count");
     for (i, (a, b)) in lines.iter().zip(forked.iter()).enumerate() {
@@ -1248,7 +1267,10 @@ fn fork_is_additive_and_linkage_preserving(tc: TestCase) {
 
     // A second fork with an explicit colliding id must refuse, not overwrite.
     let again = fork::fork(provider, &path, Some(result.session_id.clone()));
-    assert!(again.is_err(), "fork silently overwrote an existing sibling");
+    assert!(
+        again.is_err(),
+        "fork silently overwrote an existing sibling"
+    );
     assert_eq!(read_lines(&result.path), forked);
 }
 
@@ -1274,13 +1296,20 @@ fn vault_roundtrip_dedups_and_restores_exactly(tc: TestCase) {
 
     let e1 = vault::snapshot(&path, provider, "s", Some("a"), &vault_root).unwrap();
     let e2 = vault::snapshot(&path, provider, "s", Some("b"), &vault_root).unwrap();
-    assert_eq!(e1.sha256, e2.sha256, "identical content produced different digests");
+    assert_eq!(
+        e1.sha256, e2.sha256,
+        "identical content produced different digests"
+    );
 
     // Mutate, then restore — the original bytes come back exactly.
     fs::write(&path, "garbage-not-jsonl\n").unwrap();
     let restored = vault::restore(&e1.sha256, &path, &vault_root).unwrap();
     assert_eq!(restored.sha256, e1.sha256);
-    assert_eq!(fs::read(&path).unwrap(), original, "restore did not reproduce exact bytes");
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        original,
+        "restore did not reproduce exact bytes"
+    );
 
     // The index holds both snapshots; latest_for finds this path's newest.
     let entries = vault::list(&vault_root).unwrap();
@@ -1305,8 +1334,7 @@ fn tail_and_history_shapes_hold(tc: TestCase) {
         .iter()
         .filter_map(|l| {
             let rec: Value = serde_json::from_str(l).ok()?;
-            (rec.get("type")?.as_str()? == "response_item")
-                .then(|| rec.get("payload").cloned())?
+            (rec.get("type")?.as_str()? == "response_item").then(|| rec.get("payload").cloned())?
         })
         .collect::<Vec<_>>()
         .into_iter()
@@ -1345,7 +1373,10 @@ fn hostile_digest_injects_as_one_line(tc: TestCase) {
     write_lines(&path, &lines);
     let digest = DigestBlock {
         goal: Some(tc.draw(gs::text().max_size(120))),
-        decisions: vec![format!("weird\nnewline \"quotes\" {}", tc.draw(gs::text().max_size(80)))],
+        decisions: vec![format!(
+            "weird\nnewline \"quotes\" {}",
+            tc.draw(gs::text().max_size(80))
+        )],
         files_touched: vec!["{not json}\r\n../escape".to_string()],
         open_tasks: vec![],
         covers_items: lines.len(),
@@ -1360,10 +1391,13 @@ fn hostile_digest_injects_as_one_line(tc: TestCase) {
         Provider::Codex => 1,
         Provider::ClaudeCode => 3,
     };
-    assert_eq!(before + expected_delta, after.len(), "digest injected the wrong number of lines");
+    assert_eq!(
+        before + expected_delta,
+        after.len(),
+        "digest injected the wrong number of lines"
+    );
     for line in after.iter().skip(before) {
-        let parsed: Value = serde_json::from_str(line)
-            .expect("injected line is not valid JSON");
+        let parsed: Value = serde_json::from_str(line).expect("injected line is not valid JSON");
         assert!(parsed.is_object());
     }
     no_errors(provider, &path);
@@ -1546,7 +1580,10 @@ fn discover_finds_generated_sessions(tc: TestCase) {
         assert_eq!(hits.len(), 1, "{id} discovered {} times", hits.len());
         let d = hits[0];
         assert_eq!(d.handle.provider, *provider);
-        assert_eq!(d.handle.session_id, *id, "session id not recovered for {id}");
+        assert_eq!(
+            d.handle.session_id, *id,
+            "session id not recovered for {id}"
+        );
     }
     // Nothing extra surfaced.
     assert_eq!(found.len(), expected.len());
@@ -1676,14 +1713,27 @@ fn digest_line_carries_no_elided_content() {
         trigger_tokens: 1,
         ..Default::default()
     };
-    let plan = StructuredStrategy.evaluate(&t, &policy).expect("plan fires");
+    let plan = StructuredStrategy
+        .evaluate(&t, &policy)
+        .expect("plan fires");
     let has_digest = plan
         .edits
         .iter()
         .any(|e| matches!(e, Edit::InjectDigest { .. }));
-    assert!(!has_digest, "metadata-only fallback must not fabricate a digest");
+    assert!(
+        !has_digest,
+        "metadata-only fallback must not fabricate a digest"
+    );
     let mut edits = plan.edits;
-    edits.push(Edit::InjectDigest { digest: DigestBlock { goal: Some("explicit synthetic summary".into()), decisions: Vec::new(), files_touched: Vec::new(), open_tasks: Vec::new(), covers_items: 1 } });
+    edits.push(Edit::InjectDigest {
+        digest: DigestBlock {
+            goal: Some("explicit synthetic summary".into()),
+            decisions: Vec::new(),
+            files_touched: Vec::new(),
+            open_tasks: Vec::new(),
+            covers_items: 1,
+        },
+    });
     codex::apply(&path, &edits).unwrap();
 
     let after = read_lines(&path);
@@ -1694,10 +1744,7 @@ fn digest_line_carries_no_elided_content() {
     );
     // Sanity: the covered markers really were elided, so this isn't a
     // vacuous pass — stubs replaced their payload bytes.
-    let stubs = after
-        .iter()
-        .filter(|l| l.contains("output elided"))
-        .count();
+    let stubs = after.iter().filter(|l| l.contains("output elided")).count();
     assert!(stubs > 0, "expected covered outputs to be stubbed");
 }
 
@@ -1737,10 +1784,7 @@ fn elide_of_non_output_lines_is_byte_identical(tc: TestCase) {
     let mut uuids: Vec<String> = Vec::new();
     let mut lines = Vec::new();
     for i in 0..n {
-        let parent = uuids
-            .last()
-            .map(|p| json!(p))
-            .unwrap_or(Value::Null);
+        let parent = uuids.last().map(|p| json!(p)).unwrap_or(Value::Null);
         let uuid = format!("u{i}");
         let line = json!({
             "type": "user", "uuid": uuid, "parentUuid": parent, "sessionId": "s",

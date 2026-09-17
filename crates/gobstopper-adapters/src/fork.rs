@@ -102,9 +102,7 @@ where
             .ok()
             .and_then(|mut record| {
                 let changed = record.as_object_mut().is_some_and(&mut rewrite);
-                changed.then(|| {
-                    serde_json::to_string(&record).unwrap_or_else(|_| body.to_string())
-                })
+                changed.then(|| serde_json::to_string(&record).unwrap_or_else(|_| body.to_string()))
             });
         match rewritten {
             Some(r) => {
@@ -263,9 +261,17 @@ pub fn fork(
     })
 }
 
-pub fn restore_copy(provider: Provider, source: &Path, sha256: &str, root: &Path) -> anyhow::Result<ForkResult> {
+pub fn restore_copy(
+    provider: Provider,
+    source: &Path,
+    sha256: &str,
+    root: &Path,
+) -> anyhow::Result<ForkResult> {
     let bytes = crate::vault::read_object(sha256, root)?;
-    if crate::verify::verify(provider, &bytes).iter().any(|f| f.severity == crate::verify::Severity::Error) {
+    if crate::verify::verify(provider, &bytes)
+        .iter()
+        .any(|f| f.severity == crate::verify::Severity::Error)
+    {
         bail!("snapshot has structural errors; source was not modified");
     }
     let session_id = generate_session_id(source);
@@ -276,7 +282,11 @@ pub fn restore_copy(provider: Provider, source: &Path, sha256: &str, root: &Path
         Provider::Codex => format!("codex resume {session_id}"),
         Provider::ClaudeCode => format!("claude --resume {session_id}"),
     };
-    Ok(ForkResult { path, session_id, resume_hint })
+    Ok(ForkResult {
+        path,
+        session_id,
+        resume_hint,
+    })
 }
 
 pub(crate) fn rewrite_identity(provider: Provider, raw: &str, id: &str) -> String {
@@ -289,7 +299,9 @@ pub(crate) fn rewrite_identity(provider: Provider, raw: &str, id: &str) -> Strin
 pub(crate) fn target_path(provider: Provider, source: &Path, id: &str) -> PathBuf {
     let name = match provider {
         Provider::ClaudeCode => format!("{id}.jsonl"),
-        Provider::Codex => codex_fork_name(source, crate::codex::scan_meta(source).0.as_deref(), id),
+        Provider::Codex => {
+            codex_fork_name(source, crate::codex::scan_meta(source).0.as_deref(), id)
+        }
     };
     source.parent().unwrap_or_else(|| Path::new(".")).join(name)
 }
@@ -361,7 +373,10 @@ mod tests {
             res.path.file_name().unwrap().to_str().unwrap(),
             format!("{}.jsonl", res.session_id)
         );
-        assert_eq!(res.resume_hint, format!("claude --resume {}", res.session_id));
+        assert_eq!(
+            res.resume_hint,
+            format!("claude --resume {}", res.session_id)
+        );
 
         let forked = fs::read_to_string(&res.path).unwrap();
         // Every sessionId rewritten.
@@ -372,7 +387,9 @@ mod tests {
             }
         }
         // Line without sessionId passed through byte-for-byte.
-        assert!(forked.starts_with("{\"type\":\"summary\",\"summary\":\"s\",\"leafUuid\":\"u3\"}\n"));
+        assert!(
+            forked.starts_with("{\"type\":\"summary\",\"summary\":\"s\",\"leafUuid\":\"u3\"}\n")
+        );
         // uuid/parentUuid chain intact — verify reports zero findings.
         let findings = verify(Provider::ClaudeCode, forked.as_bytes());
         assert_eq!(findings, vec![], "expected zero findings, got {findings:?}");
@@ -384,7 +401,11 @@ mod tests {
     fn claude_fork_refuses_existing_target() {
         let dir = TestDir::new();
         let src = dir.0.join("a.jsonl");
-        fs::write(&src, "{\"type\":\"user\",\"uuid\":\"u1\",\"sessionId\":\"s\"}\n").unwrap();
+        fs::write(
+            &src,
+            "{\"type\":\"user\",\"uuid\":\"u1\",\"sessionId\":\"s\"}\n",
+        )
+        .unwrap();
         let taken = dir.0.join("taken.jsonl");
         fs::write(&taken, "{\"keep\":true}\n").unwrap();
 
@@ -410,7 +431,11 @@ mod tests {
     fn fork_rejects_confident_provider_mismatch() {
         let dir = TestDir::new();
         let src = dir.0.join("s.jsonl");
-        fs::write(&src, "{\"type\":\"user\",\"uuid\":\"u1\",\"sessionId\":\"s\"}\n").unwrap();
+        fs::write(
+            &src,
+            "{\"type\":\"user\",\"uuid\":\"u1\",\"sessionId\":\"s\"}\n",
+        )
+        .unwrap();
         // File sniffs as Claude; asking for a Codex fork must fail.
         assert!(fork(Provider::Codex, &src, None).is_err());
     }

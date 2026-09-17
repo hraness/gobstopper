@@ -39,11 +39,7 @@ impl Strategy for AutoStrategy {
         "auto"
     }
 
-    fn evaluate(
-        &self,
-        transcript: &Transcript,
-        policy: &PolicyConfig,
-    ) -> Option<CompactionPlan> {
+    fn evaluate(&self, transcript: &Transcript, policy: &PolicyConfig) -> Option<CompactionPlan> {
         let mut plan = match Self::select(transcript) {
             "elide" => ElideStrategy.evaluate(transcript, policy),
             "structured" => StructuredStrategy.evaluate(transcript, policy),

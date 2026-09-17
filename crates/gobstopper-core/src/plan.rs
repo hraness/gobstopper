@@ -44,6 +44,50 @@ pub struct DigestBlock {
     pub covers_items: usize,
 }
 
+impl DigestBlock {
+    /// Marker that identifies a gobstopper state card in a transcript
+    /// record's text content.
+    pub const MARKER: &'static str = "[gobstopper state card]";
+
+    /// Parse the prose form produced by the adapters back into a
+    /// `DigestBlock`. Returns `None` if the text does not carry the marker.
+    pub fn parse(text: &str) -> Option<Self> {
+        if !text.starts_with(Self::MARKER) {
+            return None;
+        }
+        let mut goal = None;
+        let mut decisions = Vec::new();
+        let mut files_touched = Vec::new();
+        let mut open_tasks = Vec::new();
+        let mut covers_items = 0;
+        for line in text.lines().skip(1) {
+            if let Some(g) = line.strip_prefix("goal: ") {
+                goal = Some(g.to_string());
+            } else if let Some(d) = line.strip_prefix("decision: ") {
+                decisions.push(d.to_string());
+            } else if let Some(f) = line.strip_prefix("file: ") {
+                files_touched.push(f.to_string());
+            } else if let Some(t) = line.strip_prefix("todo: ") {
+                open_tasks.push(t.to_string());
+            } else if let Some(rest) = line.strip_prefix("(covers ") {
+                if let Some(n) = rest
+                    .strip_suffix(" earlier records)")
+                    .and_then(|s| s.parse::<usize>().ok())
+                {
+                    covers_items = n;
+                }
+            }
+        }
+        Some(DigestBlock {
+            goal,
+            decisions,
+            files_touched,
+            open_tasks,
+            covers_items,
+        })
+    }
+}
+
 /// The output of evaluating a strategy against a transcript.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompactionPlan {

@@ -21,7 +21,9 @@ pub struct Roots {
 
 impl Roots {
     pub fn from_env() -> Self {
-        let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .unwrap_or_default();
         let codex_home = std::env::var_os("CODEX_HOME")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".codex"));
@@ -109,12 +111,29 @@ struct CachedSession {
     usage: UsageSample,
 }
 impl DiscoveryCache {
-    fn inspect(&mut self, provider: Provider, path: &Path) -> ((Option<String>, Option<PathBuf>), UsageSample) {
+    fn inspect(
+        &mut self,
+        provider: Provider,
+        path: &Path,
+    ) -> ((Option<String>, Option<PathBuf>), UsageSample) {
         let metadata = fs::metadata(path).ok();
-        let mut fingerprint = (metadata.as_ref().map(|m| m.len()).unwrap_or(0), metadata.as_ref().and_then(|m| m.modified().ok()), 0, 0, 0, 0);
-        #[cfg(unix)] {
+        let mut fingerprint = (
+            metadata.as_ref().map(|m| m.len()).unwrap_or(0),
+            metadata.as_ref().and_then(|m| m.modified().ok()),
+            0,
+            0,
+            0,
+            0,
+        );
+        #[cfg(unix)]
+        {
             use std::os::unix::fs::MetadataExt;
-            if let Some(meta) = &metadata { fingerprint.2 = meta.dev(); fingerprint.3 = meta.ino(); fingerprint.4 = meta.ctime(); fingerprint.5 = meta.ctime_nsec(); }
+            if let Some(meta) = &metadata {
+                fingerprint.2 = meta.dev();
+                fingerprint.3 = meta.ino();
+                fingerprint.4 = meta.ctime();
+                fingerprint.5 = meta.ctime_nsec();
+            }
         }
         let key = (provider, path.to_path_buf());
         if let Some(entry) = self.0.get(&key) {
@@ -126,13 +145,27 @@ impl DiscoveryCache {
             Provider::Codex => (codex::scan_meta(path), codex::scan_usage(path)),
             Provider::ClaudeCode => (claude::scan_meta(path), claude::scan_usage(path)),
         };
-        if self.0.len() >= 4096 { self.0.clear(); }
-        self.0.insert(key, CachedSession { fingerprint, sampled: std::time::Instant::now(), meta: meta.clone(), usage });
+        if self.0.len() >= 4096 {
+            self.0.clear();
+        }
+        self.0.insert(
+            key,
+            CachedSession {
+                fingerprint,
+                sampled: std::time::Instant::now(),
+                meta: meta.clone(),
+                usage,
+            },
+        );
         (meta, usage)
     }
 }
 
-pub fn discover_cached(roots: &Roots, max_age_secs: u64, cache: &mut DiscoveryCache) -> Vec<Discovered> {
+pub fn discover_cached(
+    roots: &Roots,
+    max_age_secs: u64,
+    cache: &mut DiscoveryCache,
+) -> Vec<Discovered> {
     let limit = if max_age_secs == 0 {
         u64::MAX
     } else {
@@ -202,12 +235,15 @@ pub fn find(roots: &Roots, query: &str) -> Vec<Discovered> {
     collect_jsonl(&roots.claude_home.join("projects"), &mut paths, 3);
     let mut found = Vec::new();
     for path in paths {
-        let name = path.file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy())
+            .unwrap_or_default();
         if !name.contains(query) {
             continue;
         }
-        let codex = name.starts_with("rollout-")
-            || path.components().any(|c| c.as_os_str() == ".codex");
+        let codex =
+            name.starts_with("rollout-") || path.components().any(|c| c.as_os_str() == ".codex");
         let (provider, meta, usage) = if codex {
             (
                 Provider::Codex,

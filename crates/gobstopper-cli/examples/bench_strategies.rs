@@ -53,7 +53,8 @@ fn make_codex(tool_outputs: usize, output_size: usize) -> (Transcript, Vec<Strin
         cwd: None,
         age_secs: 0,
     };
-    let transcript = gobstopper_adapters::codex::load_bytes(handle, raw.as_bytes()).expect("valid bench transcript");
+    let transcript = gobstopper_adapters::codex::load_bytes(handle, raw.as_bytes())
+        .expect("valid bench transcript");
     (transcript, lines)
 }
 

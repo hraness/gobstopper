@@ -51,16 +51,26 @@ fn value_len(v: &Value) -> usize {
 /// (`custom_tool_call_output`).
 fn output_text(payload: &Value) -> Option<String> {
     match payload.get("type").and_then(Value::as_str)? {
-        "function_call_output" => payload.get("output").and_then(Value::as_str).map(String::from),
-        "custom_tool_call_output" => payload.get("output").and_then(Value::as_array).map(|blocks| {
-            blocks
-                .iter()
-                .filter_map(|b| match b.get("type").and_then(Value::as_str) {
-                    Some("input_text") => b.get("text").and_then(Value::as_str).map(String::from),
-                    _ => None,
+        "function_call_output" => payload
+            .get("output")
+            .and_then(Value::as_str)
+            .map(String::from),
+        "custom_tool_call_output" => {
+            payload
+                .get("output")
+                .and_then(Value::as_array)
+                .map(|blocks| {
+                    blocks
+                        .iter()
+                        .filter_map(|b| match b.get("type").and_then(Value::as_str) {
+                            Some("input_text") => {
+                                b.get("text").and_then(Value::as_str).map(String::from)
+                            }
+                            _ => None,
+                        })
+                        .collect()
                 })
-                .collect()
-        }),
+        }
         _ => None,
     }
 }
@@ -70,12 +80,22 @@ fn output_text(payload: &Value) -> Option<String> {
 /// elided command without carrying its full payload.
 fn output_summary(payload: &Value) -> Option<String> {
     let text = output_text(payload)?;
-    if text.is_empty() { return None; }
+    if text.is_empty() {
+        return None;
+    }
     const MAX_SUMMARY: usize = 200;
     if text.chars().count() <= MAX_SUMMARY {
         return Some(text);
     }
-    Some(text.chars().rev().take(MAX_SUMMARY).collect::<String>().chars().rev().collect())
+    Some(
+        text.chars()
+            .rev()
+            .take(MAX_SUMMARY)
+            .collect::<String>()
+            .chars()
+            .rev()
+            .collect(),
+    )
 }
 
 /// Elidable payload bytes: tool output bodies only.
@@ -92,7 +112,9 @@ pub fn load(handle: SessionHandle) -> Result<Transcript, AdapterError> {
 }
 
 pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, AdapterError> {
-    if bytes.len() as u64 > crate::transaction::MAX_TRANSCRIPT_BYTES { return Err(AdapterError::InvalidEdit("transcript exceeds byte limit")); }
+    if bytes.len() as u64 > crate::transaction::MAX_TRANSCRIPT_BYTES {
+        return Err(AdapterError::InvalidEdit("transcript exceeds byte limit"));
+    }
     let file = std::io::Cursor::new(bytes);
     let mut items: Vec<TranscriptItem> = Vec::new();
     let mut window_start = 0;
@@ -140,18 +162,18 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                 let bytes: u64 = payload
                     .get("replacement_history")
                     .and_then(Value::as_array)
-                    .map(|items| {
-                        items
-                            .iter()
-                            .filter_map(elidable_bytes)
-                            .sum()
-                    })
+                    .map(|items| items.iter().filter_map(elidable_bytes).sum())
                     .unwrap_or(0);
                 let elidable = (bytes > 256).then_some(bytes);
                 items.push(TranscriptItem {
                     line_index,
                     kind: ItemKind::ToolResult,
-                    est_tokens: estimate_tokens(payload.get("replacement_history").map(value_len).unwrap_or(0)),
+                    est_tokens: estimate_tokens(
+                        payload
+                            .get("replacement_history")
+                            .map(value_len)
+                            .unwrap_or(0),
+                    ),
 
                     elidable_bytes: elidable,
                     label: format!("compacted@{line_index}"),
@@ -178,7 +200,8 @@ fn absorb_usage(record: &Value, sample: &mut UsageSample) {
             .unwrap_or(0)
     };
     // `input_tokens` already includes the cached portion on this schema.
-    sample.context_tokens = get("usage", "input_tokens").saturating_add(get("usage", "output_tokens"));
+    sample.context_tokens =
+        get("usage", "input_tokens").saturating_add(get("usage", "output_tokens"));
     sample.lifetime_input_tokens = get("thread_token_usage", "input_tokens");
     sample.lifetime_cached_tokens = get("thread_token_usage", "cached_input_tokens");
 }
@@ -190,7 +213,7 @@ pub fn scan_usage(path: &Path) -> UsageSample {
         match record.get("type").and_then(Value::as_str) {
             Some("token_usage_record") => absorb_usage(&record, &mut sample),
             Some("compacted") => sample.context_tokens = 0,
-            _ => {},
+            _ => {}
         }
     }
     sample
@@ -202,7 +225,9 @@ pub fn parent_thread(path: &Path) -> Option<String> {
     let file = fs::File::open(path).ok()?;
     for line in BufReader::new(file).lines().take(64) {
         let Ok(line) = line else { break };
-        let Ok(record) = serde_json::from_str::<Value>(&line) else { continue };
+        let Ok(record) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
         if record.get("type").and_then(Value::as_str) != Some("session_meta") {
             continue;
         }
@@ -212,7 +237,12 @@ pub fn parent_thread(path: &Path) -> Option<String> {
             .get("parent_thread_id")
             .and_then(Value::as_str)
             .map(str::to_string)
-            .or_else(|| payload.get("forked_from_id").and_then(Value::as_str).map(str::to_string))
+            .or_else(|| {
+                payload
+                    .get("forked_from_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            })
         {
             return Some(parent);
         }
@@ -278,8 +308,7 @@ fn apply_elide(raw: &str, line_indexes: &[usize], stub_template: &str) -> (Strin
         let trimmed = line.trim_end_matches('\n');
         match serde_json::from_str::<Value>(trimmed) {
             Ok(mut record) => {
-                let is_compacted =
-                    record.get("type").and_then(Value::as_str) == Some("compacted");
+                let is_compacted = record.get("type").and_then(Value::as_str) == Some("compacted");
                 let Some(payload) = record.get_mut("payload") else {
                     out.push_str(line);
                     continue;
@@ -297,9 +326,14 @@ fn apply_elide(raw: &str, line_indexes: &[usize], stub_template: &str) -> (Strin
                         .and_then(Value::as_array_mut)
                     {
                         for it in items.iter_mut() {
-                            let Some(old) = elidable_bytes(it) else { continue };
-                            let Some(output) = it.get_mut("output") else { continue };
-                            let changed = crate::payload::elide(output, stub_for(stub_template, old, &kind));
+                            let Some(old) = elidable_bytes(it) else {
+                                continue;
+                            };
+                            let Some(output) = it.get_mut("output") else {
+                                continue;
+                            };
+                            let changed =
+                                crate::payload::elide(output, stub_for(stub_template, old, &kind));
                             reclaimed += changed;
                             stubbed_any |= changed > 0;
                         }
@@ -315,11 +349,19 @@ fn apply_elide(raw: &str, line_indexes: &[usize], stub_template: &str) -> (Strin
                         out.push_str(line);
                         continue;
                     };
-                    let changed = crate::payload::elide(&mut payload["output"], stub_for(stub_template, old, &kind));
-                    if changed == 0 { out.push_str(line); continue; }
+                    let changed = crate::payload::elide(
+                        &mut payload["output"],
+                        stub_for(stub_template, old, &kind),
+                    );
+                    if changed == 0 {
+                        out.push_str(line);
+                        continue;
+                    }
                     reclaimed += changed;
                 }
-                out.push_str(&serde_json::to_string(&record).unwrap_or_else(|_| trimmed.to_string()));
+                out.push_str(
+                    &serde_json::to_string(&record).unwrap_or_else(|_| trimmed.to_string()),
+                );
                 if line.ends_with('\n') {
                     out.push('\n');
                 }
@@ -344,14 +386,19 @@ pub(crate) fn digest_text(digest: &DigestBlock) -> String {
     for t in &digest.open_tasks {
         s.push_str(&format!("todo: {t}\n"));
     }
-    s.push_str(&format!("(covers {} earlier records)\n", digest.covers_items));
+    s.push_str(&format!(
+        "(covers {} earlier records)\n",
+        digest.covers_items
+    ));
     s
 }
 
 /// Execute a plan's edits against a rollout file. `ProviderCompact` is a
 /// no-op here — the CLI routes it to the provider instead.
 pub fn apply(path: &Path, edits: &[Edit]) -> Result<u64, AdapterError> {
-    crate::transaction::apply(Provider::Codex, path, |candidate| apply_inner(candidate, edits))
+    crate::transaction::apply(Provider::Codex, path, |candidate| {
+        apply_inner(candidate, edits)
+    })
 }
 
 fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
