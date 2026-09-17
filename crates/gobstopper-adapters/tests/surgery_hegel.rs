@@ -318,6 +318,55 @@ fn gen_digest(_tc: &TestCase, covers: usize) -> DigestBlock {
     }
 }
 
+/// Mirror of `claude::load`'s live-branch walk: the set of uuid-bearing
+/// (linked) line indexes, and the subset reachable from the latest leaf
+/// by following parentUuid. Dead branches stay provably dead.
+fn claude_live_lines(
+    lines: &[String],
+) -> (std::collections::HashSet<usize>, std::collections::HashSet<usize>) {
+    use std::collections::{HashMap, HashSet};
+    let mut links: Vec<(usize, String, Option<String>)> = Vec::new();
+    for (i, line) in lines.iter().enumerate() {
+        if let Ok(rec) = serde_json::from_str::<Value>(line) {
+            if let Some(uuid) = rec.get("uuid").and_then(Value::as_str) {
+                links.push((
+                    i,
+                    uuid.to_string(),
+                    rec.get("parentUuid")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                ));
+            }
+        }
+    }
+    let linked: HashSet<usize> = links.iter().map(|(l, _, _)| *l).collect();
+    let mut live = HashSet::new();
+    if links.is_empty() {
+        return (linked, live);
+    }
+    let parent_of: HashMap<&str, Option<&str>> = links
+        .iter()
+        .map(|(_, u, p)| (u.as_str(), p.as_deref()))
+        .collect();
+    let line_of: HashMap<&str, usize> = links
+        .iter()
+        .map(|(l, u, _)| (u.as_str(), *l))
+        .collect();
+    let mut cursor = Some(links.last().unwrap().1.as_str());
+    let mut steps = 0usize;
+    while let Some(uuid) = cursor {
+        if let Some(&line) = line_of.get(uuid) {
+            live.insert(line);
+        }
+        cursor = parent_of.get(uuid).copied().flatten();
+        steps += 1;
+        if steps > links.len() {
+            break;
+        }
+    }
+    (linked, live)
+}
+
 /// Draw `k` distinct line indexes in `0..n` (or fewer when n is small).
 fn draw_line_indexes(tc: &TestCase, n: usize) -> Vec<usize> {
     let want = tc.draw(gs::integers::<usize>().min_value(1).max_value(4));
@@ -707,6 +756,16 @@ fn plans_apply_cleanly(tc: TestCase) {
                         "strategy {} emitted out-of-bounds index {i} (file has {line_count} lines)",
                         strategy.id()
                     );
+                    // A linked line on a dead Claude branch is never a
+                    // target: load() strips its elidable_bytes.
+                    if provider == Provider::ClaudeCode {
+                        let (linked, live) = claude_live_lines(&lines);
+                        assert!(
+                            !linked.contains(&i) || live.contains(&i),
+                            "strategy {} targeted dead-branch line {i}",
+                            strategy.id()
+                        );
+                    }
                 }
             }
         }
@@ -720,6 +779,49 @@ fn plans_apply_cleanly(tc: TestCase) {
             Provider::ClaudeCode => claude::apply(&copy, &file_edits).unwrap(),
         };
         no_errors(provider, &copy);
+
+        // Watch-loop fixpoint: reload the surgically edited transcript
+        // and let the same strategy plan again — a second round must
+        // still apply verify-clean (or stop planning entirely).
+        let mut current_lines = read_lines(&copy);
+        for _ in 0..2 {
+            let handle = SessionHandle {
+                provider,
+                session_id: "hegel".to_string(),
+                path: copy.clone(),
+                cwd: None,
+                age_secs: 0,
+            };
+            let t2 = match provider {
+                Provider::Codex => codex::load(handle).unwrap(),
+                Provider::ClaudeCode => claude::load(handle).unwrap(),
+            };
+            let Some(plan2) = strategy.evaluate(&t2, &policy) else {
+                break;
+            };
+            for edit in &plan2.edits {
+                if let Edit::Elide { line_indexes, .. } = edit {
+                    for &i in line_indexes {
+                        assert!(
+                            i < current_lines.len(),
+                            "round-2 plan out of bounds: {i} ({} lines)",
+                            current_lines.len()
+                        );
+                    }
+                }
+            }
+            let file_edits2: Vec<Edit> = plan2
+                .edits
+                .into_iter()
+                .filter(|e| !matches!(e, Edit::ProviderCompact { .. }))
+                .collect();
+            match provider {
+                Provider::Codex => codex::apply(&copy, &file_edits2).unwrap(),
+                Provider::ClaudeCode => claude::apply(&copy, &file_edits2).unwrap(),
+            };
+            no_errors(provider, &copy);
+            current_lines = read_lines(&copy);
+        }
     }
 }
 
@@ -755,6 +857,18 @@ fn dirty_transcript_surgery_adds_no_findings(tc: TestCase) {
     }
     write_lines(&path, &lines);
 
+    // load() must tolerate dirty lines too — it skips what it can't parse.
+    let handle = gobstopper_core::model::SessionHandle {
+        provider,
+        session_id: "dirty".to_string(),
+        path: path.clone(),
+        cwd: None,
+        age_secs: 0,
+    };
+    match provider {
+        Provider::Codex => codex::load(handle).unwrap(),
+        Provider::ClaudeCode => claude::load(handle).unwrap(),
+    };
     let before: std::collections::HashSet<(&'static str, Option<usize>)> =
         verify::verify(provider, &fs::read(&path).unwrap())
             .iter()
@@ -987,6 +1101,31 @@ fn verify_never_panics_on_arbitrary_bytes(tc: TestCase) {
     for f in &findings {
         assert!(f.message.len() < 200);
     }
+}
+
+/// A cyclic parentUuid chain (a1->b1, b1->a1) must not hang load — the
+/// cycle guard bounds the walk. Corrupt-but-parseable linkage is a real
+/// transcript state after interrupted provider writes.
+#[test]
+fn cyclic_parent_chain_terminates() {
+    let dir = tmpdir("cycle");
+    let path = dir.join("session.jsonl");
+    write_lines(
+        &path,
+        &[
+            r#"{"type":"user","uuid":"a1","parentUuid":"b1","message":{"role":"user","content":"x"}}"#.to_string(),
+            r#"{"type":"assistant","uuid":"b1","parentUuid":"a1","message":{"role":"assistant","content":[{"type":"text","text":"y"}]}}"#.to_string(),
+        ],
+    );
+    let t = claude::load(gobstopper_core::model::SessionHandle {
+        provider: Provider::ClaudeCode,
+        session_id: "cycle".to_string(),
+        path,
+        cwd: None,
+        age_secs: 0,
+    })
+    .unwrap();
+    assert!(!t.items.is_empty());
 }
 
 /// Eliding a line that carries no elidable payload leaves the transcript
