@@ -111,26 +111,6 @@ pub struct InstallReport {
     pub skipped: Vec<String>,
 }
 
-/// `$CLAUDE_CONFIG_DIR/settings.json`, default `~/.claude/settings.json`.
-pub fn default_claude_settings() -> PathBuf {
-    std::env::var_os("CLAUDE_CONFIG_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude")))
-        .unwrap_or_default()
-        .join("settings.json")
-}
-
-/// `$CODEX_HOME/hooks.json`, default `~/.codex/hooks.json`. Codex also
-/// accepts inline `[hooks]` tables in `config.toml`; the standalone JSON
-/// file is the additive, non-destructive install point.
-pub fn default_codex_hooks() -> PathBuf {
-    std::env::var_os("CODEX_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".codex")))
-        .unwrap_or_default()
-        .join("hooks.json")
-}
-
 /// The installed Codex builds on this machine (codex-cli
 /// 0.154.0-alpha.6.2, `codex features list`: `hooks stable true`) ship a
 /// real hooks engine with `PreCompact`/`SessionStart` events — see the

@@ -754,8 +754,8 @@ fn cmd_vault(cli: &Cli, cfg: &config::Config, session: Option<&str>, json: bool)
     Ok(())
 }
 
-fn cmd_install_hooks(uninstall: bool) -> Result<()> {
-    let claude_settings = hooks::default_claude_settings();
+fn cmd_install_hooks(uninstall: bool, roots: &Roots) -> Result<()> {
+    let claude_settings = roots.claude_home.join("settings.json");
     let claude_targets = [
         hooks::HookTarget::ClaudePreCompact,
         hooks::HookTarget::ClaudeSessionStart,
@@ -770,7 +770,9 @@ fn cmd_install_hooks(uninstall: bool) -> Result<()> {
         println!("  {} {a}", if uninstall { "removed" } else { "added" });
     }
     if hooks::codex_hooks_supported() {
-        let codex_hooks = hooks::default_codex_hooks();
+        // Codex also accepts inline `[hooks]` tables in `config.toml`; the
+        // standalone JSON file is the additive, non-destructive install point.
+        let codex_hooks = roots.codex_home.join("hooks.json");
         let codex_targets = [
             hooks::HookTarget::CodexPreCompact,
             hooks::HookTarget::CodexSessionStart,
@@ -1373,8 +1375,8 @@ fn main() -> Result<()> {
             trigger,
             json,
         } => cmd_eval(&cli, &cfg, session, strategy.as_deref(), *trigger, *json),
-        Cmd::InstallHooks => cmd_install_hooks(false),
-        Cmd::UninstallHooks => cmd_install_hooks(true),
+        Cmd::InstallHooks => cmd_install_hooks(false, &roots(&cli)),
+        Cmd::UninstallHooks => cmd_install_hooks(true, &roots(&cli)),
         Cmd::Hook { event } => cmd_hook(event),
         Cmd::Report { strict } => cmd_report(&cli, *strict),
         Cmd::Events {
