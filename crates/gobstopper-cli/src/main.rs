@@ -77,9 +77,14 @@ enum Cmd {
         /// Codex only: emit a real `compacted` record (provider window
         /// chain + replacement_history) instead of a plain digest line.
         /// Experimental — shape is verified against real rollouts but
-        /// not yet validated against live resume.
+        /// not yet validated against live resume. Requires an explicit
+        /// trust flag until live qualification completes.
         #[arg(long)]
         experimental_compacted: bool,
+        /// Trust the experimental Codex `compacted`-record writer for
+        /// this invocation. Default remains guarded.
+        #[arg(long)]
+        trust_experimental_compacted: bool,
     },
     /// Check a transcript for resume-breaking defects (broken parent
     /// chains, orphaned tool calls, malformed compaction records).
@@ -980,9 +985,12 @@ fn cmd_apply(
     yes: bool,
     no_backup: bool,
     experimental_compacted: bool,
+    trust_experimental_compacted: bool,
 ) -> Result<()> {
     if no_backup { bail!("snapshots are mandatory; --no-backup is no longer supported"); }
-    if experimental_compacted { bail!("custom compacted records are quarantined pending live qualification"); }
+    if experimental_compacted && !trust_experimental_compacted {
+        bail!("custom compacted records are experimental; pass --trust-experimental-compacted to use them");
+    }
     let d = find_session(cli, cfg, session)?;
     let mut resolved = cfg.resolve(
         d.handle.provider,
@@ -1426,6 +1434,7 @@ fn main() -> Result<()> {
             yes,
             no_backup,
             experimental_compacted,
+            trust_experimental_compacted,
         } => cmd_apply(
             &cli,
             &cfg,
@@ -1436,6 +1445,7 @@ fn main() -> Result<()> {
             *yes,
             *no_backup,
             *experimental_compacted,
+            *trust_experimental_compacted,
         ),
         Cmd::Verify { session, json } => cmd_verify(&cli, &cfg, session, *json),
         Cmd::Undo { session, sha, yes } => {
