@@ -1,18 +1,35 @@
 //! Local strategy benchmark.
 //!
-//! Generates synthetic Codex transcripts with varying tool-output history,
-//! runs every built-in strategy against each, and prints a CSV of actual
-//! byte reduction, projected token reduction, elapsed time and structural
-//! integrity. This is an offline proxy benchmark: it does not exercise
-//! provider APIs, cache economics, or task completion.
+//! Generates synthetic transcripts with varying tool-output history,
+//! runs every built-in strategy against each in an isolated temp workdir,
+//! and prints a CSV of actual byte reduction, projected token reduction,
+//! elapsed time and structural integrity. This is an offline proxy
+//! benchmark: it does not exercise provider APIs, cache economics, or
+//! task completion.
 
 use gobstopper_core::strategy::{builtin_strategies, PolicyConfig};
 use gobstopper_core::Transcript;
 use serde_json::json;
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
-use std::time::Instant;
+use std::path::{Path, PathBuf};
+use std::time::{Instant, SystemTime};
+
+fn bench_root() -> PathBuf {
+    let mut dir = std::env::temp_dir();
+    let now = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    dir.push(format!("gobstopper-bench-{now}-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&dir);
+    fs::create_dir_all(&dir).expect("create bench workdir");
+    dir
+}
+
+fn cleanup(root: &Path) {
+    let _ = fs::remove_dir_all(root);
+}
 
 fn make_codex(tool_outputs: usize, output_size: usize) -> (Transcript, Vec<String>) {
     let mut lines = vec![json!({"type":"session_meta","payload":{"id":"bench"}}).to_string()];
@@ -41,6 +58,7 @@ fn make_codex(tool_outputs: usize, output_size: usize) -> (Transcript, Vec<Strin
 }
 
 fn main() {
+    let root = bench_root();
     let policy = PolicyConfig {
         trigger_tokens: 1,
         floor_tokens: 0,
@@ -71,7 +89,8 @@ fn main() {
             let mut errors = 0usize;
             if let Some(plan) = plan {
                 after = plan.context_tokens_after;
-                let tmp = PathBuf::from(format!("/tmp/gobstopper-bench-{}-{pairs}-{output_size}.jsonl", strat.id()));
+                let mut tmp = root.clone();
+                tmp.push(format!("{}-{pairs}-{output_size}.jsonl", strat.id()));
                 fs::write(&tmp, lines.join("\n") + "\n").ok();
                 match gobstopper_adapters::codex::apply(&tmp, &plan.edits) {
                     Ok(_) => {
@@ -99,4 +118,5 @@ fn main() {
             .unwrap();
         }
     }
+    cleanup(&root);
 }
