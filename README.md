@@ -156,14 +156,15 @@ a private `codex app-server --listen stdio://` process — no daemon
 required. `verify` checks resume-validity, `undo`/`vault` give reversible
 compaction via a content-addressed snapshot store, `policy-check` accepts
 `--quota-pressure`, and every compaction emits a numeric
-`compaction-events-v1` record. The agentic driver interface
-(`EditorDriver`, `EditorCall` schema) is defined and falls back to the
-`auto` rubric until a model backend is wired in.
+`compaction-events-v1` record. The `agentic` strategy runs an external
+editor command (`preset.command`) that returns bounded `Edit` plans —
+`hraness/agentmixer`'s `gobstopper-editor` shim is the reference backend —
+and falls back to the `auto` rubric when no command is configured.
 
 See [docs/design.md](docs/design.md) for the research basis and
 [docs/roadmap.md](docs/roadmap.md) for the phased plan — including how
 gobstopper shares foundations with oompa (control plane), aicharts
-(measurement), and the agentrouter task runtime (editor-model backend for
+(measurement), and the agentmixer task runtime (editor-model backend for
 the `agentic` strategy).
 
 ## License
