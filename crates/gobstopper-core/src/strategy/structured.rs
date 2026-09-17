@@ -1,6 +1,6 @@
 use super::{PolicyConfig, Strategy};
-use crate::model::{ItemKind, Transcript};
-use crate::plan::{CompactionPlan, DigestBlock, Edit};
+use crate::model::Transcript;
+use crate::plan::{CompactionPlan, Edit};
 
 /// Structured: extract a field-oriented digest of the session (goal,
 /// decisions, files, open tasks), elide everything the digest covers,
@@ -36,30 +36,15 @@ impl Strategy for StructuredStrategy {
             return None;
         }
 
-        let digest = DigestBlock {
-            goal: transcript
-                .items
-                .iter()
-                .find(|i| i.kind == ItemKind::User)
-                .map(|i| i.label.clone()),
-            decisions: Vec::new(),
-            files_touched: Vec::new(),
-            open_tasks: Vec::new(),
-            covers_items: covered.len(),
-        };
-
         // Elide every elidable item inside the covered region; the digest
         // stands in for their content. Recent tail stays untouched.
-        let covered_lines: Vec<usize> = covered
-            .iter()
-            .filter(|i| i.elidable_bytes.is_some())
-            .map(|i| i.line_index)
-            .collect();
-        let elided_tokens: u64 = covered
-            .iter()
-            .filter(|i| i.elidable_bytes.is_some())
-            .map(|i| i.est_tokens)
-            .sum();
+        let protected: std::collections::HashSet<usize> = transcript.items.iter().rev()
+            .filter(|i| i.elidable_bytes.is_some()).take(policy.keep_recent_tool_outputs)
+            .map(|i| i.line_index).collect();
+        let eligible: Vec<_> = covered.iter()
+            .filter(|i| i.elidable_bytes.is_some() && !protected.contains(&i.line_index)).collect();
+        let covered_lines: Vec<usize> = eligible.iter().map(|i| i.line_index).collect();
+        let elided_tokens: u64 = eligible.iter().map(|i| i.estimated_elision_savings()).sum();
 
         let mut edits = Vec::new();
         if !covered_lines.is_empty() {
@@ -68,12 +53,12 @@ impl Strategy for StructuredStrategy {
                 stub_template: super::elide::DEFAULT_STUB.to_string(),
             });
         }
-        edits.push(Edit::InjectDigest { digest });
+        if edits.is_empty() { return None; }
 
         Some(CompactionPlan {
             strategy: self.id().to_string(),
             rationale: format!(
-                "context {before} tokens exceeds trigger {}; digest covers {} items, {} tail items kept verbatim",
+                "context {before} tokens exceeds trigger {}; masking fallback over {} items, {} tail items kept; semantic summary requires a content-authorized plugin",
                 policy.trigger_tokens,
                 tail_start,
                 transcript.items.len() - tail_start

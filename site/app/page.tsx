@@ -8,14 +8,13 @@ import {
   MarketingProofFrame,
   MarketingQuestionList,
   MarketingSection,
-  MarketingSiteHeader,
   MarketingTrustBoundary,
   ProductHero,
 } from "@hraness/design-kit/react/server";
-import { AskAiAboutThis } from "@hraness/ui";
 
+import { SiteHeader, SiteFooter } from "./_components/site-chrome";
 import { publishedRelease } from "./publication";
-import { readmeLead, readmeTitle } from "./readme.generated";
+import { readmeLead } from "./readme.generated";
 
 function TopicIcon({ slug }: Readonly<{ slug: string }>) {
   return (
@@ -34,39 +33,39 @@ const primitives = [
   {
     icon: "session-detection",
     label: "Session detection",
-    summary: "Scans Codex and Claude Code transcript stores for live and idle sessions, reading each provider's own token-usage records — real context size, not an estimate.",
+    summary: "Scans Codex and Claude Code transcript stores for live and idle sessions, reading each provider's own token-usage records — real context size where available, with a fallback estimate otherwise.",
   },
   {
     icon: "edit-ir",
     label: "A small edit IR",
-    summary: "Every strategy lowers to the same edits — elide, inject digest, provider compact — applied in place so parent chains and ordinals never break.",
+    summary: "Every strategy lowers to the same edits — elide, inject digest, provider compact — and the host validates the candidate before publication. Provider linkage (parent chains, ordinals) is never removed, only rewritten in place within a line.",
   },
   {
     icon: "strategies",
     label: "Strategies",
-    summary: "auto picks by transcript shape; sawtooth delegates to the provider's native compaction; elide masks stale tool output; structured writes a state-card digest; agentic hands bounded keep/elide/summarize tools to a small editor model.",
+    summary: "auto picks by transcript shape; sawtooth delegates to the provider's native compaction; elide masks stale tool output; structured emits a conservative state-card placeholder; agentic is reserved for a bounded editor-model backend.",
   },
   {
     icon: "presets-config",
-    label: "Presets and config",
-    summary: "Global defaults, per-provider and per-session overrides, named presets, and a preset.command escape hatch that runs your own edit program over normalized transcript JSON.",
+    label: "Presets, plugins and config",
+    summary: "Global defaults, per-provider and per-session overrides, named presets, an explicitly-trusted legacy command hook, and versioned plugin bundles with exact artifact identity and host-side edit validation.",
   },
   {
     icon: "undo-vault",
     label: "Undo vault",
-    summary: "Every apply snapshots the transcript into a content-addressed vault first. gobstopper undo restores byte-identical — and the undo itself is snapshotted.",
+    summary: "Every apply snapshots the transcript into a content-addressed vault first. gobstopper undo restores byte-identical bytes into a new fork — the original transcript is never overwritten by a standalone compaction.",
   },
   {
     icon: "telemetry-eval",
     label: "Telemetry and eval",
-    summary: "Every mutation emits a compaction event for dashboards. gobstopper eval runs all strategies on temp copies and scores what the compacted session still recalls.",
+    summary: "Every mutation emits a compaction event for dashboards. gobstopper eval runs all strategies on temp copies and scores structural retention; it is a regression signal, not a live cost measurement.",
   },
 ] as const;
 
 const trust = [
   {
     label: "Transcripts are never destroyed",
-    detail: "Rewrites are in-place stubs, not deletions — provider resume chains stay valid. A verified snapshot exists before any byte changes, and gobstopper verify checks structural integrity after.",
+    detail: "Rewrites replace payload content inside existing lines, never deleting records, so provider resume chains stay valid. Standalone compaction publishes a separate, verified transcript copy; the source file is left unchanged. A verified snapshot exists before any byte changes, and gobstopper verify checks structural integrity after.",
   },
   {
     label: "Provider keeps live authority",
@@ -74,22 +73,22 @@ const trust = [
   },
   {
     label: "Honest outcomes",
-    detail: "A provider-side compaction that fails is recorded as failed — quota rejections included. Eval reports probe recall and verify findings, not just token deltas.",
+    detail: "A provider-side compaction that fails is recorded as failed — quota rejections included. Eval reports structural retention and verify findings, not measured subscription savings. Public claims distinguish occupancy models from completed benchmarks.",
   },
 ] as const;
 
 const questions = [
   {
     question: "How much does it actually save?",
-    answer: "Compaction is a sawtooth: steady-state cost per turn is roughly (trigger+floor)/2. Against a 1M-window provider default (~480k average input), a 250k trigger lands near 3.3x fewer input tokens; an aggressive 150k/20k setting near 5.6x. The best case — long tool-heavy sessions where elision drives the floor toward zero — approaches 10x.",
+    answer: "Compaction lowers context occupancy in a sawtooth model: average context per turn is roughly (trigger+floor)/2. A 250k/40k policy is ~3.3x lower occupancy than a 1M-window default, and 150k/20k is ~5.6x lower. These are occupancy projections, not measured subscription savings: real cost depends on cache hit rates, billing for summary turns, re-fetches from lost detail, and how often compaction runs. We report file-byte changes and observed provider usage where available; we do not claim dollar or quota savings without a completed benchmark.",
   },
   {
     question: "Does it edit my live session?",
-    answer: "No. For a session the provider is actively serving, Gobstopper delegates to provider-native compaction — Codex thread/compact/start over the app-server protocol, Claude /compact through stream-json. Local rewrites only touch idle transcripts, and always with a vault snapshot first.",
+    answer: "Standalone `apply` or `watch` produces a separate, validated transcript copy and leaves the source unchanged. For a session the provider is actively serving, Gobstopper delegates to provider-native compaction — Codex thread/compact/start over the app-server protocol, Claude /compact through stream-json. Local rewrites only touch idle transcripts, and always with a vault snapshot first.",
   },
   {
     question: "What if a compaction loses something important?",
-    answer: "gobstopper undo restores the exact bytes. gobstopper eval replays every strategy against a transcript copy and reports probe recall — which verbatim details survived — plus post-rewrite integrity findings, so you can pick a strategy with evidence before trusting it live.",
+    answer: "gobstopper undo restores the exact bytes into a new fork, leaving the current transcript untouched. gobstopper eval replays every strategy against a transcript copy and reports probe recall — which verbatim details survived — plus post-rewrite integrity findings, so you can pick a strategy with evidence before trusting it live.",
   },
   {
     question: "Which agents does it support?",
@@ -97,7 +96,7 @@ const questions = [
   },
   {
     question: "Can I run my own compaction logic?",
-    answer: "Yes — preset.command pipes normalized transcript JSON to any program and applies the edits it returns. The agentic preset uses the same seam: a bounded editor model that may keep, elide, summarize, or defer each item.",
+    answer: "Yes — a `preset.command` pipes normalized transcript JSON to a program and applies the edits it returns, or a versioned `gobstopper-plugin.json` bundle declares capabilities and a checked executable. Host-side validation bounds every proposal: no edit can grow the transcript, skip protected recent output, bypass linkage checks, or exceed digest size. Trusted subprocesses are not security sandboxes, so explicit trust and artifact identity are required.",
   },
   {
     question: "Who made it?",
@@ -105,77 +104,45 @@ const questions = [
   },
 ] as const;
 
-const navigation = [
-  { href: "#model", label: "Model" },
-  { href: "#interfaces", label: "Interfaces" },
-  { href: "#install", label: "Install" },
-  { href: "/docs", label: "Docs" },
-  { href: repository, label: "GitHub" },
-] as const;
-
-function BrandMark() {
-  return <span aria-hidden="true" className="brand-mark">🍬</span>;
-}
+const structuredData = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: questions.map(({ answer, question }) => ({
+    "@type": "Question",
+    acceptedAnswer: { "@type": "Answer", text: answer },
+    name: question,
+  })),
+};
 
 export default function Home() {
-  const structuredData = [
-    {
-      "@context": "https://schema.org",
-      "@type": "SoftwareSourceCode",
-      codeRepository: repository,
-      description: readmeLead,
-      license: "https://opensource.org/license/mit",
-      name: readmeTitle,
-      programmingLanguage: "Rust",
-      runtimePlatform: "Cargo",
-      url: "https://gobstopper.sh",
-    },
-    {
-      "@context": "https://schema.org",
-      "@type": "FAQPage",
-      mainEntity: questions.map(({ answer, question }) => ({
-        "@type": "Question",
-        acceptedAnswer: { "@type": "Answer", text: answer },
-        name: question,
-      })),
-    },
-  ];
-
   return (
     <div data-hraness-marketing-preset="editorial">
       <script
         dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
         type="application/ld+json"
       />
-      <a className="skip-link" href="#main">Skip to content</a>
-      <MarketingSiteHeader
-        className="hraness-material-chrome"
-        action={{ href: "#install", label: "Install Gobstopper" }}
-        brand={<><BrandMark />Gobstopper</>}
-        brandLabel="Gobstopper home"
-        links={navigation}
-      />
+      <SiteHeader path="/" />
 
       <main id="main" tabIndex={-1}>
         <MarketingPage>
           <div className="hraness-material-wall">
-          <ProductHero
-            align="start"
-            actions={[
-              { href: "#install", label: "Install Gobstopper" },
-              { href: "/docs", label: "Read the docs" },
-            ]}
-            boundary={footnote}
-            className="gobstopper-marketing-hero"
-            eyebrow=""
-            frame={(
-              <MarketingProofFrame
-                className="hraness-material-pane"
-                caption="Example session: find the heavy sessions, preview the edit, then let the watcher hold the threshold."
-                credit="From the README"
-                title="Watch one long session get cheaper"
-              >
-                <pre className="transcript" tabIndex={0}><code>{`$ gobstopper detect
+            <ProductHero
+              align="start"
+              actions={[
+                { href: "#install", label: "Install Gobstopper" },
+                { href: "/docs", label: "Read the docs" },
+              ]}
+              boundary={footnote}
+              className="gobstopper-marketing-hero"
+              eyebrow=""
+              frame={(
+                <MarketingProofFrame
+                  className="hraness-material-pane"
+                  caption="Example session: find the heavy sessions, preview the edit, then let the watcher hold the threshold."
+                  credit="From the README"
+                  title="Watch one long session get cheaper"
+                >
+                  <pre className="transcript" tabIndex={0}><code>{`$ gobstopper detect
 claude_code  4f3a…  active   context ~231k tokens   lifetime ~416M in
 
 $ gobstopper plan 4f3a --strategy auto
@@ -183,13 +150,13 @@ context: 93k -> ~40k tokens (saves ~53k)
 strategy: elide — 10 stale tool outputs masked, tail preserved
 
 $ gobstopper watch --trigger 250000`}</code></pre>
-              </MarketingProofFrame>
-            )}
-            heading={heading}
-            headingId="hero-title"
-            name=""
-            summary={readmeLead}
-          />
+                </MarketingProofFrame>
+              )}
+              heading={heading}
+              headingId="hero-title"
+              name=""
+              summary={readmeLead}
+            />
           </div>
 
           <MarketingPrimitives
@@ -224,7 +191,7 @@ gobstopper verify <session> && gobstopper undo <session>`}</code></pre>
               },
               {
                 label: "Watcher and hooks",
-                summary: "A polling daemon that stages a plan before the threshold and swaps it in when crossed — or provider hooks that snapshot and log around native compaction.",
+                summary: "A polling daemon that stages a plan before the threshold and publishes a validated copy when crossed — or provider hooks that snapshot and log around native compaction.",
                 example: (
                   <>
                     <TopicIcon slug="watcher" />
@@ -235,7 +202,7 @@ gobstopper install-hooks   # Claude settings + Codex hooks.json`}</code></pre>
               },
               {
                 label: "Your program",
-                summary: "preset.command receives normalized transcript JSON and returns edits. The agentic preset runs a bounded editor model over the same seam.",
+                summary: "preset.command receives normalized transcript JSON and returns edits. A versioned plugin bundle declares capabilities and a checked executable for the same seam.",
                 example: (
                   <>
                     <TopicIcon slug="custom-program" />
@@ -346,16 +313,7 @@ gobstopper watch`}</code></pre>
         </MarketingPage>
       </main>
 
-      <AskAiAboutThis className="ask-ai" url="https://gobstopper.sh" />
-
-      <div className="site-footer">
-        <p>Gobstopper is open source for developers and the agents working beside them.</p>
-        <nav aria-label="Project links">
-          <a href="/docs">Docs</a>
-          <a href={repository}>hraness/gobstopper</a>
-          <a href="https://hraness.com/projects">Hraness projects</a>
-        </nav>
-      </div>
+      <SiteFooter path="/" />
     </div>
   );
 }

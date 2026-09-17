@@ -15,7 +15,7 @@ use gobstopper_core::plan::{DigestBlock, Edit};
 use gobstopper_core::{Provider, Transcript};
 use serde_json::Value;
 use std::fs;
-use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 
 use crate::AdapterError;
@@ -50,25 +50,22 @@ fn value_len(v: &Value) -> usize {
 /// on `function_call_output` and an array of `input_text` blocks on
 /// `custom_tool_call_output`.
 fn elidable_bytes(payload: &Value) -> Option<u64> {
-    let output = payload.get("output")?;
-    let bytes = match output {
-        Value::String(s) => s.len(),
-        Value::Array(blocks) => blocks
-            .iter()
-            .filter_map(|b| b.get("text").and_then(Value::as_str).map(str::len))
-            .sum(),
-        other => value_len(other),
-    };
-    (bytes > 256).then_some(bytes as u64)
+    if !matches!(payload.get("type").and_then(Value::as_str), Some("function_call_output" | "custom_tool_call_output")) { return None; }
+    let bytes = elidable_output_bytes(payload.get("output")?);
+    (bytes > 0).then_some(bytes)
 }
 
 /// Parse a full rollout file into a normalized transcript.
 pub fn load(handle: SessionHandle) -> Result<Transcript, AdapterError> {
-    let file = fs::File::open(&handle.path).map_err(|e| AdapterError::Io {
-        path: handle.path.clone(),
-        source: e,
-    })?;
-    let mut items = Vec::new();
+    let bytes = crate::transaction::read(&handle.path)?;
+    load_bytes(handle, &bytes)
+}
+
+pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, AdapterError> {
+    if bytes.len() as u64 > crate::transaction::MAX_TRANSCRIPT_BYTES { return Err(AdapterError::InvalidEdit("transcript exceeds byte limit")); }
+    let file = std::io::Cursor::new(bytes);
+    let mut items: Vec<TranscriptItem> = Vec::new();
+    let mut window_start = 0;
     let mut usage = UsageSample::default();
     for (line_index, line) in BufReader::new(file).lines().enumerate() {
         let line = line.map_err(|e| AdapterError::Io {
@@ -86,9 +83,7 @@ pub fn load(handle: SessionHandle) -> Result<Transcript, AdapterError> {
                 let role = payload.get("role").and_then(Value::as_str);
                 let kind = classify(ptype, role);
                 let elidable = elidable_bytes(payload);
-                let est = elidable
-                    .map(|b| estimate_tokens(b as usize))
-                    .unwrap_or_else(|| estimate_tokens(value_len(payload)));
+                let est = estimate_tokens(value_len(payload));
                 items.push(TranscriptItem {
                     line_index,
                     kind,
@@ -98,6 +93,12 @@ pub fn load(handle: SessionHandle) -> Result<Transcript, AdapterError> {
                 });
             }
             Some("compacted") => {
+                for item in &mut items[window_start..] {
+                    item.est_tokens = 0;
+                    item.elidable_bytes = None;
+                }
+                window_start = items.len();
+                usage.context_tokens = 0;
                 // Post-compaction files carry live context inside
                 // `replacement_history`; its tool outputs stay elidable.
                 let payload = &record["payload"];
@@ -111,8 +112,7 @@ pub fn load(handle: SessionHandle) -> Result<Transcript, AdapterError> {
                     .map(|items| {
                         items
                             .iter()
-                            .filter_map(|i| i.get("output").map(elidable_output_bytes))
-                            .filter(|b| *b > 256)
+                            .filter_map(elidable_bytes)
                             .sum()
                     })
                     .unwrap_or(0);
@@ -120,7 +120,8 @@ pub fn load(handle: SessionHandle) -> Result<Transcript, AdapterError> {
                 items.push(TranscriptItem {
                     line_index,
                     kind: ItemKind::ToolResult,
-                    est_tokens: estimate_tokens(bytes.max(256) as usize),
+                    est_tokens: estimate_tokens(payload.get("replacement_history").map(value_len).unwrap_or(0)),
+
                     elidable_bytes: elidable,
                     label: format!("compacted@{line_index}"),
                 });
@@ -145,7 +146,7 @@ fn absorb_usage(record: &Value, sample: &mut UsageSample) {
             .unwrap_or(0)
     };
     // `input_tokens` already includes the cached portion on this schema.
-    sample.context_tokens = get("usage", "input_tokens") + get("usage", "output_tokens");
+    sample.context_tokens = get("usage", "input_tokens").saturating_add(get("usage", "output_tokens"));
     sample.lifetime_input_tokens = get("thread_token_usage", "input_tokens");
     sample.lifetime_cached_tokens = get("thread_token_usage", "cached_input_tokens");
 }
@@ -153,24 +154,11 @@ fn absorb_usage(record: &Value, sample: &mut UsageSample) {
 /// Cheap usage pass for `detect`: read only the tail of the file.
 pub fn scan_usage(path: &Path) -> UsageSample {
     let mut sample = UsageSample::default();
-    let Ok(mut file) = fs::File::open(path) else {
-        return sample;
-    };
-    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
-    let start = len.saturating_sub(TAIL_SCAN_BYTES);
-    if file.seek(SeekFrom::Start(start)).is_err() {
-        return sample;
-    }
-    let mut buf = String::new();
-    if file.read_to_string(&mut buf).is_err() {
-        return sample;
-    }
-    for line in buf.lines() {
-        let Ok(record) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
-        if record.get("type").and_then(Value::as_str) == Some("token_usage_record") {
-            absorb_usage(&record, &mut sample);
+    for record in crate::tail_records(path, TAIL_SCAN_BYTES) {
+        match record.get("type").and_then(Value::as_str) {
+            Some("token_usage_record") => absorb_usage(&record, &mut sample),
+            Some("compacted") => sample.context_tokens = 0,
+            _ => {},
         }
     }
     sample
@@ -205,14 +193,7 @@ pub fn scan_meta(path: &Path) -> (Option<String>, Option<PathBuf>) {
 
 /// Byte size of an `output` field, shared by classify and rewrite paths.
 fn elidable_output_bytes(output: &Value) -> u64 {
-    (match output {
-        Value::String(s) => s.len(),
-        Value::Array(blocks) => blocks
-            .iter()
-            .filter_map(|b| b.get("text").and_then(Value::as_str).map(str::len))
-            .sum(),
-        other => value_len(other),
-    }) as u64
+    crate::payload::eligible_bytes(output)
 }
 
 fn stub_for(template: &str, bytes: u64, kind: &str) -> String {
@@ -224,12 +205,8 @@ fn stub_for(template: &str, bytes: u64, kind: &str) -> String {
 /// Apply an elide edit in place: rewrite only the `output` field of the
 /// targeted records. Line order and count are preserved — the rollout's
 /// `ordinal` sequence is never disturbed.
-fn apply_elide(path: &Path, line_indexes: &[usize], stub_template: &str) -> Result<u64, AdapterError> {
+fn apply_elide(raw: &str, line_indexes: &[usize], stub_template: &str) -> (String, u64) {
     let targets: std::collections::HashSet<usize> = line_indexes.iter().copied().collect();
-    let raw = fs::read_to_string(path).map_err(|e| AdapterError::Io {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
     let mut reclaimed = 0u64;
     let mut out = String::with_capacity(raw.len());
     for (idx, line) in raw.split_inclusive('\n').enumerate() {
@@ -251,15 +228,6 @@ fn apply_elide(path: &Path, line_indexes: &[usize], stub_template: &str) -> Resu
                     .and_then(Value::as_str)
                     .unwrap_or("output")
                     .to_string();
-                let stub_value = |old: u64, was_array: bool| {
-                    if was_array {
-                        serde_json::json!([
-                            {"type": "input_text", "text": stub_for(stub_template, old, &kind)}
-                        ])
-                    } else {
-                        Value::String(stub_for(stub_template, old, &kind))
-                    }
-                };
                 if is_compacted {
                     // Stub each output inside replacement_history in place.
                     let mut stubbed_any = false;
@@ -268,15 +236,11 @@ fn apply_elide(path: &Path, line_indexes: &[usize], stub_template: &str) -> Resu
                         .and_then(Value::as_array_mut)
                     {
                         for it in items.iter_mut() {
-                            let Some(o) = it.get("output") else { continue };
-                            let old = elidable_output_bytes(o);
-                            if old <= 256 {
-                                continue;
-                            }
-                            let was_array = o.is_array();
-                            it["output"] = stub_value(old, was_array);
-                            reclaimed += old;
-                            stubbed_any = true;
+                            let Some(old) = elidable_bytes(it) else { continue };
+                            let Some(output) = it.get_mut("output") else { continue };
+                            let changed = crate::payload::elide(output, stub_for(stub_template, old, &kind));
+                            reclaimed += changed;
+                            stubbed_any |= changed > 0;
                         }
                     }
                     // Nothing met the floor — pass the original bytes
@@ -286,18 +250,13 @@ fn apply_elide(path: &Path, line_indexes: &[usize], stub_template: &str) -> Resu
                         continue;
                     }
                 } else {
-                    let Some(o) = payload.get("output") else {
+                    let Some(old) = elidable_bytes(payload) else {
                         out.push_str(line);
                         continue;
                     };
-                    let old = elidable_output_bytes(o);
-                    if old <= 256 {
-                        out.push_str(line);
-                        continue;
-                    }
-                    let was_array = o.is_array();
-                    payload["output"] = stub_value(old, was_array);
-                    reclaimed += old;
+                    let changed = crate::payload::elide(&mut payload["output"], stub_for(stub_template, old, &kind));
+                    if changed == 0 { out.push_str(line); continue; }
+                    reclaimed += changed;
                 }
                 out.push_str(&serde_json::to_string(&record).unwrap_or_else(|_| trimmed.to_string()));
                 if line.ends_with('\n') {
@@ -307,8 +266,7 @@ fn apply_elide(path: &Path, line_indexes: &[usize], stub_template: &str) -> Resu
             Err(_) => out.push_str(line),
         }
     }
-    crate::write_if_unchanged(path, raw.as_bytes(), &out)?;
-    Ok(reclaimed)
+    (out, reclaimed)
 }
 
 pub(crate) fn digest_text(digest: &DigestBlock) -> String {
@@ -332,13 +290,17 @@ pub(crate) fn digest_text(digest: &DigestBlock) -> String {
 /// Execute a plan's edits against a rollout file. `ProviderCompact` is a
 /// no-op here — the CLI routes it to the provider instead.
 pub fn apply(path: &Path, edits: &[Edit]) -> Result<u64, AdapterError> {
-    let mut reclaimed = 0u64;
+    crate::transaction::apply(Provider::Codex, path, |candidate| apply_inner(candidate, edits))
+}
+
+fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
+    let mut raw = original.to_string();
     for edit in edits {
         match edit {
             Edit::Elide {
                 line_indexes,
                 stub_template,
-            } => reclaimed += apply_elide(path, line_indexes, stub_template)?,
+            } => raw = apply_elide(&raw, line_indexes, stub_template).0,
             Edit::InjectDigest { digest } => {
                 // Appended as a user message; Codex rebuilds context from
                 // rollout items on resume, so a trailing state card lands
@@ -353,22 +315,12 @@ pub fn apply(path: &Path, edits: &[Edit]) -> Result<u64, AdapterError> {
                         "content": [{"type": "input_text", "text": text}],
                     }
                 });
-                let mut f = fs::OpenOptions::new()
-                    .append(true)
-                    .open(path)
-                    .map_err(|e| AdapterError::Io {
-                        path: path.to_path_buf(),
-                        source: e,
-                    })?;
-                writeln!(f, "{line}").map_err(|e| AdapterError::Io {
-                    path: path.to_path_buf(),
-                    source: e,
-                })?;
+                crate::transaction::append_record(&mut raw, &line)?;
             }
             Edit::ProviderCompact { .. } => {}
         }
     }
-    Ok(reclaimed)
+    Ok(raw)
 }
 
 pub fn provider() -> Provider {

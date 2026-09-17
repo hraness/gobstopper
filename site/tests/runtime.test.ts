@@ -110,13 +110,13 @@ describe("built Gobstopper site", () => {
       expect(home).toContain(publishedRelease === null ? "First Gobstopper release in preparation" : `Current verified release · v${publishedRelease.version}`);
       expect(home).toContain('<link rel="canonical" href="https://gobstopper.sh"');
       expect(home).toContain('aria-label="Ask AI about this"');
-      expect(home).toContain('<meta property="og:image" content="https://gobstopper.sh/opengraph-image"');
+      expect(home).toMatch(/<meta\s+property="og:image"\s+content="https:\/\/gobstopper\.sh\/opengraph-image(?:\?[^"]+)?"/u);
       expect(home).toContain('<meta name="twitter:card" content="summary_large_image"');
-      expect(home).toContain('<meta name="twitter:image" content="https://gobstopper.sh/opengraph-image"');
+      expect(home).toMatch(/<meta\s+name="twitter:image"\s+content="https:\/\/gobstopper\.sh\/opengraph-image(?:\?[^"]+)?"/u);
       expect(docsResponse.status).toBe(200);
       expect(docs).toContain('<link rel="canonical" href="https://gobstopper.sh/docs"');
       expect(docs).toContain('id="install--use"');
-      expect(docs).toContain('<meta property="og:image" content="https://gobstopper.sh/docs/opengraph-image"');
+      expect(docs).toMatch(/<meta\s+property="og:image"\s+content="https:\/\/gobstopper\.sh\/docs\/opengraph-image(?:\?[^"]+)?"/u);
       expect(robotsResponse.status).toBe(200);
       expect(robots).toContain("Sitemap: https://gobstopper.sh/sitemap.xml");
       expect(llmsResponse.status).toBe(200);

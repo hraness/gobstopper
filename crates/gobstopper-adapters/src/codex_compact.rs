@@ -714,7 +714,9 @@ mod tests {
         assert_eq!(kinds.len(), 5);
         assert_eq!(kinds.last(), Some(&gobstopper_core::model::ItemKind::ToolResult));
         assert_eq!(transcript.items.last().unwrap().line_index, lines.len());
-        assert_eq!(transcript.usage.context_tokens, 105);
+        assert_eq!(transcript.usage.context_tokens, 0);
+        assert!(transcript.items[..4].iter().all(|i| i.est_tokens == 0 && i.elidable_bytes.is_none()));
+        assert!(transcript.estimated_context_tokens() > 0);
     }
 
     #[test]

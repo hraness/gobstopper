@@ -85,7 +85,10 @@ fn is_hex(s: &str) -> bool {
 fn read_index(root: &Path) -> anyhow::Result<Vec<VaultEntry>> {
     let index = index_path(root);
     let file = match fs::File::open(&index) {
-        Ok(f) => f,
+        Ok(f) => {
+            fs2::FileExt::try_lock_shared(&f)?;
+            f
+        },
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(e) => return Err(e).with_context(|| format!("open {}", index.display())),
     };
@@ -103,18 +106,32 @@ fn read_index(root: &Path) -> anyhow::Result<Vec<VaultEntry>> {
 }
 
 fn append_index(root: &Path, entry: &VaultEntry) -> anyhow::Result<()> {
-    fs::create_dir_all(root)
-        .with_context(|| format!("create vault root {}", root.display()))?;
+    crate::transaction::private_dir(root)?;
     let index = index_path(root);
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&index)
-        .with_context(|| format!("open {}", index.display()))?;
+    if fs::symlink_metadata(&index).is_ok_and(|m| !m.is_file()) {
+        bail!("vault index must be a regular file");
+    }
+    let mut options = fs::OpenOptions::new();
+    options.create(true).append(true).read(true);
+    #[cfg(unix)] {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&index).context("open vault index")?;
+    fs2::FileExt::try_lock_exclusive(&file)?;
     let mut line = serde_json::to_string(entry).context("serialize vault entry")?;
     line.push('\n');
-    file.write_all(line.as_bytes())
-        .with_context(|| format!("append {}", index.display()))
+    use std::io::{Read, Seek, SeekFrom};
+    if file.metadata()?.len() > 0 {
+        file.seek(SeekFrom::End(-1))?;
+        let mut last = [0];
+        file.read_exact(&mut last)?;
+        if last[0] != b'\n' { file.write_all(b"\n")?; }
+    }
+    file.write_all(line.as_bytes())?;
+    file.sync_all()?;
+    crate::transaction::sync_dir(root)?;
+    Ok(())
 }
 
 /// Snapshot `path` into the vault and record it in the index.
@@ -131,19 +148,24 @@ pub fn snapshot(
     strategy: Option<&str>,
     root: &Path,
 ) -> anyhow::Result<VaultEntry> {
-    let data = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    let data = crate::transaction::read(path)?;
     let sha256 = sha256_hex(&data);
 
+    crate::transaction::private_dir(root)?;
     let objects = objects_dir(root);
-    fs::create_dir_all(&objects).with_context(|| format!("create {}", objects.display()))?;
+    crate::transaction::private_dir(&objects)?;
     let object_path = objects.join(&sha256);
-    if !object_path.exists() {
+    if fs::symlink_metadata(&object_path).is_err() {
         // Temp + rename so a killed snapshot never leaves a
         // half-written object behind a valid digest name.
-        let tmp = objects.join(format!(".{sha256}.tmp-{}", std::process::id()));
-        fs::write(&tmp, &data).with_context(|| format!("write {}", tmp.display()))?;
-        fs::rename(&tmp, &object_path)
-            .with_context(|| format!("commit {}", object_path.display()))?;
+        match crate::transaction::publish_new(&object_path, &data) {
+            Ok(()) => {},
+            Err(crate::AdapterError::Io { source, .. }) if source.kind() == std::io::ErrorKind::AlreadyExists => {},
+            Err(e) => return Err(e.into()),
+        }
+    }
+    if crate::transaction::read(&object_path)? != data {
+        bail!("existing vault object failed integrity verification");
     }
 
     let entry = VaultEntry {
@@ -189,15 +211,11 @@ pub fn restore(sha256: &str, target: &Path, root: &Path) -> anyhow::Result<Vault
         );
     }
 
-    let tmp = PathBuf::from(format!(
-        "{}.gobstopper-restore-{}",
-        target.display(),
-        std::process::id()
-    ));
-    fs::write(&tmp, &data).with_context(|| format!("write {}", tmp.display()))?;
-    if let Err(e) = fs::rename(&tmp, target) {
-        let _ = fs::remove_file(&tmp);
-        return Err(e).with_context(|| format!("rename over {}", target.display()));
+    if target.exists() {
+        let before = crate::transaction::read(target)?;
+        crate::transaction::replace(target, &before, &data)?;
+    } else {
+        crate::transaction::publish_new(target, &data)?;
     }
     Ok(entry)
 }
@@ -219,6 +237,18 @@ pub fn list(root: &Path) -> anyhow::Result<Vec<VaultEntry>> {
     entries.reverse();
     entries.sort_by_key(|e| std::cmp::Reverse(e.ts));
     Ok(entries)
+}
+
+pub fn read_object(sha256: &str, root: &Path) -> anyhow::Result<Vec<u8>> {
+    if sha256.len() != 64 || !is_hex(sha256) { bail!("invalid snapshot digest"); }
+    let bytes = crate::transaction::read(&objects_dir(root).join(sha256))?;
+    if sha256_hex(&bytes) != sha256 { bail!("vault object failed integrity verification"); }
+    Ok(bytes)
+}
+
+pub fn latest_pre_compaction(path: &Path, root: &Path) -> anyhow::Result<Option<VaultEntry>> {
+    Ok(list(root)?.into_iter().find(|entry| entry.path == path
+        && !matches!(entry.strategy.as_deref(), Some("post-compact" | "pre-undo"))))
 }
 
 #[cfg(test)]

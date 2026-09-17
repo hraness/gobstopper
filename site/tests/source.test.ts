@@ -58,17 +58,15 @@ describe("Gobstopper site source contract", () => {
   });
 
   test("renders the README landing identity and the shared Ask AI links", async () => {
-    const [packageJson, home, docs, generated] = await Promise.all([
+    const [packageJson, chrome, generated] = await Promise.all([
       read("package.json"),
-      read("app/page.tsx"),
-      read("app/docs/page.tsx"),
+      read("app/_components/site-chrome.tsx"),
       read("app/readme.generated.ts"),
     ]);
     expect(packageJson).toContain('"@hraness/ui": "github:hraness/ui#v0.5.13"');
-    expect(packageJson).toContain('"@hraness/design-kit": "github:hraness/design-kit#v0.8.0"');
-    expect(home).toContain('import { AskAiAboutThis } from "@hraness/ui"');
-    expect(home).toContain('<AskAiAboutThis className="ask-ai" url="https://gobstopper.sh" />');
-    expect(docs).toContain('<AskAiAboutThis className="ask-ai" url="https://gobstopper.sh/docs" />');
+    expect(packageJson).toContain('"@hraness/design-kit": "github:hraness/design-kit#v0.10.0"');
+    expect(chrome).toContain('import { AskAiAboutThis } from "@hraness/ui"');
+    expect(chrome).toContain('url={absoluteUrl(path)}');
     expect(generated).toContain('export const readmeTitle = "gobstopper";');
     expect(generated).toContain("export const readmeHtml = ");
   });

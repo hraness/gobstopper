@@ -4,7 +4,7 @@ mod elide;
 mod sawtooth;
 mod structured;
 
-pub use agentic::AgenticStrategy;
+pub use agentic::{AgenticStrategy, EditorCall, EditorDriver};
 pub use auto::AutoStrategy;
 pub use elide::ElideStrategy;
 pub use sawtooth::SawtoothStrategy;

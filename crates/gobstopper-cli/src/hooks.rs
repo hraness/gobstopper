@@ -365,11 +365,13 @@ fn handle_inner(
             // provenance, then point the model at the undo path.
             snapshot_and_log(&payload, "post-compact", "applied", vault_root, log_path);
             let session_id = payload["session_id"].as_str().unwrap_or("unknown");
-            let context = format!(
-                "gobstopper: this session was just compacted by the provider. \
-                 A pre-compact snapshot of the full transcript is in the \
-                 gobstopper vault; restore it with `gobstopper undo {session_id}`."
-            );
+            let snapshot = payload["transcript_path"].as_str()
+                .and_then(|path| vault::latest_pre_compaction(Path::new(path), vault_root).ok().flatten());
+            let safe_id = session_id.len() <= 128 && session_id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'));
+            let context = match snapshot.filter(|entry| safe_id && entry.session_id == session_id && vault::read_object(&entry.sha256, vault_root).is_ok()) {
+                Some(entry) => format!("gobstopper: a verified pre-compact snapshot is available. Restore a separate copy with `gobstopper undo {session_id} --sha {}`; the current session remains unchanged.", entry.sha256),
+                None => "gobstopper: no pre-compact recovery snapshot has been verified for this session.".into(),
+            };
             let out = json!({
                 "hookSpecificOutput": {
                     "hookEventName": "SessionStart",
@@ -625,6 +627,54 @@ mod tests {
         let transcript = claude_transcript(&dir);
         let vault_root = dir.join("vault");
         let log = dir.join("events.jsonl");
+        let path = transcript.display();
+        // Pre-compact snapshot must exist before the post-compact SessionStart
+        // hook can point the model at a safe undo copy.
+        let pre = format!(
+            r#"{{"session_id":"sess-2","transcript_path":"{}","hook_event_name":"PreCompact"}}"#,
+            path
+        );
+        assert!(handle_inner("precompact", &pre, &vault_root, &log).unwrap().is_none());
+
+        let stdin = format!(
+            r#"{{"session_id":"sess-2","transcript_path":"{}","hook_event_name":"SessionStart","source":"compact"}}"#,
+            path
+        );
+        let out = handle_inner("session-start", &stdin, &vault_root, &log)
+            .unwrap()
+            .expect("compact source must emit additionalContext");
+        let doc: Value = serde_json::from_str(&out).unwrap();
+        let ctx = doc["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert_eq!(doc["hookSpecificOutput"]["hookEventName"], "SessionStart");
+        assert!(ctx.contains("gobstopper undo sess-2 --sha"), "got: {ctx}");
+        // Pointer only: neither transcript path nor content leaks.
+        assert!(!ctx.contains(&path.to_string()));
+        assert!(!ctx.contains("\"content\":\"hi\""));
+
+        // Provenance snapshot + event appended.
+        let index = fs::read_to_string(vault_root.join("index.jsonl")).unwrap();
+        let lines: Vec<&str> = index.lines().collect();
+        assert_eq!(lines.len(), 2);
+        let entry: Value = serde_json::from_str(lines[1]).unwrap();
+        assert_eq!(entry["strategy"], "post-compact");
+        let events: Vec<Value> = fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1]["outcome"], "applied");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn handle_session_start_compact_without_precompact_is_honest() {
+        let dir = tmpdir("session-start-no-pre");
+        let transcript = claude_transcript(&dir);
+        let vault_root = dir.join("vault");
+        let log = dir.join("events.jsonl");
         let stdin = format!(
             r#"{{"session_id":"sess-2","transcript_path":"{}","hook_event_name":"SessionStart","source":"compact"}}"#,
             transcript.display()
@@ -636,23 +686,7 @@ mod tests {
         let ctx = doc["hookSpecificOutput"]["additionalContext"]
             .as_str()
             .unwrap();
-        assert_eq!(doc["hookSpecificOutput"]["hookEventName"], "SessionStart");
-        assert!(ctx.contains("gobstopper undo sess-2"));
-        // Pointer only: neither transcript path nor content leaks.
-        assert!(!ctx.contains(&transcript.display().to_string()));
-        assert!(!ctx.contains("\"content\":\"hi\""));
-
-        // Provenance snapshot + event appended.
-        let index = fs::read_to_string(vault_root.join("index.jsonl")).unwrap();
-        let entry: Value = serde_json::from_str(index.lines().next().unwrap()).unwrap();
-        assert_eq!(entry["strategy"], "post-compact");
-        let events: Vec<Value> = fs::read_to_string(&log)
-            .unwrap()
-            .lines()
-            .map(|l| serde_json::from_str(l).unwrap())
-            .collect();
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0]["outcome"], "applied");
+        assert!(ctx.contains("no pre-compact recovery snapshot"), "got: {ctx}");
         fs::remove_dir_all(&dir).ok();
     }
 

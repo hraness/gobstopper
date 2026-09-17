@@ -6,12 +6,25 @@ import Docs from "../app/docs/page";
 import { publishedRelease } from "../app/publication";
 import RootLayout from "../app/layout";
 
+const SUPPORT_URL = "https://account.hraness.com/support?product=gobstopper&amp;source=web#support";
+const SUPPORT_LABEL = "Support ongoing development of earlier, smarter context compaction for coding agents.";
+
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0;
+  let index = haystack.indexOf(needle);
+  while (index !== -1) {
+    count += 1;
+    index = haystack.indexOf(needle, index + needle.length);
+  }
+  return count;
+}
+
 test("every public route has one optional support footer without product signup", () => {
   for (const Page of [Home, Docs]) {
     const html = renderToStaticMarkup(<RootLayout><Page /></RootLayout>);
-    expect(html.match(/<footer\b/gu)).toHaveLength(1);
-    expect(html).toContain("https://account.hraness.com/support?product=gobstopper&amp;source=web#support");
-    expect(html).toContain("Support ongoing development of earlier, smarter context compaction for coding agents.");
+    // The shared support footer appears once; a product marketing footer may also render.
+    expect(countOccurrences(html, SUPPORT_URL)).toBe(1);
+    expect(html).toContain(SUPPORT_LABEL);
     expect(html).not.toContain('type="email"');
     expect(html).not.toContain('source=web#updates');
   }

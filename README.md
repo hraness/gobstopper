@@ -18,21 +18,23 @@ turn near the end of a long session costs ~900k input tokens — and on
 subscription plans, those tokens come out of your weekly allowance.
 
 Context is a sawtooth problem. If you compact at trigger `T` and the
-summary floor is `F`, steady-state cost per turn is roughly `(T+F)/2`:
+summary floor is `F`, steady-state *context occupancy* per turn is roughly
+`(T+F)/2`:
 
-| policy | trigger | floor | avg input/turn | relative cost |
+| policy | trigger | floor | avg context/turn | relative occupancy |
 |---|---|---|---|---|
 | provider default (1M window) | ~900k | ~60k | ~480k | 1.0x |
-| gobstopper default | 250k | 40k | ~145k | **~3.3x less** |
-| gobstopper aggressive | 150k | 20k | ~85k | **~5.6x less** |
+| gobstopper default | 250k | 40k | ~145k | ~3.3x lower occupancy |
+| gobstopper aggressive | 150k | 20k | ~85k | ~5.6x lower occupancy |
 
-The same arithmetic holds on 400k-class windows (~3x savings at a 150k
-trigger). The claimed "~10x" is reachable only in the best case — long
-tool-heavy sessions where elision drives the floor near zero — but 3-6x
-fewer input tokens per turn is the honest, repeatable range, and it
-compounds with a second benefit: **context rot**. Model recall degrades as
-context grows, so the tail of a 900k session is not just expensive, it is
-measurably dumber. Compacting earlier buys back both quota and quality.
+This is an **occupancy model**, not a measured subscription savings claim.
+Actual token cost depends on cache hit rates, whether summary turns are
+billed, re-fetches caused by lost detail, and how often compaction itself
+runs. Anthropic documents that clearing tool results can
+[invalidate the prompt cache](https://platform.claude.com/docs/en/build-with-claude/context-editing).
+gobstopper reports measured file-byte changes and observed provider usage
+where available; it does not project dollar or quota savings into its
+public claims.
 
 Compaction itself isn't free — each cycle costs one large input call and
 risks losing detail — so strategy matters. That is the actual product
@@ -46,12 +48,15 @@ right boundary."
 | `auto` (default) | dynamic | selects per-session from transcript composition: tool-heavy → `elide`, chatty → `structured`, live/empty → `sawtooth` |
 | `sawtooth` | provider | fires the provider's own compaction early (`thread/compact/start` on Codex app-server; `/compact` or `--autocompact` on Claude) |
 | `elide` | transcript | stubs stale tool outputs oldest-first until the floor; deterministic, no model call |
-| `structured` | transcript | extracts a state card (goal/decisions/files/todos) + keeps recent turns verbatim |
-| `agentic` | transcript | a small editor model emits edits through a fixed tool schema (`keep`/`elide`/`summarize`/`defer`); driver-pluggable |
+| `structured` | transcript | placeholder state-card digest (`goal`/`decisions`/`files`/`todos`); currently emits item labels, not a real summary. Safe for chat-only sessions but should not be mistaken for a semantic compressor |
+| `agentic` | transcript | reserved for a bounded editor-model backend; today `preset.command` is the only extension point and is treated as untrusted code |
 
 Custom strategies are userspace code: a preset can name a `command` that
 receives the normalized transcript as JSON on stdin and returns an edit
-plan on stdout.
+plan on stdout, or install a versioned `gobstopper-plugin.json` bundle
+(see `gobstopper plugin check`). Host-side validation bounds every
+proposal: no edit can grow the transcript, leave protected recent output,
+bypass linkage checks, or exceed configured digest size.
 
 ## Install & use
 
@@ -62,20 +67,22 @@ cargo install --git https://github.com/hraness/gobstopper gobstopper
 gobstopper detect                  # sessions, context sizes, lifetime burn
 gobstopper plan <session>          # what would happen, under which strategy
 gobstopper eval <session>          # every strategy side-by-side on temp copies
-gobstopper apply <session>         # vault snapshot + rewrite (idle sessions)
+gobstopper apply <session>         # vault snapshot + produce validated fork (idle sessions)
 gobstopper verify <session>        # resume-validity check (exit 1 on errors)
 gobstopper fork <session>          # clone under a fresh session id + resume cmd
-gobstopper undo <session>          # restore the pre-compaction snapshot
+gobstopper undo <session>          # restore a pre-compaction snapshot into a new fork
 gobstopper vault                   # list snapshots in the undo vault
 gobstopper install-hooks           # Claude + Codex compaction lifecycle hooks
-gobstopper watch --dry-run         # the daemon path: poll, threshold, fire
-gobstopper explain                 # the economics math above
+gobstopper watch --dry-run         # the daemon path: poll, threshold, prepare copy
+gobstopper explain                 # the occupancy math above
 ```
 
-Every `apply`/`watch` compaction snapshots the transcript into a
-content-addressed vault (`~/.local/share/gobstopper/vault/`) before
-writing and appends a numeric record to `events.jsonl` — the
-`gobstopper/compaction-events-v1` schema aicharts and oompa consume.
+Every `apply`/`watch` compaction snapshots the source transcript into a
+content-addressed vault (`~/.local/share/gobstopper/vault/`) and publishes
+the result as a separate, verified file. The original transcript is never
+overwritten by a standalone compaction run; live session surgery must be
+dispatched by the session owner. Each compaction appends a numeric record
+to `events.jsonl` in the `gobstopper/compaction-events-v1` schema.
 
 Config: `~/.config/gobstopper/config.toml`
 
@@ -150,22 +157,26 @@ for fully custom summaries is the designed v0.2 path.
 
 ## Status
 
-v0.2: detection, planning, and transcript elision work against real
-session files. `sawtooth` routes to Codex's `thread/compact/start` through
-a private `codex app-server --listen stdio://` process — no daemon
-required. `verify` checks resume-validity, `undo`/`vault` give reversible
-compaction via a content-addressed snapshot store, `policy-check` accepts
-`--quota-pressure`, and every compaction emits a numeric
-`compaction-events-v1` record. The `agentic` strategy runs an external
-editor command (`preset.command`) that returns bounded `Edit` plans —
-`hraness/agentmixer`'s `gobstopper-editor` shim is the reference backend —
-and falls back to the `auto` rubric when no command is configured.
+Experimental. Core detection, planning, and transcript elision run
+against real session files and a property-tested suite. `apply` and `watch`
+publish a separate, verified transcript copy; they no longer overwrite the
+source transcript directly. `verify` checks resume-validity, `undo` restores
+to a new fork, and `vault` keeps content-addressed snapshots. `sawtooth` can
+route to Codex's `thread/compact/start` over a private app-server connection
+when `codex-cli` is installed and trusted.
 
-See [docs/design.md](docs/design.md) for the research basis and
-[docs/roadmap.md](docs/roadmap.md) for the phased plan — including how
-gobstopper shares foundations with oompa (control plane), aicharts
-(measurement), and the agentmixer task runtime (editor-model backend for
-the `agentic` strategy).
+The `structured` and `agentic` strategies are placeholders or extension
+points, not proven semantic compressors. Custom strategy code is treated as
+untrusted and validated by the host before any transcript is written.
+
+Research papers cited in [docs/design.md](docs/design.md) motivate earlier
+compaction and observation masking in general; they do not validate
+gobstopper's specific savings or superiority. Comparative benchmarks against
+provider-native defaults are on the roadmap; current savings claims are
+occupancy models only.
+
+See [docs/roadmap.md](docs/roadmap.md) for the phased plan and remaining
+work, including live-provider qualification and measured cost comparisons.
 
 ## License
 

@@ -1669,8 +1669,10 @@ fn digest_line_carries_no_elided_content() {
         .edits
         .iter()
         .any(|e| matches!(e, Edit::InjectDigest { .. }));
-    assert!(has_digest, "structured plan must inject a digest");
-    codex::apply(&path, &plan.edits).unwrap();
+    assert!(!has_digest, "metadata-only fallback must not fabricate a digest");
+    let mut edits = plan.edits;
+    edits.push(Edit::InjectDigest { digest: DigestBlock { goal: Some("explicit synthetic summary".into()), decisions: Vec::new(), files_touched: Vec::new(), open_tasks: Vec::new(), covers_items: 1 } });
+    codex::apply(&path, &edits).unwrap();
 
     let after = read_lines(&path);
     let digest_line = after.last().expect("digest line appended");
