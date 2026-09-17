@@ -87,6 +87,29 @@ describe("Gobstopper site source contract", () => {
     expect(sitemap).toContain("<loc>https://gobstopper.sh/docs</loc>");
     expect(robots).toContain("Sitemap: https://gobstopper.sh/sitemap.xml");
   });
+
+  test("keeps social previews and the agent map on the canonical origin", async () => {
+    const [layout, docs, llms, homeCard, docsCard] = await Promise.all([
+      read("app/layout.tsx"),
+      read("app/docs/page.tsx"),
+      read("public/llms.txt"),
+      read("app/opengraph-image/route.ts"),
+      read("app/docs/opengraph-image/route.ts"),
+    ]);
+    for (const page of [layout, docs]) {
+      expect(page).toContain('card: "summary_large_image"');
+      expect(page).toContain("opengraph-image");
+    }
+    expect(layout).toContain('url: "/opengraph-image"');
+    expect(docs).toContain('url: "/docs/opengraph-image"');
+    for (const card of [homeCard, docsCard]) {
+      expect(card).toContain("createSocialImage");
+      expect(card).toContain('"force-static"');
+    }
+    expect(llms).toContain("https://gobstopper.sh/");
+    expect(llms).toContain("https://gobstopper.sh/docs");
+    expect(llms).not.toContain("http://");
+  });
 });
 
 

@@ -1,11 +1,11 @@
 import type { Metadata, Viewport } from "next";
 import { HranessSiteFooter } from "@hraness/site-footer/react";
+import { siteDescription, siteTitle } from "./site";
 import { supportProfile } from "./support-profile";
 import "./globals.css";
 
-const title = "Gobstopper: earlier, smarter context compaction for coding agents";
-const description =
-  "Gobstopper watches Codex and Claude Code sessions and compacts context at a threshold you control — so long sessions cost a fraction of the tokens and stay sharp.";
+const title = siteTitle;
+const description = siteDescription;
 
 export const metadata: Metadata = {
   metadataBase: new URL("https://gobstopper.sh"),
@@ -22,11 +22,13 @@ export const metadata: Metadata = {
     siteName: "Gobstopper",
     type: "website",
     url: "/",
+    images: [{ url: "/opengraph-image", width: 1200, height: 630, alt: title }],
   },
   twitter: {
-    card: "summary",
+    card: "summary_large_image",
     title,
     description,
+    images: [{ url: "/opengraph-image", alt: title }],
   },
 };
 

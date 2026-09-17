@@ -1,0 +1,16 @@
+# Gobstopper
+
+> Gobstopper watches Codex and Claude Code sessions and compacts context at a threshold you control — so long sessions cost a fraction of the tokens and stay sharp.
+
+When to use this site:
+- Use gobstopper.sh to learn what Gobstopper does, which strategies it runs, and how to install it.
+- Use /docs for the complete README: install, strategies, configuration, hooks, telemetry, evaluation, and design notes.
+
+## Pages
+
+- [Gobstopper](https://gobstopper.sh/): earlier, smarter context compaction for coding agents — detection, an edit IR, strategies, presets, an undo vault, and telemetry.
+- [Gobstopper documentation](https://gobstopper.sh/docs): the complete Gobstopper README.
+
+## Optional
+
+- [sitemap](https://gobstopper.sh/sitemap.xml): Indexable HTML URLs.

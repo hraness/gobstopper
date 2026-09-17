@@ -96,22 +96,35 @@ describe("built Gobstopper site", () => {
   test("serves the homepage, docs, and static discovery files through Next", async () => {
     const server = await startBuiltSite();
     try {
-      const [homeResponse, docsResponse, robotsResponse, missingResponse] = await Promise.all([
+      const [homeResponse, docsResponse, robotsResponse, llmsResponse, cardResponse, docsCardResponse, missingResponse] = await Promise.all([
         fetch(`${server.origin}/`, { redirect: "manual" }),
         fetch(`${server.origin}/docs`, { redirect: "manual" }),
         fetch(`${server.origin}/robots.txt`, { redirect: "manual" }),
+        fetch(`${server.origin}/llms.txt`, { redirect: "manual" }),
+        fetch(`${server.origin}/opengraph-image`, { redirect: "manual" }),
+        fetch(`${server.origin}/docs/opengraph-image`, { redirect: "manual" }),
         fetch(`${server.origin}/missing`, { redirect: "manual" }),
       ]);
-      const [home, docs, robots] = await Promise.all([homeResponse.text(), docsResponse.text(), robotsResponse.text()]);
+      const [home, docs, robots, llms] = await Promise.all([homeResponse.text(), docsResponse.text(), robotsResponse.text(), llmsResponse.text()]);
       expect(homeResponse.status).toBe(200);
       expect(home).toContain(publishedRelease === null ? "First Gobstopper release in preparation" : `Current verified release · v${publishedRelease.version}`);
       expect(home).toContain('<link rel="canonical" href="https://gobstopper.sh"');
       expect(home).toContain('aria-label="Ask AI about this"');
+      expect(home).toContain('<meta property="og:image" content="https://gobstopper.sh/opengraph-image"');
+      expect(home).toContain('<meta name="twitter:card" content="summary_large_image"');
+      expect(home).toContain('<meta name="twitter:image" content="https://gobstopper.sh/opengraph-image"');
       expect(docsResponse.status).toBe(200);
       expect(docs).toContain('<link rel="canonical" href="https://gobstopper.sh/docs"');
       expect(docs).toContain('id="install--use"');
+      expect(docs).toContain('<meta property="og:image" content="https://gobstopper.sh/docs/opengraph-image"');
       expect(robotsResponse.status).toBe(200);
       expect(robots).toContain("Sitemap: https://gobstopper.sh/sitemap.xml");
+      expect(llmsResponse.status).toBe(200);
+      expect(llms).toContain("https://gobstopper.sh/docs");
+      expect(cardResponse.status).toBe(200);
+      expect(cardResponse.headers.get("content-type")).toContain("image/png");
+      expect(docsCardResponse.status).toBe(200);
+      expect(docsCardResponse.headers.get("content-type")).toContain("image/png");
       expect(missingResponse.status).toBe(404);
     } finally {
       await stopBuiltSite(server);

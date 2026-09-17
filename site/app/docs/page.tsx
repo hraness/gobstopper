@@ -4,15 +4,27 @@ import { AskAiAboutThis } from "@hraness/ui";
 import { publishedRelease } from "../publication";
 import { readmeHtml, readmeTitle } from "../readme.generated";
 
+const title = `${readmeTitle} documentation`;
+const description =
+  "The complete Gobstopper README: installation, strategies, configuration, hooks, telemetry, evaluation, and design notes.";
+
 export const metadata: Metadata = {
-  title: `${readmeTitle} documentation`,
-  description: "The complete Gobstopper README: installation, strategies, configuration, hooks, telemetry, evaluation, and design notes.",
+  title,
+  description,
   alternates: { canonical: "/docs" },
   openGraph: {
-    title: `${readmeTitle} documentation`,
-    description: "The complete Gobstopper README.",
+    title,
+    description,
+    siteName: "Gobstopper",
     type: "article",
     url: "/docs",
+    images: [{ url: "/docs/opengraph-image", width: 1200, height: 630, alt: title }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title,
+    description,
+    images: [{ url: "/docs/opengraph-image", alt: title }],
   },
 };
 
