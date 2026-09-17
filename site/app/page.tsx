@@ -17,6 +17,12 @@ import { AskAiAboutThis } from "@hraness/ui";
 import { publishedRelease } from "./publication";
 import { readmeLead, readmeTitle } from "./readme.generated";
 
+function TopicIcon({ slug }: Readonly<{ slug: string }>) {
+  return (
+    <img className="gobstopper-topic-icon" src={`/icons/${slug}.svg`} alt="" aria-hidden="true" width="88" height="88" loading="lazy" decoding="async" />
+  );
+}
+
 const releaseVersion = publishedRelease?.version;
 const repository = "https://github.com/hraness/gobstopper";
 
@@ -26,26 +32,32 @@ const footnote =
 
 const primitives = [
   {
+    icon: "session-detection",
     label: "Session detection",
     summary: "Scans Codex and Claude Code transcript stores for live and idle sessions, reading each provider's own token-usage records — real context size, not an estimate.",
   },
   {
+    icon: "edit-ir",
     label: "A small edit IR",
     summary: "Every strategy lowers to the same edits — elide, inject digest, provider compact — applied in place so parent chains and ordinals never break.",
   },
   {
+    icon: "strategies",
     label: "Strategies",
     summary: "auto picks by transcript shape; sawtooth delegates to the provider's native compaction; elide masks stale tool output; structured writes a state-card digest; agentic hands bounded keep/elide/summarize tools to a small editor model.",
   },
   {
+    icon: "presets-config",
     label: "Presets and config",
     summary: "Global defaults, per-provider and per-session overrides, named presets, and a preset.command escape hatch that runs your own edit program over normalized transcript JSON.",
   },
   {
+    icon: "undo-vault",
     label: "Undo vault",
     summary: "Every apply snapshots the transcript into a content-addressed vault first. gobstopper undo restores byte-identical — and the undo itself is snapshotted.",
   },
   {
+    icon: "telemetry-eval",
     label: "Telemetry and eval",
     summary: "Every mutation emits a compaction event for dashboards. gobstopper eval runs all strategies on temp copies and scores what the compacted session still recalls.",
   },
@@ -184,7 +196,11 @@ $ gobstopper watch --trigger 250000`}</code></pre>
             heading="A policy over your transcripts, not a new editor."
             headingId="model-title"
             id="model"
-            items={primitives.map((primitive) => ({ label: primitive.label, summary: primitive.summary }))}
+            items={primitives.map((primitive) => ({
+              example: <TopicIcon slug={primitive.icon} />,
+              label: primitive.label,
+              summary: primitive.summary,
+            }))}
             label=""
             summary="Providers compact late — near the top of the context window, where every turn is most expensive and recall is already degrading. Gobstopper moves the boundary down and lets you choose what happens there."
           />
@@ -198,29 +214,38 @@ $ gobstopper watch --trigger 250000`}</code></pre>
                 label: "CLI",
                 summary: "Detect, plan, apply, verify, undo — every step inspectable before anything changes.",
                 example: (
-                  <pre tabIndex={0}><code>{`gobstopper plan <session> --trigger 250000
+                  <>
+                    <TopicIcon slug="cli" />
+                    <pre tabIndex={0}><code>{`gobstopper plan <session> --trigger 250000
 gobstopper apply <session> --strategy elide
 gobstopper verify <session> && gobstopper undo <session>`}</code></pre>
+                  </>
                 ),
               },
               {
                 label: "Watcher and hooks",
                 summary: "A polling daemon that stages a plan before the threshold and swaps it in when crossed — or provider hooks that snapshot and log around native compaction.",
                 example: (
-                  <pre tabIndex={0}><code>{`gobstopper watch --trigger 250000 --double-buffer
+                  <>
+                    <TopicIcon slug="watcher" />
+                    <pre tabIndex={0}><code>{`gobstopper watch --trigger 250000 --double-buffer
 gobstopper install-hooks   # Claude settings + Codex hooks.json`}</code></pre>
+                  </>
                 ),
               },
               {
                 label: "Your program",
                 summary: "preset.command receives normalized transcript JSON and returns edits. The agentic preset runs a bounded editor model over the same seam.",
                 example: (
-                  <pre tabIndex={0}><code>{`[presets.my-policy]
+                  <>
+                    <TopicIcon slug="custom-program" />
+                    <pre tabIndex={0}><code>{`[presets.my-policy]
 strategy = "elide"
 keep_recent_tool_outputs = 4
 
 [presets.custom]
 command = ["node", "my-editor.js"]`}</code></pre>
+                  </>
                 ),
               },
             ]}
