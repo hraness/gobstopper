@@ -1103,6 +1103,325 @@ fn verify_never_panics_on_arbitrary_bytes(tc: TestCase) {
     }
 }
 
+/// `eval` runs every strategy against temp copies: the source file must
+/// come out byte-identical, and each row's plan (when present) stays
+/// in-bounds with internally consistent finding counts.
+#[hegel::test(test_cases = 64, suppress_health_check = [hegel::HealthCheck::TooSlow])]
+fn eval_never_mutates_source(tc: TestCase) {
+    use gobstopper_adapters::eval;
+    use gobstopper_core::strategy::PolicyConfig;
+
+    let provider = if tc.draw(gs::booleans()) {
+        Provider::Codex
+    } else {
+        Provider::ClaudeCode
+    };
+    let dir = tmpdir("eval");
+    let path = dir.join("session.jsonl");
+    let lines = match provider {
+        Provider::Codex => gen_codex_transcript(&tc, false),
+        Provider::ClaudeCode => gen_claude_transcript(&tc),
+    };
+    write_lines(&path, &lines);
+    let before = fs::read(&path).unwrap();
+
+    let policy = PolicyConfig {
+        trigger_tokens: 100,
+        floor_tokens: 10,
+        keep_recent_tool_outputs: 1,
+        min_interval_secs: 0,
+        quota_pressure: gobstopper_core::strategy::QuotaPressure::Normal,
+    };
+    let rows = eval::eval_transcript(provider, &path, &policy, None).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), before, "eval rewrote the source transcript");
+    assert!(!rows.is_empty());
+    for row in &rows {
+        assert_eq!(
+            row.verify_errors,
+            row.findings
+                .iter()
+                .filter(|f| f.severity == verify::Severity::Error)
+                .count(),
+            "row {} has inconsistent error rollup",
+            row.strategy
+        );
+        assert_eq!(
+            row.verify_warnings,
+            row.findings
+                .iter()
+                .filter(|f| f.severity == verify::Severity::Warning)
+                .count(),
+            "row {} has inconsistent warning rollup",
+            row.strategy
+        );
+        if let Some(plan) = &row.plan {
+            for edit in &plan.edits {
+                if let Edit::Elide { line_indexes, .. } = edit {
+                    for &i in line_indexes {
+                        assert!(i < lines.len(), "eval row {} out of bounds", row.strategy);
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Fork is additive-only: the source stays byte-identical, the sibling
+/// keeps uuid/parentUuid linkage and verifies clean, session ids are
+/// rewritten, and a second fork to the same id refuses rather than
+/// overwriting.
+#[hegel::test(test_cases = 64, suppress_health_check = [hegel::HealthCheck::TooSlow])]
+fn fork_is_additive_and_linkage_preserving(tc: TestCase) {
+    use gobstopper_adapters::fork;
+
+    let provider = if tc.draw(gs::booleans()) {
+        Provider::Codex
+    } else {
+        Provider::ClaudeCode
+    };
+    let dir = tmpdir("fork");
+    let path = dir.join(match provider {
+        Provider::Codex => "rollout-2026-09-15T00-00-00-c0.jsonl",
+        Provider::ClaudeCode => "session.jsonl",
+    });
+    let lines = match provider {
+        Provider::Codex => gen_codex_transcript(&tc, false),
+        Provider::ClaudeCode => gen_claude_transcript(&tc),
+    };
+    write_lines(&path, &lines);
+    let original = fs::read(&path).unwrap();
+
+    let result = fork::fork(provider, &path, None).unwrap();
+    assert_eq!(fs::read(&path).unwrap(), original, "fork modified the source");
+    let forked = read_lines(&result.path);
+    assert_eq!(forked.len(), lines.len(), "fork changed the record count");
+    for (i, (a, b)) in lines.iter().zip(forked.iter()).enumerate() {
+        // Forked lines must equal originals except session-identity
+        // fields — mask those and require full record equality, which
+        // covers linkage (uuid/parentUuid/ordinal/call_id) and more.
+        let mut ra: Value = serde_json::from_str(a).unwrap();
+        let mut rb: Value = serde_json::from_str(b).unwrap();
+        match provider {
+            Provider::ClaudeCode => {
+                ra["sessionId"] = Value::Null;
+                rb["sessionId"] = Value::Null;
+            }
+            Provider::Codex => {
+                for r in [&mut ra, &mut rb] {
+                    if r.get("type").and_then(Value::as_str) == Some("session_meta") {
+                        if let Some(p) = r.get_mut("payload") {
+                            p["id"] = Value::Null;
+                            p["session_id"] = Value::Null;
+                        }
+                    }
+                }
+            }
+        }
+        assert_eq!(ra, rb, "fork changed non-identity fields on line {i}");
+        // Session identity must be rewritten to the new id.
+        let rec: Value = serde_json::from_str(b).unwrap();
+        match provider {
+            Provider::ClaudeCode => {
+                if let Some(sid) = rec.get("sessionId") {
+                    assert_eq!(
+                        sid.as_str().unwrap(),
+                        result.session_id,
+                        "fork left a stale sessionId on line {i}"
+                    );
+                }
+            }
+            Provider::Codex => {
+                if rec.get("type").and_then(Value::as_str) == Some("session_meta") {
+                    let id = rec.pointer("/payload/id").and_then(Value::as_str);
+                    assert_eq!(id, Some(result.session_id.as_str()));
+                }
+            }
+        }
+    }
+    no_errors(provider, &result.path);
+
+    // A second fork with an explicit colliding id must refuse, not overwrite.
+    let again = fork::fork(provider, &path, Some(result.session_id.clone()));
+    assert!(again.is_err(), "fork silently overwrote an existing sibling");
+    assert_eq!(read_lines(&result.path), forked);
+}
+
+/// Vault: snapshot → mutate → restore reproduces byte-identical bytes;
+/// identical content dedups to the same object; the index keeps both
+/// entries so `latest_for` sees the newest snapshot.
+#[hegel::test(test_cases = 64, suppress_health_check = [hegel::HealthCheck::TooSlow])]
+fn vault_roundtrip_dedups_and_restores_exactly(tc: TestCase) {
+    let provider = if tc.draw(gs::booleans()) {
+        Provider::Codex
+    } else {
+        Provider::ClaudeCode
+    };
+    let dir = tmpdir("vault");
+    let path = dir.join("session.jsonl");
+    let vault_root = dir.join("vault");
+    let lines = match provider {
+        Provider::Codex => gen_codex_transcript(&tc, false),
+        Provider::ClaudeCode => gen_claude_transcript(&tc),
+    };
+    write_lines(&path, &lines);
+    let original = fs::read(&path).unwrap();
+
+    let e1 = vault::snapshot(&path, provider, "s", Some("a"), &vault_root).unwrap();
+    let e2 = vault::snapshot(&path, provider, "s", Some("b"), &vault_root).unwrap();
+    assert_eq!(e1.sha256, e2.sha256, "identical content produced different digests");
+
+    // Mutate, then restore — the original bytes come back exactly.
+    fs::write(&path, "garbage-not-jsonl\n").unwrap();
+    let restored = vault::restore(&e1.sha256, &path, &vault_root).unwrap();
+    assert_eq!(restored.sha256, e1.sha256);
+    assert_eq!(fs::read(&path).unwrap(), original, "restore did not reproduce exact bytes");
+
+    // The index holds both snapshots; latest_for finds this path's newest.
+    let entries = vault::list(&vault_root).unwrap();
+    assert!(entries.iter().filter(|e| e.sha256 == e1.sha256).count() >= 2);
+    let latest = vault::latest_for(&path, &vault_root).unwrap().unwrap();
+    assert_eq!(latest.sha256, e1.sha256);
+}
+
+/// `tail_response_items` takes the last n response_item payloads in file
+/// order; `digest_to_replacement_history` puts the digest user-message
+/// first and the tail verbatim after.
+#[hegel::test(test_cases = 64)]
+fn tail_and_history_shapes_hold(tc: TestCase) {
+    use gobstopper_adapters::codex_compact;
+
+    let lines = gen_codex_transcript(&tc, false);
+    let n = tc.draw(gs::integers::<usize>().max_value(8));
+    let tail = codex_compact::tail_response_items(&lines, n);
+
+    // Expected: payloads of the last n response_item records, in order.
+    let expected: Vec<Value> = lines
+        .iter()
+        .filter_map(|l| {
+            let rec: Value = serde_json::from_str(l).ok()?;
+            (rec.get("type")?.as_str()? == "response_item")
+                .then(|| rec.get("payload").cloned())?
+        })
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .take(n)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
+    assert_eq!(tail, expected);
+
+    let digest = gen_digest(&tc, tail.len());
+    let history = codex_compact::digest_to_replacement_history(&digest, &tail);
+    assert_eq!(history.len(), tail.len() + 1);
+    assert_eq!(history[0]["type"], "message");
+    assert_eq!(history[0]["role"], "user");
+    assert!(history[0]["id"].as_str().unwrap().starts_with("msg_"));
+    assert_eq!(&history[1..], &tail[..], "tail items were not verbatim");
+}
+
+/// A digest carrying hostile content — newlines, quotes, unicode,
+/// braces — must still land as exactly one valid JSONL line.
+#[hegel::test(test_cases = 64)]
+fn hostile_digest_injects_as_one_line(tc: TestCase) {
+    let provider = if tc.draw(gs::booleans()) {
+        Provider::Codex
+    } else {
+        Provider::ClaudeCode
+    };
+    let dir = tmpdir("hostile-digest");
+    let path = dir.join("session.jsonl");
+    let lines = match provider {
+        Provider::Codex => gen_codex_transcript(&tc, false),
+        Provider::ClaudeCode => gen_claude_transcript(&tc),
+    };
+    write_lines(&path, &lines);
+    let digest = DigestBlock {
+        goal: Some(tc.draw(gs::text().max_size(120))),
+        decisions: vec![format!("weird\nnewline \"quotes\" {}", tc.draw(gs::text().max_size(80)))],
+        files_touched: vec!["{not json}\r\n../escape".to_string()],
+        open_tasks: vec![],
+        covers_items: lines.len(),
+    };
+    let before = read_lines(&path).len();
+    match provider {
+        Provider::Codex => codex::apply(&path, &[Edit::InjectDigest { digest }]).unwrap(),
+        Provider::ClaudeCode => claude::apply(&path, &[Edit::InjectDigest { digest }]).unwrap(),
+    };
+    let after = read_lines(&path);
+    assert_eq!(before + 1, after.len(), "digest injected more than one line");
+    let last: Value = serde_json::from_str(after.last().unwrap())
+        .expect("injected line is not valid JSON");
+    assert!(last.is_object());
+    no_errors(provider, &path);
+}
+
+/// Transcript-model invariants strategies rely on: item line_indexes are
+/// real file positions, elidable_bytes never exceeds the line's size,
+/// and provably-dead Claude branches carry no elidable bytes and no cost.
+#[hegel::test(test_cases = 64, suppress_health_check = [hegel::HealthCheck::TooSlow])]
+fn load_item_invariants_hold(tc: TestCase) {
+    use gobstopper_core::model::SessionHandle;
+
+    let provider = if tc.draw(gs::booleans()) {
+        Provider::Codex
+    } else {
+        Provider::ClaudeCode
+    };
+    let dir = tmpdir("load-inv");
+    let path = dir.join("session.jsonl");
+    let lines = match provider {
+        Provider::Codex => gen_codex_transcript(&tc, false),
+        Provider::ClaudeCode => gen_claude_transcript(&tc),
+    };
+    write_lines(&path, &lines);
+    let handle = SessionHandle {
+        provider,
+        session_id: "s".to_string(),
+        path: path.clone(),
+        cwd: None,
+        age_secs: 0,
+    };
+    let t = match provider {
+        Provider::Codex => codex::load(handle).unwrap(),
+        Provider::ClaudeCode => claude::load(handle).unwrap(),
+    };
+    let (linked, live) = if provider == Provider::ClaudeCode {
+        claude_live_lines(&lines)
+    } else {
+        Default::default()
+    };
+    let mut seen_indexes = std::collections::HashSet::new();
+    for item in &t.items {
+        assert!(item.line_index < lines.len(), "item index out of bounds");
+        assert!(
+            seen_indexes.insert(item.line_index),
+            "duplicate item for line {}",
+            item.line_index
+        );
+        if let Some(b) = item.elidable_bytes {
+            assert!(
+                b as usize <= lines[item.line_index].len() + 64,
+                "elidable_bytes {b} exceeds line size at {}",
+                item.line_index
+            );
+        }
+        if provider == Provider::ClaudeCode
+            && linked.contains(&item.line_index)
+            && !live.is_empty()
+            && !live.contains(&item.line_index)
+        {
+            assert_eq!(
+                item.elidable_bytes, None,
+                "dead-branch line {} stayed elidable",
+                item.line_index
+            );
+            assert_eq!(item.est_tokens, 0);
+        }
+    }
+}
+
 /// A cyclic parentUuid chain (a1->b1, b1->a1) must not hang load — the
 /// cycle guard bounds the walk. Corrupt-but-parseable linkage is a real
 /// transcript state after interrupted provider writes.
