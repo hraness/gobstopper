@@ -1385,7 +1385,7 @@ fn cmd_bench(
     let cfg = config::load()?;
     let mut csv = String::new();
     csv.push_str(
-        "provider,session,strategy,context_before,context_after,est_reclaimed,prefix_tokens,verify_errors,verify_warnings,probes_total,probes_recalled,recall,tail_intact,duration_ms\n",
+        "provider,session,strategy,context_before,context_after,est_reclaimed,prefix_tokens,prefix_ratio,verify_errors,verify_warnings,probes_total,probes_recalled,recall,tail_intact,duration_ms\n",
     );
     for d in sessions {
         let mut resolved = match cfg.resolve(d.handle.provider, &d.handle.session_id, None, None) {
@@ -1414,8 +1414,13 @@ fn cmd_bench(
                 row.probe_score.as_ref().map_or((0, 0, 0.0, false), |s| {
                     (s.probes_total, s.probes_recalled, s.recall, s.tail_intact)
                 });
+            let prefix_ratio = if before > 0 {
+                (row.prefix_tokens as f64) / (before as f64)
+            } else {
+                0.0
+            };
             csv.push_str(&format!(
-                "{},{},{},{},{},{},{},{},{},{},{},{:.2},{},{}\n",
+                "{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.2},{},{}\n",
                 d.handle.provider.as_str(),
                 d.handle.session_id,
                 row.strategy,
@@ -1423,6 +1428,7 @@ fn cmd_bench(
                 after,
                 row.est_reclaimed,
                 row.prefix_tokens,
+                prefix_ratio,
                 row.verify_errors,
                 row.verify_warnings,
                 probes_total,
