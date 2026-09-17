@@ -991,6 +991,17 @@ fn cmd_apply(
         return Ok(());
     };
     print_plan(&d, &plan, false)?;
+    let has_provider_compact = plan
+        .edits
+        .iter()
+        .any(|e| matches!(e, Edit::ProviderCompact { .. }));
+    if !has_provider_compact && plan.context_tokens_after >= plan.context_tokens_before {
+        bail!(
+            "plan has no net context benefit ({} -> {} tokens); refusing to rewrite",
+            plan.context_tokens_before,
+            plan.context_tokens_after
+        );
+    }
     if d.handle.is_active() {
         println!("session appears live; only a separate fork will be prepared; the source remains unchanged");
     }
@@ -1004,10 +1015,6 @@ fn cmd_apply(
             return Ok(());
         }
     }
-    let has_provider_compact = plan
-        .edits
-        .iter()
-        .any(|e| matches!(e, Edit::ProviderCompact { .. }));
     let file_edits: Vec<Edit> = plan
         .edits
         .iter()
