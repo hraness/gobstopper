@@ -571,6 +571,80 @@ fn missing_trailing_newline_is_preserved() {
     assert!(!after.ends_with('\n'), "rewrite added a trailing newline");
 }
 
+/// End-to-end property: for any generated transcript, every strategy that
+/// fires must emit only in-bounds line indexes, and applying the full
+/// plan leaves the file verify-clean with linkage intact. `ProviderCompact`
+/// edits are skipped here — they are routed to the provider, not the file.
+#[hegel::test(test_cases = 64, suppress_health_check = [hegel::HealthCheck::TooSlow])]
+fn plans_apply_cleanly(tc: TestCase) {
+    use gobstopper_core::model::SessionHandle;
+    use gobstopper_core::strategy::{builtin_strategies, PolicyConfig};
+
+    let provider = if tc.draw(gs::booleans()) {
+        Provider::Codex
+    } else {
+        Provider::ClaudeCode
+    };
+    let dir = tmpdir("plan-apply");
+    let path = dir.join("session.jsonl");
+    let lines = match provider {
+        Provider::Codex => gen_codex_transcript(&tc),
+        Provider::ClaudeCode => gen_claude_transcript(&tc),
+    };
+    write_lines(&path, &lines);
+
+    let handle = SessionHandle {
+        provider,
+        session_id: "hegel".to_string(),
+        path: path.clone(),
+        cwd: None,
+        age_secs: 0,
+    };
+    let transcript = match provider {
+        Provider::Codex => codex::load(handle).unwrap(),
+        Provider::ClaudeCode => claude::load(handle).unwrap(),
+    };
+    let line_count = read_lines(&path).len();
+    let policy = PolicyConfig {
+        trigger_tokens: 100,
+        floor_tokens: 10,
+        keep_recent_tool_outputs: 1,
+        min_interval_secs: 0,
+        quota_pressure: gobstopper_core::strategy::QuotaPressure::Normal,
+    };
+
+    for strategy in builtin_strategies() {
+        // Each strategy applies against a fresh copy: plans are computed
+        // from the same transcript and must not interact.
+        let copy = dir.join(format!("{}.jsonl", strategy.id()));
+        fs::copy(&path, &copy).unwrap();
+        let Some(plan) = strategy.evaluate(&transcript, &policy) else {
+            continue;
+        };
+        for edit in &plan.edits {
+            if let Edit::Elide { line_indexes, .. } = edit {
+                for &i in line_indexes {
+                    assert!(
+                        i < line_count,
+                        "strategy {} emitted out-of-bounds index {i} (file has {line_count} lines)",
+                        strategy.id()
+                    );
+                }
+            }
+        }
+        let file_edits: Vec<Edit> = plan
+            .edits
+            .into_iter()
+            .filter(|e| !matches!(e, Edit::ProviderCompact { .. }))
+            .collect();
+        match provider {
+            Provider::Codex => codex::apply(&copy, &file_edits).unwrap(),
+            Provider::ClaudeCode => claude::apply(&copy, &file_edits).unwrap(),
+        };
+        no_errors(provider, &copy);
+    }
+}
+
 /// Eliding a line that carries no elidable payload leaves the transcript
 /// byte-identical — the surgery must not touch records it has nothing to
 /// reclaim from.
