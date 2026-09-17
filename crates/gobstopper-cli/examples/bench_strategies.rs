@@ -1,0 +1,102 @@
+//! Local strategy benchmark.
+//!
+//! Generates synthetic Codex transcripts with varying tool-output history,
+//! runs every built-in strategy against each, and prints a CSV of actual
+//! byte reduction, projected token reduction, elapsed time and structural
+//! integrity. This is an offline proxy benchmark: it does not exercise
+//! provider APIs, cache economics, or task completion.
+
+use gobstopper_core::strategy::{builtin_strategies, PolicyConfig};
+use gobstopper_core::Transcript;
+use serde_json::json;
+use std::fs;
+use std::io::Write;
+use std::path::PathBuf;
+use std::time::Instant;
+
+fn make_codex(tool_outputs: usize, output_size: usize) -> (Transcript, Vec<String>) {
+    let mut lines = vec![json!({"type":"session_meta","payload":{"id":"bench"}}).to_string()];
+    for i in 0..tool_outputs {
+        let call_id = format!("call-{i:04}");
+        lines.push(
+            json!({"type":"response_item","payload":{"type":"function_call","call_id":call_id,"function":"f","arguments":{}}})
+                .to_string(),
+        );
+        lines.push(
+            json!({"type":"response_item","payload":{"type":"function_call_output","call_id":call_id,"output":"x".repeat(output_size)}})
+                .to_string(),
+        );
+    }
+    // Keep the transcript JSONL in memory and parse it back through the adapter.
+    let raw = lines.join("\n") + "\n";
+    let handle = gobstopper_core::SessionHandle {
+        provider: gobstopper_core::Provider::Codex,
+        session_id: "bench".into(),
+        path: std::path::PathBuf::from("/tmp/bench.jsonl"),
+        cwd: None,
+        age_secs: 0,
+    };
+    let transcript = gobstopper_adapters::codex::load_bytes(handle, raw.as_bytes()).expect("valid bench transcript");
+    (transcript, lines)
+}
+
+fn main() {
+    let policy = PolicyConfig {
+        trigger_tokens: 1,
+        floor_tokens: 0,
+        keep_recent_tool_outputs: 2,
+        min_interval_secs: 0,
+        quota_pressure: Default::default(),
+    };
+    let strategies = builtin_strategies();
+    let sizes = [(50, 400), (200, 400), (500, 400), (1000, 400)];
+
+    let mut out = std::io::stdout();
+    writeln!(
+        out,
+        "tool_pairs,output_bytes,strategy,input_bytes,output_bytes,elapsed_us,projected_tokens_before,projected_tokens_after,verify_errors"
+    )
+    .unwrap();
+
+    for (pairs, output_size) in sizes {
+        let (transcript, lines) = make_codex(pairs, output_size);
+        let input_bytes = (lines.join("\n") + "\n").len();
+        for strat in &strategies {
+            let start = Instant::now();
+            let plan = strat.evaluate(&transcript, &policy);
+            let elapsed = start.elapsed().as_micros();
+            let before = transcript.context_tokens();
+            let mut after = before;
+            let mut output_bytes = input_bytes;
+            let mut errors = 0usize;
+            if let Some(plan) = plan {
+                after = plan.context_tokens_after;
+                let tmp = PathBuf::from(format!("/tmp/gobstopper-bench-{}-{pairs}-{output_size}.jsonl", strat.id()));
+                fs::write(&tmp, lines.join("\n") + "\n").ok();
+                match gobstopper_adapters::codex::apply(&tmp, &plan.edits) {
+                    Ok(_) => {
+                        if let Ok(rendered) = fs::read_to_string(&tmp) {
+                            output_bytes = rendered.len();
+                        }
+                    }
+                    Err(_) => errors += 1,
+                }
+                let _ = fs::remove_file(&tmp);
+            }
+            writeln!(
+                out,
+                "{},{},{},{},{},{},{},{},{}",
+                pairs,
+                output_size,
+                strat.id(),
+                input_bytes,
+                output_bytes,
+                elapsed,
+                before,
+                after,
+                errors
+            )
+            .unwrap();
+        }
+    }
+}
