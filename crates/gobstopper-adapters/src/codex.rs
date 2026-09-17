@@ -278,6 +278,10 @@ fn apply_elide(path: &Path, line_indexes: &[usize], stub_template: &str) -> Resu
                         continue;
                     };
                     let old = elidable_output_bytes(o);
+                    if old <= 256 {
+                        out.push_str(line);
+                        continue;
+                    }
                     let was_array = o.is_array();
                     payload["output"] = stub_value(old, was_array);
                     reclaimed += old;
