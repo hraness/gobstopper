@@ -515,6 +515,62 @@ fn malformed_target_line_passes_through() {
     assert_eq!(fs::read(&path).unwrap(), before);
 }
 
+/// When the rewrite cannot be staged (read-only directory), apply must
+/// fail and leave the original file byte-identical — never a truncated or
+/// partially written transcript.
+#[cfg(unix)]
+#[test]
+fn failed_write_preserves_original() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tmpdir("readonly");
+    let path = dir.join("rollout.jsonl");
+    let line = serde_json::to_string(&json!({
+        "timestamp": "2026-09-15T00:00:00Z", "type": "response_item",
+        "ordinal": 0,
+        "payload": {"type": "function_call_output", "call_id": "c0", "output": "x".repeat(1200)}
+    }))
+    .unwrap();
+    write_lines(&path, &[line]);
+    let before = fs::read(&path).unwrap();
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+    let result = codex::apply(
+        &path,
+        &[Edit::Elide {
+            line_indexes: vec![0],
+            stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+        }],
+    );
+    fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(result.is_err());
+    assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+/// A transcript whose last line lacks a trailing newline must not gain
+/// one — byte-level fidelity of untouched structure is part of the
+/// not-breaking-sessions contract.
+#[test]
+fn missing_trailing_newline_is_preserved() {
+    let dir = tmpdir("nonewline");
+    let path = dir.join("rollout.jsonl");
+    let line = serde_json::to_string(&json!({
+        "timestamp": "2026-09-15T00:00:00Z", "type": "response_item",
+        "ordinal": 0,
+        "payload": {"type": "function_call_output", "call_id": "c0", "output": "x".repeat(1200)}
+    }))
+    .unwrap();
+    fs::write(&path, &line).unwrap(); // no trailing newline
+    codex::apply(
+        &path,
+        &[Edit::Elide {
+            line_indexes: vec![0],
+            stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+        }],
+    )
+    .unwrap();
+    let after = fs::read_to_string(&path).unwrap();
+    assert!(!after.ends_with('\n'), "rewrite added a trailing newline");
+}
+
 /// Eliding a line that carries no elidable payload leaves the transcript
 /// byte-identical — the surgery must not touch records it has nothing to
 /// reclaim from.
