@@ -290,8 +290,8 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
 | R2 | Effective context, eligibility, convergence and verification | R1 | Complete |
 | R3 | Validated configuration and bounded versioned plugins | R2 | Complete |
 | R4 | Safe CLI/watch/native control and honest public surfaces | R1–R3 | Complete |
-| R5 | Comparative evaluation and fault/property regression gates | R1–R4 | Local proxy complete; live comparison pending R6 |
-| R6 | Subscription-only live qualification and benchmark pilot | R5 | Not started |
+| R5 | Comparative evaluation and fault/property regression gates | R1–R4 | Local proxy complete |
+| R6 | Subscription-only live qualification and benchmark pilot | R5 | In progress: Codex shape and fork/apply/verify qualified; live resume blocked by account usage-limit / sub-agent parent constraint; Claude auth not present in this shell |
 
 ### R1: Transactional private copy publication and recovery
 
@@ -370,5 +370,20 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
   semantics for `apply`/`watch`/`undo`, corrected native Codex error propagation,
   and SessionStart pre-compact snapshot wiring. Workspace tests and Clippy pass.
 - R5 local proxy: `bench_strategies` example generates synthetic transcripts,
-  runs all strategies, and reports byte/token/integrity/time metrics. Live
-  provider-native comparison and task-completion measurement remain R6.
+  runs all strategies, and reports byte/token/integrity/time metrics.
+- R6 pilot 2026-09-17: added `--trust-experimental-compacted` so the custom
+  Codex `compacted`-record writer can be exercised under explicit trust.
+  Fork + `apply --experimental-compacted --trust-experimental-compacted` +
+  `verify` succeeded on a real 138k-token Codex session, producing a record
+  whose top-level/payload key order and window-chain fields match native
+  provider rollouts. `codex exec resume` of the fork accepted the rollout
+  and parsed the window chain, but failed because the source thread is a
+  multi-agent v2 sub-agent that must be resumed through its parent; a
+  subsequent resume attempt on the parent thread hit the account usage limit.
+  Claude `fork` + `apply` + `verify` also succeeded, but `claude --resume`
+  in this non-interactive shell reported "Not logged in", so live Claude
+  continuation cannot be completed without logging Claude Code into this
+  environment or running from the user's interactive shell.
+  Direct provider-native comparison and task-completion measurement remain
+  pending until Codex quota resets or a non-subagent source thread is chosen,
+  and until Claude Code is authenticated in the qualification environment.
