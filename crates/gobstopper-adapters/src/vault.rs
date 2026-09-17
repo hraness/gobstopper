@@ -33,6 +33,12 @@ pub struct VaultEntry {
     pub bytes: u64,
     /// Strategy that produced the post-snapshot edit, if known.
     pub strategy: Option<String>,
+    /// Number of transcript records in the snapshot (new in record-addressed vault).
+    #[serde(default)]
+    pub record_count: u64,
+    /// SHA-256 of the full snapshotted transcript bytes (for source binding).
+    #[serde(default)]
+    pub source_sha256: String,
 }
 
 /// Production vault root: `$XDG_DATA_HOME/gobstopper/vault`, else
@@ -49,6 +55,14 @@ pub fn default_root() -> PathBuf {
 
 fn objects_dir(root: &Path) -> PathBuf {
     root.join("objects")
+}
+
+fn records_dir(root: &Path) -> PathBuf {
+    root.join("records")
+}
+
+fn manifests_dir(root: &Path) -> PathBuf {
+    root.join("manifests")
 }
 
 fn index_path(root: &Path) -> PathBuf {
@@ -136,11 +150,13 @@ fn append_index(root: &Path, entry: &VaultEntry) -> anyhow::Result<()> {
 
 /// Snapshot `path` into the vault and record it in the index.
 ///
-/// The bytes are hashed once; identical content reuses the existing
-/// object (dedup), while a fresh index line is always appended so
-/// [`latest_for`] sees the newest snapshot. `path` is stored verbatim —
-/// callers should pass an absolute path, and lookups must match it
-/// verbatim.
+/// The transcript is split into record-addressed storage: each line is
+/// hashed and stored once under `records/<sha>`, and a small manifest
+/// listing the record hashes is stored under `manifests/<sha>`. Identical
+/// records are shared across sessions and versions (a Merkle-style DAG);
+/// only the manifest and index are duplicated per snapshot. `path` is
+/// stored verbatim — callers should pass an absolute path, and lookups
+/// must match it verbatim.
 pub fn snapshot(
     path: &Path,
     provider: Provider,
@@ -149,32 +165,70 @@ pub fn snapshot(
     root: &Path,
 ) -> anyhow::Result<VaultEntry> {
     let data = crate::transaction::read(path)?;
-    let sha256 = sha256_hex(&data);
+    let source_sha256 = sha256_hex(&data);
+    let trailing_newline = data.last() == Some(&b'\n');
+
+    // Split into JSONL records. Empty segments from leading/trailing
+    // newlines are ignored; the trailing newline flag is tracked
+    // separately so the exact original bytes can be reconstructed.
+    let raw_lines: Vec<&[u8]> = data.split(|&b| b == b'\n').collect();
+    let mut lines = Vec::with_capacity(raw_lines.len());
+    for line in raw_lines {
+        if !line.is_empty() {
+            lines.push(line);
+        }
+    }
 
     crate::transaction::private_dir(root)?;
-    let objects = objects_dir(root);
-    crate::transaction::private_dir(&objects)?;
-    let object_path = objects.join(&sha256);
-    if fs::symlink_metadata(&object_path).is_err() {
-        // Temp + rename so a killed snapshot never leaves a
-        // half-written object behind a valid digest name.
-        match crate::transaction::publish_new(&object_path, &data) {
+    let records = records_dir(root);
+    let manifests = manifests_dir(root);
+    crate::transaction::private_dir(&records)?;
+    crate::transaction::private_dir(&manifests)?;
+
+    let mut record_hashes = Vec::with_capacity(lines.len());
+    for line in lines {
+        let record_sha = sha256_hex(line);
+        let record_path = records.join(&record_sha);
+        if fs::symlink_metadata(&record_path).is_err() {
+            match crate::transaction::publish_new(&record_path, line) {
+                Ok(()) => {},
+                Err(crate::AdapterError::Io { source, .. }) if source.kind() == std::io::ErrorKind::AlreadyExists => {},
+                Err(e) => return Err(e.into()),
+            }
+        }
+        if crate::transaction::read(&record_path)? != line {
+            bail!("record object {record_sha} failed integrity verification");
+        }
+        record_hashes.push(record_sha);
+    }
+
+    let manifest = serde_json::json!({
+        "records": record_hashes,
+        "trailing_newline": trailing_newline,
+    });
+    let manifest_bytes = serde_json::to_vec(&manifest)?;
+    let manifest_sha = sha256_hex(&manifest_bytes);
+    let manifest_path = manifests.join(&manifest_sha);
+    if fs::symlink_metadata(&manifest_path).is_err() {
+        match crate::transaction::publish_new(&manifest_path, &manifest_bytes) {
             Ok(()) => {},
             Err(crate::AdapterError::Io { source, .. }) if source.kind() == std::io::ErrorKind::AlreadyExists => {},
             Err(e) => return Err(e.into()),
         }
     }
-    if crate::transaction::read(&object_path)? != data {
-        bail!("existing vault object failed integrity verification");
+    if crate::transaction::read(&manifest_path)? != manifest_bytes {
+        bail!("manifest object {manifest_sha} failed integrity verification");
     }
 
     let entry = VaultEntry {
         ts: now_secs(),
-        sha256,
+        sha256: manifest_sha,
         path: path.to_path_buf(),
         session_id: session_id.to_string(),
         provider,
         bytes: data.len() as u64,
+        record_count: record_hashes.len() as u64,
+        source_sha256,
         strategy: strategy.map(str::to_string),
     };
     append_index(root, &entry)?;
@@ -184,9 +238,10 @@ pub fn snapshot(
 /// Restore the snapshotted bytes for `sha256` over `target`, atomically:
 /// write `<target>.gobstopper-restore-<pid>` then rename.
 ///
-/// The stored object is re-hashed before anything is written; a digest
-/// mismatch means vault corruption, and the restore refuses rather than
-/// resurrecting bad bytes into a live transcript.
+/// For record-addressed snapshots the manifest is verified and the
+/// individual records are re-hashed before concatenation. Legacy full-byte
+/// objects are also supported for snapshots created before the
+/// record-addressed change.
 pub fn restore(sha256: &str, target: &Path, root: &Path) -> anyhow::Result<VaultEntry> {
     if !is_hex(sha256) {
         bail!("invalid sha256 digest: {sha256:?}");
@@ -200,16 +255,7 @@ pub fn restore(sha256: &str, target: &Path, root: &Path) -> anyhow::Result<Vault
         bail!("vault index entry has invalid sha256: {:?}", entry.sha256);
     }
 
-    let object_path = objects_dir(root).join(&entry.sha256);
-    let data = fs::read(&object_path)
-        .with_context(|| format!("read vault object {}", object_path.display()))?;
-    let actual = sha256_hex(&data);
-    if actual != entry.sha256 {
-        bail!(
-            "vault object {} is corrupt: content hashes to {actual}",
-            entry.sha256
-        );
-    }
+    let data = read_object(&entry.sha256, root)?;
 
     if target.exists() {
         let before = crate::transaction::read(target)?;
@@ -218,6 +264,40 @@ pub fn restore(sha256: &str, target: &Path, root: &Path) -> anyhow::Result<Vault
         crate::transaction::publish_new(target, &data)?;
     }
     Ok(entry)
+}
+
+/// Read a manifest and concatenate its records back into the original
+/// transcript bytes.
+fn reconstruct_manifest(manifest_bytes: &[u8], root: &Path) -> anyhow::Result<Vec<u8>> {
+    let manifest: serde_json::Value = serde_json::from_slice(manifest_bytes)?;
+    let records = manifest
+        .get("records")
+        .and_then(|v| v.as_array())
+        .with_context(|| "missing records in manifest")?;
+    let trailing = manifest
+        .get("trailing_newline")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+
+    let mut out = Vec::with_capacity(records.len() * 256);
+    for (i, r) in records.iter().enumerate() {
+        let sha = r.as_str().with_context(|| "record hash is not a string")?;
+        if !is_hex(sha) {
+            bail!("invalid record hash in manifest: {sha:?}");
+        }
+        let record_path = records_dir(root).join(sha);
+        let record = fs::read(&record_path)
+            .with_context(|| format!("read vault record {}", record_path.display()))?;
+        let actual = sha256_hex(&record);
+        if actual != sha {
+            bail!("record {sha} is corrupt: hashes to {actual}");
+        }
+        out.extend_from_slice(&record);
+        if trailing || i + 1 < records.len() {
+            out.push(b'\n');
+        }
+    }
+    Ok(out)
 }
 
 /// The most recent snapshot taken of `path` (verbatim path match), if
@@ -241,6 +321,16 @@ pub fn list(root: &Path) -> anyhow::Result<Vec<VaultEntry>> {
 
 pub fn read_object(sha256: &str, root: &Path) -> anyhow::Result<Vec<u8>> {
     if sha256.len() != 64 || !is_hex(sha256) { bail!("invalid snapshot digest"); }
+
+    // Try a record-addressed manifest first.
+    let manifest_path = manifests_dir(root).join(sha256);
+    if manifest_path.exists() {
+        let bytes = crate::transaction::read(&manifest_path)?;
+        if sha256_hex(&bytes) != sha256 { bail!("manifest failed integrity verification"); }
+        return reconstruct_manifest(&bytes, root);
+    }
+
+    // Fall back to a legacy full-byte object.
     let bytes = crate::transaction::read(&objects_dir(root).join(sha256))?;
     if sha256_hex(&bytes) != sha256 { bail!("vault object failed integrity verification"); }
     Ok(bytes)
@@ -249,6 +339,105 @@ pub fn read_object(sha256: &str, root: &Path) -> anyhow::Result<Vec<u8>> {
 pub fn latest_pre_compaction(path: &Path, root: &Path) -> anyhow::Result<Option<VaultEntry>> {
     Ok(list(root)?.into_iter().find(|entry| entry.path == path
         && !matches!(entry.strategy.as_deref(), Some("post-compact" | "pre-undo"))))
+}
+
+/// All snapshots for a session id (newest first). Accepts a prefix.
+pub fn for_session(session_id: &str, root: &Path) -> anyhow::Result<Vec<VaultEntry>> {
+    Ok(list(root)?.into_iter().filter(|e| e.session_id.starts_with(session_id)).collect())
+}
+
+fn record_type(record: &[u8]) -> String {
+    serde_json::from_slice::<serde_json::Value>(record)
+        .ok()
+        .and_then(|v| v.get("type").and_then(|t| t.as_str().map(str::to_string)))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Structural diff between two vault snapshots.
+///
+/// Returns added and removed record hash lists plus the record counts by
+/// type for each side. Identical records are shared, so the diff is cheap:
+/// only the manifest hash lists are compared.
+pub fn diff(sha1: &str, sha2: &str, root: &Path) -> anyhow::Result<DiffSummary> {
+    if !is_hex(sha1) || !is_hex(sha2) { bail!("invalid sha256 digest"); }
+
+    fn load_manifest(sha: &str, root: &Path) -> anyhow::Result<(Vec<String>, serde_json::Value)> {
+        let p = manifests_dir(root).join(sha);
+        let bytes = if p.exists() {
+            crate::transaction::read(&p)?
+        } else {
+            // Legacy full-object snapshot: treat the whole transcript as one record.
+            return Ok((vec![sha.to_string()], serde_json::Value::Null));
+        };
+        if sha256_hex(&bytes) != sha { bail!("manifest {sha} failed integrity verification"); }
+        let manifest: serde_json::Value = serde_json::from_slice(&bytes)?;
+        let records = manifest
+            .get("records")
+            .and_then(|v| v.as_array())
+            .context("missing records in manifest")?
+            .iter()
+            .map(|v| v.as_str().map(str::to_string).context("record hash is not a string"))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Ok((records, manifest))
+    }
+
+    let (a, _) = load_manifest(sha1, root)?;
+    let (b, _) = load_manifest(sha2, root)?;
+
+    let a_set: std::collections::HashSet<&str> = a.iter().map(String::as_str).collect();
+    let b_set: std::collections::HashSet<&str> = b.iter().map(String::as_str).collect();
+
+    let mut removed = Vec::new();
+    let mut added = Vec::new();
+    let mut type_summary_a = std::collections::BTreeMap::<String, usize>::new();
+    let mut type_summary_b = std::collections::BTreeMap::<String, usize>::new();
+
+    for h in &a {
+        if !b_set.contains(h.as_str()) {
+            removed.push(h.clone());
+        }
+        let record = read_record(h, root).unwrap_or_default();
+        *type_summary_a.entry(record_type(&record)).or_default() += 1;
+    }
+    for h in &b {
+        if !a_set.contains(h.as_str()) {
+            added.push(h.clone());
+        }
+        let record = read_record(h, root).unwrap_or_default();
+        *type_summary_b.entry(record_type(&record)).or_default() += 1;
+    }
+
+    Ok(DiffSummary {
+        sha1: sha1.to_string(),
+        sha2: sha2.to_string(),
+        record_count_a: a.len(),
+        record_count_b: b.len(),
+        added,
+        removed,
+        type_summary_a,
+        type_summary_b,
+    })
+}
+
+/// Read a single record object by hash.
+pub fn read_record(sha: &str, root: &Path) -> anyhow::Result<Vec<u8>> {
+    if !is_hex(sha) { bail!("invalid record digest"); }
+    let p = records_dir(root).join(sha);
+    let bytes = fs::read(&p).with_context(|| format!("read record {}", p.display()))?;
+    if sha256_hex(&bytes) != sha { bail!("record {sha} is corrupt"); }
+    Ok(bytes)
+}
+
+#[derive(Debug, Clone)]
+pub struct DiffSummary {
+    pub sha1: String,
+    pub sha2: String,
+    pub record_count_a: usize,
+    pub record_count_b: usize,
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+    pub type_summary_a: std::collections::BTreeMap<String, usize>,
+    pub type_summary_b: std::collections::BTreeMap<String, usize>,
 }
 
 #[cfg(test)]
@@ -291,7 +480,7 @@ mod tests {
         assert_eq!(entry.path, src);
         assert_eq!(entry.session_id, "sess-1");
         assert_eq!(entry.strategy.as_deref(), Some("elide"));
-        assert!(objects_dir(&root).join(&entry.sha256).is_file());
+        assert!(manifests_dir(&root).join(&entry.sha256).is_file());
 
         // Simulate a compaction edit clobbering the transcript.
         fs::write(&src, b"{\"compacted\":true}\n").unwrap();
@@ -316,8 +505,8 @@ mod tests {
         fs::write(&src, b"original bytes").unwrap();
         let entry = snapshot(&src, Provider::Codex, "s", None, &root).unwrap();
 
-        // Tamper with the stored object.
-        fs::write(objects_dir(&root).join(&entry.sha256), b"tampered").unwrap();
+        // Tamper with the stored manifest.
+        fs::write(manifests_dir(&root).join(&entry.sha256), b"tampered").unwrap();
 
         assert!(restore(&entry.sha256, &src, &root).is_err());
         // The target must be untouched.
@@ -371,7 +560,9 @@ mod tests {
         let e2 = snapshot(&src, Provider::ClaudeCode, "s2", None, &root).unwrap();
         assert_eq!(e1.sha256, e2.sha256);
 
-        assert_eq!(fs::read_dir(objects_dir(&root)).unwrap().count(), 1);
+        // Identical records are deduplicated across both snapshots.
+        assert_eq!(fs::read_dir(records_dir(&root)).unwrap().count(), 1);
+        assert_eq!(fs::read_dir(manifests_dir(&root)).unwrap().count(), 1);
         assert_eq!(list(&root).unwrap().len(), 2);
     }
 

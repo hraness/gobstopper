@@ -188,7 +188,7 @@ fn corrupt_existing_snapshot_aborts_admission() {
     let root = dir.0.join("vault");
     fs::write(&path, "original").unwrap();
     let entry = vault::snapshot(&path, Provider::Codex, "audit", None, &root).unwrap();
-    fs::write(root.join("objects").join(entry.sha256), "corrupt").unwrap();
+    fs::write(root.join("manifests").join(entry.sha256), "corrupt").unwrap();
     assert!(vault::snapshot(&path, Provider::Codex, "audit", None, &root).is_err());
 }
 

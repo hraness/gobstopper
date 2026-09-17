@@ -85,7 +85,7 @@ pub fn compact(
         bail!("prior copy operation requires recovery; refusing speculative replay");
     }
     let snapshot = vault::snapshot(&handle.path, handle.provider, &handle.session_id, Some(&plan.strategy), vault_root)?;
-    if snapshot.sha256 != source_sha256 { bail!("source changed before snapshot"); }
+    if snapshot.source_sha256 != source_sha256 { bail!("source changed before snapshot"); }
     let parent = handle.path.parent().unwrap_or_else(|| Path::new("."));
     let temp = transaction::Temporary::new(parent, &original)?;
     match handle.provider {
@@ -104,7 +104,7 @@ pub fn compact(
     let mut receipt = CopyReceipt {
         schema_version: 1, source_sha256: source_sha256.into(), output_sha256: sha256(output.as_bytes()),
         session_id: id, path, bytes_before: original.len() as u64, bytes_after,
-        reclaimed_bytes: original.len() as u64 - bytes_after, snapshot_sha256: snapshot.sha256, completed: false,
+        reclaimed_bytes: original.len() as u64 - bytes_after, snapshot_sha256: snapshot.source_sha256, completed: false,
     };
     let intent = serde_json::to_vec(&receipt)?;
     transaction::publish_new(&receipt_path, &intent)?;
@@ -189,7 +189,7 @@ pub fn compact_via_compacted(
         bail!("prior copy operation requires recovery; refusing speculative replay");
     }
     let snapshot = vault::snapshot(&handle.path, handle.provider, &handle.session_id, Some(&plan.strategy), vault_root)?;
-    if snapshot.sha256 != source_sha256 { bail!("source changed before snapshot"); }
+    if snapshot.source_sha256 != source_sha256 { bail!("source changed before snapshot"); }
     let parent = handle.path.parent().unwrap_or_else(|| Path::new("."));
     let temp = transaction::Temporary::new(parent, &original)?;
     if !file_edits.is_empty() {
@@ -213,7 +213,7 @@ pub fn compact_via_compacted(
         schema_version: 1, source_sha256: source_sha256.into(), output_sha256: sha256(output.as_bytes()),
         session_id: id, path: target, bytes_before: original.len() as u64, bytes_after,
         reclaimed_bytes: original.len().saturating_sub(output.len() as usize) as u64,
-        snapshot_sha256: snapshot.sha256, completed: false,
+        snapshot_sha256: snapshot.source_sha256, completed: false,
     };
     let intent = serde_json::to_vec(&receipt)?;
     transaction::publish_new(&receipt_path, &intent)?;

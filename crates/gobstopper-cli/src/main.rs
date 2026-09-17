@@ -162,6 +162,38 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Show the version history of a session (all recorded snapshots).
+    History {
+        /// Session id prefix or path to the transcript.
+        session: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show a structural summary of a vault snapshot (or the latest snapshot
+    /// for a session).
+    Show {
+        /// SHA256 prefix of a snapshot, or a session id/path.
+        target: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Compare two vault snapshots structurally.
+    Diff {
+        /// SHA256 prefix of the first snapshot.
+        a: String,
+        /// SHA256 prefix of the second snapshot.
+        b: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Store the current transcript state in the vault without compacting.
+    Snapshot {
+        /// Session id prefix, or path to a transcript file.
+        session: String,
+        /// Optional label for the snapshot (recorded as the strategy tag).
+        #[arg(long)]
+        label: Option<String>,
+    },
     /// Poll for sessions over threshold and compact them automatically.
     Watch {
         /// Poll interval in seconds.
@@ -789,6 +821,143 @@ fn cmd_vault(cli: &Cli, cfg: &config::Config, session: Option<&str>, json: bool)
             e.path.display(),
         );
     }
+    Ok(())
+}
+
+fn cmd_history(cli: &Cli, cfg: &config::Config, session: &str, json: bool) -> Result<()> {
+    let d = find_session(cli, cfg, session)?;
+    let root = vault::default_root();
+    let mut entries = vault::list(&root)?;
+    entries.retain(|e| e.path == d.handle.path || e.session_id.starts_with(session));
+    if json {
+        println!("{}", serde_json::to_string_pretty(&entries)?);
+        return Ok(());
+    }
+    println!(
+        "{:<18} {:>10} {:>8} {:<10} {:<12} PATH",
+        "SHA256", "BYTES", "RECORDS", "STRATEGY", "SESSION"
+    );
+    for e in entries {
+        println!(
+            "{:<18} {:>10} {:>8} {:<10} {:<12} {}",
+            &e.sha256[..16],
+            e.bytes,
+            e.record_count,
+            e.strategy.as_deref().unwrap_or("-"),
+            &e.session_id[..e.session_id.len().min(12)],
+            e.path.display(),
+        );
+    }
+    Ok(())
+}
+
+fn cmd_show(cli: &Cli, cfg: &config::Config, target: &str, json: bool) -> Result<()> {
+    let root = vault::default_root();
+    let entries = vault::list(&root)?;
+    let entry = if target.len() >= 16 && target.chars().all(|c| c.is_ascii_hexdigit()) {
+        entries
+            .into_iter()
+            .find(|e| e.sha256.starts_with(target))
+            .with_context(|| format!("no snapshot matches sha prefix {target:?}"))?
+    } else {
+        let d = find_session(cli, cfg, target)?;
+        vault::latest_for(&d.handle.path, &root)?
+            .with_context(|| format!("no vault snapshot for {}", d.handle.path.display()))?
+    };
+
+    let data = vault::read_object(&entry.sha256, &root)?;
+    let mut type_counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    for line in data.split(|&b| b == b'\n') {
+        if line.is_empty() { continue; }
+        if let Ok(v) = serde_json::from_slice::<serde_json::Value>(line) {
+            let t = v.get("type").and_then(|t| t.as_str()).unwrap_or("unknown");
+            *type_counts.entry(t.to_string()).or_default() += 1;
+        }
+    }
+
+    let summary = serde_json::json!({
+        "sha256": entry.sha256,
+        "provider": entry.provider.as_str(),
+        "session_id": entry.session_id,
+        "path": entry.path,
+        "bytes": entry.bytes,
+        "record_count": entry.record_count,
+        "strategy": entry.strategy,
+        "record_types": type_counts,
+    });
+    if json {
+        println!("{}", serde_json::to_string_pretty(&summary)?);
+    } else {
+        println!("sha:        {}", entry.sha256);
+        println!("provider:   {}", entry.provider.as_str());
+        println!("session:    {}", entry.session_id);
+        println!("path:       {}", entry.path.display());
+        println!("bytes:      {}", entry.bytes);
+        println!("records:    {}", entry.record_count);
+        println!("strategy:   {}", entry.strategy.as_deref().unwrap_or("-"));
+        println!("record types:");
+        for (t, n) in &type_counts {
+            println!("  {:<12} {}", t, n);
+        }
+    }
+    Ok(())
+}
+
+fn cmd_diff(a: &str, b: &str, json: bool) -> Result<()> {
+    let root = vault::default_root();
+    let entries = vault::list(&root)?;
+    let a_full = entries
+        .iter()
+        .find(|e| e.sha256.starts_with(a))
+        .map(|e| e.sha256.clone())
+        .with_context(|| format!("no snapshot matches sha prefix {a:?}"))?;
+    let b_full = entries
+        .iter()
+        .find(|e| e.sha256.starts_with(b))
+        .map(|e| e.sha256.clone())
+        .with_context(|| format!("no snapshot matches sha prefix {b:?}"))?;
+    let summary = vault::diff(&a_full, &b_full, &root)?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "sha_a": summary.sha1,
+                "sha_b": summary.sha2,
+                "record_count_a": summary.record_count_a,
+                "record_count_b": summary.record_count_b,
+                "added_count": summary.added.len(),
+                "removed_count": summary.removed.len(),
+                "type_summary_a": summary.type_summary_a,
+                "type_summary_b": summary.type_summary_b,
+            }))?
+        );
+    } else {
+        println!("snapshot a: {} ({} records)", summary.sha1, summary.record_count_a);
+        println!("snapshot b: {} ({} records)", summary.sha2, summary.record_count_b);
+        println!("added records:  {}", summary.added.len());
+        println!("removed records: {}", summary.removed.len());
+        println!("\ntype counts in a:");
+        for (t, n) in &summary.type_summary_a {
+            println!("  {:<12} {}", t, n);
+        }
+        println!("\ntype counts in b:");
+        for (t, n) in &summary.type_summary_b {
+            println!("  {:<12} {}", t, n);
+        }
+    }
+    Ok(())
+}
+
+fn cmd_snapshot(cli: &Cli, cfg: &config::Config, session: &str, label: Option<&str>) -> Result<()> {
+    let d = find_session(cli, cfg, session)?;
+    let entry = vault::snapshot(&d.handle.path, d.handle.provider, &d.handle.session_id, label, &vault::default_root())?;
+    println!(
+        "snapshotted {} -> {} ({} bytes, {} records)",
+        d.handle.path.display(),
+        &entry.sha256[..16],
+        entry.bytes,
+        entry.record_count,
+    );
     Ok(())
 }
 
@@ -1505,6 +1674,12 @@ fn main() -> Result<()> {
             json,
         } => cmd_events(session.as_deref(), *tail, *json),
         Cmd::Vault { session, json } => cmd_vault(&cli, &cfg, session.as_deref(), *json),
+        Cmd::History { session, json } => cmd_history(&cli, &cfg, session, *json),
+        Cmd::Show { target, json } => cmd_show(&cli, &cfg, target, *json),
+        Cmd::Diff { a, b, json } => cmd_diff(a, b, *json),
+        Cmd::Snapshot { session, label } => {
+            cmd_snapshot(&cli, &cfg, session, label.as_deref())
+        }
         Cmd::Watch {
             interval,
             dry_run,
