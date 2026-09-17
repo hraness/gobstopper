@@ -974,6 +974,11 @@ fn cmd_eval(
     Ok(())
 }
 
+/// Response items carried verbatim into a custom `compacted` record's
+/// `replacement_history` after the digest — the recent window the resumed
+/// session still sees word-for-word.
+const COMPACTED_KEEP_TAIL: usize = 24;
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_apply(
     cli: &Cli,
@@ -1044,8 +1049,32 @@ fn cmd_apply(
     } else {
         None
     };
-    if !file_edits.is_empty() {
-        if digest_for_compacted.is_some() { bail!("custom replacement history is not qualified"); }
+    if let Some(digest) = digest_for_compacted {
+        let file_result = copy::compact_via_compacted(
+            &d.handle,
+            &source_sha256,
+            &plan,
+            &digest,
+            COMPACTED_KEEP_TAIL,
+            &vault::default_root(),
+        ).inspect(|receipt| {
+            println!("prepared {}", receipt.path.display());
+            println!("resume the new session: codex resume {}", receipt.session_id);
+        });
+        match file_result {
+            Ok(receipt) => {
+                emit_event(&d, &plan, "transcript_compact", "applied", trigger,
+                    started.elapsed().as_millis() as u64, None);
+                println!("emitted compacted record (window chain advanced; resume performs the swap)");
+                println!("reclaimed ~{} bytes of tool output", receipt.reclaimed_bytes);
+            }
+            Err(e) => {
+                emit_event(&d, &plan, "transcript_compact", "failed", trigger,
+                    started.elapsed().as_millis() as u64, Some("apply_failed"));
+                return Err(e);
+            }
+        }
+    } else if !file_edits.is_empty() {
         let file_result = copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root()).map(|receipt| {
             println!("prepared {}", receipt.path.display());
             println!("resume the new session: {} {}", if d.handle.provider == Provider::Codex { "codex resume" } else { "claude --resume" }, receipt.session_id);
@@ -1056,9 +1085,6 @@ fn cmd_apply(
                 emit_event(&d, &plan, "transcript_compact", "applied", trigger,
                     started.elapsed().as_millis() as u64, None);
                 println!("reclaimed ~{} bytes of tool output", reclaimed);
-                if digest_for_compacted.is_some() {
-                    println!("emitted compacted record (window chain advanced; resume performs the swap)");
-                }
             }
             Err(e) => {
                 emit_event(&d, &plan, "transcript_compact", "failed", trigger,

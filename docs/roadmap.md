@@ -291,7 +291,7 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
 | R3 | Validated configuration and bounded versioned plugins | R2 | Complete |
 | R4 | Safe CLI/watch/native control and honest public surfaces | R1–R3 | Complete |
 | R5 | Comparative evaluation and fault/property regression gates | R1–R4 | Local proxy complete |
-| R6 | Subscription-only live qualification and benchmark pilot | R5 | In progress: Codex shape and fork/apply/verify qualified; live resume blocked by account usage-limit / sub-agent parent constraint; Claude auth not present in this shell |
+| R6 | Subscription-only live qualification and benchmark pilot | R5 | Partial: Codex custom `compacted` record resume qualified live; Claude elide resume qualified live; Claude digest resume remains blocked by missing `last-prompt`/`mode` tail |
 
 ### R1: Transactional private copy publication and recovery
 
@@ -380,10 +380,17 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
   and parsed the window chain, but failed because the source thread is a
   multi-agent v2 sub-agent that must be resumed through its parent; a
   subsequent resume attempt on the parent thread hit the account usage limit.
-  Claude `fork` + `apply` + `verify` also succeeded, but `claude --resume`
-  in this non-interactive shell reported "Not logged in", so live Claude
-  continuation cannot be completed without logging Claude Code into this
-  environment or running from the user's interactive shell.
-  Direct provider-native comparison and task-completion measurement remain
-  pending until Codex quota resets or a non-subagent source thread is chosen,
-  and until Claude Code is authenticated in the qualification environment.
+- R6 completion 2026-09-17 (after login): wired `copy::compact_via_compacted`
+  into `gobstopper apply --experimental-compacted` and created a small-model
+  Codex session with large tool outputs. `fork` + `apply --preset test-compacted
+  --experimental-compacted --trust-experimental-compacted` + `verify` produced
+  a custom `compacted` record at the tail with correct `window_number == 1`,
+  `first_window_id == previous_window_id`, and `replacement_history` carrying
+  the digest plus 20 verbatim tail response items. `codex exec resume`
+  completed a full API-backed turn (20,580 tokens input; `task_complete`);
+  the model correctly recalled the elided commands, proving the provider
+  accepted the gobstopper-written `compacted` record and performed the
+  window swap. Claude elide resume also succeeded on a small-model session
+  with elided tool outputs (the model recalled the six commands). Claude
+  digest-injected fork is not yet resumable; the synthetic `user` record
+  lacks the `last-prompt`/`mode` tail Claude's resume indexer expects.
