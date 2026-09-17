@@ -764,13 +764,13 @@ fn codex_compact(
     Ok(())
 }
 
-fn print_plan(d: &Discovered, plan: &CompactionPlan, json: bool) -> Result<()> {
+fn print_plan(d: &Discovered, plan: &CompactionPlan, prefix_tokens: u64, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(plan)?);
         return Ok(());
     }
     println!(
-        "{} {} ({})\n  context: {} -> ~{} tokens (saves ~{})\n  strategy: {}\n  {}",
+        "{} {} ({})\n  context: {} -> ~{} tokens (saves ~{})\n  prefix: {} tokens cached\n  strategy: {}\n  {}",
         d.handle.provider.as_str(),
         d.handle.session_id,
         if d.handle.is_active() {
@@ -781,6 +781,7 @@ fn print_plan(d: &Discovered, plan: &CompactionPlan, json: bool) -> Result<()> {
         plan.context_tokens_before,
         plan.context_tokens_after,
         plan.est_savings(),
+        prefix_tokens,
         plan.strategy,
         plan.rationale,
     );
@@ -1477,7 +1478,8 @@ fn cmd_apply(
         report_no_plan(&transcript, &resolved);
         return Ok(());
     };
-    print_plan(&d, &plan, false)?;
+    let prefix = eval::prefix_tokens(&transcript, &plan);
+    print_plan(&d, &plan, prefix, false)?;
     let has_provider_compact = plan
         .edits
         .iter()
@@ -2087,7 +2089,10 @@ fn main() -> Result<()> {
             }
             let transcript = detect::load(&d)?;
             match evaluate(&transcript, &resolved)? {
-                Some(plan) => print_plan(&d, &plan, *json),
+                Some(plan) => {
+                    let prefix = eval::prefix_tokens(&transcript, &plan);
+                    print_plan(&d, &plan, prefix, *json)
+                }
                 None => {
                     report_no_plan(&transcript, &resolved);
                     Ok(())

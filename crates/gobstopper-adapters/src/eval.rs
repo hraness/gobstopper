@@ -132,7 +132,7 @@ fn protected_tail_start(transcript: &Transcript, policy: &PolicyConfig) -> usize
 /// edit in `plan`. Provider-compact plans touch no local file, so the
 /// whole transcript is considered preserved. A larger number means more
 /// of the provider's prefix cache survives the rewrite.
-fn prefix_tokens(transcript: &Transcript, plan: &CompactionPlan) -> u64 {
+pub fn prefix_tokens(transcript: &Transcript, plan: &CompactionPlan) -> u64 {
     if plan
         .edits
         .iter()
