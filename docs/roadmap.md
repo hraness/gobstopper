@@ -394,3 +394,17 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
   with elided tool outputs (the model recalled the six commands). Claude
   digest-injected fork is not yet resumable; the synthetic `user` record
   lacks the `last-prompt`/`mode` tail Claude's resume indexer expects.
+- R6 benchmark pilot 2026-09-17: ran a two-phase `count.py` task on Codex
+  (gpt-6-astra) across three conditions on the same `test.txt`:
+  | condition | phase-1 tokens | phase-2 tokens | count_lines correct? | recall last `seq` numbers? | notes |
+  |---|---:|---:|---|---|---|
+  | no compaction (one-shot) | 12,489 | — | yes | — | full conversation, no resume |
+  | elide resume | 11,533 | 23,298 | yes | no | `seq 1 100` output stubbed; `seq 101 200` retained |
+  | compacted resume | 11,533 | 26,589 | yes (file already carried `count_lines` from the elide resume in the shared workdir) | no | window swap accepted; digest did not carry the elided `seq` numbers |
+  All three completed the coding edit; neither resume condition could recall
+  the elided `seq` numbers because the digest did not explicitly record that
+  fact. The shared `/private/tmp/gob-bench-shared` workdir created file-system
+  cross-contamination between the elide and compacted resumes; a clean rerun
+  would use separate workdirs. This pilot validates continuation, not recall of
+  discarded verbatim output. Direct provider-native comparison, larger samples,
+  and per-turn usage breakdown remain for future work.
