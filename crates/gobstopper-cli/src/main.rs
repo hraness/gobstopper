@@ -284,6 +284,11 @@ fn evaluate(
         let plan_json = run_preset_command(command, transcript)?;
         let edits: Vec<Edit> = serde_json::from_value(plan_json["edits"].clone())
             .context("preset command returned invalid edits")?;
+        // An empty edit list is the command's defer answer — report no plan
+        // rather than applying nothing and recording a phantom compaction.
+        if edits.is_empty() {
+            return Ok(None);
+        }
         let before = transcript.context_tokens();
         if before < resolved.policy.trigger_tokens {
             return Ok(None);
@@ -1515,5 +1520,71 @@ done
         let err = codex_compact(&stub, "error-thread").unwrap_err();
         assert!(err.to_string().contains("thread not found"), "got: {err}");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn preset_transcript() -> gobstopper_core::Transcript {
+        gobstopper_core::Transcript {
+            session: gobstopper_core::SessionHandle {
+                provider: gobstopper_core::Provider::Codex,
+                session_id: "sess-preset".to_string(),
+                path: PathBuf::from("/tmp/sess-preset.jsonl"),
+                cwd: None,
+                age_secs: 0,
+            },
+            items: vec![gobstopper_core::model::TranscriptItem {
+                line_index: 0,
+                kind: gobstopper_core::model::ItemKind::ToolResult,
+                est_tokens: 500,
+                elidable_bytes: Some(2000),
+                label: "tool output".to_string(),
+            }],
+            usage: gobstopper_core::model::UsageSample {
+                context_tokens: 50_000,
+                lifetime_input_tokens: 50_000,
+                lifetime_cached_tokens: 0,
+                model_context_window: Some(1_000_000),
+            },
+        }
+    }
+
+    fn preset_resolved(command: &str) -> config::Resolved {
+        config::Resolved {
+            policy: gobstopper_core::strategy::PolicyConfig {
+                trigger_tokens: 1_000,
+                ..Default::default()
+            },
+            strategy: "agentic".to_string(),
+            command: Some(command.to_string()),
+        }
+    }
+
+    #[test]
+    fn preset_command_empty_edits_defers_without_a_plan() {
+        let plan = evaluate(
+            &preset_transcript(),
+            &preset_resolved("cat > /dev/null; echo '{\"edits\": []}'"),
+        )
+        .unwrap();
+        assert!(plan.is_none(), "empty edits must defer, not apply nothing");
+    }
+
+    #[test]
+    fn preset_command_edits_flow_into_a_plan() {
+        let plan = evaluate(
+            &preset_transcript(),
+            &preset_resolved(
+                "cat > /dev/null; echo '{\"edits\": [{\"op\": \"elide\", \"line_indexes\": [0], \"stub_template\": \"[elided]\"}], \"context_tokens_after\": 1200}'",
+            ),
+        )
+        .unwrap()
+        .expect("edits must produce a plan");
+        assert_eq!(plan.strategy, "preset:agentic");
+        assert_eq!(plan.context_tokens_after, 1200);
+        assert!(matches!(plan.edits.as_slice(), [Edit::Elide { .. }]));
+    }
+
+    #[test]
+    fn preset_command_invalid_json_is_an_error() {
+        assert!(evaluate(&preset_transcript(), &preset_resolved("echo 'nope'")).is_err());
     }
 }
