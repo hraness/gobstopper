@@ -4,6 +4,9 @@ import { join } from "node:path";
 import { publishedRelease } from "../app/publication";
 
 const site = join(import.meta.dir, "..");
+const imageOrigin = process.env.VERCEL_URL === undefined
+  ? "https://gobstopper.sh"
+  : `https://${process.env.VERCEL_URL}`;
 
 async function startBuiltSite() {
   const process_ = Bun.spawn([
@@ -105,7 +108,9 @@ describe("built Gobstopper site", () => {
         fetch(`${server.origin}/docs/opengraph-image`, { redirect: "manual" }),
         fetch(`${server.origin}/missing`, { redirect: "manual" }),
       ]);
-      const [home, docs, robots, llms] = await Promise.all([homeResponse.text(), docsResponse.text(), robotsResponse.text(), llmsResponse.text()]);
+      const [rawHome, rawDocs, robots, llms] = await Promise.all([homeResponse.text(), docsResponse.text(), robotsResponse.text(), llmsResponse.text()]);
+      const home = rawHome.replaceAll(imageOrigin, "https://gobstopper.sh");
+      const docs = rawDocs.replaceAll(imageOrigin, "https://gobstopper.sh");
       expect(homeResponse.status).toBe(200);
       expect(home).toContain(publishedRelease === null ? "First Gobstopper release in preparation" : `Current verified release · v${publishedRelease.version}`);
       expect(home).toContain('<link rel="canonical" href="https://gobstopper.sh"');
