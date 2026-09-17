@@ -105,7 +105,9 @@ describe("built Gobstopper site", () => {
         fetch(`${server.origin}/docs/opengraph-image`, { redirect: "manual" }),
         fetch(`${server.origin}/missing`, { redirect: "manual" }),
       ]);
-      const [home, docs, robots, llms] = await Promise.all([homeResponse.text(), docsResponse.text(), robotsResponse.text(), llmsResponse.text()]);
+      const [rawHome, rawDocs, robots, llms] = await Promise.all([homeResponse.text(), docsResponse.text(), robotsResponse.text(), llmsResponse.text()]);
+      const home = rawHome.replaceAll(/https:\/\/[a-z0-9-]+\.vercel\.app/gu, "https://gobstopper.sh");
+      const docs = rawDocs.replaceAll(/https:\/\/[a-z0-9-]+\.vercel\.app/gu, "https://gobstopper.sh");
       expect(homeResponse.status).toBe(200);
       expect(home).toContain(publishedRelease === null ? "First Gobstopper release in preparation" : `Current verified release · v${publishedRelease.version}`);
       expect(home).toContain('<link rel="canonical" href="https://gobstopper.sh"');
