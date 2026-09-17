@@ -449,3 +449,9 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
   consumed only 56,300 input tokens (~82% reduction) but answered incorrectly,
   claiming the renames were already completed and published. The README and
   `/benchmarks` page now report this head-to-head.
+- Codex live comparison 2026-09-17: on a 101k-token real Codex session, the same
+  resume question was asked under three conditions. `gobstopper compacted` reduced
+  resume input tokens by 66% (101,275 → 34,503) and `elide` by 43% (101,275 → 57,980),
+  both correctly recalling the Oh/BEAM benchmark and the 0.60 expansion gate. The
+  `gobstopper`-written `compacted` record was accepted by `codex exec resume` and
+  the swap completed a real API turn.

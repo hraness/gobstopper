@@ -195,11 +195,25 @@ actually consumed on the next turn:
 `gobstopper elide` and `compacted` both cut the resume context by about
 30% while keeping the answer accurate. Claude's native `--autocompact 100`
 cut the resume context by ~82% but produced a confident, inaccurate
-summary of the session. That is the difference gobstopper is built for:
-measured, auditable compaction that does not replace the transcript's
-actual state with a plausible invention. Every pre- and post-state is in the
-vault, so you can `gobstopper diff` the exact structural changes and decide
-which strategy to trust.
+summary of the session.
+
+The same question was then asked on a 101k-token Codex session:
+
+| condition | input tokens on resume | output tokens | recalled the standing task? |
+|---|---|---|---|
+| none (original) | 101,275 | 244 | yes — Oh's memory benchmark and the 0.60 expansion gate |
+| `gobstopper elide` | 57,980 | 83 | yes — same 0.545 score and 0.60 gate |
+| `gobstopper compacted` | 34,503 | 159 | yes — same BEAM experiment and expansion gate |
+
+On Codex, `compacted` cut resume input tokens by **66%** and `elide` cut
+them by **43%**, both with accurate answers. There is no one-shot Codex
+native compact to compare against.
+
+That is the difference gobstopper is built for: measured, auditable
+compaction that does not replace the transcript's actual state with a
+plausible invention. Every pre- and post-state is in the vault, so you can
+`gobstopper diff` the exact structural changes and decide which strategy to
+trust.
 
 - **Codex custom `compacted` record** — a gobstopper-written `compacted`
   record with a correct window chain was accepted by `codex exec resume` and

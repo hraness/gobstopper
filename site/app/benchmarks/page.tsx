@@ -108,11 +108,51 @@ export default function Benchmarks() {
             gobstopper <code>elide</code> and <code>compacted</code> both cut the
             resume context by about 30% while keeping the answer accurate. Claude&apos;s
             native <code>--autocompact 100</code> cut the resume context by ~82% but
-            produced a confident, inaccurate summary of the session. gobstopper is
-            built for measured, auditable compaction: every pre- and post-state is in
-            the vault, so you can <code>gobstopper diff</code> the exact structural
-            changes and choose the strategy that matches your tolerance for recall
-            loss.
+            produced a confident, inaccurate summary of the session.
+          </p>
+
+          <h2>Codex live comparison</h2>
+          <p>
+            The same resume question was asked on a 101k-token Codex session
+            (a real BEAM-benchmark thread) under three conditions. Codex does not
+            expose a one-shot native compact to test against.
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>condition</th>
+                <th>input tokens</th>
+                <th>output tokens</th>
+                <th>recalled the standing task?</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>none (original)</td>
+                <td>101,275</td>
+                <td>244</td>
+                <td>yes — Oh&apos;s memory benchmark and the 0.60 expansion gate</td>
+              </tr>
+              <tr>
+                <td>gobstopper <code>elide</code></td>
+                <td>57,980</td>
+                <td>83</td>
+                <td>yes — same 0.545 score and 0.60 gate</td>
+              </tr>
+              <tr>
+                <td>gobstopper <code>compacted</code></td>
+                <td>34,503</td>
+                <td>159</td>
+                <td>yes — same BEAM experiment and expansion gate</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            On Codex, <code>compacted</code> cut resume input tokens by 66% and
+            <code>elide</code> cut them by 43%, both with accurate answers. Every
+            pre- and post-state is in the vault, so you can <code>gobstopper diff</code>
+            the exact structural changes and choose the strategy that matches your
+            tolerance for recall loss.
           </p>
 
           <h2>Results</h2>
