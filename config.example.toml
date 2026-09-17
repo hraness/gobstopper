@@ -1,7 +1,7 @@
 # ~/.config/gobstopper/config.toml
 
 [policy]
-strategy = "auto"              # auto | sawtooth | elide | structured | agentic
+strategy = "auto"              # auto | sawtooth | elide | compacted | structured | agentic
 trigger_tokens = 250_000       # fire when context exceeds this
 floor_tokens = 40_000          # transcript-path post-compaction target
 keep_recent_tool_outputs = 8   # tail outputs never elided
@@ -28,6 +28,12 @@ floor_tokens = 20_000
 [presets.chatty]
 strategy = "structured"
 trigger_tokens = 180_000
+
+# Codex-only: emit a real provider `compacted` record.
+[presets.compact-window]
+strategy = "compacted"
+trigger_tokens = 120_000
+floor_tokens = 20_000
 
 # Userspace code preset: receives the normalized transcript as JSON on
 # stdin, returns {"edits": [...]} on stdout.

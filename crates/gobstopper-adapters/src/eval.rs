@@ -524,7 +524,7 @@ mod tests {
         policy.trigger_tokens = u64::MAX;
 
         let rows = eval_transcript(Provider::ClaudeCode, &src, &policy, None).unwrap();
-        assert_eq!(rows.len(), 5);
+        assert_eq!(rows.len(), 6);
         for r in &rows {
             assert!(r.plan.is_none(), "{} should not fire", r.strategy);
             assert_eq!(r.est_reclaimed, 0);

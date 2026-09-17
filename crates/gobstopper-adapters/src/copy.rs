@@ -7,6 +7,11 @@ use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// Response items carried verbatim into a custom `compacted` record's
+/// `replacement_history` after the digest — the recent window the resumed
+/// session still sees word-for-word.
+pub const COMPACTED_KEEP_TAIL: usize = 24;
+
 pub fn sha256(bytes: &[u8]) -> String { format!("{:x}", Sha256::digest(bytes)) }
 
 pub fn load_bound(handle: SessionHandle) -> anyhow::Result<(Transcript, String)> {

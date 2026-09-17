@@ -291,7 +291,7 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
 | R3 | Validated configuration and bounded versioned plugins | R2 | Complete |
 | R4 | Safe CLI/watch/native control and honest public surfaces | R1–R3 | Complete |
 | R5 | Comparative evaluation and fault/property regression gates | R1–R4 | Local proxy complete |
-| R6 | Subscription-only live qualification and benchmark pilot | R5 | Partial: Codex custom `compacted` record resume qualified live; Claude elide resume qualified live; Claude digest resume remains blocked by missing `last-prompt`/`mode` tail |
+| R6 | Subscription-only live qualification and benchmark pilot | R5 | Partial: Codex custom `compacted` record now a built-in strategy and qualified live; Claude elide resume qualified live; Claude digest resume remains blocked by missing `last-prompt`/`mode` tail |
 
 ### R1: Transactional private copy publication and recovery
 

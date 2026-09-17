@@ -74,17 +74,6 @@ enum Cmd {
         /// (not recommended).
         #[arg(long)]
         no_backup: bool,
-        /// Codex only: emit a real `compacted` record (provider window
-        /// chain + replacement_history) instead of a plain digest line.
-        /// Experimental — shape is verified against real rollouts but
-        /// not yet validated against live resume. Requires an explicit
-        /// trust flag until live qualification completes.
-        #[arg(long)]
-        experimental_compacted: bool,
-        /// Trust the experimental Codex `compacted`-record writer for
-        /// this invocation. Default remains guarded.
-        #[arg(long)]
-        trust_experimental_compacted: bool,
     },
     /// Check a transcript for resume-breaking defects (broken parent
     /// chains, orphaned tool calls, malformed compaction records).
@@ -974,11 +963,6 @@ fn cmd_eval(
     Ok(())
 }
 
-/// Response items carried verbatim into a custom `compacted` record's
-/// `replacement_history` after the digest — the recent window the resumed
-/// session still sees word-for-word.
-const COMPACTED_KEEP_TAIL: usize = 24;
-
 #[allow(clippy::too_many_arguments)]
 fn cmd_apply(
     cli: &Cli,
@@ -989,13 +973,8 @@ fn cmd_apply(
     trigger: Option<u64>,
     yes: bool,
     no_backup: bool,
-    experimental_compacted: bool,
-    trust_experimental_compacted: bool,
 ) -> Result<()> {
     if no_backup { bail!("snapshots are mandatory; --no-backup is no longer supported"); }
-    if experimental_compacted && !trust_experimental_compacted {
-        bail!("custom compacted records are experimental; pass --trust-experimental-compacted to use them");
-    }
     let d = find_session(cli, cfg, session)?;
     let mut resolved = cfg.resolve(
         d.handle.provider,
@@ -1037,11 +1016,12 @@ fn cmd_apply(
         .collect();
     let started = std::time::Instant::now();
     let trigger = resolved.policy.trigger_tokens;
-    // Experimental Codex path: an InjectDigest edit becomes a real
+    // Compacted path: for Codex, an `InjectDigest` edit becomes a real
     // `compacted` record (window chain + replacement_history) appended
     // to the rollout — the provider's own resume mechanism performs the
-    // swap. Elide edits in the same plan still apply normally first.
-    let digest_for_compacted = if experimental_compacted && d.handle.provider == Provider::Codex {
+    // context swap. Elide edits in the same plan still apply normally first.
+    let is_compacted = resolved.strategy == "compacted" && d.handle.provider == Provider::Codex;
+    let digest_for_compacted = if is_compacted {
         plan.edits.iter().find_map(|e| match e {
             Edit::InjectDigest { digest } => Some(digest.clone()),
             _ => None,
@@ -1055,7 +1035,7 @@ fn cmd_apply(
             &source_sha256,
             &plan,
             &digest,
-            COMPACTED_KEEP_TAIL,
+            copy::COMPACTED_KEEP_TAIL,
             &vault::default_root(),
         ).inspect(|receipt| {
             println!("prepared {}", receipt.path.display());
@@ -1459,8 +1439,6 @@ fn main() -> Result<()> {
             trigger,
             yes,
             no_backup,
-            experimental_compacted,
-            trust_experimental_compacted,
         } => cmd_apply(
             &cli,
             &cfg,
@@ -1470,8 +1448,6 @@ fn main() -> Result<()> {
             *trigger,
             *yes,
             *no_backup,
-            *experimental_compacted,
-            *trust_experimental_compacted,
         ),
         Cmd::Verify { session, json } => cmd_verify(&cli, &cfg, session, *json),
         Cmd::Undo { session, sha, yes } => {

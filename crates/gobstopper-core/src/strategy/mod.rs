@@ -1,11 +1,13 @@
 mod agentic;
 mod auto;
+mod compacted;
 mod elide;
 mod sawtooth;
 mod structured;
 
 pub use agentic::{AgenticStrategy, EditorCall, EditorDriver};
 pub use auto::AutoStrategy;
+pub use compacted::CompactedStrategy;
 pub use elide::ElideStrategy;
 pub use sawtooth::SawtoothStrategy;
 pub use structured::StructuredStrategy;
@@ -88,6 +90,7 @@ pub fn builtin_strategies() -> Vec<Box<dyn Strategy>> {
         Box::new(AutoStrategy),
         Box::new(SawtoothStrategy),
         Box::new(ElideStrategy),
+        Box::new(CompactedStrategy),
         Box::new(StructuredStrategy),
         Box::new(AgenticStrategy),
     ]
