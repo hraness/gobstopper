@@ -290,7 +290,7 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
 | R2 | Effective context, eligibility, convergence and verification | R1 | Complete |
 | R3 | Validated configuration and bounded versioned plugins | R2 | Complete |
 | R4 | Safe CLI/watch/native control and honest public surfaces | R1–R3 | Complete |
-| R5 | Comparative evaluation and fault/property regression gates | R1–R4 | Not started |
+| R5 | Comparative evaluation and fault/property regression gates | R1–R4 | Local proxy complete; live comparison pending R6 |
 | R6 | Subscription-only live qualification and benchmark pilot | R5 | Not started |
 
 ### R1: Transactional private copy publication and recovery
@@ -369,3 +369,6 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
   versioned plugins with host validation, honest README/roadmap status, CLI copy
   semantics for `apply`/`watch`/`undo`, corrected native Codex error propagation,
   and SessionStart pre-compact snapshot wiring. Workspace tests and Clippy pass.
+- R5 local proxy: `bench_strategies` example generates synthetic transcripts,
+  runs all strategies, and reports byte/token/integrity/time metrics. Live
+  provider-native comparison and task-completion measurement remain R6.
