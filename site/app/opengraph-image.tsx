@@ -1,35 +1,34 @@
-import { ImageResponse } from "next/og";
+import {
+  createSocialImageResponse,
+  socialImageContentType as contentType,
+  socialImageSize as size,
+} from "@hraness/web-discovery/social-image";
 
 export const alt = "Gobstopper — Compact earlier. Spend less. Keep the thread.";
-export const size = { height: 630, width: 1200 };
-export const contentType = "image/png";
+export { contentType, size };
+
+function GobstopperMark() {
+  return (
+    <svg aria-label="Gobstopper mark" height="42" role="img" viewBox="0 0 42 42" width="42">
+      <circle cx="21" cy="21" fill="none" r="17" stroke="currentColor" strokeWidth="3" />
+      <circle cx="21" cy="21" fill="none" r="10" stroke="currentColor" strokeWidth="3" />
+      <circle cx="21" cy="21" fill="currentColor" r="3" />
+    </svg>
+  );
+}
 
 export default function OpengraphImage() {
-  return new ImageResponse(
-    (
-      <div
-        style={{
-          background: "#f8f7f4",
-          color: "#1c1a18",
-          display: "flex",
-          flexDirection: "column",
-          fontFamily: "serif",
-          height: "100%",
-          justifyContent: "space-between",
-          padding: "72px 80px",
-          width: "100%",
-        }}
-      >
-        <div style={{ color: "#8a857e", fontSize: 28, letterSpacing: 2, textTransform: "uppercase" }}>
-          Gobstopper
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
-          <div style={{ fontSize: 68, fontWeight: 700, lineHeight: 1.1 }}>Compact earlier. Spend less. Keep the thread.</div>
-          <div style={{ color: "#4a463f", fontSize: 30, lineHeight: 1.35 }}>Automatic context compaction for Codex and Claude Code sessions.</div>
-        </div>
-        <div style={{ color: "#8a857e", fontSize: 26 }}>gobstopper.sh</div>
-      </div>
-    ),
-    size,
-  );
+  return createSocialImageResponse({
+    description: "Automatic context compaction for Codex and Claude Code sessions.",
+    domain: "gobstopper.sh",
+    eyebrow: "Gobstopper",
+    mark: <GobstopperMark />,
+    theme: {
+      accent: "#A34733",
+      background: "#F8F7F4",
+      foreground: "#1C1A18",
+      muted: "#6A655E",
+    },
+    title: "Compact earlier. Spend less. Keep the thread.",
+  });
 }
