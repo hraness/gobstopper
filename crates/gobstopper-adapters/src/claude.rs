@@ -377,6 +377,9 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
                         Some("user") | Some("assistant")
                     )
                 });
+                let last_user = parsed.iter().rev().find(|r| {
+                    r.get("type").and_then(Value::as_str) == Some("user")
+                });
                 let last_mode = parsed.iter().rev().find(|r| {
                     r.get("type").and_then(Value::as_str) == Some("mode")
                 });
@@ -389,14 +392,30 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
                 let mode = last_mode
                     .and_then(|r| r.get("mode").and_then(Value::as_str))
                     .unwrap_or("auto");
+                let get = |key: &str| {
+                    last_user
+                        .and_then(|r| r.get(key).and_then(Value::as_str))
+                        .or_else(|| last_leaf.and_then(|r| r.get(key).and_then(Value::as_str)))
+                        .map(str::to_string)
+                };
                 let digest_uuid = crate::fork::generate_session_id(Path::new("claude-digest"));
                 let last_prompt_uuid = crate::fork::generate_session_id(Path::new("claude-last-prompt"));
+                let prompt_id = crate::fork::generate_session_id(Path::new("claude-prompt"));
                 let mode_uuid = crate::fork::generate_session_id(Path::new("claude-mode"));
                 let digest_user = serde_json::json!({
                     "type": "user",
                     "uuid": &digest_uuid,
                     "parentUuid": parent,
+                    "promptId": &prompt_id,
+                    "timestamp": get("timestamp").unwrap_or_default(),
+                    "permissionMode": get("permissionMode").unwrap_or_else(|| "auto".to_string()),
+                    "promptSource": get("promptSource").unwrap_or_else(|| "cli".to_string()),
+                    "userType": get("userType").unwrap_or_else(|| "external".to_string()),
+                    "entrypoint": get("entrypoint").unwrap_or_else(|| "cli".to_string()),
+                    "cwd": get("cwd").unwrap_or_else(|| std::env::var("HOME").unwrap_or_default()),
                     "sessionId": session_id,
+                    "version": get("version").unwrap_or_else(|| "2.1.0".to_string()),
+                    "gitBranch": get("gitBranch").unwrap_or_else(|| "main".to_string()),
                     "message": {"role": "user", "content": text},
                 });
                 crate::transaction::append_record(&mut raw, &digest_user)?;
