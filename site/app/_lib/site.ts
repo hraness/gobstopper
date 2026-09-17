@@ -5,7 +5,7 @@ export const SITE_DESCRIPTION =
 export const GITHUB_URL = "https://github.com/hraness/gobstopper";
 export const ARCHITECTURE_URL = "https://github.com/hraness/gobstopper/blob/main/docs/design.md";
 
-export type CanonicalPagePath = "/" | "/docs";
+export type CanonicalPagePath = "/" | "/docs" | "/methodology" | "/benchmarks";
 
 export function absoluteUrl(path: CanonicalPagePath | string): string {
   if (path.startsWith("http")) return path;

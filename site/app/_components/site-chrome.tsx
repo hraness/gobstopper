@@ -36,6 +36,8 @@ export function SiteHeader({ path }: Readonly<{ path?: CanonicalPagePath }>) {
           { href: "/#model", label: "Model" },
           { href: "/#interfaces", label: "Interfaces" },
           { href: "/docs", label: "Docs" },
+          { href: "/methodology", label: "Methodology" },
+          { href: "/benchmarks", label: "Benchmarks" },
           { href: ARCHITECTURE_URL, label: "Architecture" },
           { href: GITHUB_URL, label: "GitHub" },
         ]}
@@ -57,6 +59,8 @@ export function SiteFooter({ path }: Readonly<{ path?: CanonicalPagePath }>) {
         brandLabel="Gobstopper home"
         links={[
           { href: "/docs", label: "Docs" },
+          { href: "/methodology", label: "Methodology" },
+          { href: "/benchmarks", label: "Benchmarks" },
           { href: ARCHITECTURE_URL, label: "Architecture" },
           { href: GITHUB_URL, label: "GitHub" },
         ]}
