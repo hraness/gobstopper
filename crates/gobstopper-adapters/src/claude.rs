@@ -100,10 +100,8 @@ pub fn load(handle: SessionHandle) -> Result<Transcript, AdapterError> {
 pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, AdapterError> {
     if bytes.len() as u64 > crate::transaction::MAX_TRANSCRIPT_BYTES { return Err(AdapterError::InvalidEdit("transcript exceeds byte limit")); }
     let file = std::io::Cursor::new(bytes);
-    let mut items = Vec::new();
     let mut usage = UsageSample::default();
-    // (line_index, uuid, parent_uuid) for live-branch resolution.
-    let mut links: Vec<(usize, String, Option<String>)> = Vec::new();
+    let mut records: Vec<(usize, Value)> = Vec::new();
     for (line_index, line) in BufReader::new(file).lines().enumerate() {
         let line = line.map_err(|e| AdapterError::Io {
             path: handle.path.clone(),
@@ -113,9 +111,15 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
             continue;
         };
         absorb_usage(&record, &mut usage);
+        records.push((line_index, record));
+    }
+
+    // (line_index, uuid, parent_uuid) for live-branch resolution.
+    let mut links: Vec<(usize, String, Option<String>)> = Vec::new();
+    for (line_index, record) in &records {
         if let Some(uuid) = record.get("uuid").and_then(Value::as_str) {
             links.push((
-                line_index,
+                *line_index,
                 uuid.to_string(),
                 record
                     .get("parentUuid")
@@ -123,6 +127,41 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                     .map(str::to_string),
             ));
         }
+    }
+
+    // The canonical leaf is the leafUuid of the most recent last-prompt,
+    // if one exists; otherwise the last user/assistant/attachment uuid.
+    // Provider sessions interleave sidechains and bookkeeping after the real
+    // conversation tip, so file order alone can point at a dead branch.
+    let mut leaf_uuid: Option<String> = None;
+    for (_, record) in records.iter().rev() {
+        if record.get("type").and_then(Value::as_str) == Some("last-prompt") {
+            if let Some(uuid) = record.get("leafUuid").and_then(Value::as_str) {
+                leaf_uuid = Some(uuid.to_string());
+                break;
+            }
+        }
+    }
+    if leaf_uuid.is_none() {
+        for (_, record) in records.iter().rev() {
+            if record.get("uuid").and_then(Value::as_str).is_some()
+                && matches!(
+                    record.get("type").and_then(Value::as_str),
+                    Some("user") | Some("assistant") | Some("attachment")
+                )
+            {
+                leaf_uuid = record.get("uuid").and_then(Value::as_str).map(str::to_string);
+                break;
+            }
+        }
+    }
+    let live = leaf_uuid
+        .as_deref()
+        .map(|leaf| live_branch(&links, leaf))
+        .unwrap_or_default();
+
+    let mut items = Vec::new();
+    for (line_index, record) in &records {
         let ltype = record.get("type").and_then(Value::as_str).unwrap_or("");
         let (kind, elidable) = match ltype {
             "user" => {
@@ -142,7 +181,7 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
         }
         let est = estimate_tokens(value_len(&record["message"]));
         items.push(TranscriptItem {
-            line_index,
+            line_index: *line_index,
             kind,
             est_tokens: est,
             elidable_bytes: elidable,
@@ -150,7 +189,6 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
             summary: tool_result_summary(&record["message"]),
         });
     }
-    let live = live_branch(&links);
     // Only uuid-bearing lines can be proven dead; lines without linkage
     // (attachments, system notices) stay conservatively live.
     let linked: std::collections::HashSet<usize> =
@@ -172,14 +210,9 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
     })
 }
 
-/// Line indexes on the branch from the latest leaf back to the root.
-/// Empty when the file carries no uuid linkage (e.g. bridge-only logs) —
-/// callers treat that as "everything is live".
-fn live_branch(links: &[(usize, String, Option<String>)]) -> std::collections::HashSet<usize> {
+/// Line indexes on the branch from the named leaf back to the root.
+fn live_branch(links: &[(usize, String, Option<String>)], leaf: &str) -> std::collections::HashSet<usize> {
     use std::collections::{HashMap, HashSet};
-    if links.is_empty() {
-        return HashSet::new();
-    }
     let parent_of: HashMap<&str, Option<&str>> = links
         .iter()
         .map(|(_, u, p)| (u.as_str(), p.as_deref()))
@@ -189,7 +222,7 @@ fn live_branch(links: &[(usize, String, Option<String>)]) -> std::collections::H
         .map(|(l, u, _)| (u.as_str(), *l))
         .collect();
     let mut live = HashSet::new();
-    let mut cursor = Some(links.last().unwrap().1.as_str());
+    let mut cursor = Some(leaf);
     let mut steps = 0usize;
     while let Some(uuid) = cursor {
         if let Some(&line) = line_of.get(uuid) {
