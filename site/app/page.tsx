@@ -8,14 +8,13 @@ import {
   MarketingProofFrame,
   MarketingQuestionList,
   MarketingSection,
-  MarketingSiteHeader,
   MarketingTrustBoundary,
   ProductHero,
 } from "@hraness/design-kit/react/server";
-import { AskAiAboutThis } from "@hraness/ui";
 
+import { SiteHeader, SiteFooter } from "./_components/site-chrome";
 import { publishedRelease } from "./publication";
-import { readmeLead, readmeTitle } from "./readme.generated";
+import { readmeLead } from "./readme.generated";
 
 const releaseVersion = publishedRelease?.version;
 const repository = "https://github.com/hraness/gobstopper";
@@ -93,77 +92,45 @@ const questions = [
   },
 ] as const;
 
-const navigation = [
-  { href: "#model", label: "Model" },
-  { href: "#interfaces", label: "Interfaces" },
-  { href: "#install", label: "Install" },
-  { href: "/docs", label: "Docs" },
-  { href: repository, label: "GitHub" },
-] as const;
-
-function BrandMark() {
-  return <span aria-hidden="true" className="brand-mark">🍬</span>;
-}
+const structuredData = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: questions.map(({ answer, question }) => ({
+    "@type": "Question",
+    acceptedAnswer: { "@type": "Answer", text: answer },
+    name: question,
+  })),
+};
 
 export default function Home() {
-  const structuredData = [
-    {
-      "@context": "https://schema.org",
-      "@type": "SoftwareSourceCode",
-      codeRepository: repository,
-      description: readmeLead,
-      license: "https://opensource.org/license/mit",
-      name: readmeTitle,
-      programmingLanguage: "Rust",
-      runtimePlatform: "Cargo",
-      url: "https://gobstopper.sh",
-    },
-    {
-      "@context": "https://schema.org",
-      "@type": "FAQPage",
-      mainEntity: questions.map(({ answer, question }) => ({
-        "@type": "Question",
-        acceptedAnswer: { "@type": "Answer", text: answer },
-        name: question,
-      })),
-    },
-  ];
-
   return (
     <div data-hraness-marketing-preset="editorial">
       <script
         dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
         type="application/ld+json"
       />
-      <a className="skip-link" href="#main">Skip to content</a>
-      <MarketingSiteHeader
-        className="hraness-material-chrome"
-        action={{ href: "#install", label: "Install Gobstopper" }}
-        brand={<><BrandMark />Gobstopper</>}
-        brandLabel="Gobstopper home"
-        links={navigation}
-      />
+      <SiteHeader path="/" />
 
       <main id="main" tabIndex={-1}>
         <MarketingPage>
           <div className="hraness-material-wall">
-          <ProductHero
-            align="start"
-            actions={[
-              { href: "#install", label: "Install Gobstopper" },
-              { href: "/docs", label: "Read the docs" },
-            ]}
-            boundary={footnote}
-            className="gobstopper-marketing-hero"
-            eyebrow=""
-            frame={(
-              <MarketingProofFrame
-                className="hraness-material-pane"
-                caption="Example session: find the heavy sessions, preview the edit, then let the watcher hold the threshold."
-                credit="From the README"
-                title="Watch one long session get cheaper"
-              >
-                <pre className="transcript" tabIndex={0}><code>{`$ gobstopper detect
+            <ProductHero
+              align="start"
+              actions={[
+                { href: "#install", label: "Install Gobstopper" },
+                { href: "/docs", label: "Read the docs" },
+              ]}
+              boundary={footnote}
+              className="gobstopper-marketing-hero"
+              eyebrow=""
+              frame={(
+                <MarketingProofFrame
+                  className="hraness-material-pane"
+                  caption="Example session: find the heavy sessions, preview the edit, then let the watcher hold the threshold."
+                  credit="From the README"
+                  title="Watch one long session get cheaper"
+                >
+                  <pre className="transcript" tabIndex={0}><code>{`$ gobstopper detect
 claude_code  4f3a…  active   context ~231k tokens   lifetime ~416M in
 
 $ gobstopper plan 4f3a --strategy auto
@@ -171,13 +138,13 @@ context: 93k -> ~40k tokens (saves ~53k)
 strategy: elide — 10 stale tool outputs masked, tail preserved
 
 $ gobstopper watch --trigger 250000`}</code></pre>
-              </MarketingProofFrame>
-            )}
-            heading={heading}
-            headingId="hero-title"
-            name=""
-            summary={readmeLead}
-          />
+                </MarketingProofFrame>
+              )}
+              heading={heading}
+              headingId="hero-title"
+              name=""
+              summary={readmeLead}
+            />
           </div>
 
           <MarketingPrimitives
@@ -205,15 +172,15 @@ gobstopper verify <session> && gobstopper undo <session>`}</code></pre>
               },
               {
                 label: "Watcher and hooks",
-                summary: "A polling daemon that stages a plan before the threshold and swaps it in when crossed — or provider hooks that snapshot and log around native compaction.",
+                summary: "A polling daemon that stages a plan before the threshold and publishes a validated copy when crossed — or provider hooks that snapshot and log around native compaction.",
                 example: (
-                  <pre tabIndex={0}><code>{`gobstopper watch --trigger 250000 --double-buffer
+                  <pre tabIndex={0}><code>{`gobstopper watch --trigger 250000
 gobstopper install-hooks   # Claude settings + Codex hooks.json`}</code></pre>
                 ),
               },
               {
                 label: "Your program",
-                summary: "preset.command receives normalized transcript JSON and returns edits. The agentic preset runs a bounded editor model over the same seam.",
+                summary: "preset.command receives normalized transcript JSON and returns edits. A versioned plugin bundle declares capabilities and a checked executable for the same seam.",
                 example: (
                   <pre tabIndex={0}><code>{`[presets.my-policy]
 strategy = "elide"
@@ -321,16 +288,7 @@ gobstopper watch`}</code></pre>
         </MarketingPage>
       </main>
 
-      <AskAiAboutThis className="ask-ai" url="https://gobstopper.sh" />
-
-      <div className="site-footer">
-        <p>Gobstopper is open source for developers and the agents working beside them.</p>
-        <nav aria-label="Project links">
-          <a href="/docs">Docs</a>
-          <a href={repository}>hraness/gobstopper</a>
-          <a href="https://hraness.com/projects">Hraness projects</a>
-        </nav>
-      </div>
+      <SiteFooter path="/" />
     </div>
   );
 }
