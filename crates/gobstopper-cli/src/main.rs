@@ -1054,12 +1054,21 @@ fn cmd_apply(
     Ok(())
 }
 
+/// Content hash of a file, for the staged-swap unchanged check.
+fn sha256_file(path: &std::path::Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(path).ok()?;
+    Some(format!("{:x}", Sha256::digest(&bytes)))
+}
+
 /// A fully-applied transcript copy waiting to be swapped in at trigger.
 struct Staged {
     path: PathBuf,
-    /// Byte length of the source file when staged — if it changed, the
-    /// staged copy is missing appended records and must be discarded.
-    source_len: u64,
+    /// Content hash of the source file when staged — if the provider
+    /// wrote since, the staged copy is missing records and must be
+    /// discarded. A hash, not a length: a same-length rewrite would pass
+    /// a size check.
+    source_sha256: String,
     plan: CompactionPlan,
 }
 
@@ -1104,10 +1113,10 @@ fn stage_compaction(d: &Discovered, resolved: &config::Resolved) -> Option<Stage
         let _ = std::fs::remove_file(&staged_path);
         return None;
     }
-    let source_len = std::fs::metadata(&d.handle.path).ok()?.len();
+    let source_sha256 = sha256_file(&d.handle.path)?;
     Some(Staged {
         path: staged_path,
-        source_len,
+        source_sha256,
         plan,
     })
 }
@@ -1154,8 +1163,10 @@ fn cmd_watch(
             }
             // Staged fast path: source unchanged since staging -> swap.
             if let Some(s) = staged.remove(&d.handle.session_id) {
-                let cur_len = std::fs::metadata(&d.handle.path).map(|m| m.len()).unwrap_or(0);
-                if !dry_run && cur_len == s.source_len {
+                let unchanged = sha256_file(&d.handle.path)
+                    .map(|h| h == s.source_sha256)
+                    .unwrap_or(false);
+                if !dry_run && unchanged {
                     let started = std::time::Instant::now();
                     match snapshot_before_edit(&d, &s.plan.strategy)
                         .and_then(|_| std::fs::rename(&s.path, &d.handle.path).map_err(anyhow::Error::from))

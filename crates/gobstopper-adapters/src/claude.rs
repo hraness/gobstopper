@@ -292,17 +292,7 @@ fn apply_elide(path: &Path, line_indexes: &[usize], stub_template: &str) -> Resu
             out.push('\n');
         }
     }
-    let tmp = path.with_extension("jsonl.gobstopper-tmp");
-    fs::File::create(&tmp)
-        .and_then(|mut f| f.write_all(out.as_bytes()))
-        .map_err(|e| AdapterError::Io {
-            path: tmp.clone(),
-            source: e,
-        })?;
-    fs::rename(&tmp, path).map_err(|e| AdapterError::Io {
-        path: path.to_path_buf(),
-        source: e,
-    })?;
+    crate::write_if_unchanged(path, raw.as_bytes(), &out)?;
     Ok(reclaimed)
 }
 
