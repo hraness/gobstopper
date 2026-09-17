@@ -1422,6 +1422,132 @@ fn load_item_invariants_hold(tc: TestCase) {
     }
 }
 
+/// The fast tail-scan used by `detect` must agree with the full `load`
+/// usage pass on files smaller than the tail window — a divergence means
+/// watch would plan against one estimate and report another.
+#[hegel::test(test_cases = 64, suppress_health_check = [hegel::HealthCheck::TooSlow])]
+fn scan_usage_agrees_with_load(tc: TestCase) {
+    use gobstopper_core::model::SessionHandle;
+
+    let provider = if tc.draw(gs::booleans()) {
+        Provider::Codex
+    } else {
+        Provider::ClaudeCode
+    };
+    let dir = tmpdir("scan-agree");
+    let path = dir.join("session.jsonl");
+    let lines = match provider {
+        Provider::Codex => gen_codex_transcript(&tc, false),
+        Provider::ClaudeCode => gen_claude_transcript(&tc),
+    };
+    write_lines(&path, &lines);
+    assert!(
+        fs::metadata(&path).unwrap().len() < 512 * 1024,
+        "generator exceeded the tail window"
+    );
+    let scanned = match provider {
+        Provider::Codex => codex::scan_usage(&path),
+        Provider::ClaudeCode => claude::scan_usage(&path),
+    };
+    let loaded = match provider {
+        Provider::Codex => codex::load(SessionHandle {
+            provider,
+            session_id: "s".into(),
+            path: path.clone(),
+            cwd: None,
+            age_secs: 0,
+        })
+        .unwrap(),
+        Provider::ClaudeCode => claude::load(SessionHandle {
+            provider,
+            session_id: "s".into(),
+            path: path.clone(),
+            cwd: None,
+            age_secs: 0,
+        })
+        .unwrap(),
+    };
+    assert_eq!(
+        scanned.context_tokens, loaded.usage.context_tokens,
+        "tail-scan and full-load context estimates diverged"
+    );
+}
+
+/// `discover` must surface every generated session under the roots
+/// exactly once, with the right provider and the recovered session id;
+/// `find` matches on the id prefix.
+#[hegel::test(test_cases = 32, suppress_health_check = [hegel::HealthCheck::TooSlow])]
+fn discover_finds_generated_sessions(tc: TestCase) {
+    use gobstopper_adapters::detect::{self, Roots};
+
+    let dir = tmpdir("discover");
+    let roots = Roots {
+        codex_home: dir.join("codex"),
+        claude_home: dir.join("claude"),
+    };
+    let n_codex = tc.draw(gs::integers::<usize>().max_value(3));
+    let n_claude = tc.draw(gs::integers::<usize>().max_value(3));
+    let mut expected: Vec<(Provider, String, PathBuf)> = Vec::new();
+    for i in 0..n_codex {
+        let id = format!("uniq-c{i}");
+        let p = roots
+            .codex_home
+            .join("sessions/2026/09/15")
+            .join(format!("rollout-2026-09-15T00-00-00-{id}.jsonl"));
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let mut lines = gen_codex_transcript(&tc, false);
+        // Rewrite the session_meta id to our unique one.
+        lines[0] = serde_json::to_string(&json!({
+            "type": "session_meta",
+            "payload": {"id": id, "timestamp": "t", "cwd": "/tmp"}
+        }))
+        .unwrap();
+        write_lines(&p, &lines);
+        expected.push((Provider::Codex, id, p));
+    }
+    for i in 0..n_claude {
+        let id = format!("uniq-k{i}");
+        let p = roots
+            .claude_home
+            .join("projects/proj-a")
+            .join(format!("{id}.jsonl"));
+        fs::create_dir_all(p.parent().unwrap()).unwrap();
+        let mut lines = gen_claude_transcript(&tc);
+        // Rewrite every sessionId to the unique id.
+        lines = lines
+            .iter()
+            .map(|l| {
+                let mut v: Value = serde_json::from_str(l).unwrap();
+                if v.get("sessionId").is_some() {
+                    v["sessionId"] = json!(id);
+                }
+                serde_json::to_string(&v).unwrap()
+            })
+            .collect();
+        write_lines(&p, &lines);
+        expected.push((Provider::ClaudeCode, id, p));
+    }
+
+    let found = detect::discover(&roots, 0);
+    for (provider, id, path) in &expected {
+        let hits: Vec<_> = found.iter().filter(|d| d.handle.path == *path).collect();
+        assert_eq!(hits.len(), 1, "{id} discovered {} times", hits.len());
+        let d = hits[0];
+        assert_eq!(d.handle.provider, *provider);
+        assert_eq!(d.handle.session_id, *id, "session id not recovered for {id}");
+    }
+    // Nothing extra surfaced.
+    assert_eq!(found.len(), expected.len());
+
+    // find() matches on id prefix.
+    if let Some((provider, id, path)) = expected.first() {
+        let hits = detect::find(&roots, id);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].handle.path, *path);
+        assert_eq!(hits[0].handle.provider, *provider);
+    }
+}
+
 /// A cyclic parentUuid chain (a1->b1, b1->a1) must not hang load — the
 /// cycle guard bounds the walk. Corrupt-but-parseable linkage is a real
 /// transcript state after interrupted provider writes.
