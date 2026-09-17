@@ -1548,6 +1548,145 @@ fn discover_finds_generated_sessions(tc: TestCase) {
     }
 }
 
+/// A compacted record whose replacement_history outputs are all below
+/// the stub floor must read as non-elidable in `load` and must pass
+/// through `apply` byte-identically — otherwise the estimate and the
+/// effect diverge and watch rewrites the line forever for zero gain.
+#[test]
+fn compacted_all_small_outputs_never_rewritten() {
+    use gobstopper_core::model::SessionHandle;
+
+    let dir = tmpdir("compacted-floor");
+    let path = dir.join("session.jsonl");
+    let lines = vec![
+        serde_json::to_string(&json!({
+            "type": "session_meta",
+            "payload": {"id": "c1", "timestamp": "t", "cwd": "/tmp"}
+        }))
+        .unwrap(),
+        serde_json::to_string(&json!({
+            "type": "compacted", "ordinal": 1,
+            "payload": {"replacement_history": [
+                {"type": "function_call_output", "call_id": "h1", "output": "x".repeat(100)},
+                {"type": "function_call_output", "call_id": "h2", "output": "y".repeat(100)},
+                {"type": "function_call_output", "call_id": "h3", "output": "z".repeat(100)}
+            ]}
+        }))
+        .unwrap(),
+    ];
+    write_lines(&path, &lines);
+    let handle = SessionHandle {
+        provider: Provider::Codex,
+        session_id: "c1".into(),
+        path: path.clone(),
+        cwd: None,
+        age_secs: 0,
+    };
+    let t = codex::load(handle).unwrap();
+    let compacted = t
+        .items
+        .iter()
+        .find(|i| i.label == "compacted@1")
+        .expect("compacted item");
+    assert_eq!(
+        compacted.elidable_bytes, None,
+        "300 bytes across 3 sub-floor outputs is not elidable"
+    );
+    let before = fs::read(&path).unwrap();
+    codex::apply(
+        &path,
+        &[Edit::Elide {
+            line_indexes: vec![1],
+            stub_template: "[elided {bytes} bytes of {kind}]".into(),
+        }],
+    )
+    .unwrap();
+    assert_eq!(
+        fs::read(&path).unwrap(),
+        before,
+        "no-op elide must not even re-serialize the record"
+    );
+}
+
+/// The digest is a state card, not a lossy copy: unique marker strings
+/// planted in elided outputs must never appear inside the injected
+/// digest line. If a strategy ever started copying payload text into
+/// DigestBlock fields, this is the tripwire.
+#[test]
+fn digest_line_carries_no_elided_content() {
+    use gobstopper_core::model::SessionHandle;
+    use gobstopper_core::strategy::{PolicyConfig, Strategy, StructuredStrategy};
+
+    let dir = tmpdir("digest-privacy");
+    let path = dir.join("session.jsonl");
+    let mut lines = vec![
+        serde_json::to_string(&json!({
+            "type": "session_meta",
+            "payload": {"id": "c1", "timestamp": "t", "cwd": "/tmp"}
+        }))
+        .unwrap(),
+        serde_json::to_string(&json!({
+            "type": "response_item", "ordinal": 0,
+            "payload": {"type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": "goal text"}]}
+        }))
+        .unwrap(),
+    ];
+    for i in 0..30usize {
+        lines.push(
+            serde_json::to_string(&json!({
+                "type": "response_item", "ordinal": i + 1,
+                "payload": {"type": "function_call_output", "call_id": format!("c{i}"),
+                    "output": format!("PAYLOAD-MARKER-{i}-{}", "z".repeat(400))}
+            }))
+            .unwrap(),
+        );
+    }
+    lines.push(
+        serde_json::to_string(&json!({
+            "type": "token_usage_record",
+            "payload": {"usage": {"input_tokens": 90000, "output_tokens": 20000},
+                "thread_token_usage": {"input_tokens": 90000, "cached_input_tokens": 0}}
+        }))
+        .unwrap(),
+    );
+    write_lines(&path, &lines);
+
+    let handle = SessionHandle {
+        provider: Provider::Codex,
+        session_id: "c1".into(),
+        path: path.clone(),
+        cwd: None,
+        age_secs: 0,
+    };
+    let t = codex::load(handle).unwrap();
+    let policy = PolicyConfig {
+        trigger_tokens: 1,
+        ..Default::default()
+    };
+    let plan = StructuredStrategy.evaluate(&t, &policy).expect("plan fires");
+    let has_digest = plan
+        .edits
+        .iter()
+        .any(|e| matches!(e, Edit::InjectDigest { .. }));
+    assert!(has_digest, "structured plan must inject a digest");
+    codex::apply(&path, &plan.edits).unwrap();
+
+    let after = read_lines(&path);
+    let digest_line = after.last().expect("digest line appended");
+    assert!(
+        !digest_line.contains("PAYLOAD-MARKER"),
+        "digest leaked elided payload content"
+    );
+    // Sanity: the covered markers really were elided, so this isn't a
+    // vacuous pass — stubs replaced their payload bytes.
+    let stubs = after
+        .iter()
+        .filter(|l| l.contains("output elided"))
+        .count();
+    assert!(stubs > 0, "expected covered outputs to be stubbed");
+}
+
 /// A cyclic parentUuid chain (a1->b1, b1->a1) must not hang load — the
 /// cycle guard bounds the walk. Corrupt-but-parseable linkage is a real
 /// transcript state after interrupted provider writes.

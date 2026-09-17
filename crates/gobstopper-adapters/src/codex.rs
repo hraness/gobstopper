@@ -101,6 +101,10 @@ pub fn load(handle: SessionHandle) -> Result<Transcript, AdapterError> {
                 // Post-compaction files carry live context inside
                 // `replacement_history`; its tool outputs stay elidable.
                 let payload = &record["payload"];
+                // Count only items apply would actually stub — the
+                // per-output floor must match `apply_elide` exactly or a
+                // record full of small outputs reads as elidable forever
+                // while every apply stubs nothing.
                 let bytes: u64 = payload
                     .get("replacement_history")
                     .and_then(Value::as_array)
@@ -108,6 +112,7 @@ pub fn load(handle: SessionHandle) -> Result<Transcript, AdapterError> {
                         items
                             .iter()
                             .filter_map(|i| i.get("output").map(elidable_output_bytes))
+                            .filter(|b| *b > 256)
                             .sum()
                     })
                     .unwrap_or(0);
@@ -257,6 +262,7 @@ fn apply_elide(path: &Path, line_indexes: &[usize], stub_template: &str) -> Resu
                 };
                 if is_compacted {
                     // Stub each output inside replacement_history in place.
+                    let mut stubbed_any = false;
                     if let Some(items) = payload
                         .get_mut("replacement_history")
                         .and_then(Value::as_array_mut)
@@ -270,7 +276,14 @@ fn apply_elide(path: &Path, line_indexes: &[usize], stub_template: &str) -> Resu
                             let was_array = o.is_array();
                             it["output"] = stub_value(old, was_array);
                             reclaimed += old;
+                            stubbed_any = true;
                         }
+                    }
+                    // Nothing met the floor — pass the original bytes
+                    // through rather than re-serializing for zero gain.
+                    if !stubbed_any {
+                        out.push_str(line);
+                        continue;
                     }
                 } else {
                     let Some(o) = payload.get("output") else {
