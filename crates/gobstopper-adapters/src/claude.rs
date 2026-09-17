@@ -390,6 +390,8 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
                     .and_then(|r| r.get("mode").and_then(Value::as_str))
                     .unwrap_or("auto");
                 let digest_uuid = crate::fork::generate_session_id(Path::new("claude-digest"));
+                let last_prompt_uuid = crate::fork::generate_session_id(Path::new("claude-last-prompt"));
+                let mode_uuid = crate::fork::generate_session_id(Path::new("claude-mode"));
                 let digest_user = serde_json::json!({
                     "type": "user",
                     "uuid": &digest_uuid,
@@ -400,15 +402,18 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
                 crate::transaction::append_record(&mut raw, &digest_user)?;
                 let last_prompt = serde_json::json!({
                     "type": "last-prompt",
+                    "uuid": &last_prompt_uuid,
                     "lastPrompt": text,
                     "leafUuid": &digest_uuid,
-                    "parentUuid": parent,
+                    "parentUuid": &digest_uuid,
                     "sessionId": session_id,
                 });
                 crate::transaction::append_record(&mut raw, &last_prompt)?;
                 let mode_rec = serde_json::json!({
                     "type": "mode",
+                    "uuid": &mode_uuid,
                     "mode": mode,
+                    "parentUuid": &last_prompt_uuid,
                     "sessionId": session_id,
                 });
                 crate::transaction::append_record(&mut raw, &mode_rec)?;

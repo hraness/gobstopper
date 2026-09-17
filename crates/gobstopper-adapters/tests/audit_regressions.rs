@@ -73,8 +73,14 @@ fn claude_digest_preserves_the_live_branch() {
     assert_eq!(digest_user["parentUuid"], "a1");
     assert_eq!(digest_user["sessionId"], "audit");
     assert_eq!(last_prompt["leafUuid"], digest_user["uuid"]);
-    assert_eq!(last_prompt["parentUuid"], "a1");
+    assert_eq!(last_prompt["parentUuid"], digest_user["uuid"]);
     assert_eq!(last_prompt["sessionId"], "audit");
+    let mode = raw
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|r| r.get("type").and_then(Value::as_str) == Some("mode"))
+        .expect("mode tail");
+    assert_eq!(mode["parentUuid"], last_prompt["uuid"]);
 }
 
 #[test]
