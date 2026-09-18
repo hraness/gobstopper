@@ -58,6 +58,9 @@ enum Cmd {
         /// Override the trigger threshold (tokens) for this evaluation.
         #[arg(long)]
         trigger: Option<u64>,
+        /// Override the post-compaction floor (tokens) for this evaluation.
+        #[arg(long)]
+        floor: Option<u64>,
         #[arg(long)]
         json: bool,
     },
@@ -71,6 +74,9 @@ enum Cmd {
         /// Override the trigger threshold (tokens) for this evaluation.
         #[arg(long)]
         trigger: Option<u64>,
+        /// Override the post-compaction floor (tokens) for this evaluation.
+        #[arg(long)]
+        floor: Option<u64>,
         /// Skip the confirmation prompt.
         #[arg(long)]
         yes: bool,
@@ -102,6 +108,11 @@ enum Cmd {
         /// Skip the confirmation prompt.
         #[arg(long)]
         yes: bool,
+        /// Restore the snapshot's exact bytes back to the original session
+        /// path instead of writing a fresh fork. Keeps the same session id
+        /// so `claude --resume <id>` / `codex resume <id>` pick it up.
+        #[arg(long)]
+        in_place: bool,
     },
     /// Clone a session transcript under a fresh session id (fork-on-write)
     /// and print the provider resume command.
@@ -121,6 +132,9 @@ enum Cmd {
         /// Override the trigger threshold (tokens).
         #[arg(long)]
         trigger: Option<u64>,
+        /// Override the post-compaction floor (tokens).
+        #[arg(long)]
+        floor: Option<u64>,
         /// Emit JSON rows.
         #[arg(long)]
         json: bool,
@@ -220,6 +234,9 @@ enum Cmd {
         /// Override the token trigger for the benchmark run.
         #[arg(long)]
         trigger: Option<u64>,
+        /// Override the post-compaction floor for the benchmark run.
+        #[arg(long)]
+        floor: Option<u64>,
         /// Write CSV to this file instead of stdout.
         #[arg(long)]
         output: Option<PathBuf>,
@@ -878,6 +895,7 @@ fn cmd_undo(
     session: &str,
     sha: Option<&str>,
     yes: bool,
+    in_place: bool,
 ) -> Result<()> {
     let d = find_session(cli, cfg, session)?;
     let root = vault::default_root();
@@ -900,7 +918,12 @@ fn cmd_undo(
     );
     if !yes {
         print!(
-            "restore snapshot into a separate fork of {}? [y/N] ",
+            "restore snapshot into {}{}? [y/N] ",
+            if in_place {
+                "the original path "
+            } else {
+                "a separate fork of "
+            },
             d.handle.path.display()
         );
         std::io::stdout().flush()?;
@@ -920,6 +943,23 @@ fn cmd_undo(
             Some("pre-undo"),
             &root,
         )?;
+    }
+    if in_place {
+        let bytes = vault::read_object(&entry.sha256, &root)?;
+        if verify::verify(d.handle.provider, &bytes)
+            .iter()
+            .any(|f| f.severity == gobstopper_adapters::verify::Severity::Error)
+        {
+            bail!("snapshot has structural errors; source was not modified");
+        }
+        let current = gobstopper_adapters::transaction::read(&d.handle.path)?;
+        gobstopper_adapters::transaction::replace(&d.handle.path, &current, &bytes)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        println!(
+            "restored in place at {}\nresume the same session id",
+            d.handle.path.display()
+        );
+        return Ok(());
     }
     let restored = fork::restore_copy(d.handle.provider, &d.handle.path, &entry.sha256, &root)?;
     println!(
@@ -1316,6 +1356,7 @@ fn cmd_eval(
     session: &str,
     strategy_flag: Option<&str>,
     trigger: Option<u64>,
+    floor: Option<u64>,
     json: bool,
 ) -> Result<()> {
     let d = find_session(cli, cfg, session)?;
@@ -1323,6 +1364,9 @@ fn cmd_eval(
     let mut policy = resolved.policy;
     if let Some(t) = trigger {
         policy.trigger_tokens = t;
+    }
+    if let Some(f) = floor {
+        policy.floor_tokens = f;
     }
     let rows = eval::eval_transcript(d.handle.provider, &d.handle.path, &policy, strategy_flag)?;
     if json {
@@ -1374,6 +1418,7 @@ fn cmd_bench(
     cli: &Cli,
     all: bool,
     trigger: Option<u64>,
+    floor: Option<u64>,
     output: Option<&std::path::Path>,
 ) -> Result<()> {
     let max_age = if all {
@@ -1394,6 +1439,9 @@ fn cmd_bench(
         };
         if let Some(t) = trigger {
             resolved.policy.trigger_tokens = t;
+        }
+        if let Some(f) = floor {
+            resolved.policy.floor_tokens = f;
         }
         let rows = match eval::eval_transcript(
             d.handle.provider,
@@ -1460,6 +1508,7 @@ fn cmd_apply(
     strategy: Option<&str>,
     preset: Option<&str>,
     trigger: Option<u64>,
+    floor: Option<u64>,
     yes: bool,
     in_place: bool,
     no_backup: bool,
@@ -1478,6 +1527,9 @@ fn cmd_apply(
     let mut resolved = cfg.resolve(d.handle.provider, &d.handle.session_id, preset, strategy)?;
     if let Some(t) = trigger {
         resolved.policy.trigger_tokens = t;
+    }
+    if let Some(f) = floor {
+        resolved.policy.floor_tokens = f;
     }
     let (transcript, source_sha256) = copy::load_bound(d.handle.clone())?;
     let Some(plan) = evaluate(&transcript, &resolved)? else {
@@ -2081,6 +2133,7 @@ fn main() -> Result<()> {
             strategy,
             preset,
             trigger,
+            floor,
             json,
         } => {
             let d = find_session(&cli, &cfg, session)?;
@@ -2092,6 +2145,9 @@ fn main() -> Result<()> {
             )?;
             if let Some(t) = trigger {
                 resolved.policy.trigger_tokens = *t;
+            }
+            if let Some(f) = floor {
+                resolved.policy.floor_tokens = *f;
             }
             let transcript = detect::load(&d)?;
             match evaluate(&transcript, &resolved)? {
@@ -2110,6 +2166,7 @@ fn main() -> Result<()> {
             strategy,
             preset,
             trigger,
+            floor,
             yes,
             in_place,
             no_backup,
@@ -2120,19 +2177,34 @@ fn main() -> Result<()> {
             strategy.as_deref(),
             preset.as_deref(),
             *trigger,
+            *floor,
             *yes,
             *in_place,
             *no_backup,
         ),
         Cmd::Verify { session, json } => cmd_verify(&cli, &cfg, session, *json),
-        Cmd::Undo { session, sha, yes } => cmd_undo(&cli, &cfg, session, sha.as_deref(), *yes),
+        Cmd::Undo {
+            session,
+            sha,
+            yes,
+            in_place,
+        } => cmd_undo(&cli, &cfg, session, sha.as_deref(), *yes, *in_place),
         Cmd::Fork { session } => cmd_fork(&cli, &cfg, session),
         Cmd::Eval {
             session,
             strategy,
             trigger,
+            floor,
             json,
-        } => cmd_eval(&cli, &cfg, session, strategy.as_deref(), *trigger, *json),
+        } => cmd_eval(
+            &cli,
+            &cfg,
+            session,
+            strategy.as_deref(),
+            *trigger,
+            *floor,
+            *json,
+        ),
         Cmd::InstallHooks => cmd_install_hooks(false, &roots(&cli)),
         Cmd::UninstallHooks => cmd_install_hooks(true, &roots(&cli)),
         Cmd::Hook { event } => cmd_hook(event),
@@ -2164,8 +2236,9 @@ fn main() -> Result<()> {
         Cmd::Bench {
             all,
             trigger,
+            floor,
             output,
-        } => cmd_bench(&cli, *all, *trigger, output.as_deref()),
+        } => cmd_bench(&cli, *all, *trigger, *floor, output.as_deref()),
         Cmd::Snapshot { session, label } => cmd_snapshot(&cli, &cfg, session, label.as_deref()),
         Cmd::Watch {
             interval,

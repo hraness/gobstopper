@@ -155,6 +155,64 @@ export default function Benchmarks() {
             tolerance for recall loss.
           </p>
 
+          <h2>Prefix preservation and provider cache</h2>
+          <p>
+            The <code>cache_aware</code> strategy elides the latest stale tool
+            outputs before the protected tail instead of the oldest, so the
+            conversation prefix stays byte-identical. On a 339k-token Claude
+            session at a 310k floor, the same resume question was asked under
+            three conditions (same session, restored between runs via
+            <code>gobstopper undo --in-place</code>) and the provider&apos;s
+            real cache counters were read from the API response:
+          </p>
+          <table>
+            <thead>
+              <tr>
+                <th>condition</th>
+                <th>cache read</th>
+                <th>cache creation</th>
+                <th>file prefix preserved</th>
+                <th>cost</th>
+                <th>accurate?</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>none (original)</td>
+                <td>10,010</td>
+                <td>325,647</td>
+                <td>—</td>
+                <td>$6.53</td>
+                <td>yes</td>
+              </tr>
+              <tr>
+                <td>gobstopper <code>cache_aware</code></td>
+                <td>13,536</td>
+                <td>258,517</td>
+                <td>107,884 tokens</td>
+                <td>$5.19</td>
+                <td>yes</td>
+              </tr>
+              <tr>
+                <td>gobstopper <code>compacted</code></td>
+                <td>13,536</td>
+                <td>257,505</td>
+                <td>6,639 tokens</td>
+                <td>$5.18</td>
+                <td>yes</td>
+              </tr>
+            </tbody>
+          </table>
+          <p>
+            All three answers were accurate. Both strategies cut cache-write
+            tokens by ~21% (~20% lower cost on the resume turn). The honest
+            caveat: Claude Code&apos;s cache breakpoints bound
+            <code>cache_read</code> at ~13.5k in every condition, so the extra
+            prefix preservation does not translate into more provider cache
+            hits today — it pays off in smaller <code>gobstopper diff</code>
+            audits and cheaper record dedup across repeated compactions.
+          </p>
+
           <h2>Results</h2>
           <table>
             <thead>

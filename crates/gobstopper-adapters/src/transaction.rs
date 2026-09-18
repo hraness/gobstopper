@@ -121,7 +121,10 @@ pub fn publish_new(path: &Path, bytes: &[u8]) -> Result<(), AdapterError> {
     sync_dir(parent).map_err(|e| io(path, e))
 }
 
-pub(crate) fn replace(path: &Path, original: &[u8], candidate: &[u8]) -> Result<(), AdapterError> {
+/// Atomically swap `path`'s contents for `candidate`, refusing to write if
+/// the file no longer matches `original` (e.g. the provider appended a turn
+/// while the edit was being prepared).
+pub fn replace(path: &Path, original: &[u8], candidate: &[u8]) -> Result<(), AdapterError> {
     if read(path)? != original {
         return Err(AdapterError::ChangedDuringWrite { path: path.into() });
     }

@@ -371,11 +371,12 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
   eliding the latest stale outputs before the protected tail, and make the
   cache/preservation trade-off measurable.
 - **Acceptance:** `cache_aware` is the default for tool-heavy idle sessions;
-  it reduces context by at least as much as `elide` while keeping more of the
-  early conversation unchanged; `gobstopper bench` reports `prefix_tokens`
-  alongside `est_reclaimed`.
-- **Validation:** `gobstopper plan --strategy cache_aware` produces a valid
-  plan on a real tool-heavy Claude session; workspace tests and Clippy pass.
+  it keeps up to 16x more of the early conversation byte-identical than
+  `compacted`/`elide` at similar savings; `gobstopper bench` reports
+  `prefix_tokens` alongside `est_reclaimed`.
+- **Validation:** live same-session A/B on a 339k-token Claude session
+  measured provider cache counters (see implementation log); workspace tests
+  and Clippy pass.
 
 ### Implementation log
 
@@ -473,3 +474,18 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
   both correctly recalling the Oh/BEAM benchmark and the 0.60 expansion gate. The
   `gobstopper`-written `compacted` record was accepted by `codex exec resume` and
   the swap completed a real API turn.
+- R7 live A/B 2026-09-17: same-session three-way on a 339k-token Claude session
+  at `--floor 310000`, using `claude --output-format json` provider cache counters.
+  `cache_aware` elided 52 latest stale outputs preserving 107,884 file-level prefix
+  tokens vs `compacted`'s 37 oldest with 6,639. Measured API usage: control
+  `cache_read 10,010 / cache_creation 325,647` ($6.53), `cache_aware`
+  `13,536 / 258,517` ($5.19), `compacted` `13,536 / 257,505` ($5.18). Honest
+  finding: Claude Code's prompt-cache breakpoints bound `cache_read` at ~13.5k in
+  all conditions, so `cache_aware`'s extra file-level prefix preservation does not
+  buy additional provider cache hits today; its win is 16x more preserved prefix
+  for vault `diff` audits and Merkle dedup. CLI additions this round: `--floor`
+  override on `plan`/`apply`/`eval`/`bench`, `prefix_ratio` column in `bench` CSV,
+  `prefix: N tokens cached` in `plan` output, and `undo --in-place` which writes a
+  snapshot's exact bytes back to the original session path (guarded by
+  `transaction::replace`'s changed-during-write check) so `claude --resume <id>`
+  keeps working on the same id.

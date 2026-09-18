@@ -211,6 +211,23 @@ On Codex, `compacted` cut resume input tokens by **66%** and `elide` cut
 them by **43%**, both with accurate answers. There is no one-shot Codex
 native compact to compare against.
 
+The same-session `cache_aware` A/B (339k-token Claude session, floor 310k,
+real provider cache counters):
+
+| condition | `cache_read` | `cache_creation` | file-level prefix preserved | cost | accurate? |
+|---|---:|---:|---:|---:|---|
+| none (original) | 10,010 | 325,647 | — | $6.53 | yes |
+| `gobstopper cache_aware` | 13,536 | 258,517 | 107,884 tokens | $5.19 | yes |
+| `gobstopper compacted` | 13,536 | 257,505 | 6,639 tokens | $5.18 | yes |
+
+Honest result: `cache_aware` and `compacted` cost the same on the API —
+Claude Code's prompt-cache breakpoints sit at ~13.5k regardless of how much
+file-level prefix stays byte-identical. What `cache_aware` actually buys is
+**16x more preserved prefix at the transcript level**, which is what keeps
+`gobstopper diff` audits small and Merkle-dedup efficient across repeated
+compactions. Choose it when auditability matters; choose `compacted` when
+you want the Codex-native record.
+
 That is the difference gobstopper is built for: measured, auditable
 compaction that does not replace the transcript's actual state with a
 plausible invention. Every pre- and post-state is in the vault, so you can
@@ -234,10 +251,10 @@ Production-ready for idle and resume-boundary transcript compaction on Codex
 and Claude Code. Core detection, planning, and transcript surgery are covered
 by a property-tested suite plus the live qualifications above. `apply` and
 `watch` always snapshot the source into the content-addressed vault first;
-`verify` checks resume-validity, `undo` restores to a new fork, and `vault`
-keeps every state. `sawtooth` can route to Codex's `thread/compact/start`
-over a private app-server connection when `codex-cli` is installed and
-trusted.
+`verify` checks resume-validity, `undo` restores to a new fork (or
+`--in-place` back onto the same session id), and `vault` keeps every state.
+`sawtooth` can route to Codex's `thread/compact/start` over a private
+app-server connection when `codex-cli` is installed and trusted.
 
 The `structured` and `agentic` strategies remain conservative placeholders or
 extension points, not proven semantic compressors. Custom strategy code is
