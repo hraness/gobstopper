@@ -162,8 +162,10 @@ impl ScoredStrategy {
 
     /// Build a plan from driver-provided or heuristic scores. The
     /// `scores` are re-intersected with the transcript's eligible
-    /// candidates, sorted ascending by keep-probability, and elided until
-    /// the floor. Unknown item indexes are ignored.
+    /// candidates. The strategy expands a tailward window of candidates
+    /// and elides the lowest-scoring items *within* that window, so the
+    /// conversation prefix stays unchanged until the first elided item.
+    /// Unknown item indexes are ignored.
     pub fn scores_to_plan(
         transcript: &Transcript,
         policy: &PolicyConfig,
@@ -173,37 +175,101 @@ impl ScoredStrategy {
         if before < policy.effective_trigger() {
             return None;
         }
-        let eligible: std::collections::HashSet<usize> =
-            Self::candidates(transcript, policy).into_iter().collect();
-        let mut scored: Vec<&ScoredItem> = scores
-            .iter()
-            .filter(|s| eligible.contains(&s.item_index))
-            .collect();
-        if scored.is_empty() {
+        let eligible = Self::candidates(transcript, policy);
+        if eligible.is_empty() {
             return None;
         }
-        // Elide the lowest keep-probability items first.
-        scored.sort_by(|a, b| {
-            a.keep_probability
-                .partial_cmp(&b.keep_probability)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        let score_by_index: std::collections::HashMap<usize, f64> = scores
+            .iter()
+            .map(|s| (s.item_index, s.keep_probability))
+            .collect();
 
-        let mut projected = before;
-        let mut chosen: Vec<usize> = Vec::new();
-        for s in scored {
-            if projected <= policy.floor_tokens {
-                break;
+        let target_savings = before.saturating_sub(policy.floor_tokens);
+
+        // Min-heap by keep-probability (lower score = higher elision priority)
+        // using a fixed-point u64 key so it is `Ord`.
+        let mut heap = std::collections::BinaryHeap::new();
+        let mut total_savings = 0u64;
+
+        // Walk from newest candidate to oldest, growing the window. The
+        // first window that can reach target_savings is the smallest window;
+        // we then elide the lowest-scored items in it.
+        for k in (0..eligible.len()).rev() {
+            let idx = eligible[k];
+            let item = &transcript.items[idx];
+            let prob = score_by_index.get(&idx).copied().unwrap_or(0.5);
+            let key = (prob.clamp(0.0, 1.0) * 1_000_000.0) as u64;
+            heap.push(std::cmp::Reverse((
+                key,
+                item.line_index,
+                item.estimated_elision_savings(),
+                idx,
+            )));
+            total_savings += item.estimated_elision_savings();
+
+            if total_savings >= target_savings {
+                let mut chosen = Vec::new();
+                let mut accumulated = 0u64;
+                while accumulated < target_savings && !heap.is_empty() {
+                    let std::cmp::Reverse((_, _, savings, idx)) = heap.pop().unwrap();
+                    chosen.push(transcript.items[idx].line_index);
+                    accumulated += savings;
+                }
+                if chosen.is_empty() {
+                    return None;
+                }
+                chosen.sort();
+                let projected = before.saturating_sub(accumulated);
+
+                let digest = state_card_digest(transcript, &chosen);
+                let digest_chars: usize = digest.goal.as_ref().map(|g| g.len()).unwrap_or(0)
+                    + digest.decisions.iter().map(|d| d.len()).sum::<usize>()
+                    + digest.files_touched.iter().map(|f| f.len()).sum::<usize>()
+                    + 64;
+                let digest_overhead = estimate_tokens(digest_chars);
+
+                let first_elided = chosen.first().copied().unwrap_or(0);
+                let prefix_items = transcript
+                    .items
+                    .iter()
+                    .filter(|i| i.line_index < first_elided)
+                    .count();
+
+                return Some(CompactionPlan {
+                    strategy: "scored".to_string(),
+                    rationale: format!(
+                        "context {before} tokens exceeds trigger {}; eliding {} scored stale outputs, {} prefix records unchanged",
+                        policy.trigger_tokens,
+                        chosen.len(),
+                        prefix_items
+                    ),
+                    edits: vec![
+                        Edit::Elide {
+                            line_indexes: chosen,
+                            stub_template: DEFAULT_STUB.to_string(),
+                        },
+                        Edit::InjectDigest { digest },
+                    ],
+                    context_tokens_before: before,
+                    context_tokens_after: projected.saturating_add(digest_overhead),
+                });
             }
-            if let Some(item) = transcript.items.get(s.item_index) {
-                chosen.push(item.line_index);
-                projected = projected.saturating_sub(item.estimated_elision_savings());
-            }
+        }
+
+        // Even the full set of candidates can't reach the floor; elide as
+        // many low-scored items as possible (heuristic / max-effort).
+        let mut chosen = Vec::new();
+        let mut accumulated = 0u64;
+        while !heap.is_empty() {
+            let std::cmp::Reverse((_, _, savings, idx)) = heap.pop().unwrap();
+            chosen.push(transcript.items[idx].line_index);
+            accumulated += savings;
         }
         if chosen.is_empty() {
             return None;
         }
         chosen.sort();
+        let projected = before.saturating_sub(accumulated);
 
         let digest = state_card_digest(transcript, &chosen);
         let digest_chars: usize = digest.goal.as_ref().map(|g| g.len()).unwrap_or(0)
