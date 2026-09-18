@@ -3,6 +3,7 @@
 mod config;
 mod hooks;
 mod jev;
+mod llm_scorer;
 mod mcp;
 mod report;
 
@@ -12,7 +13,7 @@ use gobstopper_adapters::detect::{self, Discovered, Roots};
 use gobstopper_adapters::{claude, codex, copy, eval, fork, plugins, vault, verify, AdapterError};
 use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
 use gobstopper_core::plan::{CompactionPlan, Edit};
-use gobstopper_core::strategy::{self, QuotaPressure, ScoredStrategy, Strategy};
+use gobstopper_core::strategy::{self, HeuristicScorer, QuotaPressure, ScoredStrategy};
 use gobstopper_core::Provider;
 use std::io::{Read as _, Write as _};
 use std::path::PathBuf;
@@ -451,6 +452,11 @@ fn effective_policy(
     (outcome.policy, outcome.reasons)
 }
 
+fn maybe_scorer() -> Option<Box<dyn gobstopper_core::ScoreDriver>> {
+    // LLM is available now; Jev is on a waitlist, so it is the fallback.
+    llm_scorer::maybe_llm_scorer().or_else(jev::maybe_jev_scorer)
+}
+
 fn evaluate(
     transcript: &gobstopper_core::Transcript,
     resolved: &config::Resolved,
@@ -506,14 +512,13 @@ fn evaluate(
         return external_plan(transcript, &policy, &resolved.strategy, edits);
     }
     let mut plan = if resolved.strategy == "scored" {
-        if let Some(driver) = jev::maybe_jev_scorer() {
-            let candidates = ScoredStrategy::candidates(transcript, &policy);
-            let scores = driver.score(transcript, &candidates);
-            ScoredStrategy::scores_to_plan(transcript, &policy, &scores)
+        let candidates = ScoredStrategy::candidates(transcript, &policy);
+        let scores = if let Some(driver) = maybe_scorer() {
+            driver.score(transcript, &candidates)
         } else {
-            // No Jev key: the built-in heuristic scorer handles it.
-            ScoredStrategy.evaluate(transcript, &policy)
-        }
+            HeuristicScorer.score(transcript, &candidates)
+        };
+        ScoredStrategy::scores_to_plan(transcript, &policy, &scores)
     } else {
         let strat = strategy::strategy_by_id(&resolved.strategy)
             .ok_or_else(|| anyhow::anyhow!("unknown strategy '{}'", resolved.strategy))?;

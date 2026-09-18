@@ -151,6 +151,19 @@ command = "python3 ~/bin/my_compactor.py"
 Managed sessions (oompa profiles, sandboxed homes) use different roots:
 point gobstopper at them with `--codex-home` / `--claude-home`.
 
+`scored` can use a cheap LLM via Vercel AI Gateway:
+
+```sh
+export AI_GATEWAY_API_KEY=...                 # from vercel ai-gateway api-keys
+export GOBSTOPPER_LLM_MODEL=qwen/qwen2.5-7b-instruct
+export GOBSTOPPER_LLM_TIMEOUT_MS=20000
+```
+
+If no LLM key is set, the built-in heuristic scorer runs offline. With a key,
+`gobstopper plan <session> --strategy scored` calls the model once per
+compaction to score candidate tool results; only sanitized labels and summaries
+are sent. A Jev key (`TYPESAFE_API_KEY`) is also supported as a fallback.
+
 With `adaptive = true`, the effective trigger/floor are re-derived per
 session at each decision point: the trigger is capped at a quarter of
 the provider-advertised context window, backed off (bounded 2x) when

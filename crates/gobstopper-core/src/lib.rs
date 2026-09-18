@@ -22,8 +22,8 @@ pub use plan::{CompactionPlan, DigestBlock, Edit};
 pub use policy::{adapt, AdaptiveOutcome, AdaptiveSample};
 pub use probe::{KindTally, Probe, ProbeKind, ProbeScore};
 pub use strategy::{
-    builtin_strategies, strategy_by_id, PolicyConfig, QuotaPressure, ScoreDriver, ScoredItem,
-    ScoredStrategy, Strategy,
+    builtin_strategies, strategy_by_id, HeuristicScorer, PolicyConfig, QuotaPressure, ScoreDriver,
+    ScoredItem, ScoredStrategy, Strategy,
 };
 
 #[cfg(test)]

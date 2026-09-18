@@ -522,3 +522,10 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
   compactions. The Jev path is optional and falls back to the heuristic
   scorer when no key is configured or a call fails.
 
+- R8 update (2026-09-20): `scored` now uses a smarter deterministic heuristic
+  (tool type, future-context references, goal overlap, superseded-duplicate
+  detection, error markers) and supports a cheap-LLM `ScoreDriver` over Vercel
+  AI Gateway. Jev remains a fallback via `TYPESAFE_API_KEY`; the LLM path is
+  live with `AI_GATEWAY_API_KEY` and uses `qwen/qwen-2.5-7b-instruct` by
+  default. Only sanitized labels/summaries leave the machine.
+

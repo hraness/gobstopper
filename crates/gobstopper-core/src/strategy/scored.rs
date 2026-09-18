@@ -39,7 +39,6 @@ pub struct HeuristicScorer;
 
 impl HeuristicScorer {
     pub fn score(&self, transcript: &Transcript, candidates: &[usize]) -> Vec<ScoredItem> {
-        let tail = transcript.items.iter().rev().take(8).collect::<Vec<_>>();
         let goal = transcript
             .items
             .iter()
@@ -51,17 +50,12 @@ impl HeuristicScorer {
                     })
             })
             .map(|i| tokenize(i.summary.as_deref().unwrap_or(&i.label)));
-        let tail_tokens: std::collections::HashSet<String> = tail
-            .iter()
-            .flat_map(|i| {
-                tokenize(&i.label)
-                    .into_iter()
-                    .chain(tokenize(i.summary.as_deref().unwrap_or("")))
-            })
-            .collect();
+        let goal_tokens = goal.unwrap_or_default();
 
+        // Build an index of every tool label that appears after each candidate.
         let mut label_occurrences: std::collections::HashMap<String, Vec<usize>> =
             std::collections::HashMap::new();
+
         for &idx in candidates {
             if let Some(item) = transcript.items.get(idx) {
                 label_occurrences
@@ -71,41 +65,75 @@ impl HeuristicScorer {
             }
         }
 
+        let max_line = transcript.items.last().map(|i| i.line_index).unwrap_or(0);
         let n = candidates.len().max(1) as f64;
+
         candidates
             .iter()
             .enumerate()
             .map(|(pos, &idx)| {
                 let item = transcript.items.get(idx).unwrap();
-                let recency = (pos as f64) / n; // older -> lower
 
+                // 1. Recency: newer candidates are more likely still relevant.
+                let recency = (pos as f64) / n;
+
+                // 2. Tool importance: some tools produce durable state,
+                //    others are transient (ls, echo, pwd).
+                let tool = item
+                    .label
+                    .split(|c: char| ['(', ' '].contains(&c))
+                    .next()
+                    .unwrap_or("");
+                let tool_importance = tool_importance(tool);
+
+                // 3. Error/failure markers are almost always worth keeping.
                 let item_text = format!("{} {}", item.label, item.summary.as_deref().unwrap_or(""));
                 let error_marker = has_error_marker(&item_text);
 
+                // 4. Reuse: tokens from this item that reappear in later
+                //    user/assistant/tool turns are more likely needed.
                 let item_tokens = tokenize(&item_text);
-                let overlap_count = item_tokens
-                    .iter()
-                    .filter(|t| {
-                        tail_tokens.contains(*t) || goal.as_ref().is_some_and(|g| g.contains(*t))
-                    })
-                    .count();
-                let overlap = if item_tokens.is_empty() {
+                let future = collect_future_context(transcript, idx);
+                let future_overlap = if item_tokens.is_empty() {
                     0.0
                 } else {
-                    (overlap_count as f64) / (item_tokens.len() as f64)
+                    (item_tokens.intersection(&future).count() as f64) / (item_tokens.len() as f64)
                 };
 
-                let newest_dup = label_occurrences
-                    .get(&item.label)
-                    .and_then(|v| v.last())
-                    .copied()
-                    .unwrap_or(idx);
-                let unique = newest_dup == idx;
+                // 5. Goal overlap: files/paths mentioned in the current user
+                //    goal are likely still being worked on.
+                let goal_overlap = if item_tokens.is_empty() {
+                    0.0
+                } else {
+                    (item_tokens.intersection(&goal_tokens).count() as f64)
+                        / (item_tokens.len() as f64)
+                };
 
-                let score = 0.35 * recency
+                // 6. Superseded: if the same tool+label appears later, the
+                //    older run is less valuable unless it has error markers.
+                let occurrences = label_occurrences
+                    .get(&item.label)
+                    .cloned()
+                    .unwrap_or_default();
+                let newest = *occurrences.last().unwrap_or(&idx);
+                let superseded = newest != idx && occurrences.len() > 1;
+
+                // 7. Spread over the conversation: older items in the middle
+                //    of a long transcript are less likely to matter.
+                let position_ratio = if max_line == 0 {
+                    0.0
+                } else {
+                    1.0 - (item.line_index as f64 / max_line as f64)
+                };
+
+                let score = 0.22 * recency
+                    + 0.15 * tool_importance
                     + (if error_marker { 0.25 } else { 0.0 })
-                    + 0.35 * overlap
-                    + (if unique { 0.05 } else { 0.0 });
+                    + 0.18 * future_overlap
+                    + 0.15 * goal_overlap
+                    + 0.10 * position_ratio
+                    - (if superseded { 0.15 } else { 0.0 });
+
                 ScoredItem {
                     item_index: idx,
                     keep_probability: score.clamp(0.0, 1.0),
@@ -140,6 +168,33 @@ fn has_error_marker(text: &str) -> bool {
     ]
     .iter()
     .any(|m| lower.contains(m))
+}
+
+fn tool_importance(tool: &str) -> f64 {
+    match tool.to_lowercase().as_str() {
+        "read_file" | "view" | "view_range" | "search_files" | "glob" | "grep" | "apply"
+        | "replace" | "edit" => 1.0,
+        "bash" | "ls" | "cat" | "echo" | "pwd" | "which" | "find" | "wc" | "head" | "tail"
+        | "sort" | "uniq" => 0.0,
+        _ => 0.5,
+    }
+}
+
+fn collect_future_context(
+    transcript: &Transcript,
+    idx: usize,
+) -> std::collections::HashSet<String> {
+    transcript
+        .items
+        .iter()
+        .skip(idx + 1)
+        .take(12)
+        .flat_map(|i| {
+            tokenize(&i.label)
+                .into_iter()
+                .chain(tokenize(i.summary.as_deref().unwrap_or("")))
+        })
+        .collect()
 }
 
 pub struct ScoredStrategy;
