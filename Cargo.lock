@@ -182,7 +182,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -197,7 +197,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper-adapters"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "fs2",
@@ -211,7 +211,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper-core"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "serde",
  "serde_json",
