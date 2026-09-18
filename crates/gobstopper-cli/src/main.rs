@@ -1,5 +1,6 @@
 //! gobstopper: automatic context compaction for Codex and Claude Code.
 
+mod apple_scorer;
 mod config;
 mod hooks;
 mod jev;
@@ -477,6 +478,7 @@ fn maybe_scorer() -> Option<Box<dyn gobstopper_core::ScoreDriver>> {
     match std::env::var("GOBSTOPPER_SCORER").ok()?.as_str() {
         "llm" => llm_scorer::maybe_llm_scorer(),
         "jev" => jev::maybe_jev_scorer(),
+        "apple" => apple_scorer::maybe_apple_scorer(),
         _ => None,
     }
 }

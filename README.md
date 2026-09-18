@@ -170,12 +170,21 @@ Managed sessions (oompa profiles, sandboxed homes) use different roots:
 point gobstopper at them with `--codex-home` / `--claude-home`.
 
 `scored` uses the deterministic offline heuristic by default. Experimental
-external scoring is opt-in with `GOBSTOPPER_SCORER=llm` or
-`GOBSTOPPER_SCORER=jev`; merely setting an API key never sends data. External
-scorers receive bounded labels and summaries, not full tool payloads, and fall
-back to the heuristic on failure. The built-in heuristic is the recommended
-published path because current live trials did not show a better plan from the
-LLM scorer.
+external scoring is opt-in with `GOBSTOPPER_SCORER=llm`,
+`GOBSTOPPER_SCORER=jev`, or `GOBSTOPPER_SCORER=apple`; merely setting an API
+key never sends data. External scorers receive bounded labels and summaries,
+not full tool payloads, and fall back to the heuristic on failure. The
+built-in heuristic is the recommended published path because current live
+trials did not show a better plan from the LLM scorer.
+
+`GOBSTOPPER_SCORER=apple` (macOS 26+, Apple Silicon) scores on-device with
+Apple Intelligence Foundation Models via the shared `apple-foundation`
+bridge — free, private, no API key. The bridge auto-builds to
+`~/.local/share/gobstopper/apple-bridge` on first use (or set
+`GOBSTOPPER_APPLE_BRIDGE`), requests queue through one persistent process
+with guided JSON output, and any failure degrades to neutral scores.
+`GOBSTOPPER_APPLE_TIMEOUT_MS`, `_MAX_CANDIDATES`, `_BATCH_SIZE`, and
+`_MAX_BATCHES` tune it.
 
 With `adaptive = true`, the effective trigger/floor are re-derived per
 session at each decision point: the trigger is capped at a quarter of
