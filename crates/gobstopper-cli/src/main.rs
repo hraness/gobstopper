@@ -453,8 +453,13 @@ fn effective_policy(
 }
 
 fn maybe_scorer() -> Option<Box<dyn gobstopper_core::ScoreDriver>> {
-    // LLM is available now; Jev is on a waitlist, so it is the fallback.
-    llm_scorer::maybe_llm_scorer().or_else(jev::maybe_jev_scorer)
+    // The LLM and Jev scorers are opt-in. The built-in heuristic is the
+    // default because it is fast, deterministic, and private.
+    match std::env::var("GOBSTOPPER_SCORER").ok()?.as_str() {
+        "llm" => llm_scorer::maybe_llm_scorer(),
+        "jev" => jev::maybe_jev_scorer(),
+        _ => None,
+    }
 }
 
 fn evaluate(

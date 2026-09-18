@@ -65,6 +65,31 @@ impl HeuristicScorer {
             }
         }
 
+        // Corpus-wide token statistics for IDF and future-reference counting.
+        let n_docs = transcript.items.len().max(1);
+        let mut token_df: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut token_occurrences: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        for (idx, item) in transcript.items.iter().enumerate() {
+            let text = format!("{} {}", item.label, item.summary.as_deref().unwrap_or(""));
+            for token in tokenize(&text) {
+                *token_df.entry(token.clone()).or_insert(0) += 1;
+                token_occurrences.entry(token).or_default().push(idx);
+            }
+        }
+        let max_idf = (n_docs as f64).ln().max(1.0);
+
+        // Latest occurrence tokens per tool label, for near-duplicate detection.
+        let mut label_latest_tokens: std::collections::HashMap<
+            String,
+            std::collections::HashSet<String>,
+        > = std::collections::HashMap::new();
+        for item in transcript.items.iter() {
+            let text = format!("{} {}", item.label, item.summary.as_deref().unwrap_or(""));
+            label_latest_tokens.insert(item.label.clone(), tokenize(&text));
+        }
+
         let max_line = transcript.items.last().map(|i| i.line_index).unwrap_or(0);
         let n = candidates.len().max(1) as f64;
 
@@ -90,17 +115,38 @@ impl HeuristicScorer {
                 let item_text = format!("{} {}", item.label, item.summary.as_deref().unwrap_or(""));
                 let error_marker = has_error_marker(&item_text);
 
-                // 4. Reuse: tokens from this item that reappear in later
-                //    user/assistant/tool turns are more likely needed.
                 let item_tokens = tokenize(&item_text);
-                let future = collect_future_context(transcript, idx);
-                let future_overlap = if item_tokens.is_empty() {
+
+                // 4. Informativeness (IDF): rare, distinctive tokens are more
+                //    likely to carry state the model cannot reconstruct.
+                let idf: f64 = item_tokens
+                    .iter()
+                    .map(|t| (n_docs as f64 / (*token_df.get(t).unwrap_or(&1) as f64)).ln())
+                    .sum();
+                let idf_score = if item_tokens.is_empty() {
                     0.0
                 } else {
-                    (item_tokens.intersection(&future).count() as f64) / (item_tokens.len() as f64)
+                    (idf / (item_tokens.len() as f64 * max_idf)).clamp(0.0, 1.0)
                 };
 
-                // 5. Goal overlap: files/paths mentioned in the current user
+                // 5. Future reuse: count how often this item's tokens are
+                //    referenced in later turns, bounded to avoid noise.
+                let future_ref: f64 = item_tokens
+                    .iter()
+                    .map(|t| {
+                        token_occurrences
+                            .get(t)
+                            .map(|occ| {
+                                let start = occ.partition_point(|&i| i <= idx);
+                                occ[start..].iter().take(12).count() as f64
+                            })
+                            .unwrap_or(0.0)
+                    })
+                    .sum::<f64>()
+                    / (item_tokens.len().max(1) as f64);
+                let future_ref_score = (future_ref / 12.0).clamp(0.0, 1.0);
+
+                // 6. Goal overlap: files/paths mentioned in the current user
                 //    goal are likely still being worked on.
                 let goal_overlap = if item_tokens.is_empty() {
                     0.0
@@ -109,7 +155,7 @@ impl HeuristicScorer {
                         / (item_tokens.len() as f64)
                 };
 
-                // 6. Superseded: if the same tool+label appears later, the
+                // 7. Superseded: if the same tool+label appears later, the
                 //    older run is less valuable unless it has error markers.
                 let occurrences = label_occurrences
                     .get(&item.label)
@@ -118,7 +164,20 @@ impl HeuristicScorer {
                 let newest = *occurrences.last().unwrap_or(&idx);
                 let superseded = newest != idx && occurrences.len() > 1;
 
-                // 7. Spread over the conversation: older items in the middle
+                // 8. Near-duplicate: similar output from the same tool (even
+                //    with different args) is usually not worth keeping twice.
+                let latest_tokens = label_latest_tokens
+                    .get(&item.label)
+                    .cloned()
+                    .unwrap_or_default();
+                let near_duplicate = if item_tokens.is_empty() {
+                    false
+                } else {
+                    let newest_idx = *occurrences.last().unwrap_or(&idx);
+                    newest_idx != idx && jaccard_similarity(&item_tokens, &latest_tokens) >= 0.85
+                };
+
+                // 9. Spread over the conversation: older items in the middle
                 //    of a long transcript are less likely to matter.
                 let position_ratio = if max_line == 0 {
                     0.0
@@ -126,13 +185,15 @@ impl HeuristicScorer {
                     1.0 - (item.line_index as f64 / max_line as f64)
                 };
 
-                let score = 0.22 * recency
-                    + 0.15 * tool_importance
+                let score = 0.18 * recency
+                    + 0.12 * tool_importance
                     + (if error_marker { 0.25 } else { 0.0 })
-                    + 0.18 * future_overlap
-                    + 0.15 * goal_overlap
+                    + 0.12 * future_ref_score
+                    + 0.12 * goal_overlap
                     + 0.10 * position_ratio
-                    - (if superseded { 0.15 } else { 0.0 });
+                    + 0.12 * idf_score
+                    - (if superseded { 0.15 } else { 0.0 })
+                    - (if near_duplicate { 0.12 } else { 0.0 });
 
                 ScoredItem {
                     item_index: idx,
@@ -180,21 +241,16 @@ fn tool_importance(tool: &str) -> f64 {
     }
 }
 
-fn collect_future_context(
-    transcript: &Transcript,
-    idx: usize,
-) -> std::collections::HashSet<String> {
-    transcript
-        .items
-        .iter()
-        .skip(idx + 1)
-        .take(12)
-        .flat_map(|i| {
-            tokenize(&i.label)
-                .into_iter()
-                .chain(tokenize(i.summary.as_deref().unwrap_or("")))
-        })
-        .collect()
+fn jaccard_similarity(
+    a: &std::collections::HashSet<String>,
+    b: &std::collections::HashSet<String>,
+) -> f64 {
+    if a.is_empty() && b.is_empty() {
+        return 1.0;
+    }
+    let inter = a.intersection(b).count() as f64;
+    let union = a.union(b).count() as f64;
+    inter / union
 }
 
 pub struct ScoredStrategy;
