@@ -1568,6 +1568,41 @@ fn cmd_eval(
             (None, None) => println!("  {:<11} no plan", row.strategy),
         }
     }
+
+    // Pareto summary: highest scoring plan (savings × prefix²) among the
+    // concrete strategies that verified clean. This is the same metric `auto`
+    // uses, exposed for inspection.
+    let best = rows
+        .iter()
+        .filter(|r| {
+            r.plan.is_some()
+                && r.error.is_none()
+                && r.verify_errors == 0
+                && !r
+                    .plan
+                    .as_ref()
+                    .unwrap()
+                    .edits
+                    .iter()
+                    .any(|e| matches!(e, Edit::ProviderCompact { .. }))
+        })
+        .map(|r| {
+            let before = r
+                .plan
+                .as_ref()
+                .map(|p| p.context_tokens_before)
+                .unwrap_or(1)
+                .max(1) as f64;
+            let prefix_ratio = (r.prefix_tokens as f64) / before;
+            (r, (r.est_reclaimed as f64) * prefix_ratio.powi(2))
+        })
+        .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    if let Some((row, score)) = best {
+        println!(
+            "pareto best: {:<11} score={:.0}  prefix={}  reclaimed={}",
+            row.strategy, score, row.prefix_tokens, row.est_reclaimed
+        );
+    }
     Ok(())
 }
 
@@ -1587,7 +1622,7 @@ fn cmd_bench(
     let cfg = config::load()?;
     let mut csv = String::new();
     csv.push_str(
-        "provider,session,strategy,context_before,context_after,est_reclaimed,prefix_tokens,prefix_ratio,verify_errors,verify_warnings,probes_total,probes_recalled,recall,tail_intact,duration_ms\n",
+        "provider,session,strategy,context_before,context_after,est_reclaimed,prefix_tokens,prefix_ratio,score,verify_errors,verify_warnings,probes_total,probes_recalled,recall,tail_intact,duration_ms\n",
     );
     for d in sessions {
         let mut resolved = match cfg.resolve(d.handle.provider, &d.handle.session_id, None, None) {
@@ -1624,8 +1659,22 @@ fn cmd_bench(
             } else {
                 0.0
             };
+            let provider_compact = row
+                .plan
+                .as_ref()
+                .map(|p| {
+                    p.edits
+                        .iter()
+                        .any(|e| matches!(e, Edit::ProviderCompact { .. }))
+                })
+                .unwrap_or(false);
+            let score = if provider_compact {
+                0.0
+            } else {
+                (row.est_reclaimed as f64) * prefix_ratio.powi(2)
+            };
             csv.push_str(&format!(
-                "{},{},{},{},{},{},{},{:.4},{},{},{},{},{:.2},{},{}\n",
+                "{},{},{},{},{},{},{},{:.4},{:.0},{},{},{},{},{:.2},{},{}\n",
                 d.handle.provider.as_str(),
                 d.handle.session_id,
                 row.strategy,
@@ -1634,6 +1683,7 @@ fn cmd_bench(
                 row.est_reclaimed,
                 row.prefix_tokens,
                 prefix_ratio,
+                score,
                 row.verify_errors,
                 row.verify_warnings,
                 probes_total,
