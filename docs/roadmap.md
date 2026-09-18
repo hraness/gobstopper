@@ -5,7 +5,7 @@ This document is the engineering map: what exists, what comes next, and
 how the work shares foundations with **oompa** (session control plane),
 **aicharts** (usage measurement + evidence), **textbutler** (local agent
 runtime + skill distribution), and **XCB (Excalibur)** (native local agent
-workspace plus the retained AgentMixer compatibility package in
+workspace plus the retained XCB compatibility package in
 `hraness/xcb`).
 
 ---
@@ -28,7 +28,7 @@ workspace plus the retained AgentMixer compatibility package in
                     own connections │                    │ EditorDriver
  ┌──────────────┐                   │        ┌───────────┴───────────┐
  │ XCB compat   │ ── editor model ──►────────►│  (capability profile: │
- │ AgentMixer   │    task runtime   │        │   keep/elide/summarize│
+ │ editor shim  │    task runtime   │        │   keep/elide/summarize│
  └──────────────┘                   │        │   /defer)             │
                                     │        └───────────────────────┘
  shared: transcript-foundation crate (codex/claude JSONL dialects,
@@ -175,7 +175,7 @@ the write path bulletproof and undoable.
 - **XCB integration** has two bounded paths. Native XCB pins
   `gobstopper-core` at an immutable commit and applies `ElideStrategy` only to
   its in-memory prompt projection while retaining full local history. The
-  AgentMixer compatibility package exposes the bounded editor shim. Neither
+  XCB compatibility package exposes the bounded editor shim. Neither
   path grants Gobstopper ownership of XCB provider processes or durable state.
 - ~~**Double-buffer compaction**~~ was implemented experimentally and then
   retired: safe publication is copy-only, so watch never swaps a staged file
@@ -185,7 +185,7 @@ the write path bulletproof and undoable.
 
 `agentic`'s `EditorDriver` gets its first real backend:
 
-- ✅ **XCB AgentMixer compatibility editor** via `preset.command`:
+- ✅ **XCB compatibility editor** via `preset.command`:
   `src/gobstopper-editor.ts` in `hraness/xcb` exposes exactly `keep`,
   `elide`, `summarize`, and `defer` through the capability broker — no shell,
   filesystem, or network tools — and writes Gobstopper `Edit` JSON. The

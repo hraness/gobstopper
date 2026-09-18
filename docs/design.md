@@ -121,7 +121,7 @@ chain faithfully, so it is gated as experimental until validated.
 
 See `docs/roadmap.md` for the full phased plan: transcript surgery +
 undo vault, the oompa `session.compact` effect path, XCB's native
-`gobstopper-core` projection and AgentMixer-compatible editor backend, the
+`gobstopper-core` projection and XCB-compatible editor backend, the
 aicharts measurement loop, and the proposed
 `transcript-foundation` shared crate.
 
