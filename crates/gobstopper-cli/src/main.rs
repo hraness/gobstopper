@@ -1,5 +1,7 @@
 //! gobstopper: automatic context compaction for Codex and Claude Code.
 
+mod apple;
+mod apple_digest;
 mod apple_scorer;
 mod config;
 mod hooks;
@@ -566,6 +568,7 @@ fn evaluate(
         strat.evaluate(transcript, &policy)
     };
     if let Some(plan) = &mut plan {
+        apple_digest::maybe_upgrade(plan, transcript);
         gobstopper_core::validation::validate_edits(transcript, &policy, &plan.edits)
             .map_err(anyhow::Error::msg)?;
         if !policy.accepts_savings(plan.context_tokens_before, plan.context_tokens_after) {
