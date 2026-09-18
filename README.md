@@ -184,7 +184,10 @@ bridge — free, private, no API key. The bridge auto-builds to
 `GOBSTOPPER_APPLE_BRIDGE`), requests queue through one persistent process
 with guided JSON output, and any failure degrades to neutral scores.
 `GOBSTOPPER_APPLE_TIMEOUT_MS`, `_MAX_CANDIDATES`, `_BATCH_SIZE`, and
-`_MAX_BATCHES` tune it.
+`_MAX_BATCHES` tune it. Since inference is local, the scorer also reads a
+bounded excerpt of each candidate record (`GOBSTOPPER_APPLE_CONTENT_BYTES`,
+default 400; `0` restores labels-only scoring) and shrinks its default
+batch sizes to fit the ~4k-token context window.
 
 `GOBSTOPPER_DIGEST=apple` goes further: the injected state card is written
 by the on-device model instead of keyword extraction. Because inference is
@@ -194,6 +197,12 @@ lands in the same `DigestBlock` shape via guided output, capped to a small
 token overhead, and falls back to the mechanical card on any failure.
 `GOBSTOPPER_APPLE_DIGEST_ITEMS`, `_ITEM_BYTES`, and `_TOTAL_BYTES` tune the
 excerpt budget, which defaults are sized to the model's ~4k-token window.
+
+The same call also writes a one-line stub per excerpted record — e.g.
+`Script completed Wall time 4.4 seconds` — stored in the elide edit's
+`per_item_stubs` map and rendered verbatim in place of the `{bytes}`/`{kind}`
+template where the payload was removed. Records the model did not cover
+keep the generic stub; invalid or oversized stubs are dropped by validation.
 
 With `adaptive = true`, the effective trigger/floor are re-derived per
 session at each decision point: the trigger is capped at a quarter of

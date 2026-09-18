@@ -429,8 +429,19 @@ fn stub_for(template: &str, bytes: u64, kind: &str) -> String {
 /// Apply an elide edit in place: rewrite only the `output` field of the
 /// targeted records. Line order and count are preserved — the rollout's
 /// `ordinal` sequence is never disturbed.
-fn apply_elide(raw: &str, line_indexes: &[usize], stub_template: &str) -> (String, u64) {
+fn apply_elide(
+    raw: &str,
+    line_indexes: &[usize],
+    stub_template: &str,
+    per_item_stubs: &std::collections::BTreeMap<usize, String>,
+) -> (String, u64) {
     let targets: std::collections::HashSet<usize> = line_indexes.iter().copied().collect();
+    let render = |idx: usize, old: u64, kind: &str| {
+        per_item_stubs
+            .get(&idx)
+            .cloned()
+            .unwrap_or_else(|| stub_for(stub_template, old, kind))
+    };
     let mut reclaimed = 0u64;
     let mut out = String::with_capacity(raw.len());
     for (idx, line) in raw.split_inclusive('\n').enumerate() {
@@ -465,8 +476,7 @@ fn apply_elide(raw: &str, line_indexes: &[usize], stub_template: &str) -> (Strin
                             let Some(output) = it.get_mut("output") else {
                                 continue;
                             };
-                            let changed =
-                                crate::payload::elide(output, stub_for(stub_template, old, &kind));
+                            let changed = crate::payload::elide(output, render(idx, old, &kind));
                             reclaimed += changed;
                             stubbed_any |= changed > 0;
                         }
@@ -482,10 +492,8 @@ fn apply_elide(raw: &str, line_indexes: &[usize], stub_template: &str) -> (Strin
                         out.push_str(line);
                         continue;
                     };
-                    let changed = crate::payload::elide(
-                        &mut payload["output"],
-                        stub_for(stub_template, old, &kind),
-                    );
+                    let changed =
+                        crate::payload::elide(&mut payload["output"], render(idx, old, &kind));
                     if changed == 0 {
                         out.push_str(line);
                         continue;
@@ -556,7 +564,8 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
             Edit::Elide {
                 line_indexes,
                 stub_template,
-            } => raw = apply_elide(&raw, line_indexes, stub_template).0,
+                per_item_stubs,
+            } => raw = apply_elide(&raw, line_indexes, stub_template, per_item_stubs).0,
             Edit::InjectDigest { digest } => {
                 // Appended as a user message; Codex rebuilds context from
                 // rollout items on resume, so a trailing state card lands

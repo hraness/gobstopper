@@ -60,6 +60,7 @@ impl Strategy for ElideStrategy {
             edits: vec![Edit::Elide {
                 line_indexes: chosen,
                 stub_template: DEFAULT_STUB.to_string(),
+                per_item_stubs: Default::default(),
             }],
             context_tokens_before: before,
             context_tokens_after: projected,

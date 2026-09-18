@@ -432,6 +432,7 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                 let edits = vec![Edit::Elide {
                     line_indexes: indexes.clone(),
                     stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+                    per_item_stubs: Default::default(),
                 }];
                 let reclaimed = match provider {
                     Provider::Codex => codex::apply(&path, &edits).unwrap(),
@@ -497,6 +498,7 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                 let edits = vec![Edit::Elide {
                     line_indexes: indexes,
                     stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+                    per_item_stubs: Default::default(),
                 }];
                 match provider {
                     Provider::Codex => codex::apply(&path, &edits).unwrap(),
@@ -571,6 +573,7 @@ fn codex_small_output_is_not_stubbed() {
         &[Edit::Elide {
             line_indexes: vec![0],
             stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+            per_item_stubs: Default::default(),
         }],
     )
     .unwrap();
@@ -595,6 +598,7 @@ fn codex_elide_is_idempotent() {
     let edits = [Edit::Elide {
         line_indexes: vec![0],
         stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+        per_item_stubs: Default::default(),
     }];
     codex::apply(&path, &edits).unwrap();
     let once = fs::read(&path).unwrap();
@@ -620,6 +624,7 @@ fn out_of_range_indexes_leave_file_byte_identical() {
         &[Edit::Elide {
             line_indexes: vec![7, 7, usize::MAX],
             stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+            per_item_stubs: Default::default(),
         }],
     )
     .unwrap();
@@ -646,6 +651,7 @@ fn malformed_target_line_passes_through() {
         &[Edit::Elide {
             line_indexes: vec![0, 1],
             stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+            per_item_stubs: Default::default(),
         }],
     )
     .unwrap();
@@ -675,6 +681,7 @@ fn failed_write_preserves_original() {
         &[Edit::Elide {
             line_indexes: vec![0],
             stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+            per_item_stubs: Default::default(),
         }],
     );
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
@@ -701,6 +708,7 @@ fn missing_trailing_newline_is_preserved() {
         &[Edit::Elide {
             line_indexes: vec![0],
             stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+            per_item_stubs: Default::default(),
         }],
     )
     .unwrap();
@@ -891,6 +899,7 @@ fn dirty_transcript_surgery_adds_no_findings(tc: TestCase) {
             &[Edit::Elide {
                 line_indexes: indexes,
                 stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+                per_item_stubs: Default::default(),
             }],
         )
         .unwrap(),
@@ -899,6 +908,7 @@ fn dirty_transcript_surgery_adds_no_findings(tc: TestCase) {
             &[Edit::Elide {
                 line_indexes: indexes,
                 stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+                per_item_stubs: Default::default(),
             }],
         )
         .unwrap(),
@@ -977,6 +987,7 @@ fn stale_plan_survives_provider_appends(tc: TestCase) {
             &[Edit::Elide {
                 line_indexes: indexes.clone(),
                 stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+                per_item_stubs: Default::default(),
             }],
         )
         .unwrap(),
@@ -985,6 +996,7 @@ fn stale_plan_survives_provider_appends(tc: TestCase) {
             &[Edit::Elide {
                 line_indexes: indexes.clone(),
                 stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+                per_item_stubs: Default::default(),
             }],
         )
         .unwrap(),
@@ -1670,6 +1682,7 @@ fn compacted_all_small_outputs_never_rewritten() {
         &[Edit::Elide {
             line_indexes: vec![1],
             stub_template: "[elided {bytes} bytes of {kind}]".into(),
+            per_item_stubs: Default::default(),
         }],
     )
     .unwrap();
@@ -1825,8 +1838,81 @@ fn elide_of_non_output_lines_is_byte_identical(tc: TestCase) {
         &[Edit::Elide {
             line_indexes: indexes,
             stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+            per_item_stubs: Default::default(),
         }],
     )
     .unwrap();
     assert_eq!(fs::read(&path).unwrap(), before);
+}
+
+/// A `per_item_stubs` override renders verbatim on its line while
+/// uncovered lines keep the `{bytes}` template — the model-written
+/// breadcrumb replaces the accounting string, not the surgery.
+#[test]
+fn codex_per_item_stub_overrides_template() {
+    let dir = tmpdir("codex-per-item");
+    let path = dir.join("rollout.jsonl");
+    let lines: Vec<String> = (0..2)
+        .map(|i| {
+            serde_json::to_string(&json!({
+                "timestamp": "2026-09-15T00:00:00Z", "type": "response_item",
+                "ordinal": i,
+                "payload": {"type": "function_call_output", "call_id": format!("c{i}"), "output": "x".repeat(1200)}
+            }))
+            .unwrap()
+        })
+        .collect();
+    write_lines(&path, &lines);
+    let mut stubs = std::collections::BTreeMap::new();
+    stubs.insert(0usize, "read parser.rs: added token enum".to_string());
+    codex::apply(
+        &path,
+        &[Edit::Elide {
+            line_indexes: vec![0, 1],
+            stub_template: "[elided {bytes} bytes]".to_string(),
+            per_item_stubs: stubs,
+        }],
+    )
+    .unwrap();
+    let after = read_lines(&path);
+    assert!(after[0].contains("read parser.rs: added token enum"));
+    assert!(!after[0].contains("{bytes}"));
+    assert!(after[1].contains("[elided 1200 bytes]"), "{}", after[1]);
+    no_errors(Provider::Codex, &path);
+}
+
+#[test]
+fn claude_per_item_stub_overrides_template() {
+    let dir = tmpdir("claude-per-item");
+    let path = dir.join("session.jsonl");
+    let lines: Vec<String> = (0..2)
+        .map(|i| {
+            serde_json::to_string(&json!({
+                "type": "user", "uuid": format!("u{i}"),
+                "parentUuid": if i == 0 { Value::Null } else { json!(format!("u{}", i - 1)) },
+                "sessionId": "s",
+                "message": {"role": "user", "content": [
+                    {"type": "tool_result", "tool_use_id": format!("t{i}"), "content": "x".repeat(1200)}
+                ]}
+            }))
+            .unwrap()
+        })
+        .collect();
+    write_lines(&path, &lines);
+    let mut stubs = std::collections::BTreeMap::new();
+    stubs.insert(1usize, "test run: 3 lexer failures".to_string());
+    claude::apply(
+        &path,
+        &[Edit::Elide {
+            line_indexes: vec![0, 1],
+            stub_template: "[elided {bytes} bytes]".to_string(),
+            per_item_stubs: stubs,
+        }],
+    )
+    .unwrap();
+    let after = read_lines(&path);
+    assert!(after[0].contains("[elided"), "{}", after[0]);
+    assert!(after[1].contains("test run: 3 lexer failures"));
+    assert!(!after[1].contains("{bytes}"));
+    no_errors(Provider::ClaudeCode, &path);
 }

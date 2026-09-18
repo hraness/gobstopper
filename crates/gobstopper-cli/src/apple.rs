@@ -11,8 +11,12 @@
 //!   GOBSTOPPER_APPLE_BRIDGE     - explicit bridge binary path
 //!   GOBSTOPPER_APPLE_TIMEOUT_MS - 180000 (first request pays model warm-up)
 
+use std::collections::HashSet;
+use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+
+use anyhow::Context;
 
 /// Bridge binary resolution. The managed share path rebuilds automatically
 /// when the embedded bridge source changes; env/sibling paths are
@@ -78,4 +82,65 @@ pub(crate) fn shared_bridge(
             .ok()
         })
         .as_ref()
+}
+
+/// Head+tail window of a record: errors tend to sit at the end of tool
+/// output, so the tail is kept alongside the opening context.
+pub(crate) fn excerpt(line: &str, max_bytes: usize) -> String {
+    if line.len() <= max_bytes {
+        return line.to_string();
+    }
+    let head = (max_bytes * 3) / 4;
+    let tail = max_bytes - head;
+    format!(
+        "{} …[{} bytes elided]… {}",
+        head_bytes(line, head),
+        line.len(),
+        tail_bytes(line, tail)
+    )
+}
+
+fn head_bytes(s: &str, n: usize) -> &str {
+    let mut end = s.len().min(n);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+fn tail_bytes(s: &str, n: usize) -> &str {
+    let mut start = s.len().saturating_sub(n);
+    while start < s.len() && !s.is_char_boundary(start) {
+        start += 1;
+    }
+    &s[start..]
+}
+
+/// Pull the given JSONL line numbers out of a transcript file, each
+/// bounded to `item_bytes`, until the excerpt budget is spent.
+pub(crate) fn read_excerpts(
+    path: &Path,
+    wanted: &[usize],
+    item_bytes: usize,
+    total_bytes: usize,
+) -> anyhow::Result<Vec<(usize, String)>> {
+    let file =
+        std::fs::File::open(path).with_context(|| format!("open transcript {}", path.display()))?;
+    let wanted: HashSet<usize> = wanted.iter().copied().collect();
+    let last = wanted.iter().copied().max().unwrap_or(0);
+    let mut out = Vec::new();
+    let mut budget = total_bytes;
+    let mut line = String::new();
+    let mut reader = BufReader::new(file);
+    let mut idx = 0usize;
+    while idx <= last && reader.read_line(&mut line)? > 0 {
+        if wanted.contains(&idx) && budget > 256 {
+            let e = excerpt(line.trim_end(), item_bytes.min(budget));
+            budget = budget.saturating_sub(e.len());
+            out.push((idx, e));
+        }
+        line.clear();
+        idx += 1;
+    }
+    Ok(out)
 }

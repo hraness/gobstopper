@@ -24,7 +24,6 @@
 //!     guided schema together stay near ~2.5k tokens)
 
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader};
 
 use anyhow::Context;
 use gobstopper_core::plan::{CompactionPlan, DigestBlock, Edit};
@@ -37,7 +36,15 @@ use crate::{apple, llm_scorer};
 const MAX_FIELD_ITEMS: usize = 8;
 const MAX_FIELD_CHARS: usize = 300;
 
-const DIGEST_SCHEMA: &str = r#"{"type":"object","properties":{"digest":{"type":"object","properties":{"summary":{"type":"string"},"concepts":{"type":"array","items":{"type":"string"}},"files_touched":{"type":"array","items":{"type":"string"}},"decisions":{"type":"array","items":{"type":"string"}},"errors":{"type":"array","items":{"type":"string"}},"open_tasks":{"type":"array","items":{"type":"string"}},"current_work":{"type":"string"}}}},"required":["digest"]}"#;
+const DIGEST_SCHEMA: &str = r#"{"type":"object","properties":{"digest":{"type":"object","properties":{"summary":{"type":"string"},"concepts":{"type":"array","items":{"type":"string"}},"files_touched":{"type":"array","items":{"type":"string"}},"decisions":{"type":"array","items":{"type":"string"}},"errors":{"type":"array","items":{"type":"string"}},"open_tasks":{"type":"array","items":{"type":"string"}},"current_work":{"type":"string"}}},"stubs":{"type":"array","items":{"type":"object","properties":{"id":{"type":"integer"},"stub":{"type":"string"}},"required":["id","stub"]}}},"required":["digest","stubs"]}"#;
+
+const MAX_STUB_CHARS: usize = 160;
+
+#[derive(Debug, Deserialize)]
+struct StubOut {
+    id: usize,
+    stub: String,
+}
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(default)]
@@ -84,27 +91,45 @@ pub fn maybe_upgrade(plan: &mut CompactionPlan, transcript: &Transcript) {
         return;
     };
     let before_overhead = digest_slot.estimate_overhead();
-    match write_digest(bridge, transcript, digest_slot, &elided) {
-        // The strategy priced the mechanical digest into
-        // `context_tokens_after`; restate it against the card actually
-        // being injected so the savings gate below sees honest numbers.
-        Ok(true) => {
-            plan.context_tokens_after = plan
-                .context_tokens_after
-                .saturating_sub(before_overhead)
-                .saturating_add(digest_slot.estimate_overhead());
+    match write_card(bridge, transcript, digest_slot, &elided) {
+        Ok((changed, stubs)) => {
+            // The strategy priced the mechanical digest into
+            // `context_tokens_after`; restate it against the card actually
+            // being injected so the savings gate below sees honest numbers.
+            if changed {
+                plan.context_tokens_after = plan
+                    .context_tokens_after
+                    .saturating_sub(before_overhead)
+                    .saturating_add(digest_slot.estimate_overhead());
+            }
+            if !stubs.is_empty() {
+                for edit in plan.edits.iter_mut() {
+                    if let Edit::Elide {
+                        line_indexes,
+                        per_item_stubs,
+                        ..
+                    } = edit
+                    {
+                        let set: HashSet<usize> = line_indexes.iter().copied().collect();
+                        for (k, v) in &stubs {
+                            if set.contains(k) {
+                                per_item_stubs.insert(*k, v.clone());
+                            }
+                        }
+                    }
+                }
+            }
         }
-        Ok(false) => {}
         Err(e) => eprintln!("apple digest: keeping mechanical state card ({e:#})"),
     }
 }
 
-fn write_digest(
+fn write_card(
     bridge: &apple_foundation::Bridge,
     transcript: &Transcript,
     digest: &mut DigestBlock,
     elided: &HashSet<usize>,
-) -> anyhow::Result<bool> {
+) -> anyhow::Result<(bool, std::collections::BTreeMap<usize, String>)> {
     let max_items = env_usize("GOBSTOPPER_APPLE_DIGEST_ITEMS", 8);
     let item_bytes = env_usize("GOBSTOPPER_APPLE_DIGEST_ITEM_BYTES", 500);
     let total_bytes = env_usize("GOBSTOPPER_APPLE_DIGEST_TOTAL_BYTES", 4_000);
@@ -120,29 +145,33 @@ fn write_digest(
     picked.truncate(max_items);
     picked.sort_unstable();
 
-    let excerpts = read_excerpts(&transcript.session.path, &picked, item_bytes, total_bytes)?;
+    let excerpts =
+        apple::read_excerpts(&transcript.session.path, &picked, item_bytes, total_bytes)?;
     if excerpts.is_empty() {
-        return Ok(false);
+        return Ok((false, Default::default()));
     }
 
     let ctx = llm_scorer::scoring_context(transcript, &[], 0);
     let mut records = String::new();
-    for (line_index, excerpt) in &excerpts {
+    // Small models echo sequential ids far more reliably than arbitrary
+    // line numbers — present `record 1..=N` and map positions back.
+    for (pos, (line_index, excerpt)) in excerpts.iter().enumerate() {
         let item = by_line.get(line_index);
         let label = item.map(|i| i.label.as_str()).unwrap_or("record");
         records.push_str(&format!(
-            "=== record {line_index} ({label}) ===\n{excerpt}\n"
+            "=== record {} ({label}) ===\n{excerpt}\n",
+            pos + 1
         ));
     }
     let prompt = format!(
         "These transcript records are about to be deleted from a coding agent's context. The state card you produce is all the agent will see of them.\n\nAgent's current task:\n{}\n\nRecent conversation tail:\n{}\n\nRecords being removed (truncated):\n{}",
         ctx.goal, ctx.tail, records
     );
-    let schema: Value = serde_json::from_str(DIGEST_SCHEMA).unwrap();
+    let schema: Value = serde_json::from_str(DIGEST_SCHEMA).context("digest schema malformed")?;
     let value = bridge.request(&apple_foundation::Request {
         prompt,
         instructions: Some(
-            "Fill the digest object with short factual strings. files_touched: file paths or URLs. errors: failing commands, exit codes, exceptions. decisions: concrete findings or choices made. open_tasks: unfinished work mentioned. concepts: tool and library names. current_work: what the agent was doing most recently. summary: one line covering what the removed records contained. Omit a field the records give no evidence for. Never include credentials, tokens, or code blocks.".into(),
+            "Fill the digest object with short factual strings taken only from the records shown. files_touched: file paths or URLs. errors: actual error text seen in the records. decisions: concrete findings or choices made. open_tasks: unfinished work mentioned. concepts: tool and library names. current_work: what the agent was doing most recently. summary: one line covering what the removed records contained. Omit a field the records give no evidence for. Never include credentials, tokens, or code blocks. In stubs, write one entry per record id: a short note on what that record's content was — the file it read, the command it ran, or the result it produced — not just its label.".into(),
         ),
         schema: Some(schema),
         expect_json: false,
@@ -155,8 +184,46 @@ fn write_digest(
             .context("apple response missing `digest` object")?,
     )
     .context("apple response `digest` had invalid shape")?;
+    let stubs: Vec<StubOut> = serde_json::from_value(
+        value
+            .get("stubs")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new())),
+    )
+    .context("apple response `stubs` had invalid shape")?;
 
-    Ok(overlay(digest, fields))
+    let stubs = stubs
+        .into_iter()
+        .filter_map(|s| {
+            // `id` is the 1-based `record N` position from the prompt;
+            // map it back to the physical line index.
+            let line =
+                s.id.checked_sub(1)
+                    .and_then(|p| excerpts.get(p))
+                    .map(|(l, _)| l)?;
+            elided
+                .contains(line)
+                .then(|| bounded_stub(&s.stub))
+                .flatten()
+                .map(|t| (*line, t))
+        })
+        .collect();
+    Ok((overlay(digest, fields), stubs))
+}
+
+/// Collapse a model-written stub to one bounded line. Rejects stubs that
+/// quote our own excerpt marker or are pure decoration.
+fn bounded_stub(s: &str) -> Option<String> {
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let s = s.trim_start_matches(['=', '#', '*', '-', '_', '~', '.', ' ']);
+    if s.is_empty() || s.contains("bytes elided") || s.contains('…') {
+        return None;
+    }
+    Some(if s.chars().count() > MAX_STUB_CHARS {
+        s.chars().take(MAX_STUB_CHARS - 1).collect::<String>() + "…"
+    } else {
+        s.to_string()
+    })
 }
 
 /// Replace each digest field with the model's version when it produced
@@ -246,70 +313,10 @@ fn env_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
-/// Head+tail window of a record: errors tend to sit at the end of tool
-/// output, so the tail is kept alongside the opening context.
-fn excerpt(line: &str, max_bytes: usize) -> String {
-    if line.len() <= max_bytes {
-        return line.to_string();
-    }
-    let head = (max_bytes * 3) / 4;
-    let tail = max_bytes - head;
-    format!(
-        "{} …[{} bytes elided]… {}",
-        head_bytes(line, head),
-        line.len(),
-        tail_bytes(line, tail)
-    )
-}
-
-fn head_bytes(s: &str, n: usize) -> &str {
-    let mut end = s.len().min(n);
-    while !s.is_char_boundary(end) {
-        end -= 1;
-    }
-    &s[..end]
-}
-
-fn tail_bytes(s: &str, n: usize) -> &str {
-    let mut start = s.len().saturating_sub(n);
-    while start < s.len() && !s.is_char_boundary(start) {
-        start += 1;
-    }
-    &s[start..]
-}
-
-/// Pull the given JSONL line numbers out of the transcript file, each
-/// bounded to `item_bytes`, until the excerpt budget is spent.
-fn read_excerpts(
-    path: &std::path::Path,
-    wanted: &[usize],
-    item_bytes: usize,
-    total_bytes: usize,
-) -> anyhow::Result<Vec<(usize, String)>> {
-    let file =
-        std::fs::File::open(path).with_context(|| format!("open transcript {}", path.display()))?;
-    let wanted: HashSet<usize> = wanted.iter().copied().collect();
-    let last = wanted.iter().copied().max().unwrap_or(0);
-    let mut out = Vec::new();
-    let mut budget = total_bytes;
-    let mut line = String::new();
-    let mut reader = BufReader::new(file);
-    let mut idx = 0usize;
-    while idx <= last && reader.read_line(&mut line)? > 0 {
-        if wanted.contains(&idx) && budget > 256 {
-            let e = excerpt(line.trim_end(), item_bytes.min(budget));
-            budget = budget.saturating_sub(e.len());
-            out.push((idx, e));
-        }
-        line.clear();
-        idx += 1;
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::apple::excerpt;
 
     #[test]
     fn excerpt_windows_head_and_tail() {
@@ -379,5 +386,20 @@ mod tests {
         assert_eq!(mech.errors, vec!["tiny"]); // mechanical field preserved
         assert_eq!(mech.summary.as_ref().map(|s| s.chars().count()), Some(300)); // model's kept
         assert!(mech.concepts.is_empty() && mech.decisions.is_empty());
+    }
+
+    #[test]
+    fn bounded_stub_collapses_and_caps() {
+        assert_eq!(bounded_stub("   "), None);
+        assert_eq!(
+            bounded_stub("read src/main.rs\nparse  logic\r\nnext").as_deref(),
+            Some("read src/main.rs parse logic next")
+        );
+        let long = bounded_stub(&"x".repeat(400)).unwrap();
+        assert_eq!(long.chars().count(), MAX_STUB_CHARS);
+        // Our own excerpt marker and pure decoration are rejected.
+        assert_eq!(bounded_stub("i …[3463 bytes elided]"), None);
+        assert_eq!(bounded_stub("===== "), None);
+        assert_eq!(bounded_stub("===== STEP 8").as_deref(), Some("STEP 8"));
     }
 }

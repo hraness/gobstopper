@@ -524,8 +524,9 @@ fn stub_for(template: &str, bytes: u64, kind: &str) -> String {
 
 /// Replace every tool_result payload inside a user line with a stub.
 /// The line — and therefore the uuid chain — is preserved verbatim except
-/// for the elided block content.
-fn elide_line(line: &str, stub_template: &str) -> (String, u64) {
+/// for the elided block content. `stub_override` is complete stub text
+/// (e.g. a model-written digest) that bypasses `{bytes}` substitution.
+fn elide_line(line: &str, stub_template: &str, stub_override: Option<&str>) -> (String, u64) {
     let Ok(mut record) = serde_json::from_str::<Value>(line) else {
         return (line.to_string(), 0);
     };
@@ -545,7 +546,10 @@ fn elide_line(line: &str, stub_template: &str) -> (String, u64) {
             continue;
         };
         let old = crate::payload::eligible_bytes(content);
-        reclaimed += crate::payload::elide(content, stub_for(stub_template, old, "tool_result"));
+        let stub = stub_override
+            .map(str::to_string)
+            .unwrap_or_else(|| stub_for(stub_template, old, "tool_result"));
+        reclaimed += crate::payload::elide(content, stub);
     }
     if reclaimed == 0 {
         return (line.to_string(), 0);
@@ -556,7 +560,12 @@ fn elide_line(line: &str, stub_template: &str) -> (String, u64) {
     )
 }
 
-fn apply_elide(raw: &str, line_indexes: &[usize], stub_template: &str) -> (String, u64) {
+fn apply_elide(
+    raw: &str,
+    line_indexes: &[usize],
+    stub_template: &str,
+    per_item_stubs: &std::collections::BTreeMap<usize, String>,
+) -> (String, u64) {
     let targets: std::collections::HashSet<usize> = line_indexes.iter().copied().collect();
     let mut reclaimed = 0u64;
     let mut out = String::with_capacity(raw.len());
@@ -565,7 +574,11 @@ fn apply_elide(raw: &str, line_indexes: &[usize], stub_template: &str) -> (Strin
             out.push_str(line);
             continue;
         }
-        let (rewritten, bytes) = elide_line(line.trim_end_matches('\n'), stub_template);
+        let (rewritten, bytes) = elide_line(
+            line.trim_end_matches('\n'),
+            stub_template,
+            per_item_stubs.get(&idx).map(String::as_str),
+        );
         reclaimed += bytes;
         out.push_str(&rewritten);
         if line.ends_with('\n') {
@@ -626,7 +639,8 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
             Edit::Elide {
                 line_indexes,
                 stub_template,
-            } => raw = apply_elide(&raw, line_indexes, stub_template).0,
+                per_item_stubs,
+            } => raw = apply_elide(&raw, line_indexes, stub_template, per_item_stubs).0,
             Edit::InjectDigest { digest } => {
                 // Append the digest as a synthetic user line and follow it
                 // with a fresh `last-prompt`/`mode` tail. Claude's resume

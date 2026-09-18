@@ -19,8 +19,11 @@
 //!                                  (auto-built via swiftc when absent)
 //!   GOBSTOPPER_APPLE_TIMEOUT_MS  - 180000 (first request pays model warm-up)
 //!   GOBSTOPPER_APPLE_MAX_CANDIDATES - 64
-//!   GOBSTOPPER_APPLE_BATCH_SIZE  - 32
-//!   GOBSTOPPER_APPLE_MAX_BATCHES - 4
+//!   GOBSTOPPER_APPLE_BATCH_SIZE  - 32 (8 when content excerpts are on)
+//!   GOBSTOPPER_APPLE_MAX_BATCHES - 4 (8 when content excerpts are on)
+//!   GOBSTOPPER_APPLE_CONTENT_BYTES - 400 per candidate (0 = labels only;
+//!     on-device inference lifts the labels-only boundary remote scorers
+//!     need, so candidates include bounded payload excerpts by default)
 
 use std::path::PathBuf;
 
@@ -36,6 +39,7 @@ pub struct AppleConfig {
     pub max_candidates: usize,
     pub batch_size: usize,
     pub max_batches: usize,
+    pub content_bytes: usize,
 }
 
 impl AppleConfig {
@@ -47,21 +51,20 @@ impl AppleConfig {
         if !apple::available(&bridge) {
             return None;
         }
+        let content_bytes = env_usize("GOBSTOPPER_APPLE_CONTENT_BYTES", 400);
         Some(Self {
             bridge,
             timeout_ms: apple::timeout_ms(),
-            max_candidates: std::env::var("GOBSTOPPER_APPLE_MAX_CANDIDATES")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(64),
-            batch_size: std::env::var("GOBSTOPPER_APPLE_BATCH_SIZE")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(32),
-            max_batches: std::env::var("GOBSTOPPER_APPLE_MAX_BATCHES")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(4),
+            max_candidates: env_usize("GOBSTOPPER_APPLE_MAX_CANDIDATES", 64),
+            batch_size: env_usize(
+                "GOBSTOPPER_APPLE_BATCH_SIZE",
+                if content_bytes > 0 { 8 } else { 32 },
+            ),
+            max_batches: env_usize(
+                "GOBSTOPPER_APPLE_MAX_BATCHES",
+                if content_bytes > 0 { 8 } else { 4 },
+            ),
+            content_bytes,
         })
     }
 }
@@ -76,6 +79,43 @@ impl AppleScorer {
     pub fn new(cfg: AppleConfig) -> Self {
         Self { cfg }
     }
+
+    /// Append a bounded excerpt of each candidate's backing record to its
+    /// scoring line (` :: ` separator). Excerpt failures degrade to
+    /// labels-only for that item — scoring never fails on content reads.
+    fn with_content(
+        &self,
+        transcript: &Transcript,
+        inputs: Vec<(usize, usize, String)>,
+    ) -> Vec<(usize, usize, String)> {
+        if self.cfg.content_bytes == 0 {
+            return inputs;
+        }
+        let line_indexes: Vec<usize> = inputs
+            .iter()
+            .filter_map(|(_, idx, _)| transcript.items.get(*idx).map(|i| i.line_index))
+            .collect();
+        let total = self.cfg.content_bytes.saturating_mul(inputs.len());
+        let Ok(excerpts) = apple::read_excerpts(
+            &transcript.session.path,
+            &line_indexes,
+            self.cfg.content_bytes,
+            total,
+        ) else {
+            return inputs;
+        };
+        let by_line: std::collections::HashMap<usize, String> = excerpts.into_iter().collect();
+        inputs
+            .into_iter()
+            .map(|(local, idx, text)| {
+                let line = transcript.items.get(idx).map(|i| i.line_index);
+                match line.and_then(|l| by_line.get(&l)) {
+                    Some(e) => (local, idx, format!("{text} :: {e}")),
+                    None => (local, idx, text),
+                }
+            })
+            .collect()
+    }
 }
 
 impl ScoreDriver for AppleScorer {
@@ -87,14 +127,21 @@ impl ScoreDriver for AppleScorer {
         if ctx.inputs.is_empty() {
             return neutral(candidates);
         }
+        let inputs = self.with_content(transcript, ctx.inputs);
         let schema: Value = serde_json::from_str(SCORES_SCHEMA).unwrap();
         let mut by_local: std::collections::HashMap<usize, f64> = Default::default();
-        for chunk in ctx
-            .inputs
+        for chunk in inputs
             .chunks(self.cfg.batch_size)
             .take(self.cfg.max_batches)
         {
-            match score_batch(bridge, &ctx.goal, &ctx.tail, chunk, &schema) {
+            match score_batch(
+                bridge,
+                &ctx.goal,
+                &ctx.tail,
+                chunk,
+                &schema,
+                self.cfg.content_bytes > 0,
+            ) {
                 Ok(scores) => by_local.extend(scores),
                 Err(e) => eprintln!("apple scorer batch failed: {e:#}"),
             }
@@ -126,14 +173,20 @@ fn score_batch(
     tail: &str,
     batch: &[(usize, usize, String)],
     schema: &Value,
+    content_on: bool,
 ) -> anyhow::Result<Vec<(usize, f64)>> {
     let list = batch
         .iter()
         .map(|(_, _, text)| text.as_str())
         .collect::<Vec<_>>()
         .join("\n");
+    let note = if content_on {
+        " Each candidate line ends with ` :: ` followed by a bounded excerpt of the actual output."
+    } else {
+        ""
+    };
     let prompt = format!(
-        "You are scoring stale tool outputs for context compaction. The agent's current task is:\n{goal}\n\nRecent conversation tail:\n{tail}\n\nFor each candidate below, estimate the probability (0.0 to 1.0) that the tool output must remain visible for the agent to continue accurately. Score every candidate id.\n\n{list}\n"
+        "You are scoring stale tool outputs for context compaction. The agent's current task is:\n{goal}\n\nRecent conversation tail:\n{tail}\n\nFor each candidate below, estimate the probability (0.0 to 1.0) that the tool output must remain visible for the agent to continue accurately. Score every candidate id.{note}\n\n{list}\n"
     );
     let value = bridge.request(&apple_foundation::Request {
         prompt,
@@ -157,6 +210,13 @@ fn score_batch(
             ))
         })
         .collect())
+}
+
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(default)
 }
 
 /// Returns an Apple on-device driver when the bridge and model are available.
