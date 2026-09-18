@@ -242,6 +242,13 @@ fn is_error_marker(text: &str) -> bool {
         "nonzero",
         "exit code",
         "stderr:",
+        "command failed",
+        "permission denied",
+        "no such file",
+        "not found",
+        "timed out",
+        "killed",
+        "abort",
     ]
     .iter()
     .any(|m| lower.contains(m))

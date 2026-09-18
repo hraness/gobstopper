@@ -142,6 +142,22 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Emit the Claude `cache_edits` tool_use_ids for a session as JSON.
+    /// Does not modify the transcript; the caller dispatches the ids to
+    /// the Anthropic API.
+    CacheEdits {
+        /// Session id prefix, or path to a transcript file.
+        session: String,
+        /// Override the trigger threshold (tokens).
+        #[arg(long)]
+        trigger: Option<u64>,
+        /// Override the post-compaction floor (tokens).
+        #[arg(long)]
+        floor: Option<u64>,
+        /// Emit the full plan (including the digest) as JSON.
+        #[arg(long)]
+        plan: bool,
+    },
     /// Show the trigger/floor the adaptive tuner derives for a session
     /// from its provider window, elidable share, and past compaction
     /// yields — and the TOML to pin them.
@@ -1613,6 +1629,67 @@ fn cmd_eval(
     Ok(())
 }
 
+fn cmd_cache_edits(
+    cli: &Cli,
+    cfg: &config::Config,
+    session: &str,
+    trigger: Option<u64>,
+    floor: Option<u64>,
+    plan: bool,
+) -> Result<()> {
+    let d = find_session(cli, cfg, session)?;
+    if d.handle.provider != Provider::ClaudeCode {
+        bail!("cache_edits is only available for Claude Code sessions");
+    }
+    let mut resolved = cfg.resolve(
+        d.handle.provider,
+        &d.handle.session_id,
+        None,
+        Some("cache_edits"),
+    )?;
+    if let Some(t) = trigger {
+        resolved.policy.trigger_tokens = t;
+    }
+    if let Some(f) = floor {
+        resolved.policy.floor_tokens = f;
+    }
+    let transcript = detect::load(&d)?;
+    match evaluate(&transcript, &resolved)? {
+        Some(p) => {
+            let cache_edit = p.edits.iter().find_map(|e| match e {
+                Edit::CacheEdit { tool_use_ids } => Some(tool_use_ids),
+                _ => None,
+            });
+            let tool_use_ids = cache_edit.cloned().unwrap_or_default();
+            if plan {
+                println!("{}", serde_json::to_string_pretty(&p)?);
+            } else {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "session_id": d.handle.session_id,
+                        "strategy": p.strategy,
+                        "context_tokens_before": p.context_tokens_before,
+                        "context_tokens_after": p.context_tokens_after,
+                        "tool_use_ids": tool_use_ids,
+                    }))?
+                );
+            }
+        }
+        None => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "session_id": d.handle.session_id,
+                    "tool_use_ids": Vec::<String>::new(),
+                    "reason": "no cache_edits plan at this policy"
+                }))?
+            );
+        }
+    }
+    Ok(())
+}
+
 fn cmd_bench(
     cli: &Cli,
     all: bool,
@@ -2520,6 +2597,12 @@ fn main() -> Result<()> {
             *floor,
             *json,
         ),
+        Cmd::CacheEdits {
+            session,
+            trigger,
+            floor,
+            plan,
+        } => cmd_cache_edits(&cli, &cfg, session, *trigger, *floor, *plan),
         Cmd::InstallHooks => cmd_install_hooks(false, &roots(&cli)),
         Cmd::UninstallHooks => cmd_install_hooks(true, &roots(&cli)),
         Cmd::Hook { event } => cmd_hook(event),

@@ -175,7 +175,7 @@ fn tools() -> Value {
                 "type": "object",
                 "properties": {
                     "session": {"type": "string", "description": "session id prefix or transcript path"},
-                    "strategy": {"type": "string", "description": "auto | sawtooth | elide | compacted | cache_aware | scored | structured | agentic"},
+                    "strategy": {"type": "string", "description": "auto | sawtooth | elide | compacted | cache_aware | cache_edits | scored | structured | agentic | dedupe | micro | middle"},
                     "trigger": {"type": "integer", "description": "override trigger threshold (tokens)"},
                     "floor": {"type": "integer", "description": "override post-compaction floor (tokens)"},
                     "adaptive": {"type": "boolean", "description": "derive trigger/floor from the provider window, elidable share, and past compaction yields for this evaluation"}

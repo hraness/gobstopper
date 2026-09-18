@@ -1,11 +1,11 @@
-use super::{state_card_digest, PolicyConfig, Strategy};
+use super::{PolicyConfig, Strategy};
 use crate::model::Transcript;
 use crate::plan::{CompactionPlan, Edit};
 
 /// Claude `cache_edits`: remove stale tool results by `tool_use_id` at the
-/// Anthropic request layer rather than rewriting the transcript file. This
-/// keeps the on-disk conversation byte-identical, preserving the prompt cache
-/// prefix, while still dropping the selected tool outputs from the prompt.
+/// Anthropic request layer. This keeps the on-disk conversation byte-identical,
+/// preserving the prompt cache prefix, while dropping the selected tool outputs
+/// from the next prompt. No transcript file is modified.
 pub struct CacheEditsStrategy;
 
 impl Strategy for CacheEditsStrategy {
@@ -33,7 +33,7 @@ impl Strategy for CacheEditsStrategy {
         }
 
         let mut projected = before;
-        let mut chosen: Vec<usize> = Vec::new();
+        let mut chosen = 0usize;
         let mut tool_use_ids: Vec<String> = Vec::new();
         for item in candidates.iter().rev() {
             if projected <= policy.floor_tokens {
@@ -42,19 +42,15 @@ impl Strategy for CacheEditsStrategy {
             if let Some(id) = item.parent_uuid.as_deref() {
                 tool_use_ids.push(id.to_string());
             }
-            chosen.push(item.line_index);
+            chosen += 1;
             projected = projected.saturating_sub(item.estimated_elision_savings());
         }
-        if chosen.is_empty() {
+        if chosen == 0 {
             return None;
         }
-        chosen.sort();
-
-        let digest = state_card_digest(transcript, &chosen);
-        let digest_overhead = digest.estimate_overhead();
 
         let rationale = format!(
-            "context {before} tokens exceeds trigger {}; emitting {} cache_edits (and digest) to drop stale tool outputs",
+            "context {before} tokens exceeds trigger {}; emitting {} cache_edits to drop stale tool outputs",
             policy.trigger_tokens,
             tool_use_ids.len()
         );
@@ -62,12 +58,9 @@ impl Strategy for CacheEditsStrategy {
         Some(CompactionPlan {
             strategy: self.id().to_string(),
             rationale,
-            edits: vec![
-                Edit::CacheEdit { tool_use_ids },
-                Edit::InjectDigest { digest },
-            ],
+            edits: vec![Edit::CacheEdit { tool_use_ids }],
             context_tokens_before: before,
-            context_tokens_after: projected.saturating_add(digest_overhead),
+            context_tokens_after: projected,
         })
     }
 }

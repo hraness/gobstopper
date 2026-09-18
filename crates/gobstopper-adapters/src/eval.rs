@@ -464,7 +464,7 @@ mod tests {
             assert!(
                 plan.edits
                     .iter()
-                    .all(|e| matches!(e, Edit::ProviderCompact { .. })),
+                    .all(|e| matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. })),
                 "{id} should delegate on a hot transcript: {:?}",
                 plan.edits
             );

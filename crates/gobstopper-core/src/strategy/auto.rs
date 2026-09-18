@@ -1,9 +1,11 @@
 use super::{
-    CacheAwareStrategy, CompactedStrategy, DedupeStrategy, ElideStrategy, MicroStrategy,
-    MiddleStrategy, PolicyConfig, SawtoothStrategy, ScoredStrategy, Strategy, StructuredStrategy,
+    CacheAwareStrategy, CacheEditsStrategy, CompactedStrategy, DedupeStrategy, ElideStrategy,
+    MicroStrategy, MiddleStrategy, PolicyConfig, SawtoothStrategy, ScoredStrategy, Strategy,
+    StructuredStrategy,
 };
 use crate::model::Transcript;
 use crate::plan::{CompactionPlan, Edit};
+use crate::Provider;
 
 /// Auto: the default. Selects the concrete strategy per evaluation from
 /// transcript composition rather than holding a fixed policy — the
@@ -87,7 +89,11 @@ impl AutoStrategy {
         let total = transcript.context_tokens().max(1);
         let tool_tokens = transcript.elidable_tokens();
         if transcript.items.is_empty() || transcript.session.is_active() {
-            "sawtooth"
+            if transcript.session.provider == Provider::ClaudeCode {
+                "cache_edits"
+            } else {
+                "sawtooth"
+            }
         } else if tool_tokens as f64 / total as f64 >= TOOL_DOMINANCE {
             "cache_aware"
         } else {
@@ -102,13 +108,22 @@ impl Strategy for AutoStrategy {
     }
 
     fn evaluate(&self, transcript: &Transcript, policy: &PolicyConfig) -> Option<CompactionPlan> {
-        // Live sessions are unsafe to edit in place; always delegate to the
-        // provider's own compaction control.
+        // Live sessions are unsafe to edit in place; delegate to a
+        // provider-native control. Claude can drop tool results by
+        // `tool_use_id` without invalidating the cache; Codex falls back
+        // to the generic sawtooth provider control.
         if transcript.items.is_empty() || transcript.session.is_active() {
-            let mut plan = SawtoothStrategy.evaluate(transcript, policy)?;
+            let (selected, mut plan) = if transcript.session.provider == Provider::ClaudeCode {
+                (
+                    "cache_edits",
+                    CacheEditsStrategy.evaluate(transcript, policy)?,
+                )
+            } else {
+                ("sawtooth", SawtoothStrategy.evaluate(transcript, policy)?)
+            };
             plan.rationale = format!(
-                "auto (live session): delegated to sawtooth; {}",
-                plan.rationale
+                "auto (live session): delegated to {}; {}",
+                selected, plan.rationale
             );
             plan.strategy = self.id().to_string();
             return Some(plan);
