@@ -121,28 +121,68 @@ impl LlmScorer {
     }
 }
 
+/// Shared prompt context for model-backed scorers: the sanitized candidate
+/// lines (`[local_id] label = summary`), the agent's inferred goal, and the
+/// recent conversation tail. Only labels and summaries are included — full
+/// tool payloads never reach a scorer.
+pub(crate) struct ScoringContext {
+    pub inputs: Vec<(usize, usize, String)>,
+    pub goal: String,
+    pub tail: String,
+}
+
+pub(crate) fn scoring_context(
+    transcript: &Transcript,
+    candidates: &[usize],
+    max_candidates: usize,
+) -> ScoringContext {
+    let scored_total = candidates.len().min(max_candidates);
+    let mut inputs = Vec::with_capacity(scored_total);
+    for (i, idx) in candidates.iter().copied().take(scored_total).enumerate() {
+        if let Some(item) = transcript.items.get(idx) {
+            inputs.push((
+                i,
+                idx,
+                format!(
+                    "[{}] {} = {}",
+                    i,
+                    item.label,
+                    item.summary.as_deref().unwrap_or("(no summary)")
+                ),
+            ));
+        }
+    }
+    let goal = transcript
+        .items
+        .iter()
+        .rev()
+        .find(|i| {
+            i.kind == gobstopper_core::ItemKind::User
+                && i.summary.as_ref().is_some_and(|s| {
+                    !s.starts_with('<') && !s.starts_with("[gobstopper state card]")
+                })
+        })
+        .and_then(|i| i.summary.clone())
+        .unwrap_or_else(|| "(no explicit goal)".into());
+    let tail = transcript
+        .items
+        .iter()
+        .rev()
+        .take(6)
+        .filter_map(|i| i.summary.as_ref().map(|s| format!("- {}", s)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    ScoringContext { inputs, goal, tail }
+}
+
 impl ScoreDriver for LlmScorer {
     fn score(&self, transcript: &Transcript, candidates: &[usize]) -> Vec<ScoredItem> {
         if candidates.is_empty() {
             return Vec::new();
         }
 
-        let scored_total = candidates.len().min(self.cfg.max_candidates);
-        let mut inputs = Vec::with_capacity(scored_total);
-        for (i, idx) in candidates.iter().copied().take(scored_total).enumerate() {
-            if let Some(item) = transcript.items.get(idx) {
-                inputs.push((
-                    i,
-                    idx,
-                    format!(
-                        "[{}] {} = {}",
-                        i,
-                        item.label,
-                        item.summary.as_deref().unwrap_or("(no summary)")
-                    ),
-                ));
-            }
-        }
+        let ctx = scoring_context(transcript, candidates, self.cfg.max_candidates);
+        let inputs = ctx.inputs;
         if inputs.is_empty() {
             return candidates
                 .iter()
@@ -152,28 +192,8 @@ impl ScoreDriver for LlmScorer {
                 })
                 .collect();
         }
-
-        let goal = transcript
-            .items
-            .iter()
-            .rev()
-            .find(|i| {
-                i.kind == gobstopper_core::ItemKind::User
-                    && i.summary.as_ref().is_some_and(|s| {
-                        !s.starts_with('<') && !s.starts_with("[gobstopper state card]")
-                    })
-            })
-            .and_then(|i| i.summary.clone())
-            .unwrap_or_else(|| "(no explicit goal)".into());
-
-        let tail = transcript
-            .items
-            .iter()
-            .rev()
-            .take(6)
-            .filter_map(|i| i.summary.as_ref().map(|s| format!("- {}", s)))
-            .collect::<Vec<_>>()
-            .join("\n");
+        let goal = ctx.goal;
+        let tail = ctx.tail;
 
         let mut all_scores = Vec::new();
         let chunks: Vec<&[(usize, usize, String)]> = inputs

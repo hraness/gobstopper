@@ -59,6 +59,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330a5ed07fa54e4702c9d6c4174f74427fc0ef6e214bbd677ae50a5099946470"
 
 [[package]]
+name = "apple-foundation"
+version = "0.1.2"
+source = "git+https://github.com/hraness/apple-foundation?tag=v0.1.2#6886cf5cf712c2d8a1fda73176c5fe98e4ec4272"
+dependencies = [
+ "serde_json",
+]
+
+[[package]]
 name = "bitflags"
 version = "2.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -185,6 +193,7 @@ name = "gobstopper"
 version = "0.2.1"
 dependencies = [
  "anyhow",
+ "apple-foundation",
  "clap",
  "gobstopper-adapters",
  "gobstopper-core",
