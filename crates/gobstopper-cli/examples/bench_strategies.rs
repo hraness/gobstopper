@@ -65,7 +65,7 @@ fn main() {
         floor_tokens: 0,
         keep_recent_tool_outputs: 2,
         min_interval_secs: 0,
-        quota_pressure: Default::default(),
+        ..Default::default()
     };
     let strategies = builtin_strategies();
     let sizes = [(50, 400), (200, 400), (500, 400), (1000, 400)];

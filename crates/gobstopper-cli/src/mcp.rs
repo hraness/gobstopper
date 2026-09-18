@@ -177,7 +177,8 @@ fn tools() -> Value {
                     "session": {"type": "string", "description": "session id prefix or transcript path"},
                     "strategy": {"type": "string", "description": "auto | sawtooth | elide | compacted | cache_aware | structured | agentic"},
                     "trigger": {"type": "integer", "description": "override trigger threshold (tokens)"},
-                    "floor": {"type": "integer", "description": "override post-compaction floor (tokens)"}
+                    "floor": {"type": "integer", "description": "override post-compaction floor (tokens)"},
+                    "adaptive": {"type": "boolean", "description": "derive trigger/floor from the provider window, elidable share, and past compaction yields for this evaluation"}
                 },
                 "required": ["session"]
             }
@@ -248,7 +249,21 @@ fn run_tool(cli: &Cli, cfg: &config::Config, name: &str, args: &Value) -> Result
             if let Some(f) = args.get("floor").and_then(Value::as_u64) {
                 resolved.policy.floor_tokens = f;
             }
+            if let Some(adaptive) = args.get("adaptive").and_then(Value::as_bool) {
+                resolved.policy.adaptive = adaptive;
+            }
             let transcript = detect::load(&d)?;
+            let (effective, reasons) = crate::effective_policy(&transcript, &resolved);
+            let adaptive_block = if resolved.policy.adaptive {
+                json!({
+                    "enabled": true,
+                    "trigger_tokens": effective.trigger_tokens,
+                    "floor_tokens": effective.floor_tokens,
+                    "reasons": reasons,
+                })
+            } else {
+                Value::Null
+            };
             match evaluate(&transcript, &resolved)? {
                 Some(plan) => {
                     let prefix = eval::prefix_tokens(&transcript, &plan);
@@ -256,12 +271,14 @@ fn run_tool(cli: &Cli, cfg: &config::Config, name: &str, args: &Value) -> Result
                         "session_id": d.handle.session_id,
                         "plan": plan,
                         "prefix_tokens": prefix,
+                        "adaptive": adaptive_block,
                     }))
                 }
                 None => Ok(json!({
                     "session_id": d.handle.session_id,
                     "plan": Value::Null,
                     "reason": "no applicable edits at this policy",
+                    "adaptive": adaptive_block,
                 })),
             }
         }

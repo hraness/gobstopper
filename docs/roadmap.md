@@ -56,6 +56,16 @@ execution, standalone `hraness/agentmixer` repo — formerly the
   the protected tail so the conversation prefix stays byte-identical;
   `gobstopper bench` reports `prefix_tokens` so cache preservation is
   visible next to projected savings.
+- Adaptive thresholds (`adaptive = true`): trigger/floor are re-derived
+  per session at each decision point from the provider-advertised
+  context window, the elidable share of the transcript, and past
+  compaction yields recorded in `events.jsonl`. Deterministic, bounded,
+  and self-explaining via closed-vocab reasons in plan output and
+  telemetry; `gobstopper tune <session>` previews the adjustment.
+- Read-only MCP server (`gobstopper mcp`): agents query sessions,
+  state-card recall, vault history/show/diff, dry-run plans, and
+  transcript verification over stdio JSON-RPC — agent-addressable
+  memory without a mutating surface.
 
 ## 2. Landscape position (why this is a real niche)
 

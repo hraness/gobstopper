@@ -140,6 +140,16 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Show the trigger/floor the adaptive tuner derives for a session
+    /// from its provider window, elidable share, and past compaction
+    /// yields — and the TOML to pin them.
+    Tune {
+        /// Session id prefix, or path to a transcript file.
+        session: String,
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
     /// Install provider hook entries (Claude settings.json, Codex
     /// hooks.json) that call back into `gobstopper hook <event>` at
     /// compaction lifecycle points. Additive merge; never removes
@@ -385,12 +395,68 @@ fn find_session(cli: &Cli, cfg: &config::Config, query: &str) -> Result<Discover
     }
 }
 
+/// Recent applied compactions for one session as
+/// `(context_tokens_before, est_reclaimed_tokens)`, newest first —
+/// the past-yield evidence the adaptive tuner reads.
+fn recent_applied(session_id: &str, provider: Provider) -> Vec<(u64, u64)> {
+    let path = gobstopper_core::events::default_log_path();
+    let Ok(events) = gobstopper_core::events::read_events(&path) else {
+        return Vec::new();
+    };
+    events
+        .iter()
+        .filter(|e| e.session_id == session_id && e.provider == provider && e.outcome == "applied")
+        .rev()
+        .take(3)
+        .map(|e| (e.context_tokens_before, e.est_reclaimed_tokens))
+        .collect()
+}
+
+/// Full adaptive sample from a parsed transcript.
+fn adaptive_sample(transcript: &gobstopper_core::Transcript) -> gobstopper_core::AdaptiveSample {
+    gobstopper_core::AdaptiveSample {
+        model_context_window: transcript.usage.model_context_window,
+        context_tokens: transcript.context_tokens(),
+        elidable_tokens: Some(transcript.elidable_tokens()),
+        recent: recent_applied(&transcript.session.session_id, transcript.session.provider),
+    }
+}
+
+/// Transcript-free adaptive sample for cheap pre-checks (watch loop):
+/// the elidable-share rule is skipped.
+fn adaptive_sample_usage(
+    provider: Provider,
+    session_id: &str,
+    usage: &gobstopper_core::UsageSample,
+) -> gobstopper_core::AdaptiveSample {
+    gobstopper_core::AdaptiveSample {
+        model_context_window: usage.model_context_window,
+        context_tokens: usage.context_tokens,
+        elidable_tokens: None,
+        recent: recent_applied(session_id, provider),
+    }
+}
+
+/// The policy a decision should use right now: the resolved layers plus
+/// the adaptive tuner when `policy.adaptive` is set.
+fn effective_policy(
+    transcript: &gobstopper_core::Transcript,
+    resolved: &config::Resolved,
+) -> (gobstopper_core::PolicyConfig, Vec<&'static str>) {
+    if !resolved.policy.adaptive {
+        return (resolved.policy.clone(), Vec::new());
+    }
+    let outcome = gobstopper_core::adapt(&resolved.policy, &adaptive_sample(transcript));
+    (outcome.policy, outcome.reasons)
+}
+
 fn evaluate(
     transcript: &gobstopper_core::Transcript,
     resolved: &config::Resolved,
 ) -> Result<Option<CompactionPlan>> {
+    let (policy, adaptive_reasons) = effective_policy(transcript, resolved);
     let before = transcript.context_tokens();
-    if before < resolved.policy.effective_trigger() {
+    if before < policy.effective_trigger() {
         return Ok(None);
     }
     if let Some(selection) = &resolved.plugin {
@@ -417,11 +483,11 @@ fn evaluate(
             source_sha256: copy::sha256(&bytes),
             items: transcript.items.clone(),
             usage: transcript.usage,
-            policy: Some(resolved.policy.clone()),
+            policy: Some(policy.clone()),
             content,
         };
         let response = plugins::invoke(&selection.manifest, &selection.trusted_sha256, &request)?;
-        return external_plan(transcript, resolved, response.edits);
+        return external_plan(transcript, &policy, &resolved.strategy, response.edits);
     }
     // Userspace command preset: feed the normalized transcript, read edits.
     if let Some(command) = &resolved.command {
@@ -436,27 +502,35 @@ fn evaluate(
         if edits.is_empty() {
             return Ok(None);
         }
-        return external_plan(transcript, resolved, edits);
+        return external_plan(transcript, &policy, &resolved.strategy, edits);
     }
     let strat = strategy::strategy_by_id(&resolved.strategy)
         .ok_or_else(|| anyhow::anyhow!("unknown strategy '{}'", resolved.strategy))?;
-    let plan = strat.evaluate(transcript, &resolved.policy);
-    if let Some(plan) = &plan {
-        gobstopper_core::validation::validate_edits(transcript, &resolved.policy, &plan.edits)
+    let mut plan = strat.evaluate(transcript, &policy);
+    if let Some(plan) = &mut plan {
+        gobstopper_core::validation::validate_edits(transcript, &policy, &plan.edits)
             .map_err(anyhow::Error::msg)?;
+        if !adaptive_reasons.is_empty() {
+            plan.rationale = format!(
+                "{} | adaptive: {}",
+                plan.rationale,
+                adaptive_reasons.join(", ")
+            );
+        }
     }
     Ok(plan)
 }
 
 fn external_plan(
     transcript: &gobstopper_core::Transcript,
-    resolved: &config::Resolved,
+    policy: &gobstopper_core::PolicyConfig,
+    strategy_id: &str,
     edits: Vec<Edit>,
 ) -> Result<Option<CompactionPlan>> {
     if edits.is_empty() {
         return Ok(None);
     }
-    gobstopper_core::validation::validate_edits(transcript, &resolved.policy, &edits)
+    gobstopper_core::validation::validate_edits(transcript, policy, &edits)
         .map_err(anyhow::Error::msg)?;
     let before = transcript.context_tokens();
     let mut after = before;
@@ -485,7 +559,7 @@ fn external_plan(
         return Ok(None);
     }
     Ok(Some(CompactionPlan {
-        strategy: format!("preset:{}", resolved.strategy),
+        strategy: format!("preset:{strategy_id}"),
         rationale: "validated userspace proposal; savings are projected".into(),
         edits,
         context_tokens_before: before,
@@ -496,7 +570,8 @@ fn external_plan(
 /// Explain a `None` plan: under trigger vs. over trigger but nothing to cut.
 fn report_no_plan(transcript: &gobstopper_core::Transcript, resolved: &config::Resolved) {
     let ctx = transcript.context_tokens();
-    let trigger = resolved.policy.effective_trigger();
+    let (policy, reasons) = effective_policy(transcript, resolved);
+    let trigger = policy.effective_trigger();
     if ctx < trigger {
         println!("nothing to do: context ~{ctx} under trigger {trigger}");
     } else {
@@ -504,6 +579,9 @@ fn report_no_plan(transcript: &gobstopper_core::Transcript, resolved: &config::R
             "context ~{ctx} exceeds trigger {trigger} but the '{}' strategy found no applicable edits",
             resolved.strategy
         );
+    }
+    if !reasons.is_empty() {
+        println!("  adaptive policy: {}", reasons.join(", "));
     }
 }
 
@@ -838,6 +916,7 @@ fn session_rows(cli: &Cli, all: bool) -> Vec<serde_json::Value> {
                 "active": d.handle.is_active(),
                 "context_tokens": d.usage.context_tokens,
                 "lifetime_input_tokens": d.usage.lifetime_input_tokens,
+                "model_context_window": d.usage.model_context_window,
             })
         })
         .collect()
@@ -1556,6 +1635,88 @@ fn cmd_bench(
     Ok(())
 }
 
+/// `gobstopper tune` — show what the adaptive tuner derives for one
+/// session. Always computes the adjustment (a preview when the policy
+/// does not opt in) and suggests the TOML to pin the derived values.
+fn cmd_tune(cli: &Cli, cfg: &config::Config, session: &str, json: bool) -> Result<()> {
+    let d = find_session(cli, cfg, session)?;
+    let resolved = cfg.resolve(d.handle.provider, &d.handle.session_id, None, None)?;
+    let transcript = detect::load(&d)?;
+    let sample = adaptive_sample(&transcript);
+    let outcome = gobstopper_core::adapt(&resolved.policy, &sample);
+    let adjusted = &outcome.policy;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "provider": d.handle.provider,
+                "session_id": d.handle.session_id,
+                "adaptive_enabled": resolved.policy.adaptive,
+                "model_context_window": sample.model_context_window,
+                "context_tokens": sample.context_tokens,
+                "elidable_tokens": sample.elidable_tokens,
+                "recent_applied": sample.recent.len(),
+                "configured": {
+                    "trigger_tokens": resolved.policy.trigger_tokens,
+                    "floor_tokens": resolved.policy.floor_tokens,
+                },
+                "adjusted": {
+                    "trigger_tokens": adjusted.trigger_tokens,
+                    "floor_tokens": adjusted.floor_tokens,
+                },
+                "reasons": outcome.reasons,
+            }))?
+        );
+        return Ok(());
+    }
+    println!(
+        "{} {} — adaptive {}",
+        d.handle.provider.as_str(),
+        d.handle.session_id,
+        if resolved.policy.adaptive {
+            "on"
+        } else {
+            "off (preview)"
+        },
+    );
+    if let Some(window) = sample.model_context_window {
+        println!("  model context window: {window}");
+    }
+    println!("  context tokens:       {}", sample.context_tokens);
+    if let Some(elidable) = sample.elidable_tokens {
+        let share = if sample.context_tokens > 0 {
+            (elidable as f64) / (sample.context_tokens as f64) * 100.0
+        } else {
+            0.0
+        };
+        println!("  elidable tokens:      {elidable} ({share:.0}% of context)");
+    }
+    println!("  applied compactions:  {}", sample.recent.len());
+    println!(
+        "  configured:           trigger {} / floor {}",
+        resolved.policy.trigger_tokens, resolved.policy.floor_tokens
+    );
+    println!(
+        "  adjusted:             trigger {} / floor {}",
+        adjusted.trigger_tokens, adjusted.floor_tokens
+    );
+    if outcome.reasons.is_empty() {
+        println!("  no adjustment — configured policy fits this session");
+    } else {
+        println!("  reasons:              {}", outcome.reasons.join(", "));
+        if !resolved.policy.adaptive {
+            println!("\n  enable with `adaptive = true` under [policy], or pin for this session:");
+        } else {
+            println!("\n  pin for this session:");
+        }
+        println!(
+            "  [sessions.\"{}\"]\n  trigger_tokens = {}\n  floor_tokens = {}",
+            d.handle.session_id, adjusted.trigger_tokens, adjusted.floor_tokens
+        );
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_apply(
     cli: &Cli,
@@ -1625,7 +1786,9 @@ fn cmd_apply(
         .cloned()
         .collect();
     let started = std::time::Instant::now();
-    let trigger = resolved.policy.trigger_tokens;
+    // Telemetry records the trigger the decision actually used — the
+    // adaptive-adjusted one when the policy opts in.
+    let trigger = effective_policy(&transcript, &resolved).0.trigger_tokens;
     // Compacted path: for Codex, an `InjectDigest` edit becomes a real
     // `compacted` record (window chain + replacement_history) appended
     // to the rollout — the provider's own resume mechanism performs the
@@ -1909,7 +2072,16 @@ fn cmd_watch(
             else {
                 continue;
             };
-            let trigger = resolved.policy.effective_trigger();
+            let trigger = if resolved.policy.adaptive {
+                gobstopper_core::adapt(
+                    &resolved.policy,
+                    &adaptive_sample_usage(d.handle.provider, &d.handle.session_id, &d.usage),
+                )
+                .policy
+                .effective_trigger()
+            } else {
+                resolved.policy.effective_trigger()
+            };
             let ctx = if d.usage.context_tokens > 0 {
                 d.usage.context_tokens
             } else {
@@ -2289,6 +2461,7 @@ fn main() -> Result<()> {
             *json,
         ),
         Cmd::Diff { a, b, json } => cmd_diff(a, b, *json),
+        Cmd::Tune { session, json } => cmd_tune(&cli, &cfg, session, *json),
         Cmd::Bench {
             all,
             trigger,

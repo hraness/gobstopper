@@ -112,6 +112,7 @@ gobstopper recall --query <q>      # search state-card digests across all archiv
 gobstopper history <session>       # every archived state of one session
 gobstopper diff <sha-a> <sha-b>    # structural comparison of two vault snapshots
 gobstopper bench                   # benchmark every strategy across discovered sessions
+gobstopper tune <session>          # preview the adaptive trigger/floor for a session
 gobstopper mcp                     # read-only MCP server: the vault as agent tools
 ```
 
@@ -129,6 +130,7 @@ Config: `~/.config/gobstopper/config.toml`
 strategy = "auto"            # sawtooth | elide | compacted | cache_aware | structured | agentic
 trigger_tokens = 250_000
 floor_tokens = 40_000
+adaptive = true              # derive trigger/floor per session — see `gobstopper tune`
 
 [provider.codex]             # per-provider overrides
 trigger_tokens = 200_000
@@ -147,6 +149,14 @@ command = "python3 ~/bin/my_compactor.py"
 
 Managed sessions (oompa profiles, sandboxed homes) use different roots:
 point gobstopper at them with `--codex-home` / `--claude-home`.
+
+With `adaptive = true`, the effective trigger/floor are re-derived per
+session at each decision point: the trigger is capped at a quarter of
+the provider-advertised context window, backed off (bounded 2x) when
+recent compactions reclaimed too little to be worth a cycle, and
+tightened when most of the window is reclaimable tool output. The
+adjustment is deterministic and its reasons appear in plan output and
+telemetry. `gobstopper tune <session>` previews it.
 
 ## The oompa seam
 

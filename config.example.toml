@@ -1,11 +1,14 @@
 # ~/.config/gobstopper/config.toml
 
 [policy]
-strategy = "auto"              # auto | sawtooth | elide | compacted | structured | agentic
+strategy = "auto"              # auto | sawtooth | elide | compacted | cache_aware | structured | agentic
 trigger_tokens = 250_000       # fire when context exceeds this
 floor_tokens = 40_000          # transcript-path post-compaction target
 keep_recent_tool_outputs = 8   # tail outputs never elided
 min_interval_secs = 300        # per-session compaction rate limit
+# adaptive = true              # derive trigger/floor per session from the
+                               # provider window, elidable share, and past
+                               # compaction yields — see `gobstopper tune`
 
 # Per-provider overrides
 [provider.codex]

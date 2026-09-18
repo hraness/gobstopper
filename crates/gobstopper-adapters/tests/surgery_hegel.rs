@@ -746,7 +746,7 @@ fn plans_apply_cleanly(tc: TestCase) {
         floor_tokens: 10,
         keep_recent_tool_outputs: 1,
         min_interval_secs: 0,
-        quota_pressure: gobstopper_core::strategy::QuotaPressure::Normal,
+        ..Default::default()
     };
 
     for strategy in builtin_strategies() {
@@ -1147,7 +1147,7 @@ fn eval_never_mutates_source(tc: TestCase) {
         floor_tokens: 10,
         keep_recent_tool_outputs: 1,
         min_interval_secs: 0,
-        quota_pressure: gobstopper_core::strategy::QuotaPressure::Normal,
+        ..Default::default()
     };
     let rows = eval::eval_transcript(provider, &path, &policy, None).unwrap();
     assert_eq!(

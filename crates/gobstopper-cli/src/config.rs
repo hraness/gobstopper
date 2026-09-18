@@ -25,6 +25,9 @@ pub struct PolicyPatch {
     pub min_interval_secs: Option<u64>,
     /// Provider quota pressure: `low` compacts later, `high` earlier.
     pub quota_pressure: Option<QuotaPressure>,
+    /// Derive trigger/floor per session from the provider window and
+    /// past compaction yields (see `gobstopper tune`).
+    pub adaptive: Option<bool>,
     /// Userspace program: transcript JSON in, `Edit[]` JSON out.
     pub command: Option<String>,
     pub trusted_legacy_command: Option<bool>,
@@ -54,6 +57,9 @@ impl PolicyPatch {
         }
         if let Some(v) = self.quota_pressure {
             policy.quota_pressure = v;
+        }
+        if let Some(v) = self.adaptive {
+            policy.adaptive = v;
         }
     }
 }

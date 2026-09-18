@@ -47,6 +47,11 @@ pub struct PolicyConfig {
     /// Scales `trigger_tokens`; see [`PolicyConfig::effective_trigger`].
     #[serde(default)]
     pub quota_pressure: QuotaPressure,
+    /// Derive trigger/floor per session from the provider-advertised
+    /// window, elidable share, and past compaction yields. See
+    /// [`crate::policy::adapt`].
+    #[serde(default)]
+    pub adaptive: bool,
 }
 
 impl Default for PolicyConfig {
@@ -59,6 +64,7 @@ impl Default for PolicyConfig {
             keep_recent_tool_outputs: 8,
             min_interval_secs: 300,
             quota_pressure: QuotaPressure::Normal,
+            adaptive: false,
         }
     }
 }

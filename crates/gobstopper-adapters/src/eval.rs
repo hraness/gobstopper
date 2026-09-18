@@ -395,6 +395,7 @@ mod tests {
             keep_recent_tool_outputs: 1,
             min_interval_secs: 0,
             quota_pressure: QuotaPressure::Normal,
+            ..Default::default()
         }
     }
 

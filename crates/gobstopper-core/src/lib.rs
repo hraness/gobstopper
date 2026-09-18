@@ -11,6 +11,7 @@ pub mod estimate;
 pub mod events;
 pub mod model;
 pub mod plan;
+pub mod policy;
 pub mod probe;
 pub mod strategy;
 pub mod validation;
@@ -18,6 +19,7 @@ pub mod validation;
 pub use events::{append_event, default_log_path, read_events, CompactionEvent};
 pub use model::{ItemKind, Provider, SessionHandle, Transcript, TranscriptItem, UsageSample};
 pub use plan::{CompactionPlan, DigestBlock, Edit};
+pub use policy::{adapt, AdaptiveOutcome, AdaptiveSample};
 pub use probe::{KindTally, Probe, ProbeKind, ProbeScore};
 pub use strategy::{builtin_strategies, strategy_by_id, PolicyConfig, QuotaPressure, Strategy};
 
@@ -62,6 +64,7 @@ mod tests {
             keep_recent_tool_outputs: 2,
             min_interval_secs: 0,
             quota_pressure: QuotaPressure::Normal,
+            ..Default::default()
         }
     }
 
