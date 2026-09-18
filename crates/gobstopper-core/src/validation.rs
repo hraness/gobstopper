@@ -38,11 +38,21 @@ pub fn validate_edits(
             Edit::Elide {
                 line_indexes,
                 stub_template,
+                per_item_stubs,
             } => {
+                let line_set: HashSet<usize> = line_indexes.iter().copied().collect();
                 if line_indexes.len() > MAX_ITEMS
                     || stub_template.len() > 96
                     || stub_template.contains("{kind}")
                     || stub_template.contains(['\n', '\r'])
+                    || per_item_stubs.len() > line_indexes.len()
+                    || per_item_stubs.keys().any(|k| !line_set.contains(k))
+                    || per_item_stubs.values().any(|s| {
+                        s.is_empty()
+                            || s.len() > 200
+                            || s.contains(['\n', '\r'])
+                            || s.chars().any(char::is_control)
+                    })
                 {
                     return Err("invalid elision bounds or stub template");
                 }
@@ -198,6 +208,7 @@ mod tests {
             Edit::Elide {
                 line_indexes: vec![1],
                 stub_template: "[elided]".to_string(),
+                per_item_stubs: Default::default(),
             },
         ];
         assert!(validate_edits(
@@ -209,5 +220,42 @@ mod tests {
             &mixed
         )
         .is_err());
+    }
+
+    #[test]
+    fn per_item_stubs_are_bounded() {
+        let transcript = transcript(Provider::ClaudeCode);
+        let policy = PolicyConfig {
+            keep_recent_tool_outputs: 0,
+            ..Default::default()
+        };
+        let elide = |stubs: Vec<(usize, &str)>| {
+            vec![Edit::Elide {
+                line_indexes: vec![1],
+                stub_template: "[elided {bytes}]".to_string(),
+                per_item_stubs: stubs.into_iter().map(|(k, v)| (k, v.to_string())).collect(),
+            }]
+        };
+        assert!(validate_edits(&transcript, &policy, &elide(vec![])).is_ok());
+        assert!(
+            validate_edits(&transcript, &policy, &elide(vec![(1, "read src/main.rs")])).is_ok()
+        );
+        // Unknown key, empty, oversized, and control-containing stubs fail.
+        assert!(validate_edits(&transcript, &policy, &elide(vec![(2, "x")])).is_err());
+        assert!(validate_edits(&transcript, &policy, &elide(vec![(1, "")])).is_err());
+        assert!(validate_edits(&transcript, &policy, &elide(vec![(1, &"x".repeat(201))])).is_err());
+        assert!(validate_edits(&transcript, &policy, &elide(vec![(1, "a\nb")])).is_err());
+        assert!(validate_edits(&transcript, &policy, &elide(vec![(1, "a\u{7}b")])).is_err());
+    }
+
+    #[test]
+    fn old_elide_json_deserializes_without_stub_map() {
+        let edit: Edit =
+            serde_json::from_str(r#"{"op":"elide","line_indexes":[1],"stub_template":"[elided]"}"#)
+                .unwrap();
+        match edit {
+            Edit::Elide { per_item_stubs, .. } => assert!(per_item_stubs.is_empty()),
+            _ => panic!("expected elide"),
+        }
     }
 }

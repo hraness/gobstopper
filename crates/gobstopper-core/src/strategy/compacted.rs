@@ -43,6 +43,7 @@ impl Strategy for CompactedStrategy {
                 Edit::Elide {
                     line_indexes: elided_indexes,
                     stub_template: super::elide::DEFAULT_STUB.to_string(),
+                    per_item_stubs: Default::default(),
                 },
                 Edit::InjectDigest { digest },
             ],

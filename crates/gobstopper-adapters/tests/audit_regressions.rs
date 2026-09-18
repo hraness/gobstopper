@@ -141,7 +141,8 @@ fn claude_subfloor_blocks_are_not_elidable_or_reserialized() {
             &path,
             &[Edit::Elide {
                 line_indexes: vec![0],
-                stub_template: "[elided]".into()
+                stub_template: "[elided]".into(),
+                per_item_stubs: Default::default(),
             }]
         )
         .unwrap(),
@@ -222,7 +223,8 @@ fn failed_later_edit_leaves_source_byte_identical() {
         &[
             Edit::Elide {
                 line_indexes: vec![0],
-                stub_template: "[elided]".into()
+                stub_template: "[elided]".into(),
+                per_item_stubs: Default::default(),
             },
             digest()
         ]
@@ -255,6 +257,7 @@ fn compact_copy_keeps_open_writer_and_is_idempotent() {
         edits: vec![Edit::Elide {
             line_indexes: vec![1],
             stub_template: "[elided]".into(),
+            per_item_stubs: Default::default(),
         }],
     };
     let receipt = copy::compact(&h, &hash, &plan, &dir.0.join("vault")).unwrap();
@@ -298,6 +301,7 @@ fn incomplete_copy_intent_recovers_without_touching_source() {
         edits: vec![Edit::Elide {
             line_indexes: vec![1],
             stub_template: "[elided]".into(),
+            per_item_stubs: Default::default(),
         }],
     };
     let root = dir.0.join("vault");
@@ -357,6 +361,7 @@ fn rewrite_never_broadens_private_permissions() {
         &[Edit::Elide {
             line_indexes: vec![0],
             stub_template: "[elided]".into(),
+            per_item_stubs: Default::default(),
         }],
     )
     .unwrap();

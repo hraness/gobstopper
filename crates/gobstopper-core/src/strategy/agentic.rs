@@ -93,6 +93,7 @@ impl AgenticStrategy {
                         edits.push(Edit::Elide {
                             line_indexes: valid,
                             stub_template: super::elide::DEFAULT_STUB.to_string(),
+                            per_item_stubs: Default::default(),
                         });
                     }
                 }

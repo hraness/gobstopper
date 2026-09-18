@@ -63,6 +63,7 @@ impl Strategy for CacheAwareStrategy {
                 Edit::Elide {
                     line_indexes: chosen,
                     stub_template: DEFAULT_STUB.to_string(),
+                    per_item_stubs: Default::default(),
                 },
                 Edit::InjectDigest { digest },
             ],

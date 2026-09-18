@@ -13,6 +13,11 @@ pub enum Edit {
         line_indexes: Vec<usize>,
         /// Stub template. `{bytes}` and `{kind}` are substituted.
         stub_template: String,
+        /// Per-record stub text overriding the template for specific line
+        /// indexes (e.g. a model-written one-line digest). Values are
+        /// complete stub text — no `{bytes}`/`{kind}` substitution applies.
+        #[serde(default)]
+        per_item_stubs: std::collections::BTreeMap<usize, String>,
     },
     /// Insert a digest line at the tail of the transcript. The adapter
     /// renders it in the provider's own "context seed" shape.
