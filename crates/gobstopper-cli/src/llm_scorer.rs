@@ -9,13 +9,14 @@
 //! Configuration (all optional, defaults listed):
 //!   AI_GATEWAY_API_KEY  - bearer token
 //!   GOBSTOPPER_LLM_ENDPOINT - https://ai-gateway.vercel.sh/v1/chat/completions
-//!   GOBSTOPPER_LLM_MODEL    - alibaba/qwen-3-14b
+//!   GOBSTOPPER_LLM_MODEL    - google/gemini-2.5-flash-lite
 //!   GOBSTOPPER_LLM_TIMEOUT_MS - 20000
-//!   GOBSTOPPER_LLM_MAX_CANDIDATES - 16
+//!   GOBSTOPPER_LLM_MAX_CANDIDATES - 64
+//!   GOBSTOPPER_LLM_BATCH_SIZE - 16
+//!   GOBSTOPPER_LLM_MAX_BATCHES - 4
 
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::process::Command;
 
 use gobstopper_core::{ScoreDriver, ScoredItem, Transcript};
@@ -27,6 +28,8 @@ pub struct LlmConfig {
     pub model: String,
     pub timeout_ms: u64,
     pub max_candidates: usize,
+    pub batch_size: usize,
+    pub max_batches: usize,
 }
 
 impl LlmConfig {
@@ -39,7 +42,7 @@ impl LlmConfig {
             endpoint: std::env::var("GOBSTOPPER_LLM_ENDPOINT")
                 .unwrap_or_else(|_| "https://ai-gateway.vercel.sh/v1/chat/completions".into()),
             model: std::env::var("GOBSTOPPER_LLM_MODEL")
-                .unwrap_or_else(|_| "alibaba/qwen-3-14b".into()),
+                .unwrap_or_else(|_| "google/gemini-2.5-flash-lite".into()),
             timeout_ms: std::env::var("GOBSTOPPER_LLM_TIMEOUT_MS")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -47,7 +50,15 @@ impl LlmConfig {
             max_candidates: std::env::var("GOBSTOPPER_LLM_MAX_CANDIDATES")
                 .ok()
                 .and_then(|s| s.parse().ok())
+                .unwrap_or(64),
+            batch_size: std::env::var("GOBSTOPPER_LLM_BATCH_SIZE")
+                .ok()
+                .and_then(|s| s.parse().ok())
                 .unwrap_or(16),
+            max_batches: std::env::var("GOBSTOPPER_LLM_MAX_BATCHES")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(4),
         })
     }
 }
@@ -115,9 +126,10 @@ impl ScoreDriver for LlmScorer {
         if candidates.is_empty() {
             return Vec::new();
         }
-        let capped = candidates.iter().copied().take(self.cfg.max_candidates);
-        let mut inputs = Vec::new();
-        for (i, idx) in capped.enumerate() {
+
+        let scored_total = candidates.len().min(self.cfg.max_candidates);
+        let mut inputs = Vec::with_capacity(scored_total);
+        for (i, idx) in candidates.iter().copied().take(scored_total).enumerate() {
             if let Some(item) = transcript.items.get(idx) {
                 inputs.push((
                     i,
@@ -163,59 +175,76 @@ impl ScoreDriver for LlmScorer {
             .collect::<Vec<_>>()
             .join("\n");
 
-        let list = inputs
+        let mut all_scores = Vec::new();
+        let chunks: Vec<&[(usize, usize, String)]> = inputs
+            .chunks(self.cfg.batch_size)
+            .take(self.cfg.max_batches)
+            .collect();
+        std::thread::scope(|s| {
+            let mut handles = Vec::with_capacity(chunks.len());
+            for chunk in chunks {
+                let cfg = self.cfg.clone();
+                let goal = goal.clone();
+                let tail = tail.clone();
+                let batch = chunk.to_vec();
+                handles.push(s.spawn(move || score_batch(&cfg, &goal, &tail, &batch)));
+            }
+            for h in handles {
+                match h.join().unwrap_or_else(|_| Ok(Vec::new())) {
+                    Ok(scores) => all_scores.extend(scores),
+                    Err(e) => eprintln!("llm scorer batch failed: {e:#}"),
+                }
+            }
+        });
+
+        let mut by_local: std::collections::HashMap<usize, f64> = all_scores
+            .into_iter()
+            .map(|s| (s.id, s.keep_probability.clamp(0.0, 1.0)))
+            .collect();
+        candidates
             .iter()
-            .map(|(_, _, text)| text.clone())
-            .collect::<Vec<_>>()
-            .join("\n");
-        let prompt = format!(
-            "You are scoring stale tool outputs for context compaction. The agent's current task is:\n{}\n\nRecent conversation tail:\n{}\n\nFor each candidate below, estimate the probability (0.0 to 1.0) that the tool output must remain visible for the agent to continue accurately. Return ONLY a JSON object with a `scores` array of objects containing `id` (the integer in brackets) and `keep_probability`.\n\n{}\n",
-            goal, tail, list
-        );
-
-        let request = ChatCompletionRequest {
-            model: self.cfg.model.clone(),
-            response_format: None,
-            max_tokens: Some(1024),
-            temperature: Some(0.0),
-            reasoning: Some(json!({ "type": "disabled" })),
-            include_reasoning: Some(false),
-            messages: vec![
-                Message {
-                    role: "system",
-                    content: "Return only the requested JSON. Do not include markdown, prose, or explanations.".into(),
-                },
-                Message { role: "user", content: prompt },
-            ],
-        };
-
-        match call_llm(&request, &self.cfg) {
-            Ok(probs) => {
-                let mut by_local: std::collections::HashMap<usize, f64> = probs
-                    .into_iter()
-                    .map(|s| (s.id, s.keep_probability.clamp(0.0, 1.0)))
-                    .collect();
-                candidates
-                    .iter()
-                    .enumerate()
-                    .map(|(local, &idx)| ScoredItem {
-                        item_index: idx,
-                        keep_probability: by_local.remove(&local).unwrap_or(0.5),
-                    })
-                    .collect()
-            }
-            Err(e) => {
-                eprintln!("llm scorer call failed: {e:#}");
-                candidates
-                    .iter()
-                    .map(|&idx| ScoredItem {
-                        item_index: idx,
-                        keep_probability: 0.5,
-                    })
-                    .collect()
-            }
-        }
+            .enumerate()
+            .map(|(local, &idx)| ScoredItem {
+                item_index: idx,
+                keep_probability: by_local.remove(&local).unwrap_or(0.5),
+            })
+            .collect()
     }
+}
+
+fn score_batch(
+    cfg: &LlmConfig,
+    goal: &str,
+    tail: &str,
+    batch: &[(usize, usize, String)],
+) -> anyhow::Result<Vec<LlmScore>> {
+    let list = batch
+        .iter()
+        .map(|(_, _, text)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let prompt = format!(
+        "You are scoring stale tool outputs for context compaction. The agent's current task is:\n{}\n\nRecent conversation tail:\n{}\n\nFor each candidate below, estimate the probability (0.0 to 1.0) that the tool output must remain visible for the agent to continue accurately. Return ONLY a JSON object with a `scores` array of objects containing `id` (the integer in brackets) and `keep_probability`.\n\n{}\n",
+        goal, tail, list
+    );
+
+    let request = ChatCompletionRequest {
+        model: cfg.model.clone(),
+        response_format: None,
+        max_tokens: Some(1024),
+        temperature: Some(0.0),
+        reasoning: None,
+        include_reasoning: None,
+        messages: vec![
+            Message {
+                role: "system",
+                content: "Return only the requested JSON. Do not include markdown, prose, or explanations.".into(),
+            },
+            Message { role: "user", content: prompt },
+        ],
+    };
+
+    call_llm(&request, cfg)
 }
 
 fn call_llm(request: &ChatCompletionRequest, cfg: &LlmConfig) -> anyhow::Result<Vec<LlmScore>> {
