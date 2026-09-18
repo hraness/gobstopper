@@ -28,7 +28,7 @@ const TOOL_DOMINANCE: f64 = 0.55;
 /// How strongly we reward preserving the conversation prefix. A higher
 /// exponent makes `auto` more reluctant to swap a long prefix for a
 /// slightly larger token saving.
-const PREFIX_EXP: i32 = 2;
+const PREFIX_EXP: i32 = 3;
 
 /// Concrete file-surgery strategies that `auto` compares for idle
 /// sessions. The best-scoring plan wins; `sawtooth` is reserved for live
