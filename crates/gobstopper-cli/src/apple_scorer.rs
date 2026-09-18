@@ -23,12 +23,11 @@
 //!   GOBSTOPPER_APPLE_MAX_BATCHES - 4
 
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
 use gobstopper_core::{ScoreDriver, ScoredItem, Transcript};
 use serde_json::Value;
 
-use crate::llm_scorer;
+use crate::{apple, llm_scorer};
 
 #[derive(Debug, Clone)]
 pub struct AppleConfig {
@@ -39,48 +38,18 @@ pub struct AppleConfig {
     pub max_batches: usize,
 }
 
-fn share_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local/share/gobstopper"))
-}
-
-fn resolve_bridge() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("GOBSTOPPER_APPLE_BRIDGE") {
-        let path = PathBuf::from(path);
-        return path.is_file().then_some(path);
-    }
-    if let Ok(exe) = std::env::current_exe() {
-        let sibling = exe.parent()?.join("apple-bridge");
-        if sibling.is_file() {
-            return Some(sibling);
-        }
-    }
-    // The managed install path rebuilds automatically when the embedded
-    // bridge source changes; env/sibling paths are user-managed.
-    let installed = share_dir()?.join("apple-bridge");
-    apple_foundation::ensure_bridge(&installed).ok()
-}
-
 impl AppleConfig {
     pub fn resolve() -> Option<Self> {
         if !cfg!(target_os = "macos") {
             return None;
         }
-        let bridge = resolve_bridge()?;
-        let availability =
-            apple_foundation::check(&[bridge.to_string_lossy().into_owned()]).ok()?;
-        if !availability.available {
-            eprintln!(
-                "apple scorer: model unavailable ({})",
-                availability.reason.as_deref().unwrap_or("unknown")
-            );
+        let bridge = apple::resolve_bridge()?;
+        if !apple::available(&bridge) {
             return None;
         }
         Some(Self {
             bridge,
-            timeout_ms: std::env::var("GOBSTOPPER_APPLE_TIMEOUT_MS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(180_000),
+            timeout_ms: apple::timeout_ms(),
             max_candidates: std::env::var("GOBSTOPPER_APPLE_MAX_CANDIDATES")
                 .ok()
                 .and_then(|s| s.parse().ok())
@@ -97,22 +66,6 @@ impl AppleConfig {
     }
 }
 
-fn shared_bridge(cfg: &AppleConfig) -> Option<&'static apple_foundation::Bridge> {
-    static BRIDGE: OnceLock<Option<apple_foundation::Bridge>> = OnceLock::new();
-    BRIDGE
-        .get_or_init(|| {
-            apple_foundation::Bridge::with_options(
-                &[cfg.bridge.to_string_lossy().into_owned()],
-                apple_foundation::Options {
-                    request_timeout: std::time::Duration::from_millis(cfg.timeout_ms),
-                    max_pending: 8,
-                },
-            )
-            .ok()
-        })
-        .as_ref()
-}
-
 const SCORES_SCHEMA: &str = r#"{"type":"object","properties":{"scores":{"type":"array","items":{"type":"object","properties":{"id":{"type":"integer"},"keep_probability":{"type":"number"}},"required":["id","keep_probability"]}}},"required":["scores"]}"#;
 
 pub struct AppleScorer {
@@ -127,7 +80,7 @@ impl AppleScorer {
 
 impl ScoreDriver for AppleScorer {
     fn score(&self, transcript: &Transcript, candidates: &[usize]) -> Vec<ScoredItem> {
-        let Some(bridge) = shared_bridge(&self.cfg) else {
+        let Some(bridge) = apple::shared_bridge(&self.cfg.bridge, self.cfg.timeout_ms) else {
             return neutral(candidates);
         };
         let ctx = llm_scorer::scoring_context(transcript, candidates, self.cfg.max_candidates);

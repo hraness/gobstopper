@@ -186,6 +186,15 @@ with guided JSON output, and any failure degrades to neutral scores.
 `GOBSTOPPER_APPLE_TIMEOUT_MS`, `_MAX_CANDIDATES`, `_BATCH_SIZE`, and
 `_MAX_BATCHES` tune it.
 
+`GOBSTOPPER_DIGEST=apple` goes further: the injected state card is written
+by the on-device model instead of keyword extraction. Because inference is
+local, it may read bounded excerpts of the records being elided — the
+labels-only boundary only exists for remote endpoints. Each field still
+lands in the same `DigestBlock` shape via guided output, capped to a small
+token overhead, and falls back to the mechanical card on any failure.
+`GOBSTOPPER_APPLE_DIGEST_ITEMS`, `_ITEM_BYTES`, and `_TOTAL_BYTES` tune the
+excerpt budget, which defaults are sized to the model's ~4k-token window.
+
 With `adaptive = true`, the effective trigger/floor are re-derived per
 session at each decision point: the trigger is capped at a quarter of
 the provider-advertised context window, backed off (bounded 2x) when
