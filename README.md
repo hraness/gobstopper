@@ -55,6 +55,16 @@ The agent does not need to remember session IDs — it can ask for the last
 time it worked on a file, a goal, or a decision and get a ranked summary
 with a snapshot SHA it can `show` or `diff`.
 
+`gobstopper mcp` exposes the same surface as a read-only Model Context
+Protocol server on stdio — tools `list_sessions`, `recall`, `history`,
+`show`, `diff`, `plan`, and `verify`. Register it once and the agent can
+query its own history mid-session:
+
+```sh
+claude mcp add gobstopper -- gobstopper mcp          # Claude Code
+# ~/.codex/config.toml:  [mcp_servers.gobstopper] command = "gobstopper", args = ["mcp"]
+```
+
 Compaction itself isn't free — each cycle costs one large input call and
 risks losing detail — so strategy matters. That is the actual product
 here: not "compact earlier" but "compact with the right strategy at the
@@ -87,11 +97,13 @@ cargo install --git https://github.com/hraness/gobstopper gobstopper
 
 gobstopper detect                  # sessions, context sizes, lifetime burn
 gobstopper plan <session>          # what would happen, under which strategy
+gobstopper plan <session> --trigger 100000 --floor 310000   # tune the trade-off
 gobstopper eval <session>          # every strategy side-by-side on temp copies
 gobstopper apply <session>         # vault snapshot + produce validated fork (idle sessions)
 gobstopper verify <session>        # resume-validity check (exit 1 on errors)
 gobstopper fork <session>          # clone under a fresh session id + resume cmd
 gobstopper undo <session>          # restore a pre-compaction snapshot into a new fork
+gobstopper undo <session> --in-place   # restore exact bytes to the same session id
 gobstopper vault                   # list snapshots in the undo vault
 gobstopper install-hooks           # Claude + Codex compaction lifecycle hooks
 gobstopper watch --dry-run         # the daemon path: poll, threshold, prepare copy
@@ -100,6 +112,7 @@ gobstopper recall --query <q>      # search state-card digests across all archiv
 gobstopper history <session>       # every archived state of one session
 gobstopper diff <sha-a> <sha-b>    # structural comparison of two vault snapshots
 gobstopper bench                   # benchmark every strategy across discovered sessions
+gobstopper mcp                     # read-only MCP server: the vault as agent tools
 ```
 
 Every `apply`/`watch` compaction snapshots the source transcript into a
@@ -113,7 +126,7 @@ Config: `~/.config/gobstopper/config.toml`
 
 ```toml
 [policy]
-strategy = "auto"            # sawtooth | elide | structured | agentic
+strategy = "auto"            # sawtooth | elide | compacted | cache_aware | structured | agentic
 trigger_tokens = 250_000
 floor_tokens = 40_000
 
@@ -178,7 +191,8 @@ for fully custom summaries is the designed v0.2 path.
   JSONL dialects (parse + in-place rewrite; lines are never removed, so
   provider linkage is preserved).
 - `crates/gobstopper-cli` — `gobstopper` binary: detect / plan / apply /
-  verify / undo / vault / watch / policy-check / presets / explain.
+  verify / undo / vault / history / show / recall / diff / bench /
+  mcp / watch / policy-check / presets / explain.
 
 ## Live qualification
 

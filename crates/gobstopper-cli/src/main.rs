@@ -2,6 +2,7 @@
 
 mod config;
 mod hooks;
+mod mcp;
 mod report;
 
 use anyhow::{bail, Context, Result};
@@ -249,6 +250,10 @@ enum Cmd {
         #[arg(long)]
         label: Option<String>,
     },
+    /// Run a read-only Model Context Protocol server on stdio, exposing
+    /// sessions and the snapshot vault as tools an agent can call
+    /// (list_sessions, recall, history, show, diff, plan, verify).
+    Mcp,
     /// Poll for sessions over threshold and compact them automatically.
     Watch {
         /// Poll interval in seconds.
@@ -816,31 +821,39 @@ fn print_plan(d: &Discovered, plan: &CompactionPlan, prefix_tokens: u64, json: b
     Ok(())
 }
 
+fn session_rows(cli: &Cli, all: bool) -> Vec<serde_json::Value> {
+    let max_age = if all {
+        0
+    } else {
+        detect::default_max_age_secs()
+    };
+    detect::discover(&roots(cli), max_age)
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "provider": d.handle.provider,
+                "session_id": d.handle.session_id,
+                "path": d.handle.path,
+                "cwd": d.handle.cwd,
+                "active": d.handle.is_active(),
+                "context_tokens": d.usage.context_tokens,
+                "lifetime_input_tokens": d.usage.lifetime_input_tokens,
+            })
+        })
+        .collect()
+}
+
 fn cmd_detect(cli: &Cli, all: bool, json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(&session_rows(cli, all))?);
+        return Ok(());
+    }
     let max_age = if all {
         0
     } else {
         detect::default_max_age_secs()
     };
     let sessions = detect::discover(&roots(cli), max_age);
-    if json {
-        let out: Vec<serde_json::Value> = sessions
-            .iter()
-            .map(|d| {
-                serde_json::json!({
-                    "provider": d.handle.provider,
-                    "session_id": d.handle.session_id,
-                    "path": d.handle.path,
-                    "cwd": d.handle.cwd,
-                    "active": d.handle.is_active(),
-                    "context_tokens": d.usage.context_tokens,
-                    "lifetime_input_tokens": d.usage.lifetime_input_tokens,
-                })
-            })
-            .collect();
-        println!("{}", serde_json::to_string_pretty(&out)?);
-        return Ok(());
-    }
     println!(
         "{:<12} {:<38} {:<6} {:>12} {:>14}  PATH",
         "PROVIDER", "SESSION", "STATE", "CTX TOKENS", "LIFETIME IN"
@@ -1026,7 +1039,7 @@ fn cmd_history(cli: &Cli, cfg: &config::Config, session: &str, json: bool) -> Re
     Ok(())
 }
 
-fn cmd_show(cli: &Cli, cfg: &config::Config, target: &str, json: bool) -> Result<()> {
+fn show_summary(cli: &Cli, cfg: &config::Config, target: &str) -> Result<serde_json::Value> {
     let root = vault::default_root();
     let entries = vault::list(&root)?;
     let entry = if target.len() >= 16 && target.chars().all(|c| c.is_ascii_hexdigit()) {
@@ -1053,7 +1066,7 @@ fn cmd_show(cli: &Cli, cfg: &config::Config, target: &str, json: bool) -> Result
         }
     }
 
-    let summary = serde_json::json!({
+    Ok(serde_json::json!({
         "sha256": entry.sha256,
         "provider": entry.provider.as_str(),
         "session_id": entry.session_id,
@@ -1062,34 +1075,51 @@ fn cmd_show(cli: &Cli, cfg: &config::Config, target: &str, json: bool) -> Result
         "record_count": entry.record_count,
         "strategy": entry.strategy,
         "record_types": type_counts,
-    });
+    }))
+}
+
+fn cmd_show(cli: &Cli, cfg: &config::Config, target: &str, json: bool) -> Result<()> {
+    let summary = show_summary(cli, cfg, target)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&summary)?);
     } else {
-        println!("sha:        {}", entry.sha256);
-        println!("provider:   {}", entry.provider.as_str());
-        println!("session:    {}", entry.session_id);
-        println!("path:       {}", entry.path.display());
-        println!("bytes:      {}", entry.bytes);
-        println!("records:    {}", entry.record_count);
-        println!("strategy:   {}", entry.strategy.as_deref().unwrap_or("-"));
+        println!("sha:        {}", summary["sha256"].as_str().unwrap_or("-"));
+        println!(
+            "provider:   {}",
+            summary["provider"].as_str().unwrap_or("-")
+        );
+        println!(
+            "session:    {}",
+            summary["session_id"].as_str().unwrap_or("-")
+        );
+        println!("path:       {}", summary["path"].as_str().unwrap_or("-"));
+        println!("bytes:      {}", summary["bytes"].as_u64().unwrap_or(0));
+        println!(
+            "records:    {}",
+            summary["record_count"].as_u64().unwrap_or(0)
+        );
+        println!(
+            "strategy:   {}",
+            summary["strategy"].as_str().unwrap_or("-")
+        );
         println!("record types:");
-        for (t, n) in &type_counts {
-            println!("  {:<12} {}", t, n);
+        if let Some(types) = summary["record_types"].as_object() {
+            for (t, n) in types {
+                println!("  {:<12} {}", t, n);
+            }
         }
     }
     Ok(())
 }
 
-fn cmd_recall(
+fn recall_rows(
     cli: &Cli,
     cfg: &config::Config,
     session: Option<&str>,
     query: Option<&str>,
     sha: Option<&str>,
     limit: usize,
-    json: bool,
-) -> Result<()> {
+) -> Result<Vec<vault::RecallDigest>> {
     let root = vault::default_root();
     let session_key = match session {
         Some(s) => {
@@ -1104,25 +1134,37 @@ fn cmd_recall(
     };
     let mut digests = vault::recall(&session_key, query, sha, &root)?;
     digests.truncate(limit);
+    Ok(digests)
+}
+
+fn recall_row_json(r: &vault::RecallDigest) -> serde_json::Value {
+    serde_json::json!({
+        "snapshot_sha": r.snapshot_sha,
+        "ts": r.ts,
+        "provider": r.provider.as_str(),
+        "session_id": r.session_id,
+        "record_index": r.record_index,
+        "score": r.score,
+        "goal": r.digest.goal,
+        "decisions": r.digest.decisions,
+        "files_touched": r.digest.files_touched,
+        "open_tasks": r.digest.open_tasks,
+        "covers_items": r.digest.covers_items,
+    })
+}
+
+fn cmd_recall(
+    cli: &Cli,
+    cfg: &config::Config,
+    session: Option<&str>,
+    query: Option<&str>,
+    sha: Option<&str>,
+    limit: usize,
+    json: bool,
+) -> Result<()> {
+    let digests = recall_rows(cli, cfg, session, query, sha, limit)?;
     if json {
-        let rows: Vec<_> = digests
-            .into_iter()
-            .map(|r| {
-                serde_json::json!({
-                    "snapshot_sha": r.snapshot_sha,
-                    "ts": r.ts,
-                    "provider": r.provider.as_str(),
-                    "session_id": r.session_id,
-                    "record_index": r.record_index,
-                    "score": r.score,
-                    "goal": r.digest.goal,
-                    "decisions": r.digest.decisions,
-                    "files_touched": r.digest.files_touched,
-                    "open_tasks": r.digest.open_tasks,
-                    "covers_items": r.digest.covers_items,
-                })
-            })
-            .collect();
+        let rows: Vec<_> = digests.iter().map(recall_row_json).collect();
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
     }
@@ -1163,7 +1205,7 @@ fn cmd_recall(
     Ok(())
 }
 
-fn cmd_diff(a: &str, b: &str, json: bool) -> Result<()> {
+fn diff_summary(a: &str, b: &str) -> Result<serde_json::Value> {
     let root = vault::default_root();
     let entries = vault::list(&root)?;
     let a_full = entries
@@ -1177,39 +1219,53 @@ fn cmd_diff(a: &str, b: &str, json: bool) -> Result<()> {
         .map(|e| e.sha256.clone())
         .with_context(|| format!("no snapshot matches sha prefix {b:?}"))?;
     let summary = vault::diff(&a_full, &b_full, &root)?;
+    Ok(serde_json::json!({
+        "sha_a": summary.sha1,
+        "sha_b": summary.sha2,
+        "record_count_a": summary.record_count_a,
+        "record_count_b": summary.record_count_b,
+        "added_count": summary.added.len(),
+        "removed_count": summary.removed.len(),
+        "type_summary_a": summary.type_summary_a,
+        "type_summary_b": summary.type_summary_b,
+    }))
+}
+
+fn cmd_diff(a: &str, b: &str, json: bool) -> Result<()> {
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "sha_a": summary.sha1,
-                "sha_b": summary.sha2,
-                "record_count_a": summary.record_count_a,
-                "record_count_b": summary.record_count_b,
-                "added_count": summary.added.len(),
-                "removed_count": summary.removed.len(),
-                "type_summary_a": summary.type_summary_a,
-                "type_summary_b": summary.type_summary_b,
-            }))?
-        );
-    } else {
-        println!(
-            "snapshot a: {} ({} records)",
-            summary.sha1, summary.record_count_a
-        );
-        println!(
-            "snapshot b: {} ({} records)",
-            summary.sha2, summary.record_count_b
-        );
-        println!("added records:  {}", summary.added.len());
-        println!("removed records: {}", summary.removed.len());
-        println!("\ntype counts in a:");
-        for (t, n) in &summary.type_summary_a {
-            println!("  {:<12} {}", t, n);
-        }
-        println!("\ntype counts in b:");
-        for (t, n) in &summary.type_summary_b {
-            println!("  {:<12} {}", t, n);
-        }
+        println!("{}", serde_json::to_string_pretty(&diff_summary(a, b)?)?);
+        return Ok(());
+    }
+    let root = vault::default_root();
+    let entries = vault::list(&root)?;
+    let a_full = entries
+        .iter()
+        .find(|e| e.sha256.starts_with(a))
+        .map(|e| e.sha256.clone())
+        .with_context(|| format!("no snapshot matches sha prefix {a:?}"))?;
+    let b_full = entries
+        .iter()
+        .find(|e| e.sha256.starts_with(b))
+        .map(|e| e.sha256.clone())
+        .with_context(|| format!("no snapshot matches sha prefix {b:?}"))?;
+    let summary = vault::diff(&a_full, &b_full, &root)?;
+    println!(
+        "snapshot a: {} ({} records)",
+        summary.sha1, summary.record_count_a
+    );
+    println!(
+        "snapshot b: {} ({} records)",
+        summary.sha2, summary.record_count_b
+    );
+    println!("added records:  {}", summary.added.len());
+    println!("removed records: {}", summary.removed.len());
+    println!("\ntype counts in a:");
+    for (t, n) in &summary.type_summary_a {
+        println!("  {:<12} {}", t, n);
+    }
+    println!("\ntype counts in b:");
+    for (t, n) in &summary.type_summary_b {
+        println!("  {:<12} {}", t, n);
     }
     Ok(())
 }
@@ -2240,6 +2296,7 @@ fn main() -> Result<()> {
             output,
         } => cmd_bench(&cli, *all, *trigger, *floor, output.as_deref()),
         Cmd::Snapshot { session, label } => cmd_snapshot(&cli, &cfg, session, label.as_deref()),
+        Cmd::Mcp => mcp::run(&cli, &cfg),
         Cmd::Watch {
             interval,
             dry_run,

@@ -2,7 +2,7 @@
 
 - `crates/gobstopper-core/` holds the normalized transcript model, the `Edit` IR, the `Strategy` trait, all built-in strategies, and the `compaction-events-v1` telemetry schema. No I/O beyond event-log append.
 - `crates/gobstopper-adapters/` holds session discovery, the Codex and Claude Code JSONL dialects (parse and in-place rewrite), the `verify` resume-validity checker, and the `vault` content-addressed snapshot store.
-- `crates/gobstopper-cli/` holds the `gobstopper` binary and layered config/preset resolution.
+- `crates/gobstopper-cli/` holds the `gobstopper` binary, layered config/preset resolution, and the read-only `mcp` stdio server (`mcp.rs`) that exposes vault/recall/plan/verify as agent tools — it must never surface a mutating operation.
 - `docs/design.md` is the architecture and research record; `docs/roadmap.md` is the phased plan; `docs/oompa-contract.md` is the oompa integration contract.
 
 # Guidelines
