@@ -310,10 +310,13 @@ impl ScoredStrategy {
             let item = &transcript.items[idx];
             let prob = score_by_index.get(&idx).copied().unwrap_or(0.5);
             let key = (prob.clamp(0.0, 1.0) * 1_000_000.0) as u64;
+            // Entropy-weighted: for equal score, elide the item that saves
+            // the most tokens first. `Reverse(savings)` makes larger savings
+            // compare smaller inside the outer `Reverse` min-heap.
             heap.push(std::cmp::Reverse((
                 key,
                 item.line_index,
-                item.estimated_elision_savings(),
+                std::cmp::Reverse(item.estimated_elision_savings()),
                 idx,
             )));
             total_savings += item.estimated_elision_savings();
@@ -322,7 +325,8 @@ impl ScoredStrategy {
                 let mut chosen = Vec::new();
                 let mut accumulated = 0u64;
                 while accumulated < target_savings && !heap.is_empty() {
-                    let std::cmp::Reverse((_, _, savings, idx)) = heap.pop().unwrap();
+                    let std::cmp::Reverse((_, _, std::cmp::Reverse(savings), idx)) =
+                        heap.pop().unwrap();
                     chosen.push(transcript.items[idx].line_index);
                     accumulated += savings;
                 }
@@ -372,7 +376,7 @@ impl ScoredStrategy {
         let mut chosen = Vec::new();
         let mut accumulated = 0u64;
         while !heap.is_empty() {
-            let std::cmp::Reverse((_, _, savings, idx)) = heap.pop().unwrap();
+            let std::cmp::Reverse((_, _, std::cmp::Reverse(savings), idx)) = heap.pop().unwrap();
             chosen.push(transcript.items[idx].line_index);
             accumulated += savings;
         }

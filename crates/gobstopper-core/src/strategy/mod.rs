@@ -2,7 +2,10 @@ mod agentic;
 mod auto;
 mod cache_aware;
 mod compacted;
+mod dedupe;
 mod elide;
+mod micro;
+mod middle;
 mod sawtooth;
 mod scored;
 mod structured;
@@ -11,7 +14,10 @@ pub use agentic::{AgenticStrategy, EditorCall, EditorDriver};
 pub use auto::AutoStrategy;
 pub use cache_aware::CacheAwareStrategy;
 pub use compacted::CompactedStrategy;
+pub use dedupe::DedupeStrategy;
 pub use elide::ElideStrategy;
+pub use micro::MicroStrategy;
+pub use middle::MiddleStrategy;
 pub use sawtooth::SawtoothStrategy;
 pub use scored::{HeuristicScorer, ScoreDriver, ScoredItem, ScoredStrategy};
 pub use structured::StructuredStrategy;
@@ -102,6 +108,9 @@ pub fn builtin_strategies() -> Vec<Box<dyn Strategy>> {
         Box::new(CacheAwareStrategy),
         Box::new(SawtoothStrategy),
         Box::new(ElideStrategy),
+        Box::new(DedupeStrategy),
+        Box::new(MicroStrategy),
+        Box::new(MiddleStrategy),
         Box::new(CompactedStrategy),
         Box::new(StructuredStrategy),
         Box::new(AgenticStrategy),
