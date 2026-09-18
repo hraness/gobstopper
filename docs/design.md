@@ -69,7 +69,7 @@ Every strategy lowers to four primitives:
 
 ```rust
 enum Edit {
-    Elide { line_indexes, stub_template },
+    Elide { line_indexes, stub_template, per_item_stubs },
     InjectDigest { digest },
     ProviderCompact { control },
     CacheEdit { tool_use_ids },
@@ -80,7 +80,10 @@ enum Edit {
 and `CacheEdit` are control-plane proposals and cannot be mixed with file
 edits. Rewrites never remove source records; Claude `parentUuid` chains and
 Codex ordinal/window/tool-pair invariants are verified before a candidate is
-published as a separate fork.
+published as a separate fork. `per_item_stubs` optionally carries complete
+one-line stub text per line index (e.g. a model-written breadcrumb); absent
+entries render `stub_template` with `{bytes}`/`{kind}` substitution as
+before.
 
 ## Strategy selection (`auto`)
 

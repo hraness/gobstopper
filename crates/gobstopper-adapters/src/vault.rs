@@ -109,7 +109,7 @@ fn read_index(root: &Path) -> anyhow::Result<Vec<VaultEntry>> {
             if f.metadata()?.len() > MAX_INDEX_BYTES {
                 bail!("vault index exceeds byte limit");
             }
-            fs2::FileExt::try_lock_shared(&f)?;
+            fs2::FileExt::lock_shared(&f)?;
             f
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -155,7 +155,7 @@ fn append_index(root: &Path, entry: &VaultEntry) -> anyhow::Result<()> {
         options.mode(0o600);
     }
     let mut file = options.open(&index).context("open vault index")?;
-    fs2::FileExt::try_lock_exclusive(&file)?;
+    fs2::FileExt::lock_exclusive(&file)?;
     let mut line = serde_json::to_string(entry).context("serialize vault entry")?;
     line.push('\n');
     if line.len() > MAX_INDEX_LINE_BYTES
