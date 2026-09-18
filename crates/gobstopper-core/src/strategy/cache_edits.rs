@@ -1,4 +1,4 @@
-use super::{PolicyConfig, Strategy};
+use super::{HeuristicScorer, PolicyConfig, ScoredItem, ScoredStrategy, Strategy};
 use crate::model::Transcript;
 use crate::plan::{CompactionPlan, Edit};
 
@@ -19,26 +19,37 @@ impl Strategy for CacheEditsStrategy {
             return None;
         }
 
-        let elidable: Vec<&crate::model::TranscriptItem> = transcript
-            .items
-            .iter()
-            .filter(|i| i.elidable_bytes.is_some())
-            .collect();
-        let keep_from = elidable
-            .len()
-            .saturating_sub(policy.keep_recent_tool_outputs);
-        let candidates = &elidable[..keep_from.min(elidable.len())];
-        if candidates.is_empty() {
+        let eligible = ScoredStrategy::candidates(transcript, policy);
+        if eligible.is_empty() {
             return None;
         }
+
+        let scores = HeuristicScorer.score(transcript, &eligible);
+        let mut scored: Vec<ScoredItem> = scores
+            .into_iter()
+            .filter(|s| eligible.contains(&s.item_index))
+            .collect();
+        // Drop the lowest-keep-probability candidates first; break ties by
+        // eliding the larger token savers first.
+        scored.sort_by(|a, b| {
+            a.keep_probability
+                .partial_cmp(&b.keep_probability)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| {
+                    let at = transcript.items[a.item_index].estimated_elision_savings();
+                    let bt = transcript.items[b.item_index].estimated_elision_savings();
+                    bt.cmp(&at)
+                })
+        });
 
         let mut projected = before;
         let mut chosen = 0usize;
         let mut tool_use_ids: Vec<String> = Vec::new();
-        for item in candidates.iter().rev() {
+        for scored in &scored {
             if projected <= policy.floor_tokens {
                 break;
             }
+            let item = &transcript.items[scored.item_index];
             if let Some(id) = item.parent_uuid.as_deref() {
                 tool_use_ids.push(id.to_string());
             }
@@ -50,7 +61,7 @@ impl Strategy for CacheEditsStrategy {
         }
 
         let rationale = format!(
-            "context {before} tokens exceeds trigger {}; emitting {} cache_edits to drop stale tool outputs",
+            "context {before} tokens exceeds trigger {}; emitting {} scored cache_edits to drop stale tool outputs",
             policy.trigger_tokens,
             tool_use_ids.len()
         );
