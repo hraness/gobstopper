@@ -39,18 +39,27 @@ pub struct HeuristicScorer;
 
 impl HeuristicScorer {
     pub fn score(&self, transcript: &Transcript, candidates: &[usize]) -> Vec<ScoredItem> {
-        let goal = transcript
+        // Keyword retention: any token that appears in the current user goal
+        // or in the most recent user/assistant turns is likely still needed.
+        // This keeps outputs that the model is actively referring to, even if
+        // they are not the latest user message.
+        let tail_lookback = 8;
+        let goal_tokens: std::collections::HashSet<String> = transcript
             .items
             .iter()
             .rev()
-            .find(|i| {
-                i.kind == ItemKind::User
-                    && i.summary.as_ref().is_some_and(|s| {
-                        !s.starts_with('<') && !s.starts_with("[gobstopper state card]")
-                    })
+            .filter(|i| {
+                (i.kind == ItemKind::User || i.kind == ItemKind::Assistant)
+                    && i.summary
+                        .as_ref()
+                        .is_some_and(|s| !s.starts_with("[gobstopper state card]"))
             })
-            .map(|i| tokenize(i.summary.as_deref().unwrap_or(&i.label)));
-        let goal_tokens = goal.unwrap_or_default();
+            .take(tail_lookback)
+            .flat_map(|i| {
+                let text = format!("{} {}", i.label, i.summary.as_deref().unwrap_or(""));
+                tokenize(&text)
+            })
+            .collect();
 
         // Build an index of every tool label that appears after each candidate.
         let mut label_occurrences: std::collections::HashMap<String, Vec<usize>> =
