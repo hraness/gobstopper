@@ -45,7 +45,7 @@ const primitives = [
   {
     icon: "strategies",
     label: "Strategies",
-    summary: "auto picks by transcript shape; sawtooth delegates to the provider's native compaction; elide masks stale tool output; structured emits a conservative state-card placeholder; agentic is reserved for a bounded editor-model backend.",
+    summary: "auto picks by transcript shape; sawtooth delegates to the provider's native compaction; elide masks stale tool output; structured emits a conservative state-card placeholder; scored can rank candidates and draft state cards with a free on-device model on macOS (opt-in); agentic is reserved for a bounded editor-model backend.",
   },
   {
     icon: "presets-config",
