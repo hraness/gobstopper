@@ -126,4 +126,4 @@ A new provider integration should include:
 6. documentation of the provider-owned native compaction control;
 7. no direct mutation until a separate, reviewed write protocol exists.
 
-Built-in adapter proposals must additionally preserve provider resume invariants and pass the workspace regression/property suite. XCB or any other adjacent runtime has no implicit privileged seam: use numeric policy/MCP or this bounded plugin protocol unless a concrete provider-owned contract is documented and tested.
+Built-in adapter proposals must additionally preserve provider resume invariants and pass the workspace regression/property suite. Native XCB is a concrete library consumer: it pins `gobstopper-core` immutably and applies a strategy only to an in-memory prompt projection while retaining full local history. Its AgentMixer compatibility editor uses the bounded command seam. Other adjacent runtimes have no implicit privileged access: use numeric policy/MCP or this plugin protocol unless a provider-owned contract is documented and tested.

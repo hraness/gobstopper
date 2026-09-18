@@ -4,9 +4,9 @@ gobstopper is the context-compaction layer for the Hraness agent stack.
 This document is the engineering map: what exists, what comes next, and
 how the work shares foundations with **oompa** (session control plane),
 **aicharts** (usage measurement + evidence), **textbutler** (local agent
-runtime + skill distribution), and **agentmixer** (brokered agent task
-execution, standalone `hraness/agentmixer` repo — formerly the
-`agentrouter` package inside textbutler).
+runtime + skill distribution), and **XCB (Excalibur)** (native local agent
+workspace plus the retained AgentMixer compatibility package in
+`hraness/xcb`).
 
 ---
 
@@ -27,8 +27,8 @@ execution, standalone `hraness/agentmixer` repo — formerly the
  └──────────────┘   compact on its  │        └───────────▲────────────┘
                     own connections │                    │ EditorDriver
  ┌──────────────┐                   │        ┌───────────┴───────────┐
- │  agentmixer  │ ── editor model ──►────────►│  (capability profile: │
- │ (standalone) │    task runtime   │        │   keep/elide/summarize│
+ │ XCB compat   │ ── editor model ──►────────►│  (capability profile: │
+ │ AgentMixer   │    task runtime   │        │   keep/elide/summarize│
  └──────────────┘                   │        │   /defer)             │
                                     │        └───────────────────────┘
  shared: transcript-foundation crate (codex/claude JSONL dialects,
@@ -107,8 +107,8 @@ the write path bulletproof and undoable.
 - ✅ **Telemetry**: every mutating path appends a
   `gobstopper/compaction-events-v1` record to `events.jsonl` (§4, §6).
 - ✅ **Quota pressure**: `policy-check --quota-pressure low|normal|high`
-  scales the effective trigger ×1.15/×1.0/×0.7 — the input agentmixer's
-  `rateLimits/updated` signal feeds.
+  scales the effective trigger ×1.15/×1.0/×0.7 for any session owner that
+  observes a provider rate-limit signal.
 - ✅ **Hook installers**: `gobstopper install-hooks` merges
   `PreCompact`/`SessionStart(source=compact)` entries into Claude
   `settings.json` and Codex `hooks.json` (verified supported on the
@@ -172,13 +172,11 @@ the write path bulletproof and undoable.
   - Known gap: Claude's `modelContextWindow` is `null` in oompa events —
     gobstopper's trigger needs an absolute token threshold anyway, so
     this is acceptable, but worth fixing upstream.
-- **agentmixer telemetry** (formerly `agentrouter`; the package moved to
-  the standalone `hraness/agentmixer` repository): it already parses
-  `tokenUsage/updated` incl. `modelContextWindow` (currently dropped —
-  one-line retain) and drops `account/rateLimits/updated` (the
-  quota-pressure signal). Additive `policy-check` flag
-  `--quota-pressure low|normal|high` lets rate-limit state shift the
-  effective trigger.
+- **XCB integration** has two bounded paths. Native XCB pins
+  `gobstopper-core` at an immutable commit and applies `ElideStrategy` only to
+  its in-memory prompt projection while retaining full local history. The
+  AgentMixer compatibility package exposes the bounded editor shim. Neither
+  path grants Gobstopper ownership of XCB provider processes or durable state.
 - ~~**Double-buffer compaction**~~ was implemented experimentally and then
   retired: safe publication is copy-only, so watch never swaps a staged file
   over a provider-owned transcript.
@@ -187,11 +185,11 @@ the write path bulletproof and undoable.
 
 `agentic`'s `EditorDriver` gets its first real backend:
 
-- ✅ 2026-09-16 — **agentmixer `runAgentTask`** via `preset.command`:
-  `src/gobstopper-editor.ts` in the standalone repo
-  (hraness/agentmixer#7) exposes exactly `keep`, `elide`, `summarize`,
-  `defer` through the capability broker — no shell, filesystem, or
-  network tools — and writes gobstopper `Edit` JSON. Gobstopper-side,
+- ✅ **XCB AgentMixer compatibility editor** via `preset.command`:
+  `src/gobstopper-editor.ts` in `hraness/xcb` exposes exactly `keep`,
+  `elide`, `summarize`, and `defer` through the capability broker — no shell,
+  filesystem, or network tools — and writes Gobstopper `Edit` JSON. The
+  half-open range/protected-tail contract is aligned in xcb#54. Gobstopper-side,
   `run_preset_command` pipes `{session_id, provider, items, usage}` and
   treats an empty edit list as `defer`, not a phantom applied plan
   (`c5de379`). A native driver remains future work.

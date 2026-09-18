@@ -49,10 +49,10 @@ floor_tokens = 20_000
 # command = "python3 ~/bin/compactor.py"
 # trusted_legacy_command = true
 
-# Agentic preset backed by agentmixer's bounded editor profile: a cheap
-# model emits keep/elide/summarize/defer calls, the shim lowers them to
-# Edit[]. Requires an Anthropic API key (see the agentmixer repo README).
-# [presets.agentmixer]
+# Agentic preset backed by the AgentMixer compatibility package in the XCB
+# repository: a cheap model emits keep/elide/summarize/defer calls and the shim
+# lowers them to Edit[]. Requires an Anthropic API key (see hraness/xcb).
+# [presets.xcb-editor]
 # strategy = "agentic"
-# command = "bun /path/to/agentmixer/src/gobstopper-editor.ts"
+# command = "bun /path/to/xcb/src/gobstopper-editor.ts"
 # trusted_legacy_command = true

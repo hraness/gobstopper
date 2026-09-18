@@ -120,8 +120,9 @@ understood (`window_id`, `first/previous_window_id`, `guardian_history`,
 chain faithfully, so it is gated as experimental until validated.
 
 See `docs/roadmap.md` for the full phased plan: transcript surgery +
-undo vault, the oompa `session.compact` effect path, the agentmixer
-`EditorDriver` backend, the aicharts measurement loop, and the proposed
+undo vault, the oompa `session.compact` effect path, XCB's native
+`gobstopper-core` projection and AgentMixer-compatible editor backend, the
+aicharts measurement loop, and the proposed
 `transcript-foundation` shared crate.
 
 ## External strategies and providers
