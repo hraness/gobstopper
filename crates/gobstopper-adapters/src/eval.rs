@@ -225,7 +225,9 @@ pub fn eval_transcript(
             duration_ms: 0,
             error: None,
         };
-        if let Some(plan) = strat.evaluate(&transcript, policy) {
+        if let Some(plan) = strat.evaluate(&transcript, policy).filter(|plan| {
+            policy.accepts_savings(plan.context_tokens_before, plan.context_tokens_after)
+        }) {
             row.est_reclaimed = plan.est_savings();
             row.prefix_tokens = prefix_tokens(&transcript, &plan);
             let needs_rewrite = plan
@@ -394,6 +396,7 @@ mod tests {
             floor_tokens: 10,
             keep_recent_tool_outputs: 1,
             min_interval_secs: 0,
+            min_savings_tokens: 0,
             quota_pressure: QuotaPressure::Normal,
             ..Default::default()
         }

@@ -160,7 +160,8 @@ pub fn verify_path(
     provider: Provider,
     path: &std::path::Path,
 ) -> std::io::Result<Vec<VerifyFinding>> {
-    let bytes = std::fs::read(path)?;
+    let bytes =
+        crate::transaction::read(path).map_err(|error| std::io::Error::other(error.to_string()))?;
     Ok(verify(provider, &bytes))
 }
 

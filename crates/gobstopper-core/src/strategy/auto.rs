@@ -114,10 +114,10 @@ impl Strategy for AutoStrategy {
         // to the generic sawtooth provider control.
         if transcript.items.is_empty() || transcript.session.is_active() {
             let (selected, mut plan) = if transcript.session.provider == Provider::ClaudeCode {
-                (
-                    "cache_edits",
-                    CacheEditsStrategy.evaluate(transcript, policy)?,
-                )
+                match CacheEditsStrategy.evaluate(transcript, policy) {
+                    Some(plan) => ("cache_edits", plan),
+                    None => ("sawtooth", SawtoothStrategy.evaluate(transcript, policy)?),
+                }
             } else {
                 ("sawtooth", SawtoothStrategy.evaluate(transcript, policy)?)
             };
@@ -176,10 +176,13 @@ mod tests {
             kind,
             est_tokens,
             elidable_bytes: elidable.then_some(est_tokens * 4),
+            elidable_parts: 1,
             label: label.into(),
             summary: summary.map(String::from),
             uuid: None,
             parent_uuid: None,
+            tool_use_ids: Vec::new(),
+            payload_sha256: None,
         }
     }
 

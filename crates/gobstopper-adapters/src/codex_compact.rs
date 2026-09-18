@@ -194,7 +194,8 @@ fn rfc3339_now() -> String {
 /// Read a rollout file into lines (trailing newline not included), the
 /// `src_lines` input shape [`build_compacted_record`] expects.
 pub fn read_rollout_lines(path: &Path) -> anyhow::Result<Vec<String>> {
-    let raw = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+    let bytes = crate::transaction::read(path)?;
+    let raw = std::str::from_utf8(&bytes).context("rollout is not UTF-8")?;
     Ok(raw.lines().map(str::to_string).collect())
 }
 
@@ -214,7 +215,49 @@ pub fn tail_response_items(src_lines: &[String], n: usize) -> Vec<Value> {
         .take(n)
         .collect();
     items.reverse();
+    let calls: std::collections::HashSet<String> = items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.get("type").and_then(Value::as_str),
+                Some("function_call" | "custom_tool_call")
+            )
+        })
+        .filter_map(|item| {
+            item.get("call_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
+    let outputs: std::collections::HashSet<String> = items
+        .iter()
+        .filter(|item| {
+            matches!(
+                item.get("type").and_then(Value::as_str),
+                Some("function_call_output" | "custom_tool_call_output")
+            )
+        })
+        .filter_map(|item| {
+            item.get("call_id")
+                .and_then(Value::as_str)
+                .map(str::to_string)
+        })
+        .collect();
     items
+        .into_iter()
+        .filter(|item| match item.get("type").and_then(Value::as_str) {
+            Some(
+                "function_call"
+                | "custom_tool_call"
+                | "function_call_output"
+                | "custom_tool_call_output",
+            ) => item
+                .get("call_id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| calls.contains(id) && outputs.contains(id)),
+            _ => true,
+        })
+        .collect()
 }
 
 /// The digest as the first `replacement_history` entry, in the same
@@ -392,7 +435,7 @@ pub fn build_compacted_record(
 /// compaction is a tail-append: the record points at the history the
 /// provider will use on resume, and records after it replay on top.
 /// Refuses to write a line that is not a well-formed `compacted` record.
-pub fn append_compacted(path: &Path, record_line: &str) -> anyhow::Result<()> {
+pub(crate) fn append_compacted(path: &Path, record_line: &str) -> anyhow::Result<()> {
     let rec: Value =
         serde_json::from_str(record_line).context("compacted line is not valid JSON")?;
     if rec.get("type").and_then(Value::as_str) != Some("compacted") {
@@ -451,7 +494,15 @@ pub fn compact_with_digest(
         .ok()
         .and_then(|v| v.get("ordinal").and_then(Value::as_u64))
         .unwrap_or(lines.len() as u64);
-    append_compacted(path, &line)?;
+    crate::transaction::apply(gobstopper_core::Provider::Codex, path, |raw| {
+        let mut candidate = raw.to_string();
+        if !candidate.is_empty() && !candidate.ends_with('\n') {
+            candidate.push('\n');
+        }
+        candidate.push_str(&line);
+        candidate.push('\n');
+        Ok(candidate)
+    })?;
     Ok(ordinal)
 }
 
@@ -579,6 +630,31 @@ mod tests {
         // Minimal path omits the optional envelope fields.
         assert!(p.get("guardian_history").is_none());
         assert!(p.get("retained_context").is_none());
+    }
+
+    #[test]
+    fn tail_never_splits_tool_pairs() {
+        let lines = vec![
+            serde_json::json!({
+                "type": "response_item",
+                "payload": {"type": "function_call", "call_id": "paired"}
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "response_item",
+                "payload": {"type": "function_call_output", "call_id": "paired", "output": "ok"}
+            })
+            .to_string(),
+            serde_json::json!({
+                "type": "response_item",
+                "payload": {"type": "function_call", "call_id": "open"}
+            })
+            .to_string(),
+        ];
+        let tail = tail_response_items(&lines, 3);
+        assert_eq!(tail.len(), 2);
+        assert!(tail.iter().all(|item| item["call_id"] == "paired"));
+        assert!(tail_response_items(&lines, 1).is_empty());
     }
 
     #[test]

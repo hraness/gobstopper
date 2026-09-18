@@ -75,6 +75,8 @@ pub struct TranscriptItem {
     pub est_tokens: u64,
     /// Byte length of the elidable payload, if this item carries one.
     pub elidable_bytes: Option<u64>,
+    #[serde(default = "default_elidable_parts")]
+    pub elidable_parts: u32,
     /// Short sanitized label for plan output (never contains payload text).
     pub label: String,
     /// Optional short summary of the item's payload for digest generation.
@@ -84,6 +86,14 @@ pub struct TranscriptItem {
     pub uuid: Option<String>,
     /// Provider record parent uuid, when the format exposes one.
     pub parent_uuid: Option<String>,
+    #[serde(default)]
+    pub tool_use_ids: Vec<String>,
+    #[serde(default)]
+    pub payload_sha256: Option<String>,
+}
+
+const fn default_elidable_parts() -> u32 {
+    1
 }
 
 /// Point-in-time token accounting extracted from provider records.
@@ -111,7 +121,7 @@ impl TranscriptItem {
     pub fn estimated_elision_savings(&self) -> u64 {
         self.elidable_bytes
             .map(|bytes| {
-                let stub_budget = (bytes / 257).max(1).saturating_mul(96);
+                let stub_budget = u64::from(self.elidable_parts.max(1)).saturating_mul(96);
                 crate::estimate::estimate_tokens(bytes as usize)
                     .saturating_sub(crate::estimate::estimate_tokens(stub_budget as usize))
             })

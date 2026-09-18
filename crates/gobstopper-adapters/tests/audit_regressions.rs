@@ -1,4 +1,5 @@
 use gobstopper_adapters::{claude, codex, vault, verify};
+use gobstopper_core::strategy::{CacheEditsStrategy, DedupeStrategy, PolicyConfig, Strategy};
 use gobstopper_core::{DigestBlock, Edit, Provider, SessionHandle};
 use serde_json::{json, Value};
 use std::fs;
@@ -276,6 +277,54 @@ fn compact_copy_keeps_open_writer_and_is_idempotent() {
 }
 
 #[test]
+fn incomplete_copy_intent_recovers_without_touching_source() {
+    use gobstopper_adapters::copy::{self, CopyReceipt};
+    use gobstopper_core::CompactionPlan;
+    let dir = Scratch::new();
+    let path = dir.0.join("rollout-recovery.jsonl");
+    let original = format!(
+        "{}\n{}\n",
+        json!({"type":"session_meta","payload":{"id":"audit"}}),
+        json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"t","output":"x".repeat(4000)}})
+    );
+    fs::write(&path, &original).unwrap();
+    let handle = handle(Provider::Codex, &path);
+    let (_, hash) = copy::load_bound(handle.clone()).unwrap();
+    let plan = CompactionPlan {
+        strategy: "elide".into(),
+        rationale: "audit".into(),
+        context_tokens_before: 1000,
+        context_tokens_after: 10,
+        edits: vec![Edit::Elide {
+            line_indexes: vec![1],
+            stub_template: "[elided]".into(),
+        }],
+    };
+    let root = dir.0.join("vault");
+    let receipt = copy::compact(&handle, &hash, &plan, &root).unwrap();
+    fs::remove_file(&receipt.path).unwrap();
+    let receipt_path = fs::read_dir(root.join("operations"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .unwrap();
+    let mut pending: CopyReceipt =
+        serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+    pending.completed = false;
+    fs::write(&receipt_path, serde_json::to_vec(&pending).unwrap()).unwrap();
+
+    let recovered = copy::compact(&handle, &hash, &plan, &root).unwrap();
+    assert!(recovered.completed);
+    assert_eq!(recovered.path, receipt.path);
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    assert_eq!(
+        copy::sha256(&fs::read(&recovered.path).unwrap()),
+        recovered.output_sha256
+    );
+}
+
+#[test]
 fn publication_never_overwrites_existing_target() {
     let dir = Scratch::new();
     let path = dir.0.join("existing");
@@ -315,4 +364,144 @@ fn rewrite_never_broadens_private_permissions() {
         fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o600
     );
+}
+
+#[test]
+fn claude_cache_edits_use_tool_ids_and_normalized_labels() {
+    let dir = Scratch::new();
+    let path = dir.0.join("cache-edits.jsonl");
+    let output = "result ".repeat(100);
+    let lines = [
+        json!({"type":"assistant","uuid":"a1","sessionId":"audit","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_real","name":"Read","input":{"file_path":"/tmp/a"}}]}}),
+        json!({"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"audit","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_real","content":output}]}}),
+        json!({"type":"last-prompt","uuid":"lp","leafUuid":"u2","parentUuid":"u2","sessionId":"audit"}),
+    ];
+    fs::write(
+        &path,
+        lines
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    let transcript = claude::load(handle(Provider::ClaudeCode, &path)).unwrap();
+    let item = transcript
+        .items
+        .iter()
+        .find(|item| item.elidable_bytes.is_some())
+        .unwrap();
+    assert_eq!(item.label, "Read");
+    assert_eq!(item.tool_use_ids, ["toolu_real"]);
+    assert_eq!(item.elidable_parts, 1);
+
+    let policy = PolicyConfig {
+        trigger_tokens: 1,
+        floor_tokens: 0,
+        keep_recent_tool_outputs: 0,
+        min_interval_secs: 0,
+        ..Default::default()
+    };
+    let plan = CacheEditsStrategy.evaluate(&transcript, &policy).unwrap();
+    assert_eq!(
+        plan.edits,
+        vec![Edit::CacheEdit {
+            tool_use_ids: vec!["toolu_real".to_string()]
+        }]
+    );
+}
+
+#[test]
+fn claude_digest_and_usage_follow_the_canonical_leaf() {
+    let dir = Scratch::new();
+    let path = dir.0.join("canonical-leaf.jsonl");
+    let lines = [
+        json!({"type":"user","uuid":"u1","sessionId":"audit","message":{"role":"user","content":"goal"}}),
+        json!({"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"audit","message":{"role":"assistant","content":"answer","usage":{"input_tokens":100,"output_tokens":10}}}),
+        json!({"type":"last-prompt","uuid":"lp1","leafUuid":"a1","parentUuid":"a1","sessionId":"audit"}),
+        json!({"type":"assistant","uuid":"dead","parentUuid":"u1","sessionId":"audit","isSidechain":true,"message":{"role":"assistant","content":"sidechain","usage":{"input_tokens":900,"output_tokens":90}}}),
+    ];
+    fs::write(
+        &path,
+        lines
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    let transcript = claude::load(handle(Provider::ClaudeCode, &path)).unwrap();
+    assert_eq!(transcript.usage.context_tokens, 110);
+    assert_eq!(claude::scan_usage(&path).context_tokens, 110);
+
+    claude::apply(&path, &[digest()]).unwrap();
+    let records: Vec<Value> = fs::read_to_string(&path)
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    let digest = records
+        .iter()
+        .find(|record| {
+            record.get("type").and_then(Value::as_str) == Some("user")
+                && record
+                    .pointer("/message/content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.starts_with("[gobstopper state card]"))
+        })
+        .unwrap();
+    assert_eq!(digest["parentUuid"], "a1");
+}
+
+#[test]
+fn dedupe_uses_exact_payload_digests() {
+    let dir = Scratch::new();
+    let path = dir.0.join("dedupe.jsonl");
+    let common_tail = "z".repeat(300);
+    let lines = [
+        json!({"type":"response_item","payload":{"type":"function_call","call_id":"c1","name":"shell","arguments":"{}"}}),
+        json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"c1","output":format!("a{common_tail}")}}),
+        json!({"type":"response_item","payload":{"type":"function_call","call_id":"c2","name":"shell","arguments":"{}"}}),
+        json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"c2","output":format!("a{common_tail}")}}),
+        json!({"type":"response_item","payload":{"type":"function_call","call_id":"c3","name":"shell","arguments":"{}"}}),
+        json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"c3","output":format!("b{common_tail}")}}),
+    ];
+    fs::write(
+        &path,
+        lines
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n",
+    )
+    .unwrap();
+    let transcript = codex::load(handle(Provider::Codex, &path)).unwrap();
+    let outputs: Vec<_> = transcript
+        .items
+        .iter()
+        .filter(|item| item.elidable_bytes.is_some())
+        .collect();
+    assert!(outputs.iter().all(|item| item.label == "shell"));
+    assert_eq!(outputs[0].payload_sha256, outputs[1].payload_sha256);
+    assert_ne!(outputs[1].payload_sha256, outputs[2].payload_sha256);
+    let policy = PolicyConfig {
+        trigger_tokens: 1,
+        floor_tokens: 0,
+        keep_recent_tool_outputs: 0,
+        min_interval_secs: 0,
+        ..Default::default()
+    };
+    let plan = DedupeStrategy.evaluate(&transcript, &policy).unwrap();
+    let selected = plan
+        .edits
+        .iter()
+        .find_map(|edit| match edit {
+            Edit::Elide { line_indexes, .. } => Some(line_indexes.as_slice()),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(selected, [1]);
 }

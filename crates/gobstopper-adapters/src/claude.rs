@@ -67,47 +67,57 @@ fn user_prompt_summary(message: &Value) -> Option<String> {
 
 /// Collect every assistant `tool_use` block by its `id`, returning a short
 /// "name(input)" label for the matching `tool_result` summary.
-fn collect_tool_uses(records: &[(usize, Value)]) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    for (_, record) in records {
-        if record.get("type").and_then(Value::as_str) != Some("assistant") {
+#[derive(Clone)]
+struct ToolUseMeta {
+    name: String,
+    label: String,
+}
+
+fn collect_tool_uses(record: &Value, map: &mut std::collections::HashMap<String, ToolUseMeta>) {
+    if record.get("type").and_then(Value::as_str) != Some("assistant") {
+        return;
+    }
+    let Some(content) = record
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(Value::as_array)
+    else {
+        return;
+    };
+    for block in content {
+        if block.get("type").and_then(Value::as_str) != Some("tool_use") {
             continue;
         }
-        let Some(content) = record
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(Value::as_array)
-        else {
+        let Some(id) = block.get("id").and_then(Value::as_str) else {
             continue;
         };
-        for block in content {
-            if block.get("type").and_then(Value::as_str) != Some("tool_use") {
-                continue;
-            }
-            let Some(id) = block.get("id").and_then(Value::as_str) else {
-                continue;
-            };
-            let name = block.get("name").and_then(Value::as_str).unwrap_or("?");
-            let input = match block.get("input").cloned().unwrap_or(Value::Null) {
-                Value::String(s) => s,
-                other => other.to_string(),
-            };
-            let input = if input.chars().count() > 80 {
-                input.chars().take(80).collect::<String>() + "..."
-            } else {
-                input
-            };
-            map.insert(id.to_string(), format!("{name}({input})"));
+        let name = block.get("name").and_then(Value::as_str).unwrap_or("?");
+        let input = match block.get("input").cloned().unwrap_or(Value::Null) {
+            Value::String(s) => s,
+            other => other.to_string(),
+        };
+        let input = if input.chars().count() > 80 {
+            input.chars().take(80).collect::<String>() + "..."
+        } else {
+            input
+        };
+        if map.len() < gobstopper_core::validation::MAX_ITEMS {
+            map.insert(
+                id.to_string(),
+                ToolUseMeta {
+                    name: name.to_string(),
+                    label: format!("{name}({input})"),
+                },
+            );
         }
     }
-    map
 }
 
 /// Short tail snippet of the tool_result blocks inside a user line,
 /// annotated with the matching tool_use name and input.
 fn tool_result_summary(
     message: &Value,
-    tool_uses: &std::collections::HashMap<String, String>,
+    tool_uses: &std::collections::HashMap<String, ToolUseMeta>,
 ) -> Option<String> {
     const MAX_SUMMARY: usize = 240;
     const TAIL: usize = 120;
@@ -123,7 +133,7 @@ fn tool_result_summary(
             .unwrap_or("?");
         let call = tool_uses
             .get(tool_use_id)
-            .map(String::as_str)
+            .map(|meta| meta.label.as_str())
             .unwrap_or("?");
         let output = block
             .get("content")
@@ -152,6 +162,67 @@ fn tool_result_summary(
         return Some(full);
     }
     Some(full.chars().take(MAX_SUMMARY).collect())
+}
+
+fn tool_result_metadata(
+    message: &Value,
+    tool_uses: &std::collections::HashMap<String, ToolUseMeta>,
+) -> (u32, Vec<String>, String, Option<String>) {
+    let mut parts = 0u32;
+    let mut ids = Vec::new();
+    let mut names = std::collections::BTreeSet::new();
+    if let Some(blocks) = message.get("content").and_then(Value::as_array) {
+        for block in blocks {
+            if block.get("type").and_then(Value::as_str) != Some("tool_result")
+                || block
+                    .get("content")
+                    .map(crate::payload::eligible_bytes)
+                    .unwrap_or(0)
+                    == 0
+            {
+                continue;
+            }
+            parts = parts.saturating_add(1).min(1_000_000);
+            if let Some(id) = block.get("tool_use_id").and_then(Value::as_str) {
+                if ids.len() < 64 {
+                    ids.push(id.to_string());
+                }
+                if let Some(meta) = tool_uses.get(id) {
+                    names.insert(meta.name.clone());
+                }
+            }
+        }
+    }
+    let label = if names.is_empty() {
+        "tool_result".to_string()
+    } else {
+        names.into_iter().collect::<Vec<_>>().join("+")
+    };
+    let payload_sha256 = message
+        .get("content")
+        .and_then(Value::as_array)
+        .and_then(|blocks| {
+            crate::payload::fingerprint(blocks.iter().filter_map(|block| {
+                (block.get("type").and_then(Value::as_str) == Some("tool_result"))
+                    .then(|| block.get("content"))
+                    .flatten()
+                    .filter(|content| crate::payload::eligible_bytes(content) > 0)
+            }))
+        });
+    (parts, ids, label, payload_sha256)
+}
+
+fn context_usage(line: &Value) -> Option<u64> {
+    if line.get("type").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    let usage = line.pointer("/message/usage")?;
+    let get = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
+    let input = get("input_tokens")
+        .saturating_add(get("cache_read_input_tokens"))
+        .saturating_add(get("cache_creation_input_tokens"));
+    let context = input.saturating_add(get("output_tokens"));
+    (context > 0).then_some(context)
 }
 
 fn absorb_usage(line: &Value, sample: &mut UsageSample) {
@@ -190,10 +261,19 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
     if bytes.len() as u64 > crate::transaction::MAX_TRANSCRIPT_BYTES {
         return Err(AdapterError::InvalidEdit("transcript exceeds byte limit"));
     }
-    let file = std::io::Cursor::new(bytes);
     let mut usage = UsageSample::default();
-    let mut records: Vec<(usize, Value)> = Vec::new();
-    for (line_index, line) in BufReader::new(file).lines().enumerate() {
+    let mut links: Vec<(usize, String, Option<String>)> = Vec::new();
+    let mut context_samples = Vec::new();
+    let mut last_prompt_leaf = None;
+    let mut fallback_leaf = None;
+    let mut tool_uses = std::collections::HashMap::new();
+    for (line_index, line) in BufReader::new(std::io::Cursor::new(bytes))
+        .lines()
+        .enumerate()
+    {
+        if line_index >= gobstopper_core::validation::MAX_ITEMS {
+            return Err(AdapterError::InvalidEdit("transcript exceeds record limit"));
+        }
         let line = line.map_err(|e| AdapterError::Io {
             path: handle.path.clone(),
             source: e,
@@ -202,61 +282,61 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
             continue;
         };
         absorb_usage(&record, &mut usage);
-        records.push((line_index, record));
-    }
-
-    // (line_index, uuid, parent_uuid) for live-branch resolution.
-    let mut links: Vec<(usize, String, Option<String>)> = Vec::new();
-    for (line_index, record) in &records {
+        if let Some(context) = context_usage(&record) {
+            context_samples.push((line_index, context));
+        }
         if let Some(uuid) = record.get("uuid").and_then(Value::as_str) {
             links.push((
-                *line_index,
+                line_index,
                 uuid.to_string(),
                 record
                     .get("parentUuid")
                     .and_then(Value::as_str)
                     .map(str::to_string),
             ));
+            if matches!(
+                record.get("type").and_then(Value::as_str),
+                Some("user") | Some("assistant") | Some("attachment")
+            ) {
+                fallback_leaf = Some(uuid.to_string());
+            }
         }
-    }
-
-    // The canonical leaf is the leafUuid of the most recent last-prompt,
-    // if one exists; otherwise the last user/assistant/attachment uuid.
-    // Provider sessions interleave sidechains and bookkeeping after the real
-    // conversation tip, so file order alone can point at a dead branch.
-    let mut leaf_uuid: Option<String> = None;
-    for (_, record) in records.iter().rev() {
         if record.get("type").and_then(Value::as_str) == Some("last-prompt") {
             if let Some(uuid) = record.get("leafUuid").and_then(Value::as_str) {
-                leaf_uuid = Some(uuid.to_string());
-                break;
+                last_prompt_leaf = Some(uuid.to_string());
             }
         }
+        collect_tool_uses(&record, &mut tool_uses);
     }
-    if leaf_uuid.is_none() {
-        for (_, record) in records.iter().rev() {
-            if record.get("uuid").and_then(Value::as_str).is_some()
-                && matches!(
-                    record.get("type").and_then(Value::as_str),
-                    Some("user") | Some("assistant") | Some("attachment")
-                )
-            {
-                leaf_uuid = record
-                    .get("uuid")
-                    .and_then(Value::as_str)
-                    .map(str::to_string);
-                break;
-            }
-        }
-    }
+    let leaf_uuid = last_prompt_leaf.or(fallback_leaf);
     let live = leaf_uuid
         .as_deref()
         .map(|leaf| live_branch(&links, leaf))
         .unwrap_or_default();
-    let tool_uses = collect_tool_uses(&records);
+    if !live.is_empty() {
+        usage.context_tokens = context_samples
+            .iter()
+            .rev()
+            .find(|(line, _)| live.contains(line))
+            .map(|(_, context)| *context)
+            .unwrap_or(usage.context_tokens);
+    }
 
     let mut items = Vec::new();
-    for (line_index, record) in &records {
+    for (line_index, line) in BufReader::new(std::io::Cursor::new(bytes))
+        .lines()
+        .enumerate()
+    {
+        if line_index >= gobstopper_core::validation::MAX_ITEMS {
+            return Err(AdapterError::InvalidEdit("transcript exceeds record limit"));
+        }
+        let line = line.map_err(|e| AdapterError::Io {
+            path: handle.path.clone(),
+            source: e,
+        })?;
+        let Ok(record) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
         let ltype = record.get("type").and_then(Value::as_str).unwrap_or("");
         let (kind, elidable) = match ltype {
             "user" => {
@@ -284,14 +364,22 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
         let est = estimate_tokens(value_len(&record["message"]));
         let summary = match kind {
             ItemKind::User => user_prompt_summary(&record["message"]),
-            _ => tool_result_summary(&record["message"], &tool_uses),
+            ItemKind::ToolResult => tool_result_summary(&record["message"], &tool_uses),
+            _ => None,
+        };
+        let (elidable_parts, tool_use_ids, label, payload_sha256) = if kind == ItemKind::ToolResult
+        {
+            tool_result_metadata(&record["message"], &tool_uses)
+        } else {
+            (0, Vec::new(), ltype.to_string(), None)
         };
         items.push(TranscriptItem {
-            line_index: *line_index,
+            line_index,
             kind,
             est_tokens: est,
             elidable_bytes: elidable,
-            label: format!("{ltype}@{line_index}"),
+            elidable_parts,
+            label,
             summary,
             uuid: record
                 .get("uuid")
@@ -301,6 +389,8 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                 .get("parentUuid")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            tool_use_ids,
+            payload_sha256,
         });
     }
     // Only uuid-bearing lines can be proven dead; lines without linkage
@@ -313,6 +403,9 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
         if provably_dead {
             item.est_tokens = 0;
             item.elidable_bytes = None;
+            item.elidable_parts = 0;
+            item.tool_use_ids.clear();
+            item.payload_sha256 = None;
             item.label.push_str(" (dead branch)");
         }
     }
@@ -352,9 +445,46 @@ fn live_branch(
 
 /// Cheap usage pass for `detect`: read only the tail of the file.
 pub fn scan_usage(path: &Path) -> UsageSample {
+    let records = crate::tail_records(path, TAIL_SCAN_BYTES);
     let mut sample = UsageSample::default();
-    for record in crate::tail_records(path, TAIL_SCAN_BYTES) {
-        absorb_usage(&record, &mut sample);
+    let mut links = Vec::new();
+    for (line, record) in records.iter().enumerate() {
+        absorb_usage(record, &mut sample);
+        if let Some(uuid) = record.get("uuid").and_then(Value::as_str) {
+            links.push((
+                line,
+                uuid.to_string(),
+                record
+                    .get("parentUuid")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            ));
+        }
+    }
+    let leaf = records
+        .iter()
+        .rev()
+        .find(|record| record.get("type").and_then(Value::as_str) == Some("last-prompt"))
+        .and_then(|record| record.get("leafUuid").and_then(Value::as_str))
+        .or_else(|| {
+            records.iter().rev().find_map(|record| {
+                matches!(
+                    record.get("type").and_then(Value::as_str),
+                    Some("user") | Some("assistant") | Some("attachment")
+                )
+                .then(|| record.get("uuid").and_then(Value::as_str))
+                .flatten()
+            })
+        });
+    if let Some(leaf) = leaf {
+        let live = live_branch(&links, leaf);
+        sample.context_tokens = records
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(line, record)| live.contains(line) && context_usage(record).is_some())
+            .and_then(|(_, record)| context_usage(record))
+            .unwrap_or(sample.context_tokens);
     }
     sample
 }
@@ -508,11 +638,25 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
                     .lines()
                     .filter_map(|line| serde_json::from_str(line).ok())
                     .collect();
-                let last_leaf = parsed.iter().rev().find(|r| {
-                    matches!(
-                        r.get("type").and_then(Value::as_str),
-                        Some("user") | Some("assistant")
-                    )
+                let canonical_leaf = parsed
+                    .iter()
+                    .rev()
+                    .find(|r| r.get("type").and_then(Value::as_str) == Some("last-prompt"))
+                    .and_then(|r| r.get("leafUuid").and_then(Value::as_str))
+                    .or_else(|| {
+                        parsed.iter().rev().find_map(|r| {
+                            matches!(
+                                r.get("type").and_then(Value::as_str),
+                                Some("user") | Some("assistant")
+                            )
+                            .then(|| r.get("uuid").and_then(Value::as_str))
+                            .flatten()
+                        })
+                    });
+                let last_leaf = canonical_leaf.and_then(|leaf| {
+                    parsed
+                        .iter()
+                        .find(|r| r.get("uuid").and_then(Value::as_str) == Some(leaf))
                 });
                 let last_user = parsed
                     .iter()
@@ -522,9 +666,7 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
                     .iter()
                     .rev()
                     .find(|r| r.get("type").and_then(Value::as_str) == Some("mode"));
-                let parent = last_leaf
-                    .and_then(|r| r.get("uuid").and_then(Value::as_str))
-                    .map(str::to_string);
+                let parent = canonical_leaf.map(str::to_string);
                 let session_id = parsed.iter().find_map(|r| {
                     r.get("sessionId")
                         .and_then(Value::as_str)

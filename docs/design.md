@@ -65,31 +65,37 @@ gobstopper treats compaction as a *policy + strategy* problem:
 
 ## The Edit IR
 
-Every strategy lowers to three primitives:
+Every strategy lowers to four primitives:
 
 ```rust
 enum Edit {
-    Elide { line_indexes, stub_template },   // in-place payload stub
-    InjectDigest { digest },                  // appended state card
-    ProviderCompact { control },              // delegate to provider
+    Elide { line_indexes, stub_template },
+    InjectDigest { digest },
+    ProviderCompact { control },
+    CacheEdit { tool_use_ids },
 }
 ```
 
-Rewrites never remove lines. Claude `parentUuid` chains and Codex
-`ordinal` order stay intact; only payloads shrink. That keeps applied
-transcripts resumable and auditable, and makes backups trivial.
+`Elide` and `InjectDigest` are file-candidate operations. `ProviderCompact`
+and `CacheEdit` are control-plane proposals and cannot be mixed with file
+edits. Rewrites never remove source records; Claude `parentUuid` chains and
+Codex ordinal/window/tool-pair invariants are verified before a candidate is
+published as a separate fork.
 
 ## Strategy selection (`auto`)
 
 ```
-tool_result tokens / context ≥ 55%  -> elide
-live session or empty transcript    -> sawtooth (provider delegate)
-otherwise                           -> structured
+live Claude with valid tool ids  -> cache_edits
+other live/empty transcript      -> sawtooth provider delegate
+idle transcript                  -> best validated file plan by
+                                    savings × preserved-prefix³
 ```
 
-`agentic` replaces this rubric with an editor model when an
-`EditorDriver` is configured; until then it defers to `auto`, per the
-SelfCompact finding that an unguided compaction tool is unreliable.
+Idle candidates include `cache_aware`, `scored`, `elide`, `compacted`,
+`dedupe`, `micro`, `middle`, and `structured`. Plans below
+`min_savings_tokens` are rejected centrally. `agentic` uses the same host
+validation and protected-tail rules as built-ins; an empty proposal means
+defer.
 
 ## Oompa integration
 
@@ -118,21 +124,33 @@ undo vault, the oompa `session.compact` effect path, the agentmixer
 `EditorDriver` backend, the aicharts measurement loop, and the proposed
 `transcript-foundation` shared crate.
 
-## Presets as userspace code
+## External strategies and providers
 
-`preset.command` runs a user program: normalized transcript JSON on
-stdin, `{edits: [...]}` on stdout. Language-agnostic, sandboxable, and the
-lowest-friction way to let users experiment with strategies without
-shipping them. A future `EditorDriver` implementation is the same seam
-with an LLM behind it.
+The preferred extension surface is a versioned plugin manifest with an exact
+trusted manifest SHA-256, content-addressed bundle files, closed capabilities,
+cleared environment, and bounded stdin/stdout/deadline. Strategy plugins
+receive normalized items and propose `Edit[]`; provider plugins perform
+read-only inspection of bounded source bytes and may use logical record indexes
+for whole-document formats such as Devin ATIF. The host validates every edit.
+Legacy `preset.command` remains available only with
+`trusted_legacy_command = true` and has no sandbox guarantee.
 
 ## Failure and safety posture
 
-- Every apply writes `<file>.gobstopper-bak-<ts>` first (unless
-  `--no-backup`).
-- Watch mode rate-limits per session (`min_interval_secs`).
-- Elision is additive-loss only: stubs record the original byte size.
-- `policy-check` and `plan --json` are stable machine surfaces.
-- Provider delegation (`sawtooth`) is always preferred for live
-  sessions — transcript surgery on a running process's file is refused
-  by `auto` and only done explicitly by the user via `apply`.
+- Standalone `apply`, `watch`, and `undo` are copy-only; retired in-place and
+  no-backup flags fail visibly.
+- Before publication, exact source bytes are stored as verified, deduplicated
+  1 MiB chunks in the content-addressed vault.
+- Copy operations bind canonical source path, source hash, provider, and edits
+  into a durable intent receipt. Existing targets are never overwritten, and
+  incomplete receipts reconcile only against an exact output hash.
+- Candidate writes use same-directory private temporary files, compare the
+  source again before atomic publication, preserve restrictive permissions,
+  sync data/directories, and reject newly introduced verification findings.
+- Files are capped at 128 MiB and 100,000 records; plugin inputs, outputs,
+  manifests, bundles, deadlines, and discovery counts are independently
+  bounded.
+- Watch mode rate-limits per session (`min_interval_secs`), and plans below
+  `min_savings_tokens` are treated as no-ops.
+- Live provider processes remain owned by their runtime or oompa. Gobstopper
+  offers native-control proposals but never becomes a competing writer.

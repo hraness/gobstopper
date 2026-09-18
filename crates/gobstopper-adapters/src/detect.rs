@@ -58,17 +58,24 @@ fn age_secs(path: &Path) -> u64 {
 }
 
 fn collect_jsonl(dir: &Path, out: &mut Vec<PathBuf>, depth: usize) {
-    if depth == 0 {
+    const MAX_FILES: usize = 100_000;
+    if depth == 0 || out.len() >= MAX_FILES {
         return;
     }
     let Ok(entries) = fs::read_dir(dir) else {
         return;
     };
     for entry in entries.flatten() {
+        if out.len() >= MAX_FILES {
+            return;
+        }
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
         let path = entry.path();
-        if path.is_dir() {
+        if kind.is_dir() {
             collect_jsonl(&path, out, depth - 1);
-        } else if path.extension().is_some_and(|e| e == "jsonl") {
+        } else if kind.is_file() && path.extension().is_some_and(|e| e == "jsonl") {
             out.push(path);
         }
     }

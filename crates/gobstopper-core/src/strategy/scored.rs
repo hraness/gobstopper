@@ -2,15 +2,14 @@
 //! probability; the lowest-scoring items are elided until the floor.
 //!
 //! Unlike position-ordered strategies, this can keep an important older
-//! result while dropping a more recent but irrelevant one — at the cost
-//! of giving up on prefix preservation (different items may be elided
-//! from anywhere in the eligible range). A built-in deterministic
+//! result while dropping a more recent but irrelevant one inside the
+//! smallest tailward window that can reach the configured floor. A built-in deterministic
 //! heuristic scorer makes this strategy useful with no external API; the
 //! `ScoreDriver` trait lets a CLI-side driver plug in a model-based
 //! scorer such as Jev.
 
 use super::elide::DEFAULT_STUB;
-use super::{state_card_digest, PolicyConfig, Strategy};
+use super::{state_card_digest, PolicyConfig, Strategy, STATE_CARD_RESERVE_TOKENS};
 use crate::model::{ItemKind, Transcript};
 use crate::plan::{CompactionPlan, Edit};
 
@@ -174,25 +173,21 @@ impl HeuristicScorer {
 
                 // 7. Superseded: if the same tool+label appears later, the
                 //    older run is less valuable unless it has error markers.
-                let occurrences = label_occurrences
-                    .get(&item.label)
-                    .cloned()
-                    .unwrap_or_default();
-                let newest = *occurrences.last().unwrap_or(&idx);
-                let superseded = newest != idx && occurrences.len() > 1;
+                let occurrences = label_occurrences.get(&item.label);
+                let newest = occurrences
+                    .and_then(|values| values.last())
+                    .copied()
+                    .unwrap_or(idx);
+                let superseded =
+                    newest != idx && occurrences.is_some_and(|values| values.len() > 1);
 
                 // 8. Near-duplicate: similar output from the same tool (even
                 //    with different args) is usually not worth keeping twice.
-                let latest_tokens = label_latest_tokens
-                    .get(&item.label)
-                    .cloned()
-                    .unwrap_or_default();
-                let near_duplicate = if item_tokens.is_empty() {
-                    false
-                } else {
-                    let newest_idx = *occurrences.last().unwrap_or(&idx);
-                    newest_idx != idx && jaccard_similarity(&item_tokens, &latest_tokens) >= 0.85
-                };
+                let near_duplicate = !item_tokens.is_empty()
+                    && newest != idx
+                    && label_latest_tokens
+                        .get(&item.label)
+                        .is_some_and(|latest| jaccard_similarity(&item_tokens, latest) >= 0.85);
 
                 // 9. Parent-chain: an item that the tail explicitly chains off
                 //    (parent_uuid == item.uuid) is part of the live ancestry.
@@ -206,7 +201,7 @@ impl HeuristicScorer {
                 let position_ratio = if max_line == 0 {
                     0.0
                 } else {
-                    1.0 - (item.line_index as f64 / max_line as f64)
+                    item.line_index as f64 / max_line as f64
                 };
 
                 let score = 0.18 * recency
@@ -321,6 +316,7 @@ impl ScoredStrategy {
             .collect();
 
         let target_savings = before.saturating_sub(policy.floor_tokens);
+        let window_savings = target_savings.saturating_add(STATE_CARD_RESERVE_TOKENS);
 
         // Min-heap by keep-probability (lower score = higher elision priority)
         // using a fixed-point u64 key so it is `Ord`.
@@ -340,29 +336,40 @@ impl ScoredStrategy {
             // compare smaller inside the outer `Reverse` min-heap.
             heap.push(std::cmp::Reverse((
                 key,
-                item.line_index,
                 std::cmp::Reverse(item.estimated_elision_savings()),
+                item.line_index,
                 idx,
             )));
-            total_savings += item.estimated_elision_savings();
+            total_savings = total_savings.saturating_add(item.estimated_elision_savings());
 
-            if total_savings >= target_savings {
+            if total_savings >= window_savings {
                 let mut chosen = Vec::new();
                 let mut accumulated = 0u64;
                 while accumulated < target_savings && !heap.is_empty() {
-                    let std::cmp::Reverse((_, _, std::cmp::Reverse(savings), idx)) =
+                    let std::cmp::Reverse((_, std::cmp::Reverse(savings), _, idx)) =
                         heap.pop().unwrap();
                     chosen.push(transcript.items[idx].line_index);
-                    accumulated += savings;
+                    accumulated = accumulated.saturating_add(savings);
                 }
                 if chosen.is_empty() {
                     return None;
                 }
-                chosen.sort();
-                let projected = before.saturating_sub(accumulated);
-
-                let digest = state_card_digest(transcript, &chosen);
-                let digest_overhead = digest.estimate_overhead();
+                chosen.sort_unstable();
+                let mut digest = state_card_digest(transcript, &chosen);
+                let mut context_tokens_after = before
+                    .saturating_sub(accumulated)
+                    .saturating_add(digest.estimate_overhead());
+                while context_tokens_after > policy.floor_tokens && !heap.is_empty() {
+                    let std::cmp::Reverse((_, std::cmp::Reverse(savings), _, idx)) =
+                        heap.pop().unwrap();
+                    chosen.push(transcript.items[idx].line_index);
+                    accumulated = accumulated.saturating_add(savings);
+                    chosen.sort_unstable();
+                    digest = state_card_digest(transcript, &chosen);
+                    context_tokens_after = before
+                        .saturating_sub(accumulated)
+                        .saturating_add(digest.estimate_overhead());
+                }
 
                 let first_elided = chosen.first().copied().unwrap_or(0);
                 let prefix_items = transcript
@@ -387,28 +394,38 @@ impl ScoredStrategy {
                         Edit::InjectDigest { digest },
                     ],
                     context_tokens_before: before,
-                    context_tokens_after: projected.saturating_add(digest_overhead),
+                    context_tokens_after,
                 });
             }
         }
 
-        // Even the full set of candidates can't reach the floor; elide as
-        // many low-scored items as possible (heuristic / max-effort).
+        // The full window cannot cover the floor plus reserve. Select only
+        // what the target and actual digest overhead require when possible.
         let mut chosen = Vec::new();
         let mut accumulated = 0u64;
-        while !heap.is_empty() {
-            let std::cmp::Reverse((_, _, std::cmp::Reverse(savings), idx)) = heap.pop().unwrap();
+        while accumulated < target_savings && !heap.is_empty() {
+            let std::cmp::Reverse((_, std::cmp::Reverse(savings), _, idx)) = heap.pop().unwrap();
             chosen.push(transcript.items[idx].line_index);
-            accumulated += savings;
+            accumulated = accumulated.saturating_add(savings);
         }
         if chosen.is_empty() {
             return None;
         }
-        chosen.sort();
-        let projected = before.saturating_sub(accumulated);
-
-        let digest = state_card_digest(transcript, &chosen);
-        let digest_overhead = digest.estimate_overhead();
+        chosen.sort_unstable();
+        let mut digest = state_card_digest(transcript, &chosen);
+        let mut context_tokens_after = before
+            .saturating_sub(accumulated)
+            .saturating_add(digest.estimate_overhead());
+        while context_tokens_after > policy.floor_tokens && !heap.is_empty() {
+            let std::cmp::Reverse((_, std::cmp::Reverse(savings), _, idx)) = heap.pop().unwrap();
+            chosen.push(transcript.items[idx].line_index);
+            accumulated = accumulated.saturating_add(savings);
+            chosen.sort_unstable();
+            digest = state_card_digest(transcript, &chosen);
+            context_tokens_after = before
+                .saturating_sub(accumulated)
+                .saturating_add(digest.estimate_overhead());
+        }
 
         let first_elided = chosen.first().copied().unwrap_or(0);
         let prefix_items = transcript
@@ -433,7 +450,7 @@ impl ScoredStrategy {
                 Edit::InjectDigest { digest },
             ],
             context_tokens_before: before,
-            context_tokens_after: projected.saturating_add(digest_overhead),
+            context_tokens_after,
         })
     }
 }
@@ -469,10 +486,13 @@ mod tests {
             kind,
             est_tokens,
             elidable_bytes: elidable.then_some(est_tokens * 4),
+            elidable_parts: 1,
             label: label.into(),
             summary: summary.map(String::from),
             uuid: None,
             parent_uuid: None,
+            tool_use_ids: Vec::new(),
+            payload_sha256: None,
         }
     }
 

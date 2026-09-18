@@ -38,10 +38,13 @@ mod tests {
             kind,
             est_tokens,
             elidable_bytes: elidable.then_some(est_tokens * 4),
+            elidable_parts: 1,
             label: format!("item-{line}"),
             summary: None,
             uuid: None,
             parent_uuid: None,
+            tool_use_ids: Vec::new(),
+            payload_sha256: None,
         }
     }
 

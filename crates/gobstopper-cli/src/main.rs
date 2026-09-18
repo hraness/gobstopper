@@ -10,7 +10,7 @@ mod report;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use gobstopper_adapters::detect::{self, Discovered, Roots};
-use gobstopper_adapters::{claude, codex, copy, eval, fork, plugins, vault, verify, AdapterError};
+use gobstopper_adapters::{codex, copy, eval, fork, plugins, vault, verify, AdapterError};
 use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
 use gobstopper_core::plan::{CompactionPlan, Edit};
 use gobstopper_core::strategy::{self, HeuristicScorer, QuotaPressure, ScoredStrategy};
@@ -83,14 +83,16 @@ enum Cmd {
         /// Skip the confirmation prompt.
         #[arg(long)]
         yes: bool,
-        /// Apply elide/digest edits to the original transcript instead of forking.
-        /// Useful for resuming the same Claude/Codex session id after compaction.
+        /// Retired compatibility flag; standalone compaction is copy-only.
         #[arg(long)]
         in_place: bool,
-        /// Don't snapshot the transcript into the undo vault first
-        /// (not recommended).
+        /// Retired compatibility flag; snapshots are mandatory.
         #[arg(long)]
         no_backup: bool,
+        /// Emit an experimental synthetic Codex `compacted` record instead
+        /// of the portable forked digest representation.
+        #[arg(long)]
+        experimental_compacted: bool,
     },
     /// Check a transcript for resume-breaking defects (broken parent
     /// chains, orphaned tool calls, malformed compaction records).
@@ -111,9 +113,7 @@ enum Cmd {
         /// Skip the confirmation prompt.
         #[arg(long)]
         yes: bool,
-        /// Restore the snapshot's exact bytes back to the original session
-        /// path instead of writing a fresh fork. Keeps the same session id
-        /// so `claude --resume <id>` / `codex resume <id>` pick it up.
+        /// Retired compatibility flag; standalone restore is copy-only.
         #[arg(long)]
         in_place: bool,
     },
@@ -282,7 +282,7 @@ enum Cmd {
     /// sessions and the snapshot vault as tools an agent can call
     /// (list_sessions, recall, history, show, diff, plan, verify).
     Mcp,
-    /// Poll for sessions over threshold and compact them automatically.
+    /// Poll for sessions over threshold and prepare verified compacted forks.
     Watch {
         /// Poll interval in seconds.
         #[arg(long, default_value = "30")]
@@ -290,8 +290,7 @@ enum Cmd {
         /// Report plans without applying them.
         #[arg(long)]
         dry_run: bool,
-        /// Precompute compacted transcripts at 60% of trigger and swap
-        /// atomically at the trigger — zero-stall compaction.
+        /// Retired compatibility flag; in-place staged swaps are disabled.
         #[arg(long)]
         double_buffer: bool,
     },
@@ -396,7 +395,11 @@ fn find_session(cli: &Cli, cfg: &config::Config, query: &str) -> Result<Discover
         return Ok(Discovered {
             handle: gobstopper_core::SessionHandle {
                 provider,
-                session_id: meta.0.unwrap_or_else(|| query.to_string()),
+                session_id: meta.0.unwrap_or_else(|| {
+                    path.file_stem()
+                        .map(|value| value.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| "unknown".to_string())
+                }),
                 path,
                 cwd: meta.1,
                 age_secs: age,
@@ -482,7 +485,9 @@ fn evaluate(
     transcript: &gobstopper_core::Transcript,
     resolved: &config::Resolved,
 ) -> Result<Option<CompactionPlan>> {
+    config::validate_policy(&resolved.policy)?;
     let (policy, adaptive_reasons) = effective_policy(transcript, resolved);
+    config::validate_policy(&policy)?;
     let before = transcript.context_tokens();
     if before < policy.effective_trigger() {
         return Ok(None);
@@ -495,6 +500,9 @@ fn evaluate(
             .capabilities
             .contains(&plugins::Capability::ReadContent)
         {
+            if bytes.len() > checked.manifest.max_input_bytes {
+                bail!("content-authorized plugin input exceeds its manifest byte limit");
+            }
             Some(
                 std::str::from_utf8(&bytes)?
                     .lines()
@@ -504,12 +512,22 @@ fn evaluate(
         } else {
             None
         };
+        let mut items = transcript.items.clone();
+        if !checked
+            .manifest
+            .capabilities
+            .contains(&plugins::Capability::ReadContent)
+        {
+            for item in &mut items {
+                item.summary = None;
+            }
+        }
         let request = plugins::Request {
             protocol_version: 1,
             operation: plugins::Capability::Strategy,
             provider_id: transcript.session.provider.as_str().into(),
             source_sha256: copy::sha256(&bytes),
-            items: transcript.items.clone(),
+            items,
             usage: transcript.usage,
             policy: Some(policy.clone()),
             content,
@@ -548,6 +566,9 @@ fn evaluate(
     if let Some(plan) = &mut plan {
         gobstopper_core::validation::validate_edits(transcript, &policy, &plan.edits)
             .map_err(anyhow::Error::msg)?;
+        if !policy.accepts_savings(plan.context_tokens_before, plan.context_tokens_after) {
+            return Ok(None);
+        }
         if !adaptive_reasons.is_empty() {
             plan.rationale = format!(
                 "{} | adaptive: {}",
@@ -575,10 +596,12 @@ fn external_plan(
     for edit in &edits {
         match edit {
             Edit::Elide { line_indexes, .. } => {
+                let selected: std::collections::HashSet<usize> =
+                    line_indexes.iter().copied().collect();
                 for item in transcript
                     .items
                     .iter()
-                    .filter(|item| line_indexes.contains(&item.line_index))
+                    .filter(|item| selected.contains(&item.line_index))
                 {
                     after = after.saturating_sub(item.estimated_elision_savings());
                 }
@@ -596,7 +619,7 @@ fn external_plan(
             }
         }
     }
-    if after >= before {
+    if after >= before || !policy.accepts_savings(before, after) {
         return Ok(None);
     }
     Ok(Some(CompactionPlan {
@@ -1034,6 +1057,9 @@ fn cmd_undo(
     yes: bool,
     in_place: bool,
 ) -> Result<()> {
+    if in_place {
+        bail!("standalone in-place restore is retired because a provider may hold an open writer; omit --in-place to restore a verified fork");
+    }
     let d = find_session(cli, cfg, session)?;
     let root = vault::default_root();
     let entry = match sha {
@@ -1080,23 +1106,6 @@ fn cmd_undo(
             Some("pre-undo"),
             &root,
         )?;
-    }
-    if in_place {
-        let bytes = vault::read_object(&entry.sha256, &root)?;
-        if verify::verify(d.handle.provider, &bytes)
-            .iter()
-            .any(|f| f.severity == gobstopper_adapters::verify::Severity::Error)
-        {
-            bail!("snapshot has structural errors; source was not modified");
-        }
-        let current = gobstopper_adapters::transaction::read(&d.handle.path)?;
-        gobstopper_adapters::transaction::replace(&d.handle.path, &current, &bytes)
-            .map_err(|e| anyhow::anyhow!(e))?;
-        println!(
-            "restored in place at {}\nresume the same session id",
-            d.handle.path.display()
-        );
-        return Ok(());
     }
     let restored = fork::restore_copy(d.handle.provider, &d.handle.path, &entry.sha256, &root)?;
     println!(
@@ -1885,9 +1894,13 @@ fn cmd_apply(
     yes: bool,
     in_place: bool,
     no_backup: bool,
+    experimental_compacted: bool,
 ) -> Result<()> {
     if no_backup {
         bail!("snapshots are mandatory; --no-backup is no longer supported");
+    }
+    if in_place {
+        bail!("standalone in-place compaction is retired because a provider may hold an open writer; omit --in-place to publish a verified fork");
     }
     let d = find_session(cli, cfg, session)?;
     if d.handle.provider == Provider::Codex {
@@ -1958,10 +1971,9 @@ fn cmd_apply(
     // `compacted` record (window chain + replacement_history) appended
     // to the rollout — the provider's own resume mechanism performs the
     // context swap. Elide edits in the same plan still apply normally first.
-    let is_compacted = resolved.strategy == "compacted" && d.handle.provider == Provider::Codex;
-    if in_place && is_compacted {
-        bail!("--in-place is not supported for Codex compacted records; the provider expects a forked rollout");
-    }
+    let is_compacted = experimental_compacted
+        && resolved.strategy == "compacted"
+        && d.handle.provider == Provider::Codex;
     let digest_for_compacted = if is_compacted {
         plan.edits.iter().find_map(|e| match e {
             Edit::InjectDigest { digest } => Some(digest.clone()),
@@ -1992,7 +2004,7 @@ fn cmd_apply(
                     &d,
                     &plan,
                     "transcript_compact",
-                    "applied",
+                    "planned",
                     trigger,
                     started.elapsed().as_millis() as u64,
                     None,
@@ -2001,7 +2013,7 @@ fn cmd_apply(
                     "emitted compacted record (window chain advanced; resume performs the swap)"
                 );
                 println!(
-                    "reclaimed ~{} bytes of tool output",
+                    "reclaimed ~{} file bytes in the prepared fork",
                     receipt.reclaimed_bytes
                 );
             }
@@ -2019,56 +2031,34 @@ fn cmd_apply(
             }
         }
     } else if !file_edits.is_empty() {
-        let file_result: anyhow::Result<u64> = if in_place {
-            vault::snapshot(
-                &d.handle.path,
-                d.handle.provider,
-                &d.handle.session_id,
-                Some(&plan.strategy),
-                &vault::default_root(),
-            )?;
-            let reclaimed = match d.handle.provider {
-                Provider::Codex => codex::apply(&d.handle.path, &file_edits)?,
-                Provider::ClaudeCode => claude::apply(&d.handle.path, &file_edits)?,
-            };
-            println!("applied in place; source session id preserved");
-            println!(
-                "resume the same session: {} {}",
-                if d.handle.provider == Provider::Codex {
-                    "codex resume"
-                } else {
-                    "claude --resume"
+        let file_result: anyhow::Result<u64> =
+            copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root()).map(
+                |receipt| {
+                    println!("prepared {}", receipt.path.display());
+                    println!(
+                        "resume the new session: {} {}",
+                        if d.handle.provider == Provider::Codex {
+                            "codex resume"
+                        } else {
+                            "claude --resume"
+                        },
+                        receipt.session_id
+                    );
+                    receipt.reclaimed_bytes
                 },
-                d.handle.session_id
             );
-            Ok(reclaimed)
-        } else {
-            copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root()).map(|receipt| {
-                println!("prepared {}", receipt.path.display());
-                println!(
-                    "resume the new session: {} {}",
-                    if d.handle.provider == Provider::Codex {
-                        "codex resume"
-                    } else {
-                        "claude --resume"
-                    },
-                    receipt.session_id
-                );
-                receipt.reclaimed_bytes
-            })
-        };
         match file_result {
             Ok(reclaimed) => {
                 emit_event(
                     &d,
                     &plan,
                     "transcript_compact",
-                    "applied",
+                    "planned",
                     trigger,
                     started.elapsed().as_millis() as u64,
                     None,
                 );
-                println!("reclaimed ~{} bytes of tool output", reclaimed);
+                println!("reclaimed ~{} bytes in the prepared fork", reclaimed);
             }
             Err(e) => {
                 emit_event(
@@ -2231,7 +2221,11 @@ fn cmd_watch(
     let mut discovery_cache = detect::DiscoveryCache::default();
     loop {
         let cfg = config::load()?;
-        for d in detect::discover_cached(&roots(cli), 0, &mut discovery_cache) {
+        for d in detect::discover_cached(
+            &roots(cli),
+            detect::default_max_age_secs(),
+            &mut discovery_cache,
+        ) {
             let session_key = format!("{}:{}", d.handle.provider.as_str(), d.handle.path.display());
             let Ok(resolved) = cfg.resolve(d.handle.provider, &d.handle.session_id, None, None)
             else {
@@ -2294,12 +2288,12 @@ fn cmd_watch(
                                 &d,
                                 &s.plan,
                                 "transcript_compact",
-                                "applied",
+                                "planned",
                                 trigger,
                                 started.elapsed().as_millis() as u64,
                                 None,
                             );
-                            eprintln!("compacted {} (staged swap)", d.handle.session_id);
+                            eprintln!("prepared compacted fork for {}", d.handle.session_id);
                             continue;
                         }
                         Err(e) => eprintln!("staged swap {} failed: {e}", d.handle.session_id),
@@ -2355,12 +2349,12 @@ fn cmd_watch(
                                 &d,
                                 &plan,
                                 action,
-                                "applied",
+                                "planned",
                                 trigger,
                                 started.elapsed().as_millis() as u64,
                                 None,
                             );
-                            eprintln!("compacted {}", d.handle.session_id);
+                            eprintln!("prepared compacted fork for {}", d.handle.session_id);
                         }
                         Err(e) => {
                             emit_event(
@@ -2384,6 +2378,51 @@ fn cmd_watch(
     }
 }
 
+fn policy_decision(
+    cfg: &config::Config,
+    provider: &str,
+    context_tokens: u64,
+    session_active: bool,
+    quota_pressure: Option<QuotaPressure>,
+    preset: Option<&str>,
+) -> Result<serde_json::Value> {
+    let provider_id = match provider {
+        "codex" => "codex",
+        "claude" | "claude_code" => "claude_code",
+        "devin" => "devin",
+        other => bail!("unknown provider '{other}'"),
+    };
+    let mut resolved = cfg.resolve_provider(provider_id, "", preset, None)?;
+    if let Some(pressure) = quota_pressure {
+        resolved.policy.quota_pressure = pressure;
+    }
+    let effective_trigger = resolved.policy.effective_trigger();
+    let over = context_tokens >= effective_trigger;
+    let action = if !over {
+        "none"
+    } else if session_active || provider_id == "devin" {
+        "provider_compact"
+    } else {
+        "transcript_compact"
+    };
+    let control = match (over, session_active, provider_id) {
+        (true, true, "codex") => Some("thread/compact/start"),
+        (true, true, "claude_code") => Some("/compact or relaunch --autocompact"),
+        (true, _, "devin") => Some("/compact"),
+        _ => None,
+    };
+    Ok(serde_json::json!({
+        "provider": provider_id,
+        "action": action,
+        "strategy": resolved.strategy,
+        "trigger_tokens": resolved.policy.trigger_tokens,
+        "effective_trigger_tokens": effective_trigger,
+        "min_savings_tokens": resolved.policy.min_savings_tokens,
+        "quota_pressure": resolved.policy.quota_pressure,
+        "control": control,
+    }))
+}
+
 fn cmd_policy_check(
     cfg: &config::Config,
     provider: &str,
@@ -2393,47 +2432,24 @@ fn cmd_policy_check(
     preset: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    let provider = match provider {
-        "codex" => Provider::Codex,
-        "claude" | "claude_code" => Provider::ClaudeCode,
-        other => bail!("unknown provider '{other}'"),
-    };
-    let mut resolved = cfg.resolve(provider, "", preset, None)?;
-    if let Some(q) = quota_pressure {
-        resolved.policy.quota_pressure = q.into();
-    }
-    let effective_trigger = resolved.policy.effective_trigger();
-    let over = context_tokens >= effective_trigger;
-    // Mirror AutoStrategy::select without a transcript: live sessions get
-    // provider compaction; idle sessions get the transcript-path default.
-    let action = if !over {
-        "none"
-    } else if session_active {
-        "provider_compact"
-    } else {
-        "transcript_compact"
-    };
-    let control = match (over, session_active, provider) {
-        (true, true, Provider::Codex) => Some("thread/compact/start"),
-        (true, true, Provider::ClaudeCode) => Some("/compact or relaunch --autocompact"),
-        _ => None,
-    };
+    let decision = policy_decision(
+        cfg,
+        provider,
+        context_tokens,
+        session_active,
+        quota_pressure.map(Into::into),
+        preset,
+    )?;
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "action": action,
-                "strategy": resolved.strategy,
-                "trigger_tokens": resolved.policy.trigger_tokens,
-                "effective_trigger_tokens": effective_trigger,
-                "quota_pressure": resolved.policy.quota_pressure,
-                "control": control,
-            }))?
-        );
+        println!("{}", serde_json::to_string_pretty(&decision)?);
     } else {
-        println!("action={action} strategy={}", resolved.strategy);
-        if let Some(c) = control {
-            println!("control={c}");
+        println!(
+            "action={} strategy={}",
+            decision["action"].as_str().unwrap_or("none"),
+            decision["strategy"].as_str().unwrap_or("auto")
+        );
+        if let Some(control) = decision["control"].as_str() {
+            println!("control={control}");
         }
     }
     Ok(())
@@ -2562,6 +2578,7 @@ fn main() -> Result<()> {
             yes,
             in_place,
             no_backup,
+            experimental_compacted,
         } => cmd_apply(
             &cli,
             &cfg,
@@ -2573,6 +2590,7 @@ fn main() -> Result<()> {
             *yes,
             *in_place,
             *no_backup,
+            *experimental_compacted,
         ),
         Cmd::Verify { session, json } => cmd_verify(&cli, &cfg, session, *json),
         Cmd::Undo {
@@ -2802,10 +2820,13 @@ done
                 kind: gobstopper_core::model::ItemKind::ToolResult,
                 est_tokens: 500,
                 elidable_bytes: Some(2000),
+                elidable_parts: 1,
                 label: "tool output".to_string(),
                 summary: Some("fake output".to_string()),
                 uuid: None,
                 parent_uuid: None,
+                tool_use_ids: Vec::new(),
+                payload_sha256: None,
             }],
             usage: gobstopper_core::model::UsageSample {
                 context_tokens: 50_000,
@@ -2820,7 +2841,9 @@ done
         config::Resolved {
             policy: gobstopper_core::strategy::PolicyConfig {
                 trigger_tokens: 1_000,
+                floor_tokens: 100,
                 keep_recent_tool_outputs: 0,
+                min_savings_tokens: 0,
                 ..Default::default()
             },
             strategy: "agentic".to_string(),

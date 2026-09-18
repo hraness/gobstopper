@@ -36,6 +36,7 @@ multiplies the effective trigger ×1.15/×1.0/×0.7. Sources: the provider's
 | receipt | record mutation before dispatch; idempotency key; exact provider-generation binding |
 | codex | add `thread/compact/start` to `CodexMethod` + `OPERATIONS` (effect class, deadline, lost-response policy per `src/codex/AGENTS.md`); call on the daemon's own `CodexAppServerClient` |
 | claude | `/compact` as a stream-json `user` steering write on the existing client — **verified on 2.1.270** (`status:"compacting"` → `compact_result` + post-compact `init`); alternatively `--autocompact <tokens>` in `buildPinnedClaudeRuntimeArgv` |
+| devin | `/compact` over the owned ACP session; Gobstopper accepts `--provider devin` and never reads Devin's private history |
 | evidence | route `thread/compacted` (currently `ignored`) into the timeline; record a `compaction` session event `{trigger, strategy, pre_tokens}` |
 | reconcile | uncertain compact results reconcile like every other mutation — no speculative replay |
 

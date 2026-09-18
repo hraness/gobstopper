@@ -8,7 +8,7 @@
 
 use crate::Provider;
 use serde::{Deserialize, Serialize};
-use std::io::Write;
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 
 /// One compaction telemetry record — the unit written to `events.jsonl`.
@@ -93,8 +93,48 @@ impl CompactionEvent {
     }
 }
 
+fn valid_event(event: &CompactionEvent) -> bool {
+    event.schema == CompactionEvent::SCHEMA
+        && !event.session_id.is_empty()
+        && event.session_id.len() <= 256
+        && event
+            .session_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        && !event.strategy.is_empty()
+        && event.strategy.len() <= 128
+        && event
+            .strategy
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
+        && matches!(
+            event.action.as_str(),
+            "provider_compact" | "transcript_compact" | "none"
+        )
+        && matches!(
+            event.outcome.as_str(),
+            "applied" | "planned" | "failed" | "skipped"
+        )
+        && event.error_code.as_deref().is_none_or(|code| {
+            matches!(
+                code,
+                "io" | "provider_rejected" | "apply_failed" | "verification_failed"
+            )
+        })
+        && event.est_reclaimed_tokens
+            == event
+                .context_tokens_before
+                .saturating_sub(event.context_tokens_after)
+}
+
 /// Append one event as a JSONL line, creating parent dirs as needed.
 pub fn append_event(log_path: &Path, event: &CompactionEvent) -> std::io::Result<()> {
+    if !valid_event(event) {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "compaction event violates schema bounds",
+        ));
+    }
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
@@ -122,12 +162,26 @@ pub fn default_log_path() -> PathBuf {
 /// Read every event in the log. Blank and unparseable lines are skipped
 /// so one torn write does not lose the whole history.
 pub fn read_events(log_path: &Path) -> std::io::Result<Vec<CompactionEvent>> {
-    let text = std::fs::read_to_string(log_path)?;
-    Ok(text
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter_map(|l| serde_json::from_str(l).ok())
-        .collect())
+    const MAX_LOG_BYTES: u64 = 128 * 1024 * 1024;
+    const MAX_LINE_BYTES: usize = 16 * 1024;
+    let file = std::fs::File::open(log_path)?;
+    if file.metadata()?.len() > MAX_LOG_BYTES {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "compaction event log exceeds byte limit",
+        ));
+    }
+    let mut events = Vec::new();
+    for line in std::io::BufReader::new(file).lines() {
+        let line = line?;
+        if line.trim().is_empty() || line.len() > MAX_LINE_BYTES {
+            continue;
+        }
+        if let Some(event) = serde_json::from_str(&line).ok().filter(valid_event) {
+            events.push(event);
+        }
+    }
+    Ok(events)
 }
 
 #[cfg(test)]
@@ -235,6 +289,9 @@ mod tests {
         );
         append_event(&log, &e1).unwrap();
         append_event(&log, &e2).unwrap();
+        let mut invalid = e1.clone();
+        invalid.session_id = "/private/session/path".to_string();
+        assert!(append_event(&log, &invalid).is_err());
 
         // A torn write / foreign line is skipped, not fatal.
         let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();

@@ -1320,9 +1320,9 @@ fn vault_roundtrip_dedups_and_restores_exactly(tc: TestCase) {
     assert_eq!(latest.sha256, e1.sha256);
 }
 
-/// `tail_response_items` takes the last n response_item payloads in file
-/// order; `digest_to_replacement_history` puts the digest user-message
-/// first and the tail verbatim after.
+/// `tail_response_items` takes a pair-complete subset of the last n
+/// response_item payloads; `digest_to_replacement_history` puts the digest
+/// user-message first and the tail verbatim after.
 #[hegel::test(test_cases = 64)]
 fn tail_and_history_shapes_hold(tc: TestCase) {
     use gobstopper_adapters::codex_compact;
@@ -1331,8 +1331,7 @@ fn tail_and_history_shapes_hold(tc: TestCase) {
     let n = tc.draw(gs::integers::<usize>().max_value(8));
     let tail = codex_compact::tail_response_items(&lines, n);
 
-    // Expected: payloads of the last n response_item records, in order.
-    let expected: Vec<Value> = lines
+    let raw_tail: Vec<Value> = lines
         .iter()
         .filter_map(|l| {
             let rec: Value = serde_json::from_str(l).ok()?;
@@ -1346,7 +1345,28 @@ fn tail_and_history_shapes_hold(tc: TestCase) {
         .into_iter()
         .rev()
         .collect();
-    assert_eq!(tail, expected);
+    assert!(tail.len() <= n);
+    let mut cursor = 0;
+    for item in &tail {
+        cursor += raw_tail[cursor..]
+            .iter()
+            .position(|candidate| candidate == item)
+            .expect("tail item was not retained verbatim")
+            + 1;
+    }
+    let calls: std::collections::HashSet<&str> = tail
+        .iter()
+        .filter(|item| item["type"] == "function_call" || item["type"] == "custom_tool_call")
+        .filter_map(|item| item["call_id"].as_str())
+        .collect();
+    let outputs: std::collections::HashSet<&str> = tail
+        .iter()
+        .filter(|item| {
+            item["type"] == "function_call_output" || item["type"] == "custom_tool_call_output"
+        })
+        .filter_map(|item| item["call_id"].as_str())
+        .collect();
+    assert_eq!(calls, outputs);
 
     let digest = gen_digest(&tc, tail.len());
     let history = codex_compact::digest_to_replacement_history(&digest, &tail);
@@ -1638,7 +1658,7 @@ fn compacted_all_small_outputs_never_rewritten() {
     let compacted = t
         .items
         .iter()
-        .find(|i| i.label == "compacted@1")
+        .find(|i| i.label == "compacted")
         .expect("compacted item");
     assert_eq!(
         compacted.elidable_bytes, None,

@@ -86,6 +86,57 @@ fn hash(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+fn bounded_id(s: &str) -> bool {
+    !s.is_empty()
+        && s.len() <= 256
+        && s.bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
+fn validate_inspection(inspection: &Inspection, request: &Request) -> anyhow::Result<()> {
+    if inspection.provider_id != request.provider_id
+        || !identifier(&inspection.session_id)
+        || inspection.items.len() > gobstopper_core::validation::MAX_ITEMS
+        || inspection.usage.context_tokens > 100_000_000
+        || inspection.usage.lifetime_input_tokens > 10_000_000_000_000
+        || inspection.usage.lifetime_cached_tokens > inspection.usage.lifetime_input_tokens
+        || inspection
+            .usage
+            .model_context_window
+            .is_some_and(|window| window == 0 || window > 100_000_000)
+    {
+        bail!("provider inspection violates identity or usage bounds");
+    }
+    let mut seen = std::collections::HashSet::new();
+    let mut previous = None;
+    for item in &inspection.items {
+        if item.line_index >= gobstopper_core::validation::MAX_ITEMS
+            || !seen.insert(item.line_index)
+            || previous.is_some_and(|line| item.line_index <= line)
+            || item.label.is_empty()
+            || item.label.len() > 128
+            || item.summary.as_ref().is_some_and(|text| text.len() > 512)
+            || item.uuid.as_ref().is_some_and(|id| !bounded_id(id))
+            || item.parent_uuid.as_ref().is_some_and(|id| !bounded_id(id))
+            || item.tool_use_ids.len() > 64
+            || item.tool_use_ids.iter().any(|id| !bounded_id(id))
+            || item
+                .payload_sha256
+                .as_ref()
+                .is_some_and(|digest| !hash(digest))
+            || item.elidable_parts > 1_000_000
+            || item.elidable_bytes.is_some_and(|bytes| {
+                bytes <= 256 || bytes > crate::transaction::MAX_TRANSCRIPT_BYTES
+            })
+            || item.elidable_bytes.is_some() && (item.est_tokens == 0 || item.elidable_parts == 0)
+        {
+            bail!("invalid provider item projection");
+        }
+        previous = Some(item.line_index);
+    }
+    Ok(())
+}
+
 pub fn check(path: &Path) -> anyhow::Result<CheckedPlugin> {
     let bytes = crate::transaction::read(path)?;
     if bytes.len() > 64 * 1024 {
@@ -322,20 +373,10 @@ pub fn invoke(path: &Path, trusted_sha256: &str, request: &Request) -> anyhow::R
             .inspection
             .as_ref()
             .context("provider adapter omitted inspection")?;
-        if !response.edits.is_empty()
-            || inspection.provider_id != request.provider_id
-            || !identifier(&inspection.session_id)
-            || inspection.items.len() > gobstopper_core::validation::MAX_ITEMS
-        {
+        if !response.edits.is_empty() {
             bail!("provider inspection violates read-only contract");
         }
-        let count = request.content.as_ref().map(Vec::len).unwrap_or(0);
-        let mut seen = std::collections::HashSet::new();
-        for item in &inspection.items {
-            if item.line_index >= count || !seen.insert(item.line_index) || item.label.len() > 128 {
-                bail!("invalid provider item projection");
-            }
-        }
+        validate_inspection(inspection, request)?;
     } else if response.inspection.is_some() {
         bail!("strategy returned an unexpected provider inspection");
     }

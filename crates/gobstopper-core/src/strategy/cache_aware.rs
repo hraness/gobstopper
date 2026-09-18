@@ -1,5 +1,5 @@
 use super::elide::DEFAULT_STUB;
-use super::{state_card_digest, PolicyConfig, Strategy};
+use super::{choose_with_digest, PolicyConfig, Strategy};
 use crate::model::Transcript;
 use crate::plan::{CompactionPlan, Edit};
 
@@ -40,22 +40,9 @@ impl Strategy for CacheAwareStrategy {
         // Elide from the newest candidate backward until we are at or below
         // the floor. This leaves the conversation prefix untouched for as
         // long as possible, preserving prompt-cache hits on the next resume.
-        let mut projected = before;
-        let mut chosen: Vec<usize> = Vec::new();
-        for item in candidates.iter().rev() {
-            if projected <= policy.floor_tokens {
-                break;
-            }
-            chosen.push(item.line_index);
-            projected = projected.saturating_sub(item.estimated_elision_savings());
-        }
-        if chosen.is_empty() {
-            return None;
-        }
-        chosen.sort();
-
-        let digest = state_card_digest(transcript, &chosen);
-        let digest_overhead = digest.estimate_overhead();
+        let priority: Vec<_> = candidates.iter().rev().copied().collect();
+        let (chosen, digest, context_tokens_after) =
+            choose_with_digest(transcript, policy.floor_tokens, &priority)?;
 
         let first_elided = chosen.first().copied().unwrap_or(0);
         let prefix_items = transcript
@@ -80,7 +67,7 @@ impl Strategy for CacheAwareStrategy {
                 Edit::InjectDigest { digest },
             ],
             context_tokens_before: before,
-            context_tokens_after: projected.saturating_add(digest_overhead),
+            context_tokens_after,
         })
     }
 }

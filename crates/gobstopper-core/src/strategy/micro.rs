@@ -1,4 +1,4 @@
-use super::{state_card_digest, PolicyConfig, Strategy};
+use super::{choose_with_digest, PolicyConfig, Strategy};
 use crate::model::Transcript;
 use crate::plan::{CompactionPlan, Edit};
 
@@ -61,21 +61,8 @@ impl Strategy for MicroStrategy {
             .collect();
         candidates.sort_by_key(|i| i.line_index);
 
-        let mut projected = before;
-        let mut chosen = Vec::new();
-        for item in candidates {
-            if projected <= policy.floor_tokens {
-                break;
-            }
-            chosen.push(item.line_index);
-            projected = projected.saturating_sub(item.estimated_elision_savings());
-        }
-        if chosen.is_empty() {
-            return None;
-        }
-
-        let digest = state_card_digest(transcript, &chosen);
-        let digest_overhead = digest.estimate_overhead();
+        let (chosen, digest, context_tokens_after) =
+            choose_with_digest(transcript, policy.floor_tokens, &candidates)?;
 
         Some(CompactionPlan {
             strategy: self.id().to_string(),
@@ -92,7 +79,7 @@ impl Strategy for MicroStrategy {
                 Edit::InjectDigest { digest },
             ],
             context_tokens_before: before,
-            context_tokens_after: projected.saturating_add(digest_overhead),
+            context_tokens_after,
         })
     }
 }

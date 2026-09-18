@@ -10,7 +10,9 @@ use std::io::{BufRead as _, Write};
 use anyhow::Result;
 use serde_json::{json, Value};
 
-use crate::{config, evaluate, find_session, recall_rows, session_rows, show_summary};
+use crate::{
+    config, evaluate, find_session, policy_decision, recall_rows, session_rows, show_summary,
+};
 use crate::{diff_summary, Cli};
 use gobstopper_adapters::{detect, eval, transaction, vault, verify};
 
@@ -83,7 +85,7 @@ fn handle(cli: &Cli, cfg: &config::Config, message: &Value) -> Option<Value> {
                     .unwrap_or(PROTOCOL_VERSION),
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": "gobstopper", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "Read-only access to detected Codex/Claude sessions and the gobstopper snapshot vault. Use list_sessions to find sessions, recall to search state-card digests (agent memory), history/show/diff to inspect recorded states, plan to dry-run compaction, verify to check transcript integrity. No tool mutates transcripts.",
+                "instructions": "Read-only access to compaction policy, detected Codex/Claude sessions, and the gobstopper snapshot vault. Devin can use policy_check and invoke /compact when directed. Use list_sessions to find sessions, recall to search state-card digests, history/show/diff to inspect recorded states, plan to dry-run compaction, and verify to check transcript integrity. No tool mutates transcripts.",
             }),
         ),
         "ping" => result(&id, json!({})),
@@ -169,6 +171,20 @@ fn tools() -> Value {
             }
         },
         {
+            "name": "policy_check",
+            "description": "Evaluate numeric compaction policy for Codex, Claude Code, or Devin without reading or modifying session storage.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "provider": {"type": "string", "enum": ["codex", "claude_code", "devin"]},
+                    "context_tokens": {"type": "integer", "minimum": 0},
+                    "session_active": {"type": "boolean"},
+                    "quota_pressure": {"type": "string", "enum": ["low", "normal", "high"]}
+                },
+                "required": ["provider", "context_tokens"]
+            }
+        },
+        {
             "name": "plan",
             "description": "Dry-run a compaction strategy on a session: projected context tokens, elided item count, and preserved prefix tokens. Never modifies the transcript.",
             "inputSchema": {
@@ -234,6 +250,27 @@ fn run_tool(cli: &Cli, cfg: &config::Config, name: &str, args: &Value) -> Result
             get_str("a").unwrap_or_default(),
             get_str("b").unwrap_or_default(),
         ),
+        "policy_check" => {
+            let pressure = match get_str("quota_pressure") {
+                None => None,
+                Some("low") => Some(gobstopper_core::QuotaPressure::Low),
+                Some("normal") => Some(gobstopper_core::QuotaPressure::Normal),
+                Some("high") => Some(gobstopper_core::QuotaPressure::High),
+                Some(_) => anyhow::bail!("invalid quota_pressure"),
+            };
+            policy_decision(
+                cfg,
+                get_str("provider").unwrap_or_default(),
+                args.get("context_tokens")
+                    .and_then(Value::as_u64)
+                    .ok_or_else(|| anyhow::anyhow!("missing context_tokens"))?,
+                args.get("session_active")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+                pressure,
+                None,
+            )
+        }
         "plan" => {
             let session = get_str("session").unwrap_or_default();
             let d = find_session(cli, cfg, session)?;
@@ -353,6 +390,7 @@ mod tests {
             "history",
             "show",
             "diff",
+            "policy_check",
             "plan",
             "verify",
         ] {
@@ -365,6 +403,20 @@ mod tests {
                 "exposed mutating tool {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn devin_policy_check_routes_to_native_compaction() {
+        let value = run_tool(
+            &cli(),
+            &cfg(),
+            "policy_check",
+            &json!({"provider": "devin", "context_tokens": 300000}),
+        )
+        .unwrap();
+        assert_eq!(value["action"], "provider_compact");
+        assert_eq!(value["control"], "/compact");
+        assert_eq!(value["provider"], "devin");
     }
 
     #[test]

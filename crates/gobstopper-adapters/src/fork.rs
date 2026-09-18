@@ -201,17 +201,19 @@ pub fn fork(
     src: &Path,
     new_session_id: Option<String>,
 ) -> anyhow::Result<ForkResult> {
+    let src = src.canonicalize()?;
+    let original = crate::transaction::read(&src)?;
     let new_id = match new_session_id {
         Some(id) => {
             validate_session_id(&id)?;
             id
         }
-        None => generate_session_id(src),
+        None => generate_session_id(&src),
     };
 
     // A wrong-provider fork would produce a corrupt sibling; bail only
     // on a confident mismatch so head-truncated files still fork.
-    if let Some(actual) = crate::detect::sniff_provider(src) {
+    if let Some(actual) = crate::detect::sniff_provider(&src) {
         if actual != provider {
             bail!(
                 "{} looks like a {} transcript, not {}",
@@ -226,8 +228,8 @@ pub fn fork(
     let name = match provider {
         Provider::ClaudeCode => format!("{new_id}.jsonl"),
         Provider::Codex => {
-            let old_id = crate::codex::scan_meta(src).0;
-            codex_fork_name(src, old_id.as_deref(), &new_id)
+            let old_id = crate::codex::scan_meta(&src).0;
+            codex_fork_name(&src, old_id.as_deref(), &new_id)
         }
     };
     let target = dir.join(&name);
@@ -237,15 +239,15 @@ pub fn fork(
         bail!("fork target {} already exists", target.display());
     }
 
-    let raw = fs::read_to_string(src).with_context(|| format!("read {}", src.display()))?;
+    let raw = std::str::from_utf8(&original).context("transcript is not UTF-8")?;
     let out = match provider {
-        Provider::ClaudeCode => fork_claude(&raw, &new_id),
-        Provider::Codex => fork_codex(&raw, &new_id),
+        Provider::ClaudeCode => fork_claude(raw, &new_id),
+        Provider::Codex => fork_codex(raw, &new_id),
     };
 
     // Temp file + rename in the same directory: a killed fork never
     // leaves a half-written transcript behind the new id's name.
-    if crate::transaction::read(src)? != raw.as_bytes() {
+    if crate::transaction::read(&src)? != original {
         bail!("source changed while preparing fork");
     }
     crate::transaction::publish_new(&target, out.as_bytes())?;
@@ -368,7 +370,7 @@ mod tests {
         let res = fork(Provider::ClaudeCode, &src, None).unwrap();
         assert!(uuid_shaped(&res.session_id));
         // `<new-id>.jsonl` in the same directory.
-        assert_eq!(res.path.parent().unwrap(), dir.0.as_path());
+        assert_eq!(res.path.parent().unwrap(), dir.0.canonicalize().unwrap());
         assert_eq!(
             res.path.file_name().unwrap().to_str().unwrap(),
             format!("{}.jsonl", res.session_id)
@@ -425,6 +427,17 @@ mod tests {
         assert!(fork(Provider::ClaudeCode, &src, Some("a/b".into())).is_err());
         // Nothing was written.
         assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn fork_rejects_oversized_source_before_reading_it() {
+        let dir = TestDir::new();
+        let src = dir.0.join("large.jsonl");
+        let file = fs::File::create(&src).unwrap();
+        file.set_len(crate::transaction::MAX_TRANSCRIPT_BYTES + 1)
+            .unwrap();
+        assert!(fork(Provider::ClaudeCode, &src, Some("bounded".into())).is_err());
+        assert!(!dir.0.join("bounded.jsonl").exists());
     }
 
     #[test]

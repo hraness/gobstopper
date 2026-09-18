@@ -23,6 +23,7 @@ pub struct PolicyPatch {
     pub floor_tokens: Option<u64>,
     pub keep_recent_tool_outputs: Option<usize>,
     pub min_interval_secs: Option<u64>,
+    pub min_savings_tokens: Option<u64>,
     /// Provider quota pressure: `low` compacts later, `high` earlier.
     pub quota_pressure: Option<QuotaPressure>,
     /// Derive trigger/floor per session from the provider window and
@@ -54,6 +55,9 @@ impl PolicyPatch {
         }
         if let Some(v) = self.min_interval_secs {
             policy.min_interval_secs = v;
+        }
+        if let Some(v) = self.min_savings_tokens {
+            policy.min_savings_tokens = v;
         }
         if let Some(v) = self.quota_pressure {
             policy.quota_pressure = v;
@@ -96,15 +100,28 @@ pub fn load() -> anyhow::Result<Config> {
     parse(&text)
 }
 
+pub fn validate_policy(policy: &PolicyConfig) -> anyhow::Result<()> {
+    if policy.trigger_tokens == 0
+        || policy.trigger_tokens > 10_000_000
+        || policy.floor_tokens >= policy.trigger_tokens
+        || policy.keep_recent_tool_outputs > 100_000
+        || policy.min_interval_secs > 86_400
+        || policy.min_savings_tokens > 10_000_000
+    {
+        anyhow::bail!("invalid policy bounds: require floor < trigger <= 10000000, min_savings_tokens <= 10000000, keep_recent_tool_outputs <= 100000, and min_interval_secs <= 86400");
+    }
+    Ok(())
+}
+
 pub fn parse(text: &str) -> anyhow::Result<Config> {
     let config: Config = toml::from_str(text)
         .map_err(|_| anyhow::anyhow!("invalid configuration syntax, field or type"))?;
     if config
         .provider
         .keys()
-        .any(|p| !matches!(p.as_str(), "codex" | "claude_code"))
+        .any(|p| !matches!(p.as_str(), "codex" | "claude_code" | "devin"))
     {
-        anyhow::bail!("unknown provider configuration key; expected codex or claude_code");
+        anyhow::bail!("unknown provider configuration key; expected codex, claude_code, or devin");
     }
     Ok(config)
 }
@@ -126,6 +143,19 @@ impl Config {
         preset: Option<&str>,
         strategy_flag: Option<&str>,
     ) -> Result<Resolved, anyhow::Error> {
+        self.resolve_provider(provider.as_str(), session_id, preset, strategy_flag)
+    }
+
+    pub fn resolve_provider(
+        &self,
+        provider_id: &str,
+        session_id: &str,
+        preset: Option<&str>,
+        strategy_flag: Option<&str>,
+    ) -> Result<Resolved, anyhow::Error> {
+        if !matches!(provider_id, "codex" | "claude_code" | "devin") {
+            anyhow::bail!("unknown provider");
+        }
         let mut policy = PolicyConfig::default();
         let mut strategy = "auto".to_string();
         let mut command = None;
@@ -140,7 +170,7 @@ impl Config {
             .transpose()?;
         for patch in [
             Some(&self.policy),
-            self.provider.get(provider.as_str()),
+            self.provider.get(provider_id),
             preset_patch,
             self.sessions.get(session_id),
         ]
@@ -175,14 +205,7 @@ impl Config {
         if gobstopper_core::strategy::strategy_by_id(&strategy).is_none() {
             anyhow::bail!("unknown strategy");
         }
-        if policy.trigger_tokens == 0
-            || policy.trigger_tokens > 10_000_000
-            || policy.floor_tokens >= policy.trigger_tokens
-            || policy.keep_recent_tool_outputs > 100_000
-            || policy.min_interval_secs > 86400
-        {
-            anyhow::bail!("invalid policy bounds: require 0 <= floor < trigger <= 10000000");
-        }
+        validate_policy(&policy)?;
         if command.is_some() && !trusted_legacy_command {
             anyhow::bail!("legacy command requires trusted_legacy_command=true; prefer an exact-identity plugin");
         }
@@ -222,16 +245,25 @@ mod tests {
 
     #[test]
     fn layers_and_explicit_strategy_override_are_deterministic() {
-        let cfg = parse("[policy]\ntrigger_tokens = 200000\n[provider.codex]\ntrigger_tokens = 180000\n[presets.fast]\ntrigger_tokens = 120000\n[sessions.s]\ntrigger_tokens = 100000\ncommand = 'custom'\ntrusted_legacy_command = true").unwrap();
+        let cfg = parse("[policy]\ntrigger_tokens = 200000\nmin_savings_tokens = 10000\n[provider.codex]\ntrigger_tokens = 180000\n[presets.fast]\ntrigger_tokens = 120000\nmin_savings_tokens = 20000\n[sessions.s]\ntrigger_tokens = 100000\ncommand = 'custom'\ntrusted_legacy_command = true").unwrap();
         let resolved = cfg
             .resolve(Provider::Codex, "s", Some("fast"), Some("elide"))
             .unwrap();
         assert_eq!(resolved.policy.trigger_tokens, 100000);
+        assert_eq!(resolved.policy.min_savings_tokens, 20000);
         assert_eq!(resolved.strategy, "elide");
         assert!(resolved.command.is_none());
         assert!(cfg
             .resolve(Provider::Codex, "s", Some("unknown"), None)
             .is_err());
+        let cfg = parse("[provider.devin]\ntrigger_tokens = 90000").unwrap();
+        assert_eq!(
+            cfg.resolve_provider("devin", "", None, None)
+                .unwrap()
+                .policy
+                .trigger_tokens,
+            90000
+        );
     }
 
     #[test]
@@ -239,6 +271,11 @@ mod tests {
         let cfg = parse("[policy]\ncommand = 'custom'").unwrap();
         assert!(cfg.resolve(Provider::Codex, "s", None, None).is_err());
         let cfg = parse("[policy]\ntrigger_tokens = 10\nfloor_tokens = 10").unwrap();
+        assert!(cfg.resolve(Provider::Codex, "s", None, None).is_err());
+        let cfg = parse(
+            "[policy]\ntrigger_tokens = 100\nfloor_tokens = 10\nmin_savings_tokens = 10000001",
+        )
+        .unwrap();
         assert!(cfg.resolve(Provider::Codex, "s", None, None).is_err());
     }
 }

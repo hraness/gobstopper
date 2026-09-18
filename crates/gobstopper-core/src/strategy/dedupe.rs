@@ -1,9 +1,9 @@
-use super::{state_card_digest, PolicyConfig, Strategy};
+use super::{choose_with_digest, PolicyConfig, Strategy};
 use crate::model::Transcript;
 use crate::plan::{CompactionPlan, Edit};
 
 /// Dedupe: collapse exact-duplicate tool outputs, keeping only the
-/// newest occurrence of each identical (label, summary) pair.
+/// newest occurrence of each identical (tool label, payload SHA-256) pair.
 ///
 /// Research basis: repeated `ls`, `cat`, `grep`, or `read_file` of the
 /// same state are common in long agent sessions; only the latest value
@@ -37,18 +37,24 @@ impl Strategy for DedupeStrategy {
             return None;
         }
 
-        // Group exact duplicates by (label, summary) and keep the newest in
+        // Group exact duplicates by (label, payload digest) and keep the newest in
         // each group. Older duplicates in the group are elision candidates.
         let mut groups: std::collections::HashMap<(String, String), Vec<usize>> =
             std::collections::HashMap::new();
+        let mut keep: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for (pos, item) in candidates.iter().enumerate() {
-            let key = (item.label.clone(), item.summary.clone().unwrap_or_default());
-            groups.entry(key).or_default().push(pos);
+            if let Some(digest) = &item.payload_sha256 {
+                groups
+                    .entry((item.label.clone(), digest.clone()))
+                    .or_default()
+                    .push(pos);
+            } else {
+                keep.insert(pos);
+            }
         }
 
         // Build the set of positions to keep (newest in each duplicate group
         // plus any singletons). Everything else becomes elision candidates.
-        let mut keep: std::collections::HashSet<usize> = std::collections::HashSet::new();
         for positions in groups.values() {
             if let Some(&newest) = positions.last() {
                 keep.insert(newest);
@@ -64,21 +70,8 @@ impl Strategy for DedupeStrategy {
         // Oldest first so the prefix is preserved as long as possible.
         dedup_candidates.sort_by_key(|i| i.line_index);
 
-        let mut projected = before;
-        let mut chosen = Vec::new();
-        for item in dedup_candidates {
-            if projected <= policy.floor_tokens {
-                break;
-            }
-            chosen.push(item.line_index);
-            projected = projected.saturating_sub(item.estimated_elision_savings());
-        }
-        if chosen.is_empty() {
-            return None;
-        }
-
-        let digest = state_card_digest(transcript, &chosen);
-        let digest_overhead = digest.estimate_overhead();
+        let (chosen, digest, context_tokens_after) =
+            choose_with_digest(transcript, policy.floor_tokens, &dedup_candidates)?;
 
         Some(CompactionPlan {
             strategy: self.id().to_string(),
@@ -95,7 +88,7 @@ impl Strategy for DedupeStrategy {
                 Edit::InjectDigest { digest },
             ],
             context_tokens_before: before,
-            context_tokens_after: projected.saturating_add(digest_overhead),
+            context_tokens_after,
         })
     }
 }

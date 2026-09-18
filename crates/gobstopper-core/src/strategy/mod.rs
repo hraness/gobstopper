@@ -54,6 +54,8 @@ pub struct PolicyConfig {
     pub keep_recent_tool_outputs: usize,
     /// Minimum seconds between compactions of one session.
     pub min_interval_secs: u64,
+    #[serde(default = "default_min_savings_tokens")]
+    pub min_savings_tokens: u64,
     /// Scales `trigger_tokens`; see [`PolicyConfig::effective_trigger`].
     #[serde(default)]
     pub quota_pressure: QuotaPressure,
@@ -62,6 +64,10 @@ pub struct PolicyConfig {
     /// [`crate::policy::adapt`].
     #[serde(default)]
     pub adaptive: bool,
+}
+
+const fn default_min_savings_tokens() -> u64 {
+    4_096
 }
 
 impl Default for PolicyConfig {
@@ -73,6 +79,7 @@ impl Default for PolicyConfig {
             floor_tokens: 40_000,
             keep_recent_tool_outputs: 8,
             min_interval_secs: 300,
+            min_savings_tokens: default_min_savings_tokens(),
             quota_pressure: QuotaPressure::Normal,
             adaptive: false,
         }
@@ -92,6 +99,10 @@ impl PolicyConfig {
         };
         // f64 -> u64 casts saturate on overflow; max(1) is the floor.
         ((self.trigger_tokens as f64) * factor).round().max(1.0) as u64
+    }
+
+    pub fn accepts_savings(&self, before: u64, after: u64) -> bool {
+        before.saturating_sub(after) >= self.min_savings_tokens
     }
 }
 
@@ -125,6 +136,8 @@ pub fn strategy_by_id(id: &str) -> Option<Box<dyn Strategy>> {
     builtin_strategies().into_iter().find(|s| s.id() == id)
 }
 
+pub(crate) const STATE_CARD_RESERVE_TOKENS: u64 = 4_096;
+
 /// Build a bounded state-card digest from a set of chosen item
 /// `line_index`es. Sanitized labels/summaries only — never payload text.
 pub(crate) fn state_card_digest(transcript: &Transcript, chosen: &[usize]) -> DigestBlock {
@@ -135,9 +148,14 @@ pub(crate) fn state_card_digest(transcript: &Transcript, chosen: &[usize]) -> Di
     let mut decisions = Vec::new();
     let mut errors = Vec::new();
     let mut open_tasks = Vec::new();
+    let by_line: std::collections::HashMap<usize, &crate::model::TranscriptItem> = transcript
+        .items
+        .iter()
+        .map(|item| (item.line_index, item))
+        .collect();
 
     for idx in chosen {
-        if let Some(item) = transcript.items.iter().find(|i| i.line_index == *idx) {
+        if let Some(item) = by_line.get(idx).copied() {
             // Concepts: distinct tool names (without args) from chosen items.
             if let Some(tool) = item.label.split(|c: char| ['(', ' '].contains(&c)).next() {
                 if !tool.is_empty() {
@@ -227,6 +245,41 @@ pub(crate) fn state_card_digest(transcript: &Transcript, chosen: &[usize]) -> Di
     }
 }
 
+pub(crate) fn choose_with_digest(
+    transcript: &Transcript,
+    floor_tokens: u64,
+    candidates: &[&crate::model::TranscriptItem],
+) -> Option<(Vec<usize>, DigestBlock, u64)> {
+    let mut projected = transcript.context_tokens();
+    let mut cursor = 0usize;
+    let mut chosen = Vec::new();
+    while projected > floor_tokens && cursor < candidates.len() {
+        let item = candidates[cursor];
+        cursor += 1;
+        chosen.push(item.line_index);
+        projected = projected.saturating_sub(item.estimated_elision_savings());
+    }
+    if chosen.is_empty() {
+        return None;
+    }
+    loop {
+        chosen.sort_unstable();
+        let digest = state_card_digest(transcript, &chosen);
+        let overhead = digest.estimate_overhead();
+        let after = projected.saturating_add(overhead);
+        if after <= floor_tokens || cursor == candidates.len() {
+            return Some((chosen, digest, after));
+        }
+        let target = floor_tokens.saturating_sub(overhead);
+        while projected > target && cursor < candidates.len() {
+            let item = candidates[cursor];
+            cursor += 1;
+            chosen.push(item.line_index);
+            projected = projected.saturating_sub(item.estimated_elision_savings());
+        }
+    }
+}
+
 fn is_error_marker(text: &str) -> bool {
     let lower = text.to_lowercase();
     [
@@ -299,6 +352,15 @@ mod tests {
         assert_eq!(p.effective_trigger(), 1);
         p.trigger_tokens = 1;
         assert_eq!(p.effective_trigger(), 1); // 0.7 rounds to 1, floored
+    }
+
+    #[test]
+    fn minimum_savings_is_configurable() {
+        let mut policy = PolicyConfig::default();
+        assert!(policy.accepts_savings(100_000, 95_000));
+        assert!(!policy.accepts_savings(100_000, 96_000));
+        policy.min_savings_tokens = 0;
+        assert!(policy.accepts_savings(100_000, 100_000));
     }
 
     #[test]

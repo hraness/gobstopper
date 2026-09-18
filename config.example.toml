@@ -1,11 +1,12 @@
 # ~/.config/gobstopper/config.toml
 
 [policy]
-strategy = "auto"              # auto | sawtooth | elide | compacted | cache_aware | scored | structured | agentic
+strategy = "auto"              # auto | sawtooth | cache_edits | elide | compacted | cache_aware | scored | dedupe | micro | middle | structured | agentic
 trigger_tokens = 250_000       # fire when context exceeds this
 floor_tokens = 40_000          # transcript-path post-compaction target
 keep_recent_tool_outputs = 8   # tail outputs never elided
 min_interval_secs = 300        # per-session compaction rate limit
+min_savings_tokens = 4_096     # reject plans that reclaim less
 # adaptive = true              # derive trigger/floor per session from the
                                # provider window, elidable share, and past
                                # compaction yields — see `gobstopper tune`
@@ -16,6 +17,10 @@ min_interval_secs = 300        # per-session compaction rate limit
 
 [provider.claude_code]
 # trigger_tokens = 180_000
+
+[provider.devin]
+# Native policy only: over-threshold decisions return `/compact`.
+# trigger_tokens = 200_000
 
 # Per-session overrides, keyed by session id
 # [sessions."01a08d7c-77fd-7690-9413-e8219b379151"]
@@ -42,6 +47,7 @@ floor_tokens = 20_000
 # stdin, returns {"edits": [...]} on stdout.
 # [presets.my-script]
 # command = "python3 ~/bin/compactor.py"
+# trusted_legacy_command = true
 
 # Agentic preset backed by agentmixer's bounded editor profile: a cheap
 # model emits keep/elide/summarize/defer calls, the shim lowers them to
@@ -49,3 +55,4 @@ floor_tokens = 20_000
 # [presets.agentmixer]
 # strategy = "agentic"
 # command = "bun /path/to/agentmixer/src/gobstopper-editor.ts"
+# trusted_legacy_command = true

@@ -36,7 +36,7 @@ execution, standalone `hraness/agentmixer` repo — formerly the
          aicharts, write side owned by gobstopper
 ```
 
-## 1. What exists (v0.1, shipped)
+## 1. What exists (v0.2, shipped and hardened)
 
 - Session detection across `~/.codex/sessions` and `~/.claude/projects`
   (content sniffing, not filename guessing; custom roots for managed
@@ -44,12 +44,13 @@ execution, standalone `hraness/agentmixer` repo — formerly the
 - Usage extraction from provider records (`token_usage_record`,
   `message.usage`) — context occupancy + lifetime burn, no transcript
   content needed.
-- `Edit` IR (`Elide` / `InjectDigest` / `ProviderCompact`), strategies
-  `auto | sawtooth | elide | compacted | cache_aware | structured | agentic(scaffold)`, layered
-  config (`policy → provider → preset → session`), userspace `command`
-  presets, `policy-check` JSON seam, `watch` loop.
-- Verified against real session files: in-place elision preserves Claude
-  `parentUuid` chains and Codex `ordinal` order; live-branch-only
+- `Edit` IR (`Elide` / `InjectDigest` / `ProviderCompact` / `CacheEdit`),
+  deterministic strategies, layered config (`policy → provider → preset →
+  session`), minimum-savings admission, bounded plugins, `policy-check`, and
+  copy-only watch.
+- Verified against real session files: candidate elision preserves Claude
+  `parentUuid` chains and Codex ordinal/window/tool-pair invariants;
+  live-branch-only
   accounting for Claude's tree-shaped transcripts; `compacted` records'
   `replacement_history` covered.
 - `cache_aware` strategy elides the *latest* stale tool outputs before
@@ -127,9 +128,9 @@ the write path bulletproof and undoable.
   accepted, window chain parsed, turn attempted; the turn itself was
   blocked by an account usage-limit, not a transcript rejection.
   Remains gated until a quota-available resume completes an API call.
-- ✅ **Double-buffer watch**: `watch --double-buffer` stages a verified
-  compacted copy at 60% of trigger; the trigger crossing is a vault
-  snapshot + atomic rename — zero-stall compaction.
+- **Double-buffer watch retired**: `--double-buffer` now fails visibly because
+  swapping a staged file into a provider-owned path violates the single-writer
+  boundary. Ordinary watch prepares a verified, no-clobber fork.
 - ✅ **`gobstopper events`**: telemetry readback — recent activity +
   cumulative reclaimed-token totals.
 
@@ -178,10 +179,9 @@ the write path bulletproof and undoable.
   quota-pressure signal). Additive `policy-check` flag
   `--quota-pressure low|normal|high` lets rate-limit state shift the
   effective trigger.
-- ✅ **Double-buffer compaction** (Aider/Compresr pattern): `watch
-  --double-buffer` stages a verified compacted copy at ~60% of trigger
-  and swaps atomically at the trigger — zero-stall compaction at the
-  file layer.
+- ~~**Double-buffer compaction**~~ was implemented experimentally and then
+  retired: safe publication is copy-only, so watch never swaps a staged file
+  over a provider-owned transcript.
 
 ## 5. Phase C — the agentic strategy, wired (v0.4)
 

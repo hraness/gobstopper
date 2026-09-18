@@ -89,13 +89,14 @@ pub fn compact(
     let lock = options.open(&lock_path)?;
     fs2::FileExt::try_lock_exclusive(&lock).context("copy operation is already running")?;
     let receipt_path = operations.join(format!("{identity}.json"));
+    let mut existing_intent = None;
     if receipt_path.exists() {
         let raw = transaction::read(&receipt_path)?;
         let mut receipt: CopyReceipt = serde_json::from_slice(&raw)?;
         if receipt.schema_version != 1
             || receipt.source_sha256 != source_sha256
             || receipt.session_id != id
-            || receipt.path != fork::target_path(handle.provider, &handle.path, &id)
+            || receipt.path != fork::target_path(handle.provider, &source_path, &id)
             || receipt.snapshot_sha256 != source_sha256
             || receipt.reclaimed_bytes != receipt.bytes_before.saturating_sub(receipt.bytes_after)
         {
@@ -111,7 +112,10 @@ pub fn compact(
             }
             return Ok(receipt);
         }
-        bail!("prior copy operation requires recovery; refusing speculative replay");
+        if receipt.completed || fs::symlink_metadata(&receipt.path).is_ok() {
+            bail!("completed or conflicting copy output requires operator recovery");
+        }
+        existing_intent = Some(raw);
     }
     let snapshot = vault::snapshot(
         &handle.path,
@@ -123,7 +127,7 @@ pub fn compact(
     if snapshot.source_sha256 != source_sha256 {
         bail!("source changed before snapshot");
     }
-    let parent = handle.path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = source_path.parent().unwrap_or_else(|| Path::new("."));
     let temp = transaction::Temporary::new(parent, &original)?;
     match handle.provider {
         Provider::Codex => codex::apply(&temp.path, &plan.edits)?,
@@ -133,11 +137,22 @@ pub fn compact(
     if candidate.len() >= original.len() {
         bail!("compaction must reduce actual transcript bytes");
     }
-    if !verify::verify(handle.provider, &candidate).is_empty() {
-        bail!("candidate is not structurally clean");
+    let source_findings = verify::verify(handle.provider, &original);
+    let candidate_findings = verify::verify(handle.provider, &candidate);
+    if candidate_findings
+        .iter()
+        .any(|finding| !source_findings.contains(finding))
+    {
+        bail!("candidate introduces structural findings");
     }
     let output = fork::rewrite_identity(handle.provider, std::str::from_utf8(&candidate)?, &id);
-    let path = fork::target_path(handle.provider, &handle.path, &id);
+    if verify::verify(handle.provider, output.as_bytes())
+        .iter()
+        .any(|finding| !source_findings.contains(finding))
+    {
+        bail!("fork identity rewrite introduces structural findings");
+    }
+    let path = fork::target_path(handle.provider, &source_path, &id);
     let bytes_after = output.len() as u64;
     if bytes_after >= original.len() as u64 {
         bail!("fork identity overhead exceeds savings");
@@ -155,7 +170,11 @@ pub fn compact(
         completed: false,
     };
     let intent = serde_json::to_vec(&receipt)?;
-    transaction::publish_new(&receipt_path, &intent)?;
+    if let Some(previous) = existing_intent {
+        transaction::replace(&receipt_path, &previous, &intent)?;
+    } else {
+        transaction::publish_new(&receipt_path, &intent)?;
+    }
     if transaction::read(&handle.path)? != original {
         bail!("source changed before publication");
     }
@@ -237,7 +256,8 @@ pub fn compact_via_compacted(
     let lock = options.open(&lock_path)?;
     fs2::FileExt::try_lock_exclusive(&lock).context("copy operation is already running")?;
     let receipt_path = operations.join(format!("{identity}.json"));
-    let target = fork::target_path(handle.provider, &handle.path, &id);
+    let target = fork::target_path(handle.provider, &source_path, &id);
+    let mut existing_intent = None;
     if receipt_path.exists() {
         let raw = transaction::read(&receipt_path)?;
         let mut receipt: CopyReceipt = serde_json::from_slice(&raw)?;
@@ -259,7 +279,10 @@ pub fn compact_via_compacted(
             }
             return Ok(receipt);
         }
-        bail!("prior copy operation requires recovery; refusing speculative replay");
+        if receipt.completed || fs::symlink_metadata(&receipt.path).is_ok() {
+            bail!("completed or conflicting copy output requires operator recovery");
+        }
+        existing_intent = Some(raw);
     }
     let snapshot = vault::snapshot(
         &handle.path,
@@ -271,7 +294,7 @@ pub fn compact_via_compacted(
     if snapshot.source_sha256 != source_sha256 {
         bail!("source changed before snapshot");
     }
-    let parent = handle.path.parent().unwrap_or_else(|| Path::new("."));
+    let parent = source_path.parent().unwrap_or_else(|| Path::new("."));
     let temp = transaction::Temporary::new(parent, &original)?;
     if !file_edits.is_empty() {
         codex::apply(&temp.path, &file_edits)?;
@@ -285,10 +308,20 @@ pub fn compact_via_compacted(
     let record_line = codex_compact::build_compacted_record(&lines, history)?;
     codex_compact::append_compacted(&temp.path, &record_line)?;
     let candidate = transaction::read(&temp.path)?;
-    if !verify::verify(handle.provider, &candidate).is_empty() {
-        bail!("candidate is not structurally clean");
+    let source_findings = verify::verify(handle.provider, &original);
+    if verify::verify(handle.provider, &candidate)
+        .iter()
+        .any(|finding| !source_findings.contains(finding))
+    {
+        bail!("candidate introduces structural findings");
     }
     let output = fork::rewrite_identity(handle.provider, std::str::from_utf8(&candidate)?, &id);
+    if verify::verify(handle.provider, output.as_bytes())
+        .iter()
+        .any(|finding| !source_findings.contains(finding))
+    {
+        bail!("fork identity rewrite introduces structural findings");
+    }
     let bytes_after = output.len() as u64;
     let mut receipt = CopyReceipt {
         schema_version: 1,
@@ -303,7 +336,11 @@ pub fn compact_via_compacted(
         completed: false,
     };
     let intent = serde_json::to_vec(&receipt)?;
-    transaction::publish_new(&receipt_path, &intent)?;
+    if let Some(previous) = existing_intent {
+        transaction::replace(&receipt_path, &previous, &intent)?;
+    } else {
+        transaction::publish_new(&receipt_path, &intent)?;
+    }
     if transaction::read(&handle.path)? != original {
         bail!("source changed before publication");
     }

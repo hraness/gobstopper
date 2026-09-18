@@ -1,4 +1,4 @@
-use super::{state_card_digest, ElideStrategy, PolicyConfig, Strategy};
+use super::{choose_with_digest, PolicyConfig, Strategy};
 use crate::model::Transcript;
 use crate::plan::{CompactionPlan, Edit};
 
@@ -17,32 +17,37 @@ impl Strategy for CompactedStrategy {
     }
 
     fn evaluate(&self, transcript: &Transcript, policy: &PolicyConfig) -> Option<CompactionPlan> {
-        let mut plan = ElideStrategy.evaluate(transcript, policy)?;
-        let elided_indexes: Vec<usize> = plan
-            .edits
-            .iter()
-            .filter_map(|e| match e {
-                Edit::Elide { line_indexes, .. } => Some(line_indexes.clone()),
-                _ => None,
-            })
-            .flatten()
-            .collect();
-        if elided_indexes.is_empty() {
+        let before = transcript.context_tokens();
+        if before < policy.effective_trigger() {
             return None;
         }
-
-        let digest = state_card_digest(transcript, &elided_indexes);
-        let digest_overhead = digest.estimate_overhead();
-
-        plan.edits.push(Edit::InjectDigest { digest });
-        plan.strategy = self.id().to_string();
-        plan.rationale = format!(
-            "context {} tokens exceeds trigger {}; emitting a compacted record for {} elided items",
-            plan.context_tokens_before,
-            policy.trigger_tokens,
-            elided_indexes.len()
-        );
-        plan.context_tokens_after = plan.context_tokens_after.saturating_add(digest_overhead);
-        Some(plan)
+        let elidable: Vec<_> = transcript
+            .items
+            .iter()
+            .filter(|item| item.elidable_bytes.is_some())
+            .collect();
+        let keep_from = elidable
+            .len()
+            .saturating_sub(policy.keep_recent_tool_outputs);
+        let candidates = &elidable[..keep_from.min(elidable.len())];
+        let (elided_indexes, digest, context_tokens_after) =
+            choose_with_digest(transcript, policy.floor_tokens, candidates)?;
+        Some(CompactionPlan {
+            strategy: self.id().to_string(),
+            rationale: format!(
+                "context {before} tokens exceeds trigger {}; emitting a compacted record for {} elided items",
+                policy.trigger_tokens,
+                elided_indexes.len()
+            ),
+            edits: vec![
+                Edit::Elide {
+                    line_indexes: elided_indexes,
+                    stub_template: super::elide::DEFAULT_STUB.to_string(),
+                },
+                Edit::InjectDigest { digest },
+            ],
+            context_tokens_before: before,
+            context_tokens_after,
+        })
     }
 }

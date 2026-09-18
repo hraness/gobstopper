@@ -1,5 +1,5 @@
 use super::{HeuristicScorer, PolicyConfig, ScoredItem, ScoredStrategy, Strategy};
-use crate::model::Transcript;
+use crate::model::{Provider, Transcript};
 use crate::plan::{CompactionPlan, Edit};
 
 /// Claude `cache_edits`: remove stale tool results by `tool_use_id` at the
@@ -15,20 +15,22 @@ impl Strategy for CacheEditsStrategy {
 
     fn evaluate(&self, transcript: &Transcript, policy: &PolicyConfig) -> Option<CompactionPlan> {
         let before = transcript.context_tokens();
-        if before < policy.effective_trigger() {
+        if transcript.session.provider != Provider::ClaudeCode
+            || before < policy.effective_trigger()
+        {
             return None;
         }
 
-        let eligible = ScoredStrategy::candidates(transcript, policy);
+        let eligible: Vec<usize> = ScoredStrategy::candidates(transcript, policy)
+            .into_iter()
+            .filter(|&index| !transcript.items[index].tool_use_ids.is_empty())
+            .collect();
         if eligible.is_empty() {
             return None;
         }
 
         let scores = HeuristicScorer.score(transcript, &eligible);
-        let mut scored: Vec<ScoredItem> = scores
-            .into_iter()
-            .filter(|s| eligible.contains(&s.item_index))
-            .collect();
+        let mut scored: Vec<ScoredItem> = scores;
         // Drop the lowest-keep-probability candidates first; break ties by
         // eliding the larger token savers first.
         scored.sort_by(|a, b| {
@@ -45,18 +47,35 @@ impl Strategy for CacheEditsStrategy {
         let mut projected = before;
         let mut chosen = 0usize;
         let mut tool_use_ids: Vec<String> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
         for scored in &scored {
-            if projected <= policy.floor_tokens {
+            if projected <= policy.floor_tokens
+                || tool_use_ids.len() >= crate::validation::MAX_ITEMS
+            {
                 break;
             }
             let item = &transcript.items[scored.item_index];
-            if let Some(id) = item.parent_uuid.as_deref() {
-                tool_use_ids.push(id.to_string());
+            let remaining = crate::validation::MAX_ITEMS - tool_use_ids.len();
+            let fresh: Vec<String> = item
+                .tool_use_ids
+                .iter()
+                .filter(|id| !seen.contains(id.as_str()))
+                .cloned()
+                .collect();
+            if fresh.is_empty() {
+                continue;
+            }
+            if fresh.len() > remaining {
+                break;
+            }
+            for id in fresh {
+                seen.insert(id.clone());
+                tool_use_ids.push(id);
             }
             chosen += 1;
             projected = projected.saturating_sub(item.estimated_elision_savings());
         }
-        if chosen == 0 {
+        if chosen == 0 || tool_use_ids.is_empty() {
             return None;
         }
 

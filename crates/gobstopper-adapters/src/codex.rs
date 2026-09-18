@@ -92,7 +92,7 @@ fn user_prompt_summary(payload: &Value) -> Option<String> {
 /// name and arguments.
 fn annotated_output_summary(
     payload: &Value,
-    calls: &std::collections::HashMap<String, String>,
+    calls: &std::collections::HashMap<String, ToolCallMeta>,
 ) -> Option<String> {
     const MAX_SUMMARY: usize = 240;
     const TAIL: usize = 180;
@@ -106,7 +106,10 @@ fn annotated_output_summary(
         .or_else(|| payload.get("id"))
         .and_then(Value::as_str)
         .unwrap_or("?");
-    let call = calls.get(call_id).map(String::as_str).unwrap_or("?");
+    let call = calls
+        .get(call_id)
+        .map(|meta| meta.label.as_str())
+        .unwrap_or("?");
     let tail = if text.chars().count() <= TAIL {
         text
     } else {
@@ -136,7 +139,13 @@ fn call_id(payload: &Value) -> Option<String> {
         .map(str::to_string)
 }
 
-fn call_label(payload: &Value) -> String {
+#[derive(Clone)]
+struct ToolCallMeta {
+    name: String,
+    label: String,
+}
+
+fn call_label(payload: &Value) -> ToolCallMeta {
     let name = payload
         .get("name")
         .or_else(|| payload.get("command"))
@@ -152,7 +161,10 @@ fn call_label(payload: &Value) -> String {
     } else {
         args
     };
-    format!("{name}({args})")
+    ToolCallMeta {
+        name: name.to_string(),
+        label: format!("{name}({args})"),
+    }
 }
 
 /// Elidable payload bytes: tool output bodies only.
@@ -176,8 +188,12 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
     let mut items: Vec<TranscriptItem> = Vec::new();
     let mut window_start = 0;
     let mut usage = UsageSample::default();
-    let mut calls: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut calls: std::collections::HashMap<String, ToolCallMeta> =
+        std::collections::HashMap::new();
     for (line_index, line) in BufReader::new(file).lines().enumerate() {
+        if line_index >= gobstopper_core::validation::MAX_ITEMS {
+            return Err(AdapterError::InvalidEdit("transcript exceeds record limit"));
+        }
         let line = line.map_err(|e| AdapterError::Io {
             path: handle.path.clone(),
             source: e,
@@ -194,9 +210,10 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                 let kind = classify(ptype, role);
                 let elidable = elidable_bytes(payload);
                 let est = estimate_tokens(value_len(payload));
+                let item_call_id = call_id(payload);
                 if kind == ItemKind::ToolCall {
-                    if let Some(id) = call_id(payload) {
-                        calls.insert(id, call_label(payload));
+                    if let Some(id) = &item_call_id {
+                        calls.insert(id.clone(), call_label(payload));
                     }
                 }
                 let summary = match kind {
@@ -204,12 +221,28 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                     ItemKind::ToolResult => annotated_output_summary(payload, &calls),
                     _ => None,
                 };
+                let label = item_call_id
+                    .as_deref()
+                    .and_then(|id| calls.get(id))
+                    .map(|meta| meta.name.clone())
+                    .unwrap_or_else(|| ptype.to_string());
+                let tool_use_ids = if kind == ItemKind::ToolResult {
+                    item_call_id.into_iter().collect()
+                } else {
+                    Vec::new()
+                };
+                let payload_sha256 = elidable.and_then(|_| {
+                    payload
+                        .get("output")
+                        .and_then(|output| crate::payload::fingerprint(std::iter::once(output)))
+                });
                 items.push(TranscriptItem {
                     line_index,
                     kind,
                     est_tokens: est,
                     elidable_bytes: elidable,
-                    label: format!("{ptype}@{line_index}"),
+                    elidable_parts: u32::from(elidable.is_some()),
+                    label,
                     summary,
                     uuid: record
                         .get("id")
@@ -220,6 +253,8 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                         .get("parent_id")
                         .and_then(Value::as_str)
                         .map(str::to_string),
+                    tool_use_ids,
+                    payload_sha256,
                 });
             }
             Some("compacted") => {
@@ -236,12 +271,28 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                 // per-output floor must match `apply_elide` exactly or a
                 // record full of small outputs reads as elidable forever
                 // while every apply stubs nothing.
-                let bytes: u64 = payload
+                let (bytes, parts) = payload
                     .get("replacement_history")
                     .and_then(Value::as_array)
-                    .map(|items| items.iter().filter_map(elidable_bytes).sum())
-                    .unwrap_or(0);
-                let elidable = (bytes > 256).then_some(bytes);
+                    .map(|items| {
+                        items.iter().filter_map(elidable_bytes).fold(
+                            (0u64, 0u32),
+                            |(bytes, parts), size| {
+                                (bytes.saturating_add(size), parts.saturating_add(1))
+                            },
+                        )
+                    })
+                    .unwrap_or_default();
+                let elidable = (bytes > 0).then_some(bytes);
+                let payload_sha256 = payload
+                    .get("replacement_history")
+                    .and_then(Value::as_array)
+                    .and_then(|items| {
+                        crate::payload::fingerprint(items.iter().filter_map(|item| {
+                            item.get("output")
+                                .filter(|output| crate::payload::eligible_bytes(output) > 0)
+                        }))
+                    });
                 items.push(TranscriptItem {
                     line_index,
                     kind: ItemKind::ToolResult,
@@ -253,10 +304,13 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                     ),
 
                     elidable_bytes: elidable,
-                    label: format!("compacted@{line_index}"),
+                    elidable_parts: parts,
+                    label: "compacted".to_string(),
                     summary: None,
                     uuid: record.get("id").and_then(Value::as_str).map(str::to_string),
                     parent_uuid: None,
+                    tool_use_ids: Vec::new(),
+                    payload_sha256,
                 });
             }
             _ => {}

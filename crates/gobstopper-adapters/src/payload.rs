@@ -1,4 +1,5 @@
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 fn text_block(block: &Value) -> bool {
     matches!(
@@ -39,6 +40,18 @@ pub fn eligible_bytes(value: &Value) -> u64 {
     } else {
         0
     }
+}
+
+pub fn fingerprint<'a>(values: impl IntoIterator<Item = &'a Value>) -> Option<String> {
+    let mut hasher = Sha256::new();
+    let mut count = 0u64;
+    for value in values {
+        let bytes = serde_json::to_vec(value).ok()?;
+        hasher.update((bytes.len() as u64).to_be_bytes());
+        hasher.update(bytes);
+        count = count.saturating_add(1);
+    }
+    (count > 0).then(|| format!("{:x}", hasher.finalize()))
 }
 
 pub fn elide(value: &mut Value, stub: String) -> u64 {

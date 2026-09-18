@@ -68,7 +68,13 @@ fn main() {
         ..Default::default()
     };
     let strategies = builtin_strategies();
-    let sizes = [(50, 400), (200, 400), (500, 400), (1000, 400)];
+    let sizes = [
+        (50, 400),
+        (200, 400),
+        (500, 400),
+        (1_000, 400),
+        (10_000, 400),
+    ];
 
     let mut out = std::io::stdout();
     writeln!(
