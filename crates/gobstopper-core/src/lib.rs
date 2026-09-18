@@ -21,7 +21,10 @@ pub use model::{ItemKind, Provider, SessionHandle, Transcript, TranscriptItem, U
 pub use plan::{CompactionPlan, DigestBlock, Edit};
 pub use policy::{adapt, AdaptiveOutcome, AdaptiveSample};
 pub use probe::{KindTally, Probe, ProbeKind, ProbeScore};
-pub use strategy::{builtin_strategies, strategy_by_id, PolicyConfig, QuotaPressure, Strategy};
+pub use strategy::{
+    builtin_strategies, strategy_by_id, PolicyConfig, QuotaPressure, ScoreDriver, ScoredItem,
+    ScoredStrategy, Strategy,
+};
 
 #[cfg(test)]
 mod tests {

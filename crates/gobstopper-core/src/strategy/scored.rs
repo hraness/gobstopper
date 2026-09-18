@@ -1,0 +1,412 @@
+//! Scored: a relevance scorer ranks each elidable item by keep
+//! probability; the lowest-scoring items are elided until the floor.
+//!
+//! Unlike position-ordered strategies, this can keep an important older
+//! result while dropping a more recent but irrelevant one — at the cost
+//! of giving up on prefix preservation (different items may be elided
+//! from anywhere in the eligible range). A built-in deterministic
+//! heuristic scorer makes this strategy useful with no external API; the
+//! `ScoreDriver` trait lets a CLI-side driver plug in a model-based
+//! scorer such as Jev.
+
+use super::elide::DEFAULT_STUB;
+use super::{state_card_digest, PolicyConfig, Strategy};
+use crate::estimate::estimate_tokens;
+use crate::model::{ItemKind, Transcript};
+use crate::plan::{CompactionPlan, Edit};
+
+/// One scored candidate: an index into `transcript.items` plus a keep
+/// probability (0..1; higher = more worth preserving).
+#[derive(Debug, Clone)]
+pub struct ScoredItem {
+    pub item_index: usize,
+    pub keep_probability: f64,
+}
+
+/// Driver interface for model-based scorers. Implemented in the CLI or
+/// userspace; the core strategy only sees `ScoredItem`s.
+pub trait ScoreDriver {
+    /// Score every candidate item index. The `transcript` is provided
+    /// for context (tail item labels, current task), but drivers must
+    /// avoid consuming full payload text — only `item.label` and
+    /// `item.summary` are safe.
+    fn score(&self, transcript: &Transcript, candidates: &[usize]) -> Vec<ScoredItem>;
+}
+
+/// Deterministic built-in scorer. It reads item metadata only and makes
+/// the `scored` strategy usable without an API key.
+pub struct HeuristicScorer;
+
+impl HeuristicScorer {
+    pub fn score(&self, transcript: &Transcript, candidates: &[usize]) -> Vec<ScoredItem> {
+        let tail = transcript.items.iter().rev().take(8).collect::<Vec<_>>();
+        let goal = transcript
+            .items
+            .iter()
+            .rev()
+            .find(|i| {
+                i.kind == ItemKind::User
+                    && i.summary.as_ref().is_some_and(|s| {
+                        !s.starts_with('<') && !s.starts_with("[gobstopper state card]")
+                    })
+            })
+            .map(|i| tokenize(i.summary.as_deref().unwrap_or(&i.label)));
+        let tail_tokens: std::collections::HashSet<String> = tail
+            .iter()
+            .flat_map(|i| {
+                tokenize(&i.label)
+                    .into_iter()
+                    .chain(tokenize(i.summary.as_deref().unwrap_or("")))
+            })
+            .collect();
+
+        let mut label_occurrences: std::collections::HashMap<String, Vec<usize>> =
+            std::collections::HashMap::new();
+        for &idx in candidates {
+            if let Some(item) = transcript.items.get(idx) {
+                label_occurrences
+                    .entry(item.label.clone())
+                    .or_default()
+                    .push(idx);
+            }
+        }
+
+        let n = candidates.len().max(1) as f64;
+        candidates
+            .iter()
+            .enumerate()
+            .map(|(pos, &idx)| {
+                let item = transcript.items.get(idx).unwrap();
+                let recency = (pos as f64) / n; // older -> lower
+
+                let item_text = format!("{} {}", item.label, item.summary.as_deref().unwrap_or(""));
+                let error_marker = has_error_marker(&item_text);
+
+                let item_tokens = tokenize(&item_text);
+                let overlap_count = item_tokens
+                    .iter()
+                    .filter(|t| {
+                        tail_tokens.contains(*t) || goal.as_ref().is_some_and(|g| g.contains(*t))
+                    })
+                    .count();
+                let overlap = if item_tokens.is_empty() {
+                    0.0
+                } else {
+                    (overlap_count as f64) / (item_tokens.len() as f64)
+                };
+
+                let newest_dup = label_occurrences
+                    .get(&item.label)
+                    .and_then(|v| v.last())
+                    .copied()
+                    .unwrap_or(idx);
+                let unique = newest_dup == idx;
+
+                let score = 0.35 * recency
+                    + (if error_marker { 0.25 } else { 0.0 })
+                    + 0.35 * overlap
+                    + (if unique { 0.05 } else { 0.0 });
+                ScoredItem {
+                    item_index: idx,
+                    keep_probability: score.clamp(0.0, 1.0),
+                }
+            })
+            .collect()
+    }
+}
+
+fn tokenize(text: &str) -> std::collections::HashSet<String> {
+    text.split(|c: char| !c.is_alphanumeric() && c != '/' && c != '.' && c != '_')
+        .filter(|s| !s.is_empty() && s.len() <= 128)
+        .map(|s| s.to_lowercase())
+        .collect()
+}
+
+fn has_error_marker(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    [
+        "error",
+        "failed",
+        "failure",
+        "panic",
+        "exception",
+        "traceback",
+        "enoent",
+        "eacces",
+        "non-zero",
+        "nonzero",
+        "exit code",
+        "stderr:",
+    ]
+    .iter()
+    .any(|m| lower.contains(m))
+}
+
+pub struct ScoredStrategy;
+
+impl ScoredStrategy {
+    /// Eligible item indexes: elidable items outside the protected tail.
+    pub fn candidates(transcript: &Transcript, policy: &PolicyConfig) -> Vec<usize> {
+        let elidable: Vec<usize> = transcript
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| i.elidable_bytes.is_some())
+            .map(|(idx, _)| idx)
+            .collect();
+        let keep_from = elidable
+            .len()
+            .saturating_sub(policy.keep_recent_tool_outputs);
+        elidable[..keep_from.min(elidable.len())].to_vec()
+    }
+
+    /// Build a plan from driver-provided or heuristic scores. The
+    /// `scores` are re-intersected with the transcript's eligible
+    /// candidates, sorted ascending by keep-probability, and elided until
+    /// the floor. Unknown item indexes are ignored.
+    pub fn scores_to_plan(
+        transcript: &Transcript,
+        policy: &PolicyConfig,
+        scores: &[ScoredItem],
+    ) -> Option<CompactionPlan> {
+        let before = transcript.context_tokens();
+        if before < policy.effective_trigger() {
+            return None;
+        }
+        let eligible: std::collections::HashSet<usize> =
+            Self::candidates(transcript, policy).into_iter().collect();
+        let mut scored: Vec<&ScoredItem> = scores
+            .iter()
+            .filter(|s| eligible.contains(&s.item_index))
+            .collect();
+        if scored.is_empty() {
+            return None;
+        }
+        // Elide the lowest keep-probability items first.
+        scored.sort_by(|a, b| {
+            a.keep_probability
+                .partial_cmp(&b.keep_probability)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+
+        let mut projected = before;
+        let mut chosen: Vec<usize> = Vec::new();
+        for s in scored {
+            if projected <= policy.floor_tokens {
+                break;
+            }
+            if let Some(item) = transcript.items.get(s.item_index) {
+                chosen.push(item.line_index);
+                projected = projected.saturating_sub(item.estimated_elision_savings());
+            }
+        }
+        if chosen.is_empty() {
+            return None;
+        }
+        chosen.sort();
+
+        let digest = state_card_digest(transcript, &chosen);
+        let digest_chars: usize = digest.goal.as_ref().map(|g| g.len()).unwrap_or(0)
+            + digest.decisions.iter().map(|d| d.len()).sum::<usize>()
+            + digest.files_touched.iter().map(|f| f.len()).sum::<usize>()
+            + 64;
+        let digest_overhead = estimate_tokens(digest_chars);
+
+        let first_elided = chosen.first().copied().unwrap_or(0);
+        let prefix_items = transcript
+            .items
+            .iter()
+            .filter(|i| i.line_index < first_elided)
+            .count();
+
+        Some(CompactionPlan {
+            strategy: "scored".to_string(),
+            rationale: format!(
+                "context {before} tokens exceeds trigger {}; eliding {} scored stale outputs, {} prefix records unchanged",
+                policy.trigger_tokens,
+                chosen.len(),
+                prefix_items
+            ),
+            edits: vec![
+                Edit::Elide {
+                    line_indexes: chosen,
+                    stub_template: DEFAULT_STUB.to_string(),
+                },
+                Edit::InjectDigest { digest },
+            ],
+            context_tokens_before: before,
+            context_tokens_after: projected.saturating_add(digest_overhead),
+        })
+    }
+}
+
+impl Strategy for ScoredStrategy {
+    fn id(&self) -> &'static str {
+        "scored"
+    }
+
+    fn evaluate(&self, transcript: &Transcript, policy: &PolicyConfig) -> Option<CompactionPlan> {
+        let scores = HeuristicScorer.score(transcript, &Self::candidates(transcript, policy));
+        Self::scores_to_plan(transcript, policy, &scores)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{ItemKind, Provider, SessionHandle, Transcript, TranscriptItem};
+    use crate::strategy::{PolicyConfig, QuotaPressure};
+    use std::path::PathBuf;
+
+    fn item(
+        line: usize,
+        kind: ItemKind,
+        est_tokens: u64,
+        elidable: bool,
+        label: &str,
+        summary: Option<&str>,
+    ) -> TranscriptItem {
+        TranscriptItem {
+            line_index: line,
+            kind,
+            est_tokens,
+            elidable_bytes: elidable.then_some(est_tokens * 4),
+            label: label.into(),
+            summary: summary.map(String::from),
+        }
+    }
+
+    fn transcript(items: Vec<TranscriptItem>, context_tokens: u64) -> Transcript {
+        Transcript {
+            session: SessionHandle {
+                provider: Provider::Codex,
+                session_id: "s".into(),
+                path: PathBuf::from("/tmp/s.jsonl"),
+                cwd: None,
+                age_secs: u64::MAX,
+            },
+            items,
+            usage: crate::model::UsageSample {
+                context_tokens,
+                ..Default::default()
+            },
+        }
+    }
+
+    fn policy() -> PolicyConfig {
+        PolicyConfig {
+            trigger_tokens: 1_000,
+            floor_tokens: 300,
+            keep_recent_tool_outputs: 2,
+            min_interval_secs: 0,
+            quota_pressure: QuotaPressure::Normal,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn heuristic_prefers_errors_and_recent() {
+        let items = vec![
+            item(
+                0,
+                ItemKind::User,
+                100,
+                false,
+                "user",
+                Some("implement thing"),
+            ),
+            item(
+                1,
+                ItemKind::ToolResult,
+                400,
+                true,
+                "bash ls",
+                Some("main.rs src/"),
+            ),
+            item(
+                2,
+                ItemKind::ToolResult,
+                400,
+                true,
+                "bash ls",
+                Some("main.rs src/"),
+            ), // dup
+            item(
+                3,
+                ItemKind::ToolResult,
+                400,
+                true,
+                "bash gcc",
+                Some("error: missing header"),
+            ),
+            item(4, ItemKind::User, 100, false, "user", Some("fix header")),
+            item(
+                5,
+                ItemKind::ToolResult,
+                400,
+                true,
+                "bash read",
+                Some("main.rs"),
+            ), // tail protected
+            item(
+                6,
+                ItemKind::ToolResult,
+                400,
+                true,
+                "bash cat",
+                Some("main.rs"),
+            ), // tail protected
+        ];
+        let t = transcript(items, 2_500);
+        let candidates = ScoredStrategy::candidates(&t, &policy());
+        // 5 tool results, minus 2 tail = 3 candidates (items 1,2,3)
+        assert_eq!(candidates.len(), 3);
+        let scores = HeuristicScorer.score(&t, &candidates);
+        // item 3 (error, later) should have highest keep prob; item 2 (older dup) lowest.
+        let by_idx: std::collections::HashMap<usize, f64> = scores
+            .iter()
+            .map(|s| (s.item_index, s.keep_probability))
+            .collect();
+        assert!(by_idx[&3] > by_idx[&1], "error marker should raise score");
+        assert!(
+            by_idx[&2] > by_idx[&1],
+            "newer duplicate should outrank older"
+        );
+    }
+
+    #[test]
+    fn score_driver_interface_and_plan() {
+        struct StubDriver;
+        impl ScoreDriver for StubDriver {
+            fn score(&self, _t: &Transcript, candidates: &[usize]) -> Vec<ScoredItem> {
+                candidates
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &idx)| ScoredItem {
+                        item_index: idx,
+                        keep_probability: if i == 0 { 0.0 } else { 1.0 },
+                    })
+                    .collect()
+            }
+        }
+
+        let items: Vec<TranscriptItem> = (0..5)
+            .map(|i| {
+                item(
+                    i,
+                    ItemKind::ToolResult,
+                    400,
+                    true,
+                    &format!("bash-{i}"),
+                    None,
+                )
+            })
+            .collect();
+        let t = transcript(items, 2_500);
+        let candidates = ScoredStrategy::candidates(&t, &policy());
+        let scores = StubDriver.score(&t, &candidates);
+        let plan = ScoredStrategy::scores_to_plan(&t, &policy(), &scores).unwrap();
+        // item with 0.0 score elided; others kept.
+        assert_eq!(plan.edits.len(), 2);
+    }
+}

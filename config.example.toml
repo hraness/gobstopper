@@ -1,7 +1,7 @@
 # ~/.config/gobstopper/config.toml
 
 [policy]
-strategy = "auto"              # auto | sawtooth | elide | compacted | cache_aware | structured | agentic
+strategy = "auto"              # auto | sawtooth | elide | compacted | cache_aware | scored | structured | agentic
 trigger_tokens = 250_000       # fire when context exceeds this
 floor_tokens = 40_000          # transcript-path post-compaction target
 keep_recent_tool_outputs = 8   # tail outputs never elided

@@ -4,6 +4,7 @@ mod cache_aware;
 mod compacted;
 mod elide;
 mod sawtooth;
+mod scored;
 mod structured;
 
 pub use agentic::{AgenticStrategy, EditorCall, EditorDriver};
@@ -12,10 +13,11 @@ pub use cache_aware::CacheAwareStrategy;
 pub use compacted::CompactedStrategy;
 pub use elide::ElideStrategy;
 pub use sawtooth::SawtoothStrategy;
+pub use scored::{HeuristicScorer, ScoreDriver, ScoredItem, ScoredStrategy};
 pub use structured::StructuredStrategy;
 
-use crate::model::Transcript;
-use crate::plan::CompactionPlan;
+use crate::model::{ItemKind, Transcript};
+use crate::plan::{CompactionPlan, DigestBlock};
 use serde::{Deserialize, Serialize};
 
 /// How close the session is to the provider's quota ceiling. Scales the
@@ -96,6 +98,7 @@ pub trait Strategy {
 pub fn builtin_strategies() -> Vec<Box<dyn Strategy>> {
     vec![
         Box::new(AutoStrategy),
+        Box::new(ScoredStrategy),
         Box::new(CacheAwareStrategy),
         Box::new(SawtoothStrategy),
         Box::new(ElideStrategy),
@@ -108,6 +111,52 @@ pub fn builtin_strategies() -> Vec<Box<dyn Strategy>> {
 /// Look up a built-in strategy by id.
 pub fn strategy_by_id(id: &str) -> Option<Box<dyn Strategy>> {
     builtin_strategies().into_iter().find(|s| s.id() == id)
+}
+
+/// Build a bounded state-card digest from a set of chosen item
+/// `line_index`es. Sanitized labels/summaries only — never payload text.
+pub(crate) fn state_card_digest(transcript: &Transcript, chosen: &[usize]) -> DigestBlock {
+    let mut decisions = Vec::new();
+    let mut files_touched = Vec::new();
+    for idx in chosen {
+        if let Some(item) = transcript.items.iter().find(|i| i.line_index == *idx) {
+            if let Some(summary) = &item.summary {
+                decisions.push(summary.clone());
+            } else {
+                decisions.push(format!(
+                    "{} elided ({} bytes)",
+                    item.label,
+                    item.elidable_bytes.unwrap_or(0)
+                ));
+            }
+            if item.kind == ItemKind::ToolResult {
+                files_touched.push(item.summary.clone().unwrap_or_else(|| item.label.clone()));
+            }
+        }
+    }
+    const MAX_DECISIONS: usize = 8;
+    decisions.truncate(MAX_DECISIONS);
+    files_touched.truncate(MAX_DECISIONS);
+
+    let goal = transcript
+        .items
+        .iter()
+        .rev()
+        .find(|i| {
+            i.kind == ItemKind::User
+                && i.summary.as_ref().is_some_and(|s| {
+                    !s.starts_with('<') && !s.starts_with("[gobstopper state card]")
+                })
+        })
+        .and_then(|i| i.summary.clone());
+
+    DigestBlock {
+        goal: goal.clone(),
+        decisions,
+        files_touched,
+        open_tasks: Vec::new(),
+        covers_items: chosen.len(),
+    }
 }
 
 #[cfg(test)]

@@ -79,6 +79,7 @@ right boundary."
 | `elide` | transcript | stubs stale tool outputs oldest-first until the floor; deterministic, no model call |
 || `cache_aware` | transcript | elides the *latest* stale tool outputs before the protected tail, then injects a state-card digest. Keeps the conversation prefix byte-identical so the provider's prompt-cache hit rate is preserved |
 || `compacted` | transcript | same digest as `cache_aware` but elides stale outputs oldest-first. On Codex the digest is lowered to a provider-native `compacted` record; on Claude it appends as a synthetic `user` turn |
+|| `scored` | transcript | relevance-ordered elision: each candidate tool result is scored by keep-probability and the lowest-scoring are stubbed. Heuristic scorer built in; Jev (`TYPESAFE_API_KEY`) adds per-item model scoring for ~$0.0005/compaction |
 | `structured` | transcript | placeholder state-card digest (`goal`/`decisions`/`files`/`todos`); currently emits item labels, not a real summary. Safe for chat-only sessions but should not be mistaken for a semantic compressor |
 | `agentic` | transcript | reserved for a bounded editor-model backend; today `preset.command` is the only extension point and is treated as untrusted code |
 
@@ -127,7 +128,7 @@ Config: `~/.config/gobstopper/config.toml`
 
 ```toml
 [policy]
-strategy = "auto"            # sawtooth | elide | compacted | cache_aware | structured | agentic
+strategy = "auto"            # sawtooth | elide | compacted | cache_aware | scored | structured | agentic
 trigger_tokens = 250_000
 floor_tokens = 40_000
 adaptive = true              # derive trigger/floor per session — see `gobstopper tune`

@@ -1,8 +1,8 @@
 use super::elide::DEFAULT_STUB;
-use super::{PolicyConfig, Strategy};
+use super::{state_card_digest, PolicyConfig, Strategy};
 use crate::estimate::estimate_tokens;
-use crate::model::{ItemKind, Transcript};
-use crate::plan::{CompactionPlan, DigestBlock, Edit};
+use crate::model::Transcript;
+use crate::plan::{CompactionPlan, Edit};
 
 /// Cache-aware: compact by eliding the *latest* stale tool outputs before
 /// the protected tail, then inject a state-card digest. Eliding a suffix
@@ -55,50 +55,9 @@ impl Strategy for CacheAwareStrategy {
         }
         chosen.sort();
 
-        let mut decisions = Vec::new();
-        let mut files_touched = Vec::new();
-        for idx in &chosen {
-            if let Some(item) = transcript.items.iter().find(|i| i.line_index == *idx) {
-                if let Some(summary) = &item.summary {
-                    decisions.push(summary.clone());
-                } else {
-                    decisions.push(format!(
-                        "{} elided ({} bytes)",
-                        item.label,
-                        item.elidable_bytes.unwrap_or(0)
-                    ));
-                }
-                if item.kind == ItemKind::ToolResult {
-                    files_touched.push(item.summary.clone().unwrap_or_else(|| item.label.clone()));
-                }
-            }
-        }
+        let digest = state_card_digest(transcript, &chosen);
 
-        const MAX_DECISIONS: usize = 8;
-        decisions.truncate(MAX_DECISIONS);
-        files_touched.truncate(MAX_DECISIONS);
-
-        let goal = transcript
-            .items
-            .iter()
-            .rev()
-            .find(|i| {
-                i.kind == ItemKind::User
-                    && i.summary.as_ref().is_some_and(|s| {
-                        !s.starts_with('<') && !s.starts_with("[gobstopper state card]")
-                    })
-            })
-            .and_then(|i| i.summary.clone());
-
-        let digest = DigestBlock {
-            goal: goal.clone(),
-            decisions,
-            files_touched,
-            open_tasks: Vec::new(),
-            covers_items: chosen.len(),
-        };
-
-        let digest_chars: usize = goal.as_ref().map(|g| g.len()).unwrap_or(0)
+        let digest_chars: usize = digest.goal.as_ref().map(|g| g.len()).unwrap_or(0)
             + digest.decisions.iter().map(|d| d.len()).sum::<usize>()
             + digest.files_touched.iter().map(|f| f.len()).sum::<usize>()
             + 64;

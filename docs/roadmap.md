@@ -499,3 +499,26 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
   snapshot's exact bytes back to the original session path (guarded by
   `transaction::replace`'s changed-during-write check) so `claude --resume <id>`
   keeps working on the same id.
+
+### R8: Scored relevance compaction (smart strategy)
+
+- **Scope:** `scored` strategy, built-in heuristic scorer, optional Jev driver.
+- **Objective:** score each stale tool result by keep-probability instead of
+  eliding by position; drop the least relevant outputs first while protecting
+  the tail and keeping the original content addressable in the vault.
+- **Acceptance:** `scored` produces a valid `CompactionPlan` for every session
+  `cache_aware` can compact; without a Jev key the deterministic heuristic
+  still works; with `TYPESAFE_API_KEY` (or `GOBSTOPPER_JEV_API_KEY`) Jev
+  requests are batched, bounded, and never include raw tool output — only
+  sanitized labels/summaries.
+- **Validation:** workspace tests (29 core tests for `scored`), Clippy, site
+  check, and a live `gobstopper plan` on a 336k-token Claude session showing
+  `336041 -> ~300230` tokens saved via 61 heuristic-scored elisions.
+- **Morphogen assessment:** not directly useful — it is a deterministic
+  creative-computation DSL, not a context or relevance-scoring primitive, so
+  it was not integrated.
+- **Jev cost model:** ~$0.0005/compaction for a 336k-token session with
+  ~90 candidates in one or two 32k calls; scale is ~$0.04/day at 100
+  compactions. The Jev path is optional and falls back to the heuristic
+  scorer when no key is configured or a call fails.
+

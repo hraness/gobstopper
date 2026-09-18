@@ -2,6 +2,7 @@
 
 mod config;
 mod hooks;
+mod jev;
 mod mcp;
 mod report;
 
@@ -11,7 +12,7 @@ use gobstopper_adapters::detect::{self, Discovered, Roots};
 use gobstopper_adapters::{claude, codex, copy, eval, fork, plugins, vault, verify, AdapterError};
 use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
 use gobstopper_core::plan::{CompactionPlan, Edit};
-use gobstopper_core::strategy::{self, QuotaPressure};
+use gobstopper_core::strategy::{self, QuotaPressure, ScoredStrategy, Strategy};
 use gobstopper_core::Provider;
 use std::io::{Read as _, Write as _};
 use std::path::PathBuf;
@@ -504,9 +505,20 @@ fn evaluate(
         }
         return external_plan(transcript, &policy, &resolved.strategy, edits);
     }
-    let strat = strategy::strategy_by_id(&resolved.strategy)
-        .ok_or_else(|| anyhow::anyhow!("unknown strategy '{}'", resolved.strategy))?;
-    let mut plan = strat.evaluate(transcript, &policy);
+    let mut plan = if resolved.strategy == "scored" {
+        if let Some(driver) = jev::maybe_jev_scorer() {
+            let candidates = ScoredStrategy::candidates(transcript, &policy);
+            let scores = driver.score(transcript, &candidates);
+            ScoredStrategy::scores_to_plan(transcript, &policy, &scores)
+        } else {
+            // No Jev key: the built-in heuristic scorer handles it.
+            ScoredStrategy.evaluate(transcript, &policy)
+        }
+    } else {
+        let strat = strategy::strategy_by_id(&resolved.strategy)
+            .ok_or_else(|| anyhow::anyhow!("unknown strategy '{}'", resolved.strategy))?;
+        strat.evaluate(transcript, &policy)
+    };
     if let Some(plan) = &mut plan {
         gobstopper_core::validation::validate_edits(transcript, &policy, &plan.edits)
             .map_err(anyhow::Error::msg)?;
