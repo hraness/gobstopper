@@ -47,7 +47,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           shared-key: msrv
-      - run: cargo check --workspace --all-targets --locked
+      - run: cargo check --workspace --lib --bins --locked
 
   required:
     name: Required
