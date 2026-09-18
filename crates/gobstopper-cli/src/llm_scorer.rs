@@ -9,9 +9,9 @@
 //! Configuration (all optional, defaults listed):
 //!   AI_GATEWAY_API_KEY  - bearer token
 //!   GOBSTOPPER_LLM_ENDPOINT - https://ai-gateway.vercel.sh/v1/chat/completions
-//!   GOBSTOPPER_LLM_MODEL    - qwen/qwen-2.5-7b-instruct
+//!   GOBSTOPPER_LLM_MODEL    - alibaba/qwen-3-14b
 //!   GOBSTOPPER_LLM_TIMEOUT_MS - 20000
-//!   GOBSTOPPER_LLM_MAX_CANDIDATES - 96
+//!   GOBSTOPPER_LLM_MAX_CANDIDATES - 16
 
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
@@ -39,15 +39,15 @@ impl LlmConfig {
             endpoint: std::env::var("GOBSTOPPER_LLM_ENDPOINT")
                 .unwrap_or_else(|_| "https://ai-gateway.vercel.sh/v1/chat/completions".into()),
             model: std::env::var("GOBSTOPPER_LLM_MODEL")
-                .unwrap_or_else(|_| "qwen/qwen-2.5-7b-instruct".into()),
+                .unwrap_or_else(|_| "alibaba/qwen-3-14b".into()),
             timeout_ms: std::env::var("GOBSTOPPER_LLM_TIMEOUT_MS")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(20_000),
+                .unwrap_or(30_000),
             max_candidates: std::env::var("GOBSTOPPER_LLM_MAX_CANDIDATES")
                 .ok()
                 .and_then(|s| s.parse().ok())
-                .unwrap_or(96),
+                .unwrap_or(16),
         })
     }
 }
@@ -57,6 +57,14 @@ struct ChatCompletionRequest {
     model: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     response_format: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_tokens: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    temperature: Option<f32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reasoning: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    include_reasoning: Option<bool>,
     messages: Vec<Message>,
 }
 
@@ -167,7 +175,11 @@ impl ScoreDriver for LlmScorer {
 
         let request = ChatCompletionRequest {
             model: self.cfg.model.clone(),
-            response_format: Some(json!({ "type": "json_object" })),
+            response_format: None,
+            max_tokens: Some(1024),
+            temperature: Some(0.0),
+            reasoning: Some(json!({ "type": "disabled" })),
+            include_reasoning: Some(false),
             messages: vec![
                 Message {
                     role: "system",
