@@ -1,7 +1,6 @@
-use super::{ElideStrategy, PolicyConfig, Strategy};
-use crate::estimate::estimate_tokens;
-use crate::model::{ItemKind, Transcript};
-use crate::plan::{CompactionPlan, DigestBlock, Edit};
+use super::{state_card_digest, ElideStrategy, PolicyConfig, Strategy};
+use crate::model::Transcript;
+use crate::plan::{CompactionPlan, Edit};
 
 /// Compacted: observation masking plus a Codex `compacted` record.
 ///
@@ -32,59 +31,8 @@ impl Strategy for CompactedStrategy {
             return None;
         }
 
-        let mut decisions = Vec::new();
-        let mut files_touched = Vec::new();
-        for idx in &elided_indexes {
-            if let Some(item) = transcript.items.iter().find(|i| i.line_index == *idx) {
-                if let Some(summary) = &item.summary {
-                    decisions.push(summary.clone());
-                } else {
-                    decisions.push(format!(
-                        "{} elided ({} bytes)",
-                        item.label,
-                        item.elidable_bytes.unwrap_or(0)
-                    ));
-                }
-                if item.kind == ItemKind::ToolResult {
-                    files_touched.push(item.summary.clone().unwrap_or_else(|| item.label.clone()));
-                }
-            }
-        }
-
-        // Keep the digest itself bounded so the compacted record does not
-        // re-expand the context window it is trying to shrink.
-        const MAX_DECISIONS: usize = 8;
-        decisions.truncate(MAX_DECISIONS);
-        files_touched.truncate(MAX_DECISIONS);
-
-        let goal = transcript
-            .items
-            .iter()
-            .rev()
-            .find(|i| {
-                i.kind == ItemKind::User
-                    && i.summary.as_ref().is_some_and(|s| {
-                        !s.starts_with('<') && !s.starts_with("[gobstopper state card]")
-                    })
-            })
-            .and_then(|i| i.summary.clone());
-
-        let digest = DigestBlock {
-            goal: goal.clone(),
-            decisions,
-            files_touched,
-            open_tasks: Vec::new(),
-            covers_items: elided_indexes.len(),
-        };
-
-        // Estimate the digest text size that the adapter will render, so the
-        // `context_tokens_after` projection is honest and the no-op guard can
-        // reject plans that would not actually shrink the provider context.
-        let digest_chars: usize = goal.as_ref().map(|g| g.len()).unwrap_or(0)
-            + digest.decisions.iter().map(|d| d.len()).sum::<usize>()
-            + digest.files_touched.iter().map(|f| f.len()).sum::<usize>()
-            + 64; // state-card framing
-        let digest_overhead = estimate_tokens(digest_chars);
+        let digest = state_card_digest(transcript, &elided_indexes);
+        let digest_overhead = digest.estimate_overhead();
 
         plan.edits.push(Edit::InjectDigest { digest });
         plan.strategy = self.id().to_string();

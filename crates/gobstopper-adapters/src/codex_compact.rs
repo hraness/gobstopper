@@ -508,6 +508,7 @@ mod tests {
             files_touched: vec!["codex_compact.rs".to_string()],
             open_tasks: vec!["test".to_string()],
             covers_items: 4,
+            ..Default::default()
         }
     }
 

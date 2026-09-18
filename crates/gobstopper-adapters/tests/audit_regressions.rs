@@ -36,6 +36,7 @@ fn digest() -> Edit {
             files_touched: vec![],
             open_tasks: vec![],
             covers_items: 1,
+            ..Default::default()
         },
     }
 }

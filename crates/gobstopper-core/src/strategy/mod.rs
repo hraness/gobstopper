@@ -1,6 +1,7 @@
 mod agentic;
 mod auto;
 mod cache_aware;
+mod cache_edits;
 mod compacted;
 mod dedupe;
 mod elide;
@@ -13,6 +14,7 @@ mod structured;
 pub use agentic::{AgenticStrategy, EditorCall, EditorDriver};
 pub use auto::AutoStrategy;
 pub use cache_aware::CacheAwareStrategy;
+pub use cache_edits::CacheEditsStrategy;
 pub use compacted::CompactedStrategy;
 pub use dedupe::DedupeStrategy;
 pub use elide::ElideStrategy;
@@ -105,6 +107,7 @@ pub fn builtin_strategies() -> Vec<Box<dyn Strategy>> {
     vec![
         Box::new(AutoStrategy),
         Box::new(ScoredStrategy),
+        Box::new(CacheEditsStrategy),
         Box::new(CacheAwareStrategy),
         Box::new(SawtoothStrategy),
         Box::new(ElideStrategy),
@@ -125,27 +128,43 @@ pub fn strategy_by_id(id: &str) -> Option<Box<dyn Strategy>> {
 /// Build a bounded state-card digest from a set of chosen item
 /// `line_index`es. Sanitized labels/summaries only — never payload text.
 pub(crate) fn state_card_digest(transcript: &Transcript, chosen: &[usize]) -> DigestBlock {
-    let mut decisions = Vec::new();
+    const MAX: usize = 8;
+
+    let mut concepts = std::collections::HashSet::new();
     let mut files_touched = Vec::new();
+    let mut decisions = Vec::new();
+    let mut errors = Vec::new();
+
     for idx in chosen {
         if let Some(item) = transcript.items.iter().find(|i| i.line_index == *idx) {
-            if let Some(summary) = &item.summary {
-                decisions.push(summary.clone());
-            } else {
-                decisions.push(format!(
-                    "{} elided ({} bytes)",
-                    item.label,
-                    item.elidable_bytes.unwrap_or(0)
-                ));
+            // Concepts: distinct tool names (without args) from chosen items.
+            if let Some(tool) = item.label.split(|c: char| ['(', ' '].contains(&c)).next() {
+                if !tool.is_empty() {
+                    concepts.insert(tool.to_lowercase());
+                }
             }
-            if item.kind == ItemKind::ToolResult {
+
+            let text = item.summary.as_deref().unwrap_or(&item.label).to_string();
+            let is_error = is_error_marker(&text);
+            let is_path = text.contains('/');
+
+            if is_error {
+                errors.push(text);
+            } else if is_path || item.kind == ItemKind::ToolResult {
+                // Prefer the summary for file references, fall back to label.
                 files_touched.push(item.summary.clone().unwrap_or_else(|| item.label.clone()));
+            } else {
+                decisions.push(text);
             }
         }
     }
-    const MAX_DECISIONS: usize = 8;
-    decisions.truncate(MAX_DECISIONS);
-    files_touched.truncate(MAX_DECISIONS);
+
+    let mut concepts: Vec<String> = concepts.into_iter().collect();
+    concepts.sort();
+    concepts.truncate(MAX);
+    files_touched.truncate(MAX);
+    decisions.truncate(MAX);
+    errors.truncate(MAX);
 
     let goal = transcript
         .items
@@ -159,13 +178,68 @@ pub(crate) fn state_card_digest(transcript: &Transcript, chosen: &[usize]) -> Di
         })
         .and_then(|i| i.summary.clone());
 
+    let summary = goal
+        .as_ref()
+        .map(|g| {
+            let mut s = g.trim().to_string();
+            if s.len() > 120 {
+                s.truncate(117);
+                s.push_str("...");
+            }
+            s
+        })
+        .or_else(|| {
+            Some(format!(
+                "gobstopper state card covering {} elided items",
+                chosen.len()
+            ))
+        });
+
+    let current_work = transcript
+        .items
+        .iter()
+        .rev()
+        .find(|i| i.kind == ItemKind::Assistant)
+        .and_then(|i| i.summary.clone())
+        .filter(|s| !s.starts_with("[gobstopper state card]"));
+
+    let context = Some(format!(
+        "provider: {}",
+        transcript.session.provider.as_str()
+    ));
+
     DigestBlock {
         goal: goal.clone(),
-        decisions,
+        summary,
+        concepts,
         files_touched,
+        decisions,
+        errors,
         open_tasks: Vec::new(),
+        current_work,
+        context,
         covers_items: chosen.len(),
     }
+}
+
+fn is_error_marker(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    [
+        "error",
+        "failed",
+        "failure",
+        "panic",
+        "exception",
+        "traceback",
+        "enoent",
+        "eacces",
+        "non-zero",
+        "nonzero",
+        "exit code",
+        "stderr:",
+    ]
+    .iter()
+    .any(|m| lower.contains(m))
 }
 
 #[cfg(test)]

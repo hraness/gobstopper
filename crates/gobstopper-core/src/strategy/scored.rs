@@ -11,7 +11,6 @@
 
 use super::elide::DEFAULT_STUB;
 use super::{state_card_digest, PolicyConfig, Strategy};
-use crate::estimate::estimate_tokens;
 use crate::model::{ItemKind, Transcript};
 use crate::plan::{CompactionPlan, Edit};
 
@@ -363,11 +362,7 @@ impl ScoredStrategy {
                 let projected = before.saturating_sub(accumulated);
 
                 let digest = state_card_digest(transcript, &chosen);
-                let digest_chars: usize = digest.goal.as_ref().map(|g| g.len()).unwrap_or(0)
-                    + digest.decisions.iter().map(|d| d.len()).sum::<usize>()
-                    + digest.files_touched.iter().map(|f| f.len()).sum::<usize>()
-                    + 64;
-                let digest_overhead = estimate_tokens(digest_chars);
+                let digest_overhead = digest.estimate_overhead();
 
                 let first_elided = chosen.first().copied().unwrap_or(0);
                 let prefix_items = transcript
@@ -413,11 +408,7 @@ impl ScoredStrategy {
         let projected = before.saturating_sub(accumulated);
 
         let digest = state_card_digest(transcript, &chosen);
-        let digest_chars: usize = digest.goal.as_ref().map(|g| g.len()).unwrap_or(0)
-            + digest.decisions.iter().map(|d| d.len()).sum::<usize>()
-            + digest.files_touched.iter().map(|f| f.len()).sum::<usize>()
-            + 64;
-        let digest_overhead = estimate_tokens(digest_chars);
+        let digest_overhead = digest.estimate_overhead();
 
         let first_elided = chosen.first().copied().unwrap_or(0);
         let prefix_items = transcript

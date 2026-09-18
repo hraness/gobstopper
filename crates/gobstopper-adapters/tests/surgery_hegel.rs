@@ -322,6 +322,7 @@ fn gen_digest(_tc: &TestCase, covers: usize) -> DigestBlock {
         files_touched: vec!["src/main.rs".to_string()],
         open_tasks: vec![],
         covers_items: covers,
+        ..Default::default()
     }
 }
 
@@ -781,7 +782,7 @@ fn plans_apply_cleanly(tc: TestCase) {
         let file_edits: Vec<Edit> = plan
             .edits
             .into_iter()
-            .filter(|e| !matches!(e, Edit::ProviderCompact { .. }))
+            .filter(|e| !matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
             .collect();
         match provider {
             Provider::Codex => codex::apply(&copy, &file_edits).unwrap(),
@@ -822,7 +823,7 @@ fn plans_apply_cleanly(tc: TestCase) {
             let file_edits2: Vec<Edit> = plan2
                 .edits
                 .into_iter()
-                .filter(|e| !matches!(e, Edit::ProviderCompact { .. }))
+                .filter(|e| !matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
                 .collect();
             match provider {
                 Provider::Codex => codex::apply(&copy, &file_edits2).unwrap(),
@@ -1096,6 +1097,7 @@ fn compact_with_digest_entry(path: &Path, keep_tail: usize) {
             files_touched: vec![],
             open_tasks: vec![],
             covers_items: 0,
+            ..Default::default()
         },
         keep_tail,
     )
@@ -1380,6 +1382,7 @@ fn hostile_digest_injects_as_one_line(tc: TestCase) {
         files_touched: vec!["{not json}\r\n../escape".to_string()],
         open_tasks: vec![],
         covers_items: lines.len(),
+        ..Default::default()
     };
     let before = read_lines(&path).len();
     match provider {
@@ -1732,6 +1735,7 @@ fn digest_line_carries_no_elided_content() {
             files_touched: Vec::new(),
             open_tasks: Vec::new(),
             covers_items: 1,
+            ..Default::default()
         },
     });
     codex::apply(&path, &edits).unwrap();

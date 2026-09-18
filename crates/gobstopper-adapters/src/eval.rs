@@ -136,7 +136,7 @@ pub fn prefix_tokens(transcript: &Transcript, plan: &CompactionPlan) -> u64 {
     if plan
         .edits
         .iter()
-        .any(|e| matches!(e, Edit::ProviderCompact { .. }))
+        .any(|e| matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
     {
         return plan.context_tokens_before;
     }
@@ -231,7 +231,7 @@ pub fn eval_transcript(
             let needs_rewrite = plan
                 .edits
                 .iter()
-                .any(|e| !matches!(e, Edit::ProviderCompact { .. }));
+                .any(|e| !matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }));
             if needs_rewrite {
                 let tmp = std::env::temp_dir().join(format!(
                     "gob-eval-{}-{}",
@@ -560,7 +560,7 @@ mod tests {
         policy.trigger_tokens = u64::MAX;
 
         let rows = eval_transcript(Provider::ClaudeCode, &src, &policy, None).unwrap();
-        assert_eq!(rows.len(), 11);
+        assert_eq!(rows.len(), 12);
         for r in &rows {
             assert!(r.plan.is_none(), "{} should not fire", r.strategy);
             assert_eq!(r.est_reclaimed, 0);

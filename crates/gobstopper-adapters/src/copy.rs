@@ -49,7 +49,7 @@ pub fn compact(
     if plan
         .edits
         .iter()
-        .any(|e| matches!(e, Edit::ProviderCompact { .. }))
+        .any(|e| matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
     {
         bail!("copy plans cannot contain provider controls");
     }
@@ -190,7 +190,7 @@ pub fn compact_via_compacted(
     if plan
         .edits
         .iter()
-        .any(|e| matches!(e, Edit::ProviderCompact { .. }))
+        .any(|e| matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
     {
         bail!("compacted-record plans cannot contain provider controls");
     }

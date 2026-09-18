@@ -572,6 +572,9 @@ fn external_plan(
                     serde_json::to_vec(digest)?.len(),
                 ))
             }
+            Edit::CacheEdit { .. } => {
+                bail!("external strategy plugins cannot dispatch Claude cache_edits")
+            }
             Edit::ProviderCompact { .. } => {
                 bail!("external strategy plugins cannot dispatch provider controls")
             }
@@ -664,6 +667,7 @@ fn emit_event(
             .map(|e| match e {
                 Edit::Elide { line_indexes, .. } => line_indexes.len() as u64,
                 Edit::InjectDigest { digest } => digest.covers_items as u64,
+                Edit::CacheEdit { tool_use_ids } => tool_use_ids.len() as u64,
                 Edit::ProviderCompact { .. } => 0,
             })
             .sum(),
@@ -914,6 +918,9 @@ fn print_plan(d: &Discovered, plan: &CompactionPlan, prefix_tokens: u64, json: b
             }
             Edit::InjectDigest { digest } => {
                 println!("  inject digest covering {} items", digest.covers_items)
+            }
+            Edit::CacheEdit { tool_use_ids } => {
+                println!("  cache_edits: {} tool result ids", tool_use_ids.len())
             }
             Edit::ProviderCompact { control } => println!("  provider control: {control}"),
         }
@@ -1584,7 +1591,7 @@ fn cmd_eval(
                     .unwrap()
                     .edits
                     .iter()
-                    .any(|e| matches!(e, Edit::ProviderCompact { .. }))
+                    .any(|e| matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
         })
         .map(|r| {
             let before = r
@@ -1665,7 +1672,7 @@ fn cmd_bench(
                 .map(|p| {
                     p.edits
                         .iter()
-                        .any(|e| matches!(e, Edit::ProviderCompact { .. }))
+                        .any(|e| matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
                 })
                 .unwrap_or(false);
             let score = if provider_compact {
@@ -1827,15 +1834,24 @@ fn cmd_apply(
     };
     let prefix = eval::prefix_tokens(&transcript, &plan);
     print_plan(&d, &plan, prefix, false)?;
-    let has_provider_compact = plan
+    let has_provider_control = plan
         .edits
         .iter()
-        .any(|e| matches!(e, Edit::ProviderCompact { .. }));
-    if !has_provider_compact && plan.context_tokens_after >= plan.context_tokens_before {
+        .any(|e| matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }));
+    if !has_provider_control && plan.context_tokens_after >= plan.context_tokens_before {
         bail!(
             "plan has no net context benefit ({} -> {} tokens); refusing to rewrite",
             plan.context_tokens_before,
             plan.context_tokens_after
+        );
+    }
+    if plan
+        .edits
+        .iter()
+        .any(|e| matches!(e, Edit::CacheEdit { .. }))
+    {
+        bail!(
+            "cache_edits is a Claude API control; apply it through Claude Code, not by rewriting the transcript file"
         );
     }
     if d.handle.is_active() {
@@ -1854,7 +1870,7 @@ fn cmd_apply(
     let file_edits: Vec<Edit> = plan
         .edits
         .iter()
-        .filter(|e| !matches!(e, Edit::ProviderCompact { .. }))
+        .filter(|e| !matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
         .cloned()
         .collect();
     let started = std::time::Instant::now();
@@ -1991,7 +2007,7 @@ fn cmd_apply(
             }
         }
     }
-    if has_provider_compact {
+    if has_provider_control {
         if d.handle.provider == Provider::ClaudeCode {
             bail!("live Claude compaction must be dispatched by its session owner; use /compact in that session");
         }
@@ -2079,7 +2095,7 @@ fn stage_compaction(d: &Discovered, resolved: &config::Resolved) -> Option<Stage
     let file_edits: Vec<Edit> = plan
         .edits
         .iter()
-        .filter(|e| !matches!(e, Edit::ProviderCompact { .. }))
+        .filter(|e| !matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
         .cloned()
         .collect();
     if file_edits.is_empty() {
@@ -2234,10 +2250,9 @@ fn cmd_watch(
                     }
                     let started = std::time::Instant::now();
                     let trigger = resolved.policy.trigger_tokens;
-                    let is_provider = plan
-                        .edits
-                        .iter()
-                        .any(|e| matches!(e, Edit::ProviderCompact { .. }));
+                    let is_provider = plan.edits.iter().any(|e| {
+                        matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. })
+                    });
                     let action = if is_provider {
                         "provider_compact"
                     } else {

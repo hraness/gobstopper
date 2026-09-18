@@ -75,6 +75,7 @@ pub fn validate_edits(
                 return Err("provider controls cannot be mixed with file edits")
             }
             Edit::ProviderCompact { .. } => {}
+            Edit::CacheEdit { .. } => {}
         }
     }
     Ok(())

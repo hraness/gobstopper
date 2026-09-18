@@ -28,18 +28,39 @@ pub enum Edit {
         /// `codex thread/compact/start` or `claude --autocompact 250000`.
         control: String,
     },
+    /// Claude-only: remove tool results by `tool_use_id` without
+    /// invalidating the cached prefix. File-surgery adapters leave this
+    /// as metadata; the caller must pass the ids to the Anthropic API.
+    CacheEdit {
+        /// `tool_use_id`s to drop at the next request.
+        tool_use_ids: Vec<String>,
+    },
 }
 
 /// Structured extraction written into the context after a transcript-path
 /// compaction. Field-oriented rather than prose so the resumed agent can
 /// trust it as state, not narrative.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
 pub struct DigestBlock {
+    /// The user's current goal / intent.
     pub goal: Option<String>,
-    pub decisions: Vec<String>,
+    /// One-line summary of what the digest represents.
+    pub summary: Option<String>,
+    /// Key concepts / tools / operations the elided work produced.
+    pub concepts: Vec<String>,
+    /// Files, paths, or URLs touched by the elided tool results.
     pub files_touched: Vec<String>,
+    /// Concrete decisions or takeaways from the elided work.
+    pub decisions: Vec<String>,
+    /// Errors, failures, or warnings the elided region contained.
+    pub errors: Vec<String>,
+    /// Open tasks / todos still pending.
     pub open_tasks: Vec<String>,
+    /// What the assistant was most recently working on.
+    pub current_work: Option<String>,
+    /// Provider and working context (no absolute paths).
+    pub context: Option<String>,
     /// Number of transcript items the digest replaces.
     pub covers_items: usize,
 }
@@ -56,19 +77,34 @@ impl DigestBlock {
             return None;
         }
         let mut goal = None;
-        let mut decisions = Vec::new();
+        let mut summary = None;
+        let mut concepts = Vec::new();
         let mut files_touched = Vec::new();
+        let mut decisions = Vec::new();
+        let mut errors = Vec::new();
         let mut open_tasks = Vec::new();
+        let mut current_work = None;
+        let mut context = None;
         let mut covers_items = 0;
         for line in text.lines().skip(1) {
             if let Some(g) = line.strip_prefix("goal: ") {
                 goal = Some(g.to_string());
-            } else if let Some(d) = line.strip_prefix("decision: ") {
-                decisions.push(d.to_string());
+            } else if let Some(s) = line.strip_prefix("summary: ") {
+                summary = Some(s.to_string());
+            } else if let Some(c) = line.strip_prefix("concept: ") {
+                concepts.push(c.to_string());
             } else if let Some(f) = line.strip_prefix("file: ") {
                 files_touched.push(f.to_string());
+            } else if let Some(d) = line.strip_prefix("decision: ") {
+                decisions.push(d.to_string());
+            } else if let Some(e) = line.strip_prefix("error: ") {
+                errors.push(e.to_string());
             } else if let Some(t) = line.strip_prefix("todo: ") {
                 open_tasks.push(t.to_string());
+            } else if let Some(w) = line.strip_prefix("current: ") {
+                current_work = Some(w.to_string());
+            } else if let Some(x) = line.strip_prefix("context: ") {
+                context = Some(x.to_string());
             } else if let Some(rest) = line.strip_prefix("(covers ") {
                 if let Some(n) = rest
                     .strip_suffix(" earlier records)")
@@ -80,11 +116,33 @@ impl DigestBlock {
         }
         Some(DigestBlock {
             goal,
-            decisions,
+            summary,
+            concepts,
             files_touched,
+            decisions,
+            errors,
             open_tasks,
+            current_work,
+            context,
             covers_items,
         })
+    }
+
+    /// Estimated token overhead of rendering this digest as prose. This
+    /// keeps every strategy's `context_tokens_after` honest without
+    /// duplicating the char-count math in each strategy module.
+    pub fn estimate_overhead(&self) -> u64 {
+        let chars = self.goal.as_ref().map(|s| s.len()).unwrap_or(0)
+            + self.summary.as_ref().map(|s| s.len()).unwrap_or(0)
+            + self.concepts.iter().map(|s| s.len()).sum::<usize>()
+            + self.files_touched.iter().map(|s| s.len()).sum::<usize>()
+            + self.decisions.iter().map(|s| s.len()).sum::<usize>()
+            + self.errors.iter().map(|s| s.len()).sum::<usize>()
+            + self.open_tasks.iter().map(|s| s.len()).sum::<usize>()
+            + self.current_work.as_ref().map(|s| s.len()).unwrap_or(0)
+            + self.context.as_ref().map(|s| s.len()).unwrap_or(0)
+            + 64; // state-card framing
+        crate::estimate::estimate_tokens(chars)
     }
 }
 

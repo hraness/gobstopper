@@ -1,5 +1,4 @@
 use super::{state_card_digest, PolicyConfig, Strategy};
-use crate::estimate::estimate_tokens;
 use crate::model::Transcript;
 use crate::plan::{CompactionPlan, Edit};
 
@@ -76,11 +75,7 @@ impl Strategy for MicroStrategy {
         }
 
         let digest = state_card_digest(transcript, &chosen);
-        let digest_chars: usize = digest.goal.as_ref().map(|g| g.len()).unwrap_or(0)
-            + digest.decisions.iter().map(|d| d.len()).sum::<usize>()
-            + digest.files_touched.iter().map(|f| f.len()).sum::<usize>()
-            + 64;
-        let digest_overhead = estimate_tokens(digest_chars);
+        let digest_overhead = digest.estimate_overhead();
 
         Some(CompactionPlan {
             strategy: self.id().to_string(),

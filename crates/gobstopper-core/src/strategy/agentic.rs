@@ -109,10 +109,15 @@ impl AgenticStrategy {
                     edits.push(Edit::InjectDigest {
                         digest: crate::plan::DigestBlock {
                             goal: Some(digest.clone()),
+                            summary: Some(format!(
+                                "agentic digest covering {} items",
+                                to_item - from_item
+                            )),
                             decisions: Vec::new(),
                             files_touched: Vec::new(),
                             open_tasks: Vec::new(),
                             covers_items: to_item - from_item,
+                            ..Default::default()
                         },
                     });
                 }

@@ -456,14 +456,29 @@ pub(crate) fn digest_text(digest: &DigestBlock) -> String {
     if let Some(goal) = &digest.goal {
         s.push_str(&format!("goal: {goal}\n"));
     }
-    for d in &digest.decisions {
-        s.push_str(&format!("decision: {d}\n"));
+    if let Some(summary) = &digest.summary {
+        s.push_str(&format!("summary: {summary}\n"));
+    }
+    for c in &digest.concepts {
+        s.push_str(&format!("concept: {c}\n"));
     }
     for f in &digest.files_touched {
         s.push_str(&format!("file: {f}\n"));
     }
+    for d in &digest.decisions {
+        s.push_str(&format!("decision: {d}\n"));
+    }
+    for e in &digest.errors {
+        s.push_str(&format!("error: {e}\n"));
+    }
     for t in &digest.open_tasks {
         s.push_str(&format!("todo: {t}\n"));
+    }
+    if let Some(work) = &digest.current_work {
+        s.push_str(&format!("current: {work}\n"));
+    }
+    if let Some(ctx) = &digest.context {
+        s.push_str(&format!("context: {ctx}\n"));
     }
     s.push_str(&format!(
         "(covers {} earlier records)\n",
@@ -505,6 +520,7 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
                 crate::transaction::append_record(&mut raw, &line)?;
             }
             Edit::ProviderCompact { .. } => {}
+            Edit::CacheEdit { .. } => {}
         }
     }
     Ok(raw)
