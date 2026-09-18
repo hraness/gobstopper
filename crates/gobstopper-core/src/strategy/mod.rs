@@ -134,6 +134,7 @@ pub(crate) fn state_card_digest(transcript: &Transcript, chosen: &[usize]) -> Di
     let mut files_touched = Vec::new();
     let mut decisions = Vec::new();
     let mut errors = Vec::new();
+    let mut open_tasks = Vec::new();
 
     for idx in chosen {
         if let Some(item) = transcript.items.iter().find(|i| i.line_index == *idx) {
@@ -147,9 +148,12 @@ pub(crate) fn state_card_digest(transcript: &Transcript, chosen: &[usize]) -> Di
             let text = item.summary.as_deref().unwrap_or(&item.label).to_string();
             let is_error = is_error_marker(&text);
             let is_path = text.contains('/');
+            let is_open_task = is_open_task_marker(&text);
 
             if is_error {
                 errors.push(text);
+            } else if is_open_task {
+                open_tasks.push(text);
             } else if is_path || item.kind == ItemKind::ToolResult {
                 // Prefer the summary for file references, fall back to label.
                 files_touched.push(item.summary.clone().unwrap_or_else(|| item.label.clone()));
@@ -165,6 +169,7 @@ pub(crate) fn state_card_digest(transcript: &Transcript, chosen: &[usize]) -> Di
     files_touched.truncate(MAX);
     decisions.truncate(MAX);
     errors.truncate(MAX);
+    open_tasks.truncate(MAX);
 
     let goal = transcript
         .items
@@ -215,7 +220,7 @@ pub(crate) fn state_card_digest(transcript: &Transcript, chosen: &[usize]) -> Di
         files_touched,
         decisions,
         errors,
-        open_tasks: Vec::new(),
+        open_tasks,
         current_work,
         context,
         covers_items: chosen.len(),
@@ -237,6 +242,20 @@ fn is_error_marker(text: &str) -> bool {
         "nonzero",
         "exit code",
         "stderr:",
+    ]
+    .iter()
+    .any(|m| lower.contains(m))
+}
+
+fn is_open_task_marker(text: &str) -> bool {
+    let lower = text.to_lowercase();
+    [
+        "todo",
+        "fixme",
+        "pending",
+        "open:",
+        "follow up",
+        "follow-up",
     ]
     .iter()
     .any(|m| lower.contains(m))
