@@ -80,6 +80,10 @@ pub struct TranscriptItem {
     /// Optional short summary of the item's payload for digest generation.
     /// Never includes the full payload; at most a few hundred bytes.
     pub summary: Option<String>,
+    /// Provider record uuid, when the format exposes one.
+    pub uuid: Option<String>,
+    /// Provider record parent uuid, when the format exposes one.
+    pub parent_uuid: Option<String>,
 }
 
 /// Point-in-time token accounting extracted from provider records.

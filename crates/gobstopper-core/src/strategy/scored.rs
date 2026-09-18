@@ -61,6 +61,15 @@ impl HeuristicScorer {
             })
             .collect();
 
+        // Parent-chain / citation retention: any candidate that a tail item
+        // explicitly chains off (parent_uuid == candidate.uuid) is part of the
+        // live conversation ancestry and should be harder to elide.
+        let tail_start = transcript.items.len().saturating_sub(tail_lookback);
+        let tail_parents: std::collections::HashSet<&str> = transcript.items[tail_start..]
+            .iter()
+            .filter_map(|i| i.parent_uuid.as_deref())
+            .collect();
+
         // Build an index of every tool label that appears after each candidate.
         let mut label_occurrences: std::collections::HashMap<String, Vec<usize>> =
             std::collections::HashMap::new();
@@ -186,7 +195,14 @@ impl HeuristicScorer {
                     newest_idx != idx && jaccard_similarity(&item_tokens, &latest_tokens) >= 0.85
                 };
 
-                // 9. Spread over the conversation: older items in the middle
+                // 9. Parent-chain: an item that the tail explicitly chains off
+                //    (parent_uuid == item.uuid) is part of the live ancestry.
+                let parent_of_tail = item
+                    .uuid
+                    .as_deref()
+                    .is_some_and(|u| tail_parents.contains(u));
+
+                // 10. Spread over the conversation: older items in the middle
                 //    of a long transcript are less likely to matter.
                 let position_ratio = if max_line == 0 {
                     0.0
@@ -201,6 +217,7 @@ impl HeuristicScorer {
                     + 0.12 * goal_overlap
                     + 0.10 * position_ratio
                     + 0.12 * idf_score
+                    + (if parent_of_tail { 0.10 } else { 0.0 })
                     - (if superseded { 0.15 } else { 0.0 })
                     - (if near_duplicate { 0.12 } else { 0.0 });
 
@@ -463,6 +480,8 @@ mod tests {
             elidable_bytes: elidable.then_some(est_tokens * 4),
             label: label.into(),
             summary: summary.map(String::from),
+            uuid: None,
+            parent_uuid: None,
         }
     }
 

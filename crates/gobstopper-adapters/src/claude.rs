@@ -293,6 +293,14 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
             elidable_bytes: elidable,
             label: format!("{ltype}@{line_index}"),
             summary,
+            uuid: record
+                .get("uuid")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            parent_uuid: record
+                .get("parentUuid")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         });
     }
     // Only uuid-bearing lines can be proven dead; lines without linkage

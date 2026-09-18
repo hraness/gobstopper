@@ -211,6 +211,15 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                     elidable_bytes: elidable,
                     label: format!("{ptype}@{line_index}"),
                     summary,
+                    uuid: record
+                        .get("id")
+                        .or_else(|| payload.get("id"))
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
+                    parent_uuid: record
+                        .get("parent_id")
+                        .and_then(Value::as_str)
+                        .map(str::to_string),
                 });
             }
             Some("compacted") => {
@@ -246,6 +255,8 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                     elidable_bytes: elidable,
                     label: format!("compacted@{line_index}"),
                     summary: None,
+                    uuid: record.get("id").and_then(Value::as_str).map(str::to_string),
+                    parent_uuid: None,
                 });
             }
             _ => {}

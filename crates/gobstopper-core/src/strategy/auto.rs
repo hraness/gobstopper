@@ -163,6 +163,8 @@ mod tests {
             elidable_bytes: elidable.then_some(est_tokens * 4),
             label: label.into(),
             summary: summary.map(String::from),
+            uuid: None,
+            parent_uuid: None,
         }
     }
 

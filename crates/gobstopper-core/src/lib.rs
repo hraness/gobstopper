@@ -40,6 +40,8 @@ mod tests {
             elidable_bytes: elidable.then_some(est_tokens * 4),
             label: format!("item-{line}"),
             summary: None,
+            uuid: None,
+            parent_uuid: None,
         }
     }
 
