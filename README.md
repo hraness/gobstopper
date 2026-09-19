@@ -180,7 +180,7 @@ trials did not show a better plan from the LLM scorer.
 `GOBSTOPPER_SCORER=jev` scores with TypeSafe's System One API — typed
 `noul` keep-probabilities, ~100ms per batch of 64 questions, no prose
 generation. Onboarding vaults the key in the OS credential store
-(macOS Keychain, Windows Credential Manager, Linux Secret Service):
+(macOS Keychain, Windows Credential Manager, Linux kernel keyring):
 
 ```sh
 pbpaste | gobstopper auth jev     # or run it bare to use the clipboard
@@ -191,11 +191,35 @@ gobstopper auth jev --delete      # remove the stored key
 The key is verified against the API before it is stored; a rejected key
 never reaches the keychain. Resolution order at scoring time is
 `TYPESAFE_API_KEY` → `GOBSTOPPER_JEV_API_KEY` → OS keychain, so CI keeps
-working from env alone. On macOS, a self-built unsigned binary may show a
-one-time keychain access prompt on first read. `GOBSTOPPER_JEV_CONTENT_BYTES` (default `0`)
-opts in to attaching bounded per-candidate content excerpts to each
-question — Jev is a remote API, so content only leaves the device when
-explicitly enabled.
+working from env alone. Linux kernel-keyring entries are session-scoped and
+do not survive a reboot; use an environment variable for persistent
+noninteractive Linux automation. On macOS, a self-built unsigned binary may
+show a one-time keychain access prompt on first read.
+`GOBSTOPPER_JEV_CONTENT_BYTES` (default `0`) opts in to attaching bounded
+per-candidate content excerpts to each question — Jev is a remote API, so
+content only leaves the device when explicitly enabled.
+
+`eval` and `bench` now honor `GOBSTOPPER_SCORER` for their `scored` row, so
+an A/B run measures the same Jev or Apple ranking used by `plan` rather than
+silently substituting the heuristic. `GOBSTOPPER_EVAL_JUDGE=jev` adds a
+separate semantic recall score to `eval`: up to 64 extracted facts are asked
+as typed `noul` questions against at most 100,000 bytes of the rewritten
+transcript (bounded head + tail), crediting facts preserved as paraphrase in
+a state card or per-item stub. The judge is off by default because it sends
+that bounded rewritten context to the remote API; failures simply omit the
+semantic score, while deterministic verbatim probe recall still runs.
+Restricting the run to `--strategy scored` uses one judge request:
+
+```sh
+GOBSTOPPER_SCORER=jev GOBSTOPPER_EVAL_JUDGE=jev \
+  gobstopper eval <session> --strategy scored
+```
+
+In a live 80k-token run, the same valid Jev-scored plan measured 97%
+verbatim probe recall and 100% semantic recall: Jev credited one fact that
+the state card preserved after its original bytes were elided. Jev and the
+heuristic selected the same three unambiguously stale records in that run,
+so the measurement does not claim a ranking-quality win.
 
 `GOBSTOPPER_SCORER=apple` (macOS 26+, Apple Silicon) scores on-device with
 Apple Intelligence Foundation Models via the shared `apple-foundation`

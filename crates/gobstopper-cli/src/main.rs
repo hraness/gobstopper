@@ -1574,7 +1574,19 @@ fn cmd_eval(
     if let Some(f) = floor {
         policy.floor_tokens = f;
     }
-    let rows = eval::eval_transcript(d.handle.provider, &d.handle.path, &policy, strategy_flag)?;
+    let scorer = maybe_scorer();
+    let judge = jev::eval_judge();
+    let hooks = eval::EvalHooks {
+        scorer: scorer.as_deref(),
+        probe_judge: judge.as_deref(),
+    };
+    let rows = eval::eval_transcript_with_hooks(
+        d.handle.provider,
+        &d.handle.path,
+        &policy,
+        strategy_flag,
+        &hooks,
+    )?;
     if json {
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
@@ -1599,13 +1611,23 @@ fn cmd_eval(
                     ),
                     _ => String::new(),
                 };
+                let semantic = match &row.semantic_score {
+                    Some(s) if s.probes_total > 0 => format!(
+                        "  semantic {:.0}% ({}/{})",
+                        s.recall * 100.0,
+                        s.probes_recalled,
+                        s.probes_total,
+                    ),
+                    _ => String::new(),
+                };
                 println!(
-                    "  {:<11} {} -> ~{} (saves ~{}){}{}",
+                    "  {:<11} {} -> ~{} (saves ~{}){}{}{}",
                     row.strategy,
                     plan.context_tokens_before,
                     plan.context_tokens_after,
                     row.est_reclaimed,
                     probe,
+                    semantic,
                     if row.verify_errors > 0 {
                         format!("  ⚠ {} verify errors", row.verify_errors)
                     } else {
@@ -1730,6 +1752,15 @@ fn cmd_bench(
     };
     let sessions = detect::discover(&roots(cli), max_age);
     let cfg = config::load()?;
+    // The scorer env applies to `scored` rows here exactly as it does
+    // in `plan`. The probe judge is skipped: bench emits no semantic
+    // columns, and a remote call per session × strategy would spend
+    // requests on data nobody reads.
+    let scorer = maybe_scorer();
+    let hooks = eval::EvalHooks {
+        scorer: scorer.as_deref(),
+        probe_judge: None,
+    };
     let mut csv = String::new();
     csv.push_str(
         "provider,session,strategy,context_before,context_after,est_reclaimed,prefix_tokens,prefix_ratio,score,verify_errors,verify_warnings,probes_total,probes_recalled,recall,tail_intact,duration_ms\n",
@@ -1745,11 +1776,12 @@ fn cmd_bench(
         if let Some(f) = floor {
             resolved.policy.floor_tokens = f;
         }
-        let rows = match eval::eval_transcript(
+        let rows = match eval::eval_transcript_with_hooks(
             d.handle.provider,
             &d.handle.path,
             &resolved.policy,
             None,
+            &hooks,
         ) {
             Ok(rows) => rows,
             Err(_) => continue,

@@ -14,8 +14,12 @@
 
 use anyhow::Context;
 use gobstopper_core::plan::{CompactionPlan, Edit};
-use gobstopper_core::probe::{extract_probes, score_probes, Probe, ProbeScore};
-use gobstopper_core::strategy::{builtin_strategies, strategy_by_id, PolicyConfig, Strategy};
+use gobstopper_core::probe::{
+    extract_probes, score_from_probabilities, score_probes, Probe, ProbeJudge, ProbeScore,
+};
+use gobstopper_core::strategy::{
+    builtin_strategies, strategy_by_id, PolicyConfig, ScoreDriver, ScoredStrategy, Strategy,
+};
 use gobstopper_core::{Provider, SessionHandle, Transcript};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -48,6 +52,12 @@ pub struct EvalRow {
     /// verbatim probes extracted from the source survived. `None` when
     /// no rewrite ran — no plan, provider-delegated, or apply failure.
     pub probe_score: Option<ProbeScore>,
+    /// Semantic probe score from an injected [`ProbeJudge`]: facts a
+    /// model still finds in the rewritten text even when the verbatim
+    /// string is gone (state cards, per-item stubs). `None` when no
+    /// judge was configured or the judge call failed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub semantic_score: Option<ProbeScore>,
     /// Estimated tokens left byte-identical before the first in-place edit.
     /// A larger number means more of the provider's prompt cache prefix
     /// is preserved on the next resume.
@@ -157,9 +167,24 @@ pub fn prefix_tokens(transcript: &Transcript, plan: &CompactionPlan) -> u64 {
         .fold(0u64, u64::saturating_add)
 }
 
+/// Optional seams the CLI injects into eval. `scorer` drives the
+/// `scored` strategy's ranking (jev/apple drivers via env); without it
+/// scored falls back to the built-in heuristic. `probe_judge` adds a
+/// semantic probe pass over each rewritten copy.
+#[derive(Default)]
+pub struct EvalHooks<'a> {
+    /// Driver for the `scored` strategy row. `None` keeps the
+    /// deterministic heuristic path — eval matches what `plan` would
+    /// produce with no scorer env configured.
+    pub scorer: Option<&'a dyn ScoreDriver>,
+    /// Semantic probe judge; scores each rewritten temp copy beyond
+    /// verbatim matching. `None` skips the pass entirely.
+    pub probe_judge: Option<&'a dyn ProbeJudge>,
+}
+
 /// Copy `src` to `tmp`, run the plan's file edits against the copy,
 /// verify the result, and score probe recall. Returns (apply duration
-/// ms, findings, probe score).
+/// ms, findings, probe score, semantic probe score).
 fn run_on_copy(
     provider: Provider,
     src: &Path,
@@ -167,15 +192,21 @@ fn run_on_copy(
     plan: &CompactionPlan,
     probes: &[Probe],
     tail_start_line: usize,
-) -> anyhow::Result<(u64, Vec<VerifyFinding>, ProbeScore)> {
+    judge: Option<&dyn ProbeJudge>,
+) -> anyhow::Result<(u64, Vec<VerifyFinding>, ProbeScore, Option<ProbeScore>)> {
     std::fs::copy(src, tmp).with_context(|| format!("copy {} to temp eval file", src.display()))?;
     let started = Instant::now();
     apply(provider, tmp, &plan.edits).map_err(|e| anyhow::anyhow!(e))?;
     let duration_ms = started.elapsed().as_millis() as u64;
     let bytes = std::fs::read(tmp).with_context(|| "reading back temp eval file")?;
     let findings = verify::verify(provider, &bytes);
-    let score = score_probes(probes, &String::from_utf8_lossy(&bytes), tail_start_line);
-    Ok((duration_ms, findings, score))
+    let post_text = String::from_utf8_lossy(&bytes);
+    let score = score_probes(probes, &post_text, tail_start_line);
+    let semantic = judge.and_then(|j| {
+        j.score(probes, &post_text)
+            .map(|probs| score_from_probabilities(probes, &probs, tail_start_line))
+    });
+    Ok((duration_ms, findings, score, semantic))
 }
 
 /// Evaluate every built-in strategy (or `only` when set) against one
@@ -186,6 +217,17 @@ pub fn eval_transcript(
     src: &Path,
     policy: &PolicyConfig,
     only: Option<&str>,
+) -> anyhow::Result<Vec<EvalRow>> {
+    eval_transcript_with_hooks(provider, src, policy, only, &EvalHooks::default())
+}
+
+/// [`eval_transcript`] with optional scorer and semantic-judge seams.
+pub fn eval_transcript_with_hooks(
+    provider: Provider,
+    src: &Path,
+    policy: &PolicyConfig,
+    only: Option<&str>,
+    hooks: &EvalHooks,
 ) -> anyhow::Result<Vec<EvalRow>> {
     let transcript = load(provider, src)?;
     let source_bytes = std::fs::read(src)
@@ -221,11 +263,23 @@ pub fn eval_transcript(
             verify_errors: 0,
             verify_warnings: 0,
             probe_score: None,
+            semantic_score: None,
             prefix_tokens: 0,
             duration_ms: 0,
             error: None,
         };
-        if let Some(plan) = strat.evaluate(&transcript, policy).filter(|plan| {
+        // The `scored` row uses the injected driver when one is
+        // configured — matching what `plan`/`apply` would produce —
+        // and falls back to the built-in heuristic otherwise.
+        let plan_opt = match hooks.scorer.filter(|_| strat.id() == "scored") {
+            Some(scorer) => {
+                let candidates = ScoredStrategy::candidates(&transcript, policy);
+                let scores = scorer.score(&transcript, &candidates);
+                ScoredStrategy::scores_to_plan(&transcript, policy, &scores)
+            }
+            None => strat.evaluate(&transcript, policy),
+        };
+        if let Some(plan) = plan_opt.filter(|plan| {
             policy.accepts_savings(plan.context_tokens_before, plan.context_tokens_after)
         }) {
             row.est_reclaimed = plan.est_savings();
@@ -240,14 +294,22 @@ pub fn eval_transcript(
                     std::process::id(),
                     NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
                 ));
-                let outcome = run_on_copy(provider, src, &tmp, &plan, &probes, tail_start);
+                let outcome = run_on_copy(
+                    provider,
+                    src,
+                    &tmp,
+                    &plan,
+                    &probes,
+                    tail_start,
+                    hooks.probe_judge,
+                );
                 // Always clean up: the temp copy itself, plus the
                 // intermediate an adapter may have written before a
                 // failed rename.
                 let _ = std::fs::remove_file(&tmp);
                 let _ = std::fs::remove_file(tmp.with_extension("jsonl.gobstopper-tmp"));
                 match outcome {
-                    Ok((duration_ms, findings, score)) => {
+                    Ok((duration_ms, findings, score, semantic)) => {
                         row.duration_ms = duration_ms;
                         row.verify_errors = findings
                             .iter()
@@ -259,6 +321,7 @@ pub fn eval_transcript(
                             .count();
                         row.findings = findings;
                         row.probe_score = Some(score);
+                        row.semantic_score = semantic;
                     }
                     Err(e) => row.error = Some(e.to_string()),
                 }
@@ -419,7 +482,14 @@ mod tests {
         // inspects names this eval call could have used — sibling tests
         // running concurrently in this process draw other values.
         let counter_start = NEXT_TEMP.load(Ordering::Relaxed);
-        let rows = eval_transcript(Provider::ClaudeCode, &src, &low_policy(), None).unwrap();
+        let rows = eval_transcript_with_hooks(
+            Provider::ClaudeCode,
+            &src,
+            &low_policy(),
+            None,
+            &EvalHooks::default(),
+        )
+        .unwrap();
         let counter_end = NEXT_TEMP.load(Ordering::Relaxed);
 
         for id in ["auto", "sawtooth", "elide", "structured", "agentic"] {
@@ -503,13 +573,26 @@ mod tests {
         let dir = TestDir::new();
         let src = write_claude_transcript(&dir.0);
 
-        let rows =
-            eval_transcript(Provider::ClaudeCode, &src, &low_policy(), Some("elide")).unwrap();
+        let rows = eval_transcript_with_hooks(
+            Provider::ClaudeCode,
+            &src,
+            &low_policy(),
+            Some("elide"),
+            &EvalHooks::default(),
+        )
+        .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].strategy, "elide");
         assert!(rows[0].est_reclaimed > 0);
 
-        assert!(eval_transcript(Provider::ClaudeCode, &src, &low_policy(), Some("nope")).is_err());
+        assert!(eval_transcript_with_hooks(
+            Provider::ClaudeCode,
+            &src,
+            &low_policy(),
+            Some("nope"),
+            &EvalHooks::default()
+        )
+        .is_err());
     }
 
     #[test]
@@ -518,7 +601,14 @@ mod tests {
         let dir = TestDir::new();
         let src = write_probe_transcript(&dir.0);
 
-        let rows = eval_transcript(Provider::ClaudeCode, &src, &low_policy(), None).unwrap();
+        let rows = eval_transcript_with_hooks(
+            Provider::ClaudeCode,
+            &src,
+            &low_policy(),
+            None,
+            &EvalHooks::default(),
+        )
+        .unwrap();
         let elide = row(&rows, "elide");
         assert!(elide.error.is_none());
 
@@ -562,7 +652,14 @@ mod tests {
         let mut policy = low_policy();
         policy.trigger_tokens = u64::MAX;
 
-        let rows = eval_transcript(Provider::ClaudeCode, &src, &policy, None).unwrap();
+        let rows = eval_transcript_with_hooks(
+            Provider::ClaudeCode,
+            &src,
+            &policy,
+            None,
+            &EvalHooks::default(),
+        )
+        .unwrap();
         assert_eq!(rows.len(), 12);
         for r in &rows {
             assert!(r.plan.is_none(), "{} should not fire", r.strategy);
@@ -570,5 +667,83 @@ mod tests {
             assert!(r.findings.is_empty());
             assert!(r.error.is_none());
         }
+    }
+
+    /// Driver that scores every candidate maximally keepable — the
+    /// scored row should then elide nothing the window doesn't force,
+    /// and the counter proves the driver ran (not the heuristic).
+    struct KeepAllDriver {
+        calls: AtomicUsize,
+    }
+
+    impl ScoreDriver for KeepAllDriver {
+        fn score(
+            &self,
+            _t: &Transcript,
+            candidates: &[usize],
+        ) -> Vec<gobstopper_core::strategy::ScoredItem> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            candidates
+                .iter()
+                .map(|&item_index| gobstopper_core::strategy::ScoredItem {
+                    item_index,
+                    keep_probability: 1.0,
+                })
+                .collect()
+        }
+    }
+
+    /// Judge that reports every probe as surviving.
+    struct AllSurviveJudge;
+
+    impl ProbeJudge for AllSurviveJudge {
+        fn score(&self, probes: &[Probe], _post_text: &str) -> Option<Vec<f64>> {
+            Some(vec![1.0; probes.len()])
+        }
+    }
+
+    #[test]
+    fn hooks_drive_scored_row_and_semantic_score() {
+        let _guard = EVAL_LOCK.lock().unwrap();
+        let dir = TestDir::new();
+        let src = write_probe_transcript(&dir.0);
+        let driver = KeepAllDriver {
+            calls: AtomicUsize::new(0),
+        };
+        let judge = AllSurviveJudge;
+        let hooks = EvalHooks {
+            scorer: Some(&driver),
+            probe_judge: Some(&judge),
+        };
+
+        let rows = eval_transcript_with_hooks(
+            Provider::ClaudeCode,
+            &src,
+            &low_policy(),
+            Some("scored"),
+            &hooks,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        let scored = &rows[0];
+        assert_eq!(driver.calls.load(Ordering::Relaxed), 1);
+        // All-1.0 keep probabilities still elide what the savings floor
+        // demands, but nothing more: the driver produced the plan.
+        let plan = scored.plan.as_ref().expect("scored produces a plan");
+        assert!(plan.edits.iter().any(|e| matches!(e, Edit::Elide { .. })));
+        // The judge ran on the rewritten copy: every probe "survives"
+        // semantically even where the verbatim string was elided.
+        let semantic = scored
+            .semantic_score
+            .as_ref()
+            .expect("judge produced a semantic score");
+        assert_eq!(semantic.recall, 1.0);
+        assert_eq!(
+            semantic.probes_total,
+            scored.probe_score.as_ref().unwrap().probes_total
+        );
+        // And the verbatim score still shows real losses — the two
+        // scores measure different things.
+        assert!(scored.probe_score.as_ref().unwrap().recall < 1.0);
     }
 }
