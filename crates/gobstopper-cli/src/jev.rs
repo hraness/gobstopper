@@ -957,12 +957,13 @@ impl gobstopper_core::probe::ProbeJudge for JevProbeJudge {
 /// Resolve the eval probe judge from `GOBSTOPPER_EVAL_JUDGE`. Only
 /// `jev` is supported; any other value and a missing key both yield
 /// `None` (the semantic pass is skipped, verbatim recall still runs).
-pub fn eval_judge() -> Option<Box<dyn gobstopper_core::probe::ProbeJudge>> {
+pub fn eval_judge() -> Option<Box<dyn gobstopper_core::probe::ProbeJudge + Sync>> {
     if std::env::var("GOBSTOPPER_EVAL_JUDGE").ok().as_deref() != Some("jev") {
         return None;
     }
-    cached_config()
-        .map(|cfg| Box::new(JevProbeJudge { cfg }) as Box<dyn gobstopper_core::probe::ProbeJudge>)
+    cached_config().map(|cfg| {
+        Box::new(JevProbeJudge { cfg }) as Box<dyn gobstopper_core::probe::ProbeJudge + Sync>
+    })
 }
 
 #[cfg(test)]
