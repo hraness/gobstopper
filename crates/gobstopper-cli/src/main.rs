@@ -9,6 +9,7 @@ mod jev;
 mod llm_scorer;
 mod mcp;
 mod report;
+mod secrets;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -18,7 +19,7 @@ use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
 use gobstopper_core::plan::{CompactionPlan, Edit};
 use gobstopper_core::strategy::{self, HeuristicScorer, QuotaPressure, ScoredStrategy};
 use gobstopper_core::Provider;
-use std::io::{Read as _, Write as _};
+use std::io::{BufRead as _, IsTerminal as _, Read as _, Write as _};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
@@ -296,6 +297,17 @@ enum Cmd {
         /// Retired compatibility flag; in-place staged swaps are disabled.
         #[arg(long)]
         double_buffer: bool,
+    },
+    /// Manage vaulted provider credentials (OS keychain).
+    Auth {
+        /// Provider to configure (currently only `jev`).
+        provider: String,
+        /// Show where the key comes from and run a live check.
+        #[arg(long)]
+        status: bool,
+        /// Remove the stored key.
+        #[arg(long)]
+        delete: bool,
     },
     /// Pure policy check for integrators (oompa): give the numbers, get
     /// the action. Reads no transcript files.
@@ -2383,6 +2395,89 @@ fn cmd_watch(
     }
 }
 
+fn cmd_auth(provider: &str, status: bool, delete: bool) -> Result<()> {
+    match provider {
+        "jev" | "typesafe" => auth_jev(status, delete),
+        other => bail!("unknown provider '{other}' (supported: jev)"),
+    }
+}
+
+/// `gobstopper auth jev` onboarding: piped stdin wins; else the system
+/// clipboard when running interactively. The key is verified against the
+/// API before it reaches the OS keychain — a definitively rejected key is
+/// never stored.
+fn auth_jev(status: bool, delete: bool) -> Result<()> {
+    let endpoint = std::env::var("GOBSTOPPER_JEV_ENDPOINT")
+        .unwrap_or_else(|_| "https://api.typesafe.ai/v1/systemone".into());
+    if delete {
+        match secrets::delete_jev_key()? {
+            true => println!("removed stored typesafe key"),
+            false => println!("no stored typesafe key"),
+        }
+        return Ok(());
+    }
+    if status {
+        let Some((key, source)) = jev::resolve_key() else {
+            println!("jev: no key configured (set TYPESAFE_API_KEY or run `gobstopper auth jev`)");
+            return Ok(());
+        };
+        println!(
+            "jev: {} key {} — {}",
+            source.describe(),
+            secrets::masked(&key),
+            match jev::health_check(&key, &endpoint) {
+                jev::Health::Ok => "verified",
+                jev::Health::Rejected => "rejected by API (401/403)",
+                jev::Health::Unverified => "could not verify (network/API error)",
+            }
+        );
+        return Ok(());
+    }
+    let key = if !std::io::stdin().is_terminal() {
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        buf.trim().to_string()
+    } else if let Some(k) = secrets::clipboard_secret() {
+        println!("found a key on the clipboard: {}", secrets::masked(&k));
+        print!("store it in the OS keychain? [y/N] ");
+        std::io::stdout().flush()?;
+        let mut ans = String::new();
+        std::io::stdin().lock().read_line(&mut ans)?;
+        if !matches!(ans.trim().to_lowercase().as_str(), "y" | "yes") {
+            println!("aborted");
+            return Ok(());
+        }
+        k
+    } else {
+        bail!("no key on stdin or clipboard — pipe it in: `pbpaste | gobstopper auth jev`");
+    };
+    if !(12..=512).contains(&key.chars().count()) || key.contains(char::is_whitespace) {
+        bail!(
+            "that doesn't look like an API key ({} chars)",
+            key.chars().count()
+        );
+    }
+    match jev::health_check(&key, &endpoint) {
+        jev::Health::Rejected => bail!("the API rejected that key (401/403) — not stored"),
+        health => {
+            secrets::store_jev_key(&key)?;
+            match health {
+                jev::Health::Ok => println!(
+                    "typesafe key {} verified and stored in the OS keychain",
+                    secrets::masked(&key)
+                ),
+                jev::Health::Unverified => println!(
+                    "typesafe key {} stored in the OS keychain (could not verify: network/API error)",
+                    secrets::masked(&key)
+                ),
+                jev::Health::Rejected => unreachable!(),
+            }
+            println!("scorer ready: GOBSTOPPER_SCORER=jev gobstopper plan <session>");
+        }
+    }
+    Ok(())
+}
+
 fn policy_decision(
     cfg: &config::Config,
     provider: &str,
@@ -2663,6 +2758,11 @@ fn main() -> Result<()> {
         } => cmd_bench(&cli, *all, *trigger, *floor, output.as_deref()),
         Cmd::Snapshot { session, label } => cmd_snapshot(&cli, &cfg, session, label.as_deref()),
         Cmd::Mcp => mcp::run(&cli, &cfg),
+        Cmd::Auth {
+            provider,
+            status,
+            delete,
+        } => cmd_auth(provider, *status, *delete),
         Cmd::Watch {
             interval,
             dry_run,
