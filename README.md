@@ -201,11 +201,17 @@ remote API, so content only leaves the device when explicitly enabled. A
 post-fix 141k-token A/B run selected the same six records with labels-only and
 400-byte excerpts, so the private default remains `0`.
 Every numeric runtime knob is clamped: 1–64 questions per call, 1–128 state
-items, 100–30,000 ms timeout, and 1–16 batches per scoring pass
-(`GOBSTOPPER_JEV_MAX_BATCHES`, default `4`). Only the newest
+items, 100–30,000 ms timeout, 1–16 batches per scoring pass, and 1–4
+concurrent calls (`GOBSTOPPER_JEV_PARALLEL`, default `2`).
+`GOBSTOPPER_JEV_MAX_BATCHES` defaults to `4`. Only the newest
 `MAX_Q × MAX_BATCHES` tailward candidates are sent; an older prefix keeps its
 deterministic heuristic score. This caps the default at four calls and 256
-remote-scored candidates even for unusually large transcripts.
+remote-scored candidates even for unusually large transcripts. Batches run
+in deterministic waves of two: request execution is parallel, but results
+are overlaid in stable batch order and each failure retains that batch's
+heuristic scores. On one three-batch 336k-token Claude session, bounded
+parallelism reduced live planning from 148.64s to 19.47s (about 7.6×); this is
+a latency observation, not a provider-wide guarantee.
 
 `eval` and `bench` now honor `GOBSTOPPER_SCORER` for their `scored` row, so
 an A/B run measures the same Jev or Apple ranking used by `plan` rather than

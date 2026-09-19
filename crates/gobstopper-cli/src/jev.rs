@@ -20,6 +20,7 @@
 //!   GOBSTOPPER_JEV_MAX_Q          - 64 questions per call (1..64)
 //!   GOBSTOPPER_JEV_MAX_STATE      - 40 state items (1..128)
 //!   GOBSTOPPER_JEV_MAX_BATCHES    - 4 calls per scoring pass (1..16)
+//!   GOBSTOPPER_JEV_PARALLEL       - 2 concurrent calls (1..4)
 //!   GOBSTOPPER_JEV_TIMEOUT_MS     - 8000 (100..30000)
 //!   GOBSTOPPER_JEV_CACHE          - 0 disables response-cache reads
 //!   GOBSTOPPER_JEV_CACHE_TTL_SECS - 300; 0 disables reads (max 3600)
@@ -82,6 +83,8 @@ const DEFAULT_MAX_STATE_ITEMS: usize = 40;
 const MAX_STATE_ITEMS: usize = 128;
 const DEFAULT_MAX_BATCHES: usize = 4;
 const MAX_BATCHES: usize = 16;
+const DEFAULT_PARALLELISM: usize = 2;
+const MAX_PARALLELISM: usize = 4;
 const DEFAULT_TIMEOUT_MS: u64 = 8_000;
 const MIN_TIMEOUT_MS: u64 = 100;
 const MAX_TIMEOUT_MS: u64 = 30_000;
@@ -112,6 +115,7 @@ pub struct JevConfig {
     pub max_questions_per_call: usize,
     pub max_state_items: usize,
     pub max_batches: usize,
+    pub parallelism: usize,
     pub timeout_ms: u64,
     /// Bounded per-candidate excerpt bytes attached to each question.
     /// Defaults to 0: Jev is a remote API, so the labels-only privacy
@@ -127,6 +131,7 @@ impl Default for JevConfig {
             max_questions_per_call: MAX_QUESTIONS_PER_CALL,
             max_state_items: DEFAULT_MAX_STATE_ITEMS,
             max_batches: DEFAULT_MAX_BATCHES,
+            parallelism: DEFAULT_PARALLELISM,
             timeout_ms: DEFAULT_TIMEOUT_MS,
             content_bytes: 0,
         }
@@ -164,6 +169,12 @@ impl JevConfig {
                     1,
                     MAX_BATCHES,
                 ),
+                parallelism: bounded_usize(
+                    std::env::var("GOBSTOPPER_JEV_PARALLEL").ok(),
+                    DEFAULT_PARALLELISM,
+                    1,
+                    MAX_PARALLELISM,
+                ),
                 timeout_ms: bounded_u64(
                     std::env::var("GOBSTOPPER_JEV_TIMEOUT_MS").ok(),
                     DEFAULT_TIMEOUT_MS,
@@ -185,6 +196,7 @@ impl JevConfig {
         self.max_questions_per_call = self.max_questions_per_call.clamp(1, MAX_QUESTIONS_PER_CALL);
         self.max_state_items = self.max_state_items.clamp(1, MAX_STATE_ITEMS);
         self.max_batches = self.max_batches.clamp(1, MAX_BATCHES);
+        self.parallelism = self.parallelism.clamp(1, MAX_PARALLELISM);
         self.timeout_ms = self.timeout_ms.clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
         self.content_bytes = self.content_bytes.min(MAX_CONTENT_BYTES);
         self
@@ -339,6 +351,29 @@ fn overlay_probabilities(
     }
 }
 
+fn run_parallel<T, F>(count: usize, parallelism: usize, task: F) -> Vec<std::thread::Result<T>>
+where
+    T: Send,
+    F: Fn(usize) -> T + Sync,
+{
+    let parallelism = parallelism.max(1);
+    let mut outcomes = Vec::with_capacity(count);
+    for start in (0..count).step_by(parallelism) {
+        let end = count.min(start.saturating_add(parallelism));
+        outcomes.extend(std::thread::scope(|scope| {
+            let task = &task;
+            let handles: Vec<_> = (start..end)
+                .map(|index| scope.spawn(move || task(index)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join())
+                .collect::<Vec<_>>()
+        }));
+    }
+    outcomes
+}
+
 impl ScoreDriver for JevScorer {
     fn score(&self, transcript: &Transcript, candidates: &[usize]) -> Vec<ScoredItem> {
         if candidates.is_empty() {
@@ -373,27 +408,38 @@ impl ScoreDriver for JevScorer {
             Default::default()
         };
 
+        let requests: Vec<JevRequest> = chunks
+            .iter()
+            .enumerate()
+            .map(|(chunk_index, chunk)| {
+                build_request(&state, chunk, transcript, &excerpts, chunk_index)
+            })
+            .collect();
+        let outcomes = run_parallel(requests.len(), self.cfg.parallelism, |index| {
+            call_jev(&requests[index], &self.cfg)
+        });
+
         let mut results = HeuristicScorer.score(transcript, candidates);
         let result_positions: HashMap<usize, usize> = results
             .iter()
             .enumerate()
             .map(|(position, item)| (item.item_index, position))
             .collect();
-        for (chunk_idx, chunk) in chunks.iter().enumerate() {
-            let request = build_request(&state, chunk, transcript, &excerpts, chunk_idx);
-            match call_jev(&request, &self.cfg) {
-                Ok(probabilities) => overlay_probabilities(
+        for (chunk_index, (chunk, outcome)) in chunks.iter().zip(outcomes).enumerate() {
+            match outcome {
+                Ok(Ok(probabilities)) => overlay_probabilities(
                     &mut results,
                     &result_positions,
                     chunk,
-                    chunk_idx,
+                    chunk_index,
                     &probabilities,
                 ),
-                Err(error) => {
-                    eprintln!(
-                        "jev scorer call failed for chunk {chunk_idx}; retaining heuristic scores: {error:#}"
-                    );
-                }
+                Ok(Err(error)) => eprintln!(
+                    "jev scorer call failed for chunk {chunk_index}; retaining heuristic scores: {error:#}"
+                ),
+                Err(_) => eprintln!(
+                    "jev scorer worker panicked for chunk {chunk_index}; retaining heuristic scores"
+                ),
             }
         }
         results
@@ -755,6 +801,7 @@ mod tests {
             max_questions_per_call: 0,
             max_state_items: usize::MAX,
             max_batches: 0,
+            parallelism: usize::MAX,
             timeout_ms: u64::MAX,
             content_bytes: usize::MAX,
             ..Default::default()
@@ -762,8 +809,29 @@ mod tests {
         assert_eq!(scorer.cfg.max_questions_per_call, 1);
         assert_eq!(scorer.cfg.max_state_items, MAX_STATE_ITEMS);
         assert_eq!(scorer.cfg.max_batches, 1);
+        assert_eq!(scorer.cfg.parallelism, MAX_PARALLELISM);
         assert_eq!(scorer.cfg.timeout_ms, MAX_TIMEOUT_MS);
         assert_eq!(scorer.cfg.content_bytes, MAX_CONTENT_BYTES);
+    }
+
+    #[test]
+    fn parallel_batches_are_bounded_and_return_in_order() {
+        let active = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peak = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let outcomes = run_parallel(4, 2, {
+            let active = active.clone();
+            let peak = peak.clone();
+            move |index| {
+                let concurrent = active.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                peak.fetch_max(concurrent, std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(Duration::from_millis(10));
+                active.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+                index
+            }
+        });
+        let ordered: Vec<usize> = outcomes.into_iter().map(Result::unwrap).collect();
+        assert_eq!(ordered, vec![0, 1, 2, 3]);
+        assert_eq!(peak.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[test]
