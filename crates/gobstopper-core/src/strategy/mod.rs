@@ -271,11 +271,20 @@ pub(crate) fn choose_with_digest(
             return Some((chosen, digest, after));
         }
         let target = floor_tokens.saturating_sub(overhead);
+        let mut pushed = false;
         while projected > target && cursor < candidates.len() {
             let item = candidates[cursor];
             cursor += 1;
             chosen.push(item.line_index);
             projected = projected.saturating_sub(item.estimated_elision_savings());
+            pushed = true;
+        }
+        // Nothing was added and the digest overhead alone still puts
+        // `after` over the floor — the loop would re-check an identical
+        // state forever. Return the best-effort plan; the savings gate
+        // downstream decides whether it is acceptable.
+        if !pushed {
+            return Some((chosen, digest, after));
         }
     }
 }
@@ -361,6 +370,49 @@ mod tests {
         assert!(!policy.accepts_savings(100_000, 96_000));
         policy.min_savings_tokens = 0;
         assert!(policy.accepts_savings(100_000, 100_000));
+    }
+
+    #[test]
+    fn choose_with_digest_terminates_when_overhead_beats_floor() {
+        // Digest overhead exceeds the floor and candidate savings zero
+        // `projected` before the cursor exhausts: the adjust loop must
+        // return the best-effort plan, not spin on unchangeable state.
+        use crate::model::{ItemKind, SessionHandle, Transcript, TranscriptItem, UsageSample};
+        use std::path::PathBuf;
+        let item = |line: usize, bytes: u64| TranscriptItem {
+            line_index: line,
+            kind: ItemKind::ToolResult,
+            est_tokens: crate::estimate::estimate_tokens(bytes as usize),
+            elidable_bytes: Some(bytes),
+            elidable_parts: 1,
+            label: "tool(out)".into(),
+            summary: None,
+            uuid: None,
+            parent_uuid: None,
+            tool_use_ids: Vec::new(),
+            payload_sha256: None,
+        };
+        let items = vec![item(0, 4_000), item(1, 4_000), item(2, 4_000)];
+        let transcript = Transcript {
+            session: SessionHandle {
+                provider: crate::model::Provider::Codex,
+                session_id: "s".into(),
+                path: PathBuf::from("/tmp/s.jsonl"),
+                cwd: None,
+                age_secs: 0,
+            },
+            items,
+            usage: UsageSample {
+                context_tokens: 100,
+                ..Default::default()
+            },
+        };
+        let candidates: Vec<&TranscriptItem> = transcript.items.iter().collect();
+        // floor_tokens = 1: any digest's overhead already exceeds it.
+        let outcome = choose_with_digest(&transcript, 1, &candidates);
+        let (chosen, _digest, after) = outcome.expect("returns a best-effort plan");
+        assert!(!chosen.is_empty());
+        assert!(after > 1, "after {after} honestly reports digest overhead");
     }
 
     #[test]

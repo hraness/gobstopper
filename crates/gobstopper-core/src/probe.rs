@@ -491,6 +491,81 @@ pub fn score_text(pre_text: &str, post_text: &str, tail_start_line: usize) -> Pr
     score_probes(&extract_probes(pre_text), post_text, tail_start_line)
 }
 
+/// Semantic probe judge: a model-backed checker that answers "is this
+/// fact still present or established in the post-rewrite context?"
+/// where verbatim matching fails — facts preserved as paraphrase in a
+/// state card or per-item stub. Implementations must bound request
+/// count and payload; `None` means the judge could not run (missing
+/// credentials, unreachable backend), not "nothing survived".
+pub trait ProbeJudge {
+    /// Per-probe survival probability in `post_text`, covering a prefix
+    /// of `probes` — a bounded judge may answer fewer than it was given.
+    /// Values outside [0, 1] are clamped by the caller.
+    fn score(&self, probes: &[Probe], post_text: &str) -> Option<Vec<f64>>;
+}
+
+/// Build a [`ProbeScore`] from judge probabilities instead of verbatim
+/// matching: a probe counts as recalled at probability >= 0.5. The
+/// score covers the first `probs.len().min(probes.len())` probes — a
+/// bounded judge reports on the prefix it evaluated, and
+/// `probes_total` reflects the judged subset.
+pub fn score_from_probabilities(
+    probes: &[Probe],
+    probs: &[f64],
+    tail_start_line: usize,
+) -> ProbeScore {
+    let mut recalled = 0usize;
+    let mut tail_total = 0usize;
+    let mut tail_recalled = 0usize;
+    let mut missed_probes = Vec::new();
+    let mut kind_total = [0usize; 6];
+    let mut kind_recalled = [0usize; 6];
+
+    let judged = probes.len().min(probs.len());
+    for (i, p) in probes[..judged].iter().enumerate() {
+        let k = p.kind as usize;
+        kind_total[k] += 1;
+        let in_tail = p.line_index >= tail_start_line;
+        if in_tail {
+            tail_total += 1;
+        }
+        let survived = probs[i].clamp(0.0, 1.0) >= 0.5;
+        if survived {
+            recalled += 1;
+            kind_recalled[k] += 1;
+            if in_tail {
+                tail_recalled += 1;
+            }
+        } else if missed_probes.len() < MAX_MISSED {
+            missed_probes.push(p.text.clone());
+        }
+    }
+
+    let probes_total = judged;
+    ProbeScore {
+        probes_total,
+        probes_recalled: recalled,
+        recall: if probes_total == 0 {
+            1.0
+        } else {
+            recalled as f64 / probes_total as f64
+        },
+        tail_probes_total: tail_total,
+        tail_probes_recalled: tail_recalled,
+        tail_intact: tail_recalled == tail_total,
+        missed_probes,
+        by_kind: ProbeKind::ALL
+            .iter()
+            .enumerate()
+            .map(|(i, kind)| KindTally {
+                kind: *kind,
+                total: kind_total[i],
+                recalled: kind_recalled[i],
+            })
+            .collect(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -617,5 +692,58 @@ mod tests {
         let score = score_text(&text, "", 0);
         assert!(score.missed_probes.len() <= MAX_MISSED);
         assert_eq!(score.probes_recalled, 0);
+    }
+}
+
+#[cfg(test)]
+mod probability_tests {
+    use super::*;
+
+    fn probe(kind: ProbeKind, text: &str, line: usize) -> Probe {
+        Probe {
+            kind,
+            text: text.into(),
+            line_index: line,
+        }
+    }
+
+    #[test]
+    fn score_from_probabilities_thresholds_and_tails() {
+        let probes = vec![
+            probe(ProbeKind::Path, "/a/one.rs", 1),
+            probe(ProbeKind::Command, "cargo test", 5),
+            probe(ProbeKind::Path, "/a/three.rs", 9),
+            probe(ProbeKind::ErrorSignature, "error[E1]", 9),
+        ];
+        // Two survive (0.5 counts, 0.99 counts), two lost; tail = line >= 9.
+        let score = score_from_probabilities(&probes, &[0.9, 0.1, 0.5, 0.2], 9);
+        assert_eq!(score.probes_total, 4);
+        assert_eq!(score.probes_recalled, 2);
+        assert_eq!(score.recall, 0.5);
+        assert_eq!(score.tail_probes_total, 2);
+        assert_eq!(score.tail_probes_recalled, 1);
+        assert!(!score.tail_intact);
+        assert_eq!(score.missed_probes.len(), 2);
+        // Out-of-range probs are clamped, not trusted.
+        let clamped = score_from_probabilities(&probes[..1], &[7.0], usize::MAX);
+        assert_eq!(clamped.probes_recalled, 1);
+    }
+
+    #[test]
+    fn score_from_probabilities_covers_judged_prefix_only() {
+        let probes = vec![
+            probe(ProbeKind::Path, "/a/one.rs", 1),
+            probe(ProbeKind::Path, "/a/two.rs", 2),
+            probe(ProbeKind::Path, "/a/three.rs", 3),
+        ];
+        // Judge answered one probe; the score is over the judged subset.
+        let score = score_from_probabilities(&probes, &[1.0], usize::MAX);
+        assert_eq!(score.probes_total, 1);
+        assert_eq!(score.probes_recalled, 1);
+        assert_eq!(score.recall, 1.0);
+        // And no probes at all scores perfect-vacuous.
+        let empty = score_from_probabilities(&probes, &[], usize::MAX);
+        assert_eq!(empty.probes_total, 0);
+        assert_eq!(empty.recall, 1.0);
     }
 }
