@@ -215,11 +215,22 @@ GOBSTOPPER_SCORER=jev GOBSTOPPER_EVAL_JUDGE=jev \
   gobstopper eval <session> --strategy scored
 ```
 
-In a live 80k-token run, the same valid Jev-scored plan measured 97%
-verbatim probe recall and 100% semantic recall: Jev credited one fact that
-the state card preserved after its original bytes were elided. Jev and the
-heuristic selected the same three unambiguously stale records in that run,
-so the measurement does not claim a ranking-quality win.
+Gobstopper reads the official `answers.<id>.noul` probability returned by
+System One, while retaining bounded compatibility fallbacks for older response
+shapes. A missing or malformed scorer response makes the whole chunk neutral
+at `0.5`; semantic eval omits its model score instead of crediting unknown
+facts. The eval harness now makes a post-parser Jev-versus-heuristic quality
+trial possible, but no ranking-quality win is claimed until that live
+comparison is rerun.
+
+Successful Jev responses are cached in-process for five minutes, keyed by
+endpoint, credential identity, and the exact serialized request. This keeps
+`watch` from paying for identical scorer calls on an unchanged transcript
+while periodically refreshing against the remote model. The cache stores
+only parsed probabilities (not transcript text), clears at 64 entries, and
+never caches failures. Set `GOBSTOPPER_JEV_CACHE=0` or
+`GOBSTOPPER_JEV_CACHE_TTL_SECS=0` to disable reads; change the TTL with the
+latter variable.
 
 `GOBSTOPPER_SCORER=apple` (macOS 26+, Apple Silicon) scores on-device with
 Apple Intelligence Foundation Models via the shared `apple-foundation`

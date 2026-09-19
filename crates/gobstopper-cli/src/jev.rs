@@ -14,20 +14,26 @@
 //!
 //! API key resolution: `TYPESAFE_API_KEY` → `GOBSTOPPER_JEV_API_KEY` →
 //! the OS keychain written by `gobstopper auth jev` (macOS Keychain /
-//! Windows Credential Manager / Linux Secret Service).
+//! Windows Credential Manager / Linux kernel keyring).
 //!
-//!   GOBSTOPPER_JEV_ENDPOINT      - https://api.typesafe.ai/v1/systemone
-//!   GOBSTOPPER_JEV_MAX_Q         - 64 questions per call
-//!   GOBSTOPPER_JEV_MAX_STATE     - 40 state items
-//!   GOBSTOPPER_JEV_TIMEOUT_MS    - 8000
-//!   GOBSTOPPER_JEV_CONTENT_BYTES - 0 = labels only; >0 attaches a bounded
+//!   GOBSTOPPER_JEV_ENDPOINT       - https://api.typesafe.ai/v1/systemone
+//!   GOBSTOPPER_JEV_MAX_Q          - 64 questions per call
+//!   GOBSTOPPER_JEV_MAX_STATE      - 40 state items
+//!   GOBSTOPPER_JEV_TIMEOUT_MS     - 8000
+//!   GOBSTOPPER_JEV_CACHE          - 0 disables response-cache reads
+//!   GOBSTOPPER_JEV_CACHE_TTL_SECS - 300; 0 disables response-cache reads
+//!   GOBSTOPPER_JEV_CONTENT_BYTES  - 0 = labels only; >0 attaches a bounded
 //!     per-candidate content excerpt to each question. Jev is a remote
 //!     API — content only leaves the device when the user opts in.
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::process::Command;
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use gobstopper_core::{ScoreDriver, ScoredItem, Transcript};
 
@@ -137,8 +143,8 @@ struct JevRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 struct JevAnswer {
-    /// Primary answer probability; accepted forms: a number 0..1, a
-    /// boolean, or a nested `probability` field.
+    #[serde(default)]
+    noul: Option<f64>,
     #[serde(default)]
     probability: Option<f64>,
     #[serde(default)]
@@ -151,8 +157,81 @@ struct JevAnswer {
 
 #[derive(Debug, Clone, Deserialize)]
 struct JevAnswers {
-    #[serde(default)]
-    answers: Option<serde_json::Map<String, serde_json::Value>>,
+    answers: serde_json::Map<String, serde_json::Value>,
+}
+
+const CACHE_MAX: usize = 64;
+type CacheKey = [u8; 32];
+
+#[derive(Clone)]
+struct CacheEntry {
+    inserted: Instant,
+    answers: HashMap<String, f64>,
+}
+
+#[derive(Default)]
+struct ResponseCache {
+    entries: HashMap<CacheKey, CacheEntry>,
+}
+
+impl ResponseCache {
+    fn get(&mut self, key: CacheKey, ttl: Duration, now: Instant) -> Option<HashMap<String, f64>> {
+        let entry = self.entries.get(&key)?;
+        if now.duration_since(entry.inserted) >= ttl {
+            self.entries.remove(&key);
+            return None;
+        }
+        Some(entry.answers.clone())
+    }
+
+    fn put(&mut self, key: CacheKey, answers: &HashMap<String, f64>, now: Instant) {
+        if self.entries.len() >= CACHE_MAX && !self.entries.contains_key(&key) {
+            self.entries.clear();
+        }
+        self.entries.insert(
+            key,
+            CacheEntry {
+                inserted: now,
+                answers: answers.clone(),
+            },
+        );
+    }
+}
+
+fn cache_ttl() -> Option<Duration> {
+    if std::env::var("GOBSTOPPER_JEV_CACHE").as_deref() == Ok("0") {
+        return None;
+    }
+    let secs = std::env::var("GOBSTOPPER_JEV_CACHE_TTL_SECS")
+        .ok()
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(300);
+    (secs > 0).then(|| Duration::from_secs(secs))
+}
+
+fn response_cache() -> &'static Mutex<ResponseCache> {
+    static CACHE: OnceLock<Mutex<ResponseCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(ResponseCache::default()))
+}
+
+fn response_cache_key(endpoint: &str, api_key: &str, body: &[u8]) -> CacheKey {
+    let mut hasher = Sha256::new();
+    for part in [endpoint.as_bytes(), api_key.as_bytes(), body] {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    hasher.finalize().into()
+}
+
+fn cache_get(key: CacheKey) -> Option<HashMap<String, f64>> {
+    let ttl = cache_ttl()?;
+    response_cache().lock().ok()?.get(key, ttl, Instant::now())
+}
+
+fn cache_put(key: CacheKey, answers: &HashMap<String, f64>) {
+    if let Ok(mut cache) = response_cache().lock() {
+        cache.put(key, answers, Instant::now());
+    }
 }
 
 pub struct JevScorer {
@@ -318,39 +397,46 @@ fn post_json(
     Ok((code, body.to_string()))
 }
 
-fn call_jev(
-    request: &JevRequest,
-    cfg: &JevConfig,
-) -> anyhow::Result<std::collections::HashMap<String, f64>> {
+fn answer_probability(value: serde_json::Value) -> Option<f64> {
+    let probability = if let Ok(answer) = serde_json::from_value::<JevAnswer>(value.clone()) {
+        answer
+            .noul
+            .or(answer.probability)
+            .or(answer.p)
+            .or(answer.score)
+            .or_else(|| answer.answer.map(|yes| if yes { 1.0 } else { 0.0 }))?
+    } else if let Some(yes) = value.as_bool() {
+        if yes {
+            1.0
+        } else {
+            0.0
+        }
+    } else {
+        value.as_f64()?
+    };
+    probability.is_finite().then(|| probability.clamp(0.0, 1.0))
+}
+
+fn call_jev(request: &JevRequest, cfg: &JevConfig) -> anyhow::Result<HashMap<String, f64>> {
     let body = serde_json::to_vec(request)?;
+    let key = response_cache_key(&cfg.endpoint, &cfg.api_key, &body);
+    if let Some(answers) = cache_get(key) {
+        return Ok(answers);
+    }
     let (code, text) = post_json(&cfg.endpoint, &cfg.api_key, &body, cfg.timeout_ms)?;
     if !(200..300).contains(&code) {
         anyhow::bail!("jev HTTP {code}");
     }
     let parsed: JevAnswers =
         serde_json::from_str(&text).with_context(|| format!("parse jev response: {text}"))?;
-    let answers = parsed.answers.unwrap_or_default();
-    Ok(answers
+    let answers: Option<HashMap<String, f64>> = parsed
+        .answers
         .into_iter()
-        .map(|(k, v)| {
-            let prob = if let Ok(a) = serde_json::from_value::<JevAnswer>(v.clone()) {
-                a.probability
-                    .or(a.p)
-                    .or(a.score)
-                    .or_else(|| a.answer.map(|b| if b { 1.0 } else { 0.0 }))
-                    .unwrap_or(0.5)
-            } else if let Some(b) = v.as_bool() {
-                if b {
-                    1.0
-                } else {
-                    0.0
-                }
-            } else {
-                v.as_f64().unwrap_or(0.5)
-            };
-            (k, prob.clamp(0.0, 1.0))
-        })
-        .collect())
+        .map(|(key, value)| answer_probability(value).map(|probability| (key, probability)))
+        .collect();
+    let answers = answers.context("jev response contains an invalid answer")?;
+    cache_put(key, &answers);
+    Ok(answers)
 }
 
 /// Convenience: resolve a driver when the `scored` strategy is selected
@@ -469,11 +555,9 @@ impl gobstopper_core::probe::ProbeJudge for JevProbeJudge {
             questions,
         };
         let answers = call_jev(&request, &self.cfg).ok()?;
-        Some(
-            (0..judged)
-                .map(|i| answers.get(&format!("p_{i}")).copied().unwrap_or(0.0))
-                .collect(),
-        )
+        (0..judged)
+            .map(|i| answers.get(&format!("p_{i}")).copied())
+            .collect()
     }
 }
 
@@ -506,5 +590,62 @@ mod tests {
     #[test]
     fn judge_state_preserves_short_input() {
         assert_eq!(bounded_judge_state("small"), "small");
+    }
+
+    #[test]
+    fn parses_official_noul_response_shape() {
+        assert_eq!(
+            answer_probability(json!({"type": "noul", "noul": 0.83})),
+            Some(0.83)
+        );
+        assert_eq!(answer_probability(json!({"probability": 0.2})), Some(0.2));
+        assert_eq!(answer_probability(json!(true)), Some(1.0));
+        assert_eq!(answer_probability(json!(1.7)), Some(1.0));
+        assert_eq!(answer_probability(json!({"unknown": 1})), None);
+        assert!(serde_json::from_str::<JevAnswers>("{}").is_err());
+    }
+
+    #[test]
+    fn response_cache_expires_and_stays_bounded() {
+        let now = Instant::now();
+        let answers = HashMap::from([("q".to_string(), 0.75)]);
+        let mut cache = ResponseCache::default();
+        cache.put([7; 32], &answers, now);
+        assert_eq!(
+            cache.get([7; 32], Duration::from_secs(5), now),
+            Some(answers.clone())
+        );
+        assert_eq!(
+            cache.get(
+                [7; 32],
+                Duration::from_secs(5),
+                now + Duration::from_secs(5)
+            ),
+            None
+        );
+
+        for key in 0..CACHE_MAX as u8 {
+            cache.put([key; 32], &answers, now);
+        }
+        assert_eq!(cache.entries.len(), CACHE_MAX);
+        cache.put([CACHE_MAX as u8; 32], &answers, now);
+        assert_eq!(cache.entries.len(), 1);
+    }
+
+    #[test]
+    fn response_cache_key_isolates_endpoint_key_and_body() {
+        let base = response_cache_key("https://one", "key-a", b"request-a");
+        assert_ne!(
+            base,
+            response_cache_key("https://two", "key-a", b"request-a")
+        );
+        assert_ne!(
+            base,
+            response_cache_key("https://one", "key-b", b"request-a")
+        );
+        assert_ne!(
+            base,
+            response_cache_key("https://one", "key-a", b"request-b")
+        );
     }
 }
