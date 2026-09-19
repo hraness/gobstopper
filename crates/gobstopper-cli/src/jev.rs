@@ -34,6 +34,9 @@
 //!   GOBSTOPPER_JEV_TIMEOUT_MS     - 8000 (100..30000)
 //!   GOBSTOPPER_JEV_CACHE          - 0 disables response-cache use
 //!   GOBSTOPPER_JEV_CACHE_TTL_SECS - 300; 0 disables the cache (max 3600)
+//!   GOBSTOPPER_JEV_CACHE_PATH     - ~/.local/share/gobstopper/jev-cache.json
+//!     (per-question answers persist across processes; the file holds
+//!     only sha256 key digests → probability + timestamp, never text)
 //!   GOBSTOPPER_JEV_CONTENT_BYTES  - 0 = labels only; >0 attaches an excerpt
 //!     capped at 1024 bytes per candidate. Jev is a remote API — content
 //!     only leaves the device when the user opts in.
@@ -43,6 +46,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
@@ -357,7 +361,18 @@ fn request_cache_put(key: CacheKey, answers: HashMap<String, f64>, ttl: Option<D
 }
 
 fn question_cache_get(key: CacheKey, ttl: Option<Duration>) -> Option<f64> {
-    question_cache().lock().ok()?.get(key, ttl?, Instant::now())
+    let ttl = ttl?;
+    if let Some(probability) = question_cache().lock().ok()?.get(key, ttl, Instant::now()) {
+        return Some(probability);
+    }
+    // Memory miss: the disk layer extends the cache across processes, so
+    // a cold `plan` within the TTL still reuses a recent answer. A disk
+    // hit repopulates memory so later questions in this pass stay cheap.
+    let probability = disk_cache().and_then(|cache| cache.lock().ok()?.get(key, ttl.as_secs()))?;
+    if let Ok(mut cache) = question_cache().lock() {
+        cache.put(key, probability, Instant::now());
+    }
+    Some(probability)
 }
 
 fn question_cache_put(key: CacheKey, probability: f64, ttl: Option<Duration>) {
@@ -367,6 +382,149 @@ fn question_cache_put(key: CacheKey, probability: f64, ttl: Option<Duration>) {
     if let Ok(mut cache) = question_cache().lock() {
         cache.put(key, probability, Instant::now());
     }
+    if let Some(disk) = disk_cache() {
+        if let Ok(mut cache) = disk.lock() {
+            cache.put(key, probability);
+        }
+    }
+}
+
+/// On-disk question cache, persisted across processes at
+/// `~/.local/share/gobstopper/jev-cache.json` (override:
+/// `GOBSTOPPER_JEV_CACHE_PATH`). Entries are keyed by the same SHA-256
+/// digest used in memory, so the file stores only
+/// `"<key hex>": [probability, unix_secs]` tuples — question text,
+/// endpoint, and key material never land on disk. Writes are atomic
+/// (temp file + rename); concurrent processes are last-writer-wins,
+/// which is safe for a cache: a lost entry just re-asks a question.
+/// `GOBSTOPPER_JEV_CACHE=0` disables reads and writes on this layer
+/// too, via the `ttl: None` guards above.
+struct DiskCache {
+    path: PathBuf,
+    /// key → (probability, unix_secs inserted)
+    entries: HashMap<CacheKey, (f64, u64)>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct DiskFile {
+    v: u32,
+    e: HashMap<String, (f64, u64)>,
+}
+
+impl DiskCache {
+    fn open(path: PathBuf) -> Self {
+        let entries = std::fs::read(&path)
+            .ok()
+            .and_then(|raw| serde_json::from_slice::<DiskFile>(&raw).ok())
+            .filter(|f| f.v == 1)
+            .map(|f| {
+                f.e.into_iter()
+                    .filter_map(|(hex, (p, t))| unhex(&hex).map(|k| (k, (p, t))))
+                    .collect()
+            })
+            .unwrap_or_default();
+        Self { path, entries }
+    }
+
+    fn get(&mut self, key: CacheKey, ttl_secs: u64) -> Option<f64> {
+        let &(probability, inserted) = self.entries.get(&key)?;
+        if unix_now().saturating_sub(inserted) >= ttl_secs {
+            self.entries.remove(&key);
+            return None;
+        }
+        Some(probability)
+    }
+
+    fn put(&mut self, key: CacheKey, probability: f64) {
+        if self.entries.len() >= CACHE_MAX_QUESTIONS && !self.entries.contains_key(&key) {
+            if let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (_, t))| *t)
+                .map(|(k, _)| *k)
+            {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.entries.insert(key, (probability, unix_now()));
+        self.persist();
+    }
+
+    fn persist(&self) {
+        let file = DiskFile {
+            v: 1,
+            e: self
+                .entries
+                .iter()
+                .map(|(k, &(p, t))| (hex_key(k), (p, t)))
+                .collect(),
+        };
+        let Ok(body) = serde_json::to_vec(&file) else {
+            return;
+        };
+        if let Some(parent) = self.path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let tmp = self
+            .path
+            .with_extension(format!("jev-cache-{}.tmp", std::process::id()));
+        if std::fs::write(&tmp, body).is_err() {
+            return;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+        }
+        if std::fs::rename(&tmp, &self.path).is_err() {
+            #[cfg(windows)]
+            {
+                let _ = std::fs::remove_file(&self.path);
+                if std::fs::rename(&tmp, &self.path).is_err() {
+                    let _ = std::fs::remove_file(&tmp);
+                }
+            }
+            #[cfg(not(windows))]
+            let _ = std::fs::remove_file(&tmp);
+        }
+    }
+}
+
+fn disk_cache_path() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("GOBSTOPPER_JEV_CACHE_PATH") {
+        return Some(PathBuf::from(path));
+    }
+    std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join(".local/share/gobstopper/jev-cache.json"))
+}
+
+fn disk_cache() -> Option<&'static Mutex<DiskCache>> {
+    static CACHE: OnceLock<Option<Mutex<DiskCache>>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| disk_cache_path().map(|path| Mutex::new(DiskCache::open(path))))
+        .as_ref()
+}
+
+fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn hex_key(key: &CacheKey) -> String {
+    key.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn unhex(s: &str) -> Option<CacheKey> {
+    if s.len() != 64 {
+        return None;
+    }
+    let mut out = [0u8; 32];
+    for (i, byte) in out.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(s.get(2 * i..2 * i + 2)?, 16).ok()?;
+    }
+    Some(out)
 }
 
 pub struct JevScorer {
@@ -1400,6 +1558,80 @@ mod tests {
             .last_run_summary()
             .unwrap()
             .contains("(2 cached, 0 sent)"));
+    }
+
+    fn temp_cache_path(name: &str) -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "gobstopper-jev-test-{}-{}",
+            std::process::id(),
+            name
+        ))
+    }
+
+    #[test]
+    fn disk_cache_roundtrips_across_instances() {
+        let path = temp_cache_path("roundtrip");
+        let key = cache_key("endpoint", "key", b"question");
+        {
+            let mut cache = DiskCache::open(path.clone());
+            cache.put(key, 0.77);
+        }
+        // A new instance — the "next process" — sees the entry and the
+        // file holds only the hex digest, never the question text.
+        let mut cache = DiskCache::open(path.clone());
+        assert_eq!(cache.get(key, 300), Some(0.77));
+        let body = std::fs::read_to_string(&path).unwrap();
+        assert!(body.contains(&hex_key(&key)));
+        assert!(!body.contains("question"));
+        assert!(!body.contains("key"));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn disk_cache_expires_and_evicts_oldest() {
+        let path = temp_cache_path("expiry");
+        let mut cache = DiskCache::open(path.clone());
+        let key = cache_key("e", "k", b"q");
+        cache.put(key, 0.5);
+        // Fresh within a large TTL; aged past it, the entry is gone.
+        assert_eq!(cache.get(key, 3600), Some(0.5));
+        cache
+            .entries
+            .insert(key, (0.5, unix_now().saturating_sub(400)));
+        assert_eq!(cache.get(key, 300), None);
+        // Eviction: fill to the cap, the oldest timestamp loses.
+        for i in 0..CACHE_MAX_QUESTIONS {
+            let mut k = [0u8; 32];
+            k[..8].copy_from_slice(&(i as u64).to_le_bytes());
+            cache
+                .entries
+                .insert(k, (0.1, unix_now().saturating_sub(1000 + i as u64)));
+        }
+        cache.put([255u8; 32], 0.9);
+        let mut oldest = [0u8; 32];
+        oldest[..8].copy_from_slice(&((CACHE_MAX_QUESTIONS - 1) as u64).to_le_bytes());
+        assert!(!cache.entries.contains_key(&oldest));
+        assert!(cache.entries.contains_key(&[255u8; 32]));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn disk_cache_tolerates_missing_and_corrupt_files() {
+        let path = temp_cache_path("corrupt");
+        assert!(DiskCache::open(path.clone()).entries.is_empty());
+        std::fs::write(&path, b"not json").unwrap();
+        assert!(DiskCache::open(path.clone()).entries.is_empty());
+        std::fs::write(&path, br#"{"v":2,"e":{}}"#).unwrap();
+        assert!(DiskCache::open(path.clone()).entries.is_empty());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn hex_key_unhex_roundtrip() {
+        let key = cache_key("endpoint", "key", b"payload");
+        assert_eq!(unhex(&hex_key(&key)), Some(key));
+        assert_eq!(unhex("zz"), None);
+        assert_eq!(unhex(&"0".repeat(63)), None);
     }
 
     #[test]

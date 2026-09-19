@@ -257,11 +257,18 @@ from cache. The eval judge keeps the stricter exact-request cache because
 its answers depend on the entire submitted context. Cache keys cover
 endpoint, credential identity, and question or request text; values are
 parsed probabilities only (never transcript text), evict oldest-first at
-512 questions and 64 requests, and failures are never cached. Transient
+512 questions and 64 requests, and failures are never cached. The
+question layer also persists to
+`~/.local/share/gobstopper/jev-cache.json` — only sha256 key digests
+mapped to probability + timestamp, never text — so a cold `plan` inside
+the TTL still skips the wire (one live session: 588ms cold, 4ms warm in
+a second process). Transient
 transport errors and HTTP 5xx responses are retried once; auth rejections
 are not. The scorer and judge resolve the API key once per process, so
 `watch` does not re-read the OS credential store every pass. Set
-`GOBSTOPPER_JEV_CACHE=0` or `GOBSTOPPER_JEV_CACHE_TTL_SECS=0` to disable;
+`GOBSTOPPER_JEV_CACHE=0` or `GOBSTOPPER_JEV_CACHE_TTL_SECS=0` to disable
+both layers;
+`GOBSTOPPER_JEV_CACHE_PATH` relocates the disk file;
 the TTL maximum is 3,600 seconds.
 
 `GOBSTOPPER_SCORER=apple` (macOS 26+, Apple Silicon) scores on-device with
