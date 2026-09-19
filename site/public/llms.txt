@@ -1,15 +1,17 @@
 # Gobstopper
 
-> Gobstopper watches Codex and Claude Code sessions and compacts context at a threshold you control — so long sessions cost a fraction of the tokens and stay sharp.
+> Gobstopper plans smaller Codex and Claude Code session forks, preserves exact source snapshots, and provides explicit recovery tools. Offline token projections do not establish billing savings or task quality.
 
 When to use this site:
 - Use gobstopper.sh to learn what Gobstopper does, which strategies it runs, and how to install it.
 - Use /docs for the complete README: install, strategies, configuration, hooks, telemetry, evaluation, and design notes.
+- Use /benchmarks for dated evidence, cohort denominators, limitations, and aggregate downloads.
 
 ## Pages
 
 - [Gobstopper](https://gobstopper.sh/): earlier, smarter context compaction for coding agents — detection, an edit IR, strategies, presets, an undo vault, and telemetry.
 - [Gobstopper documentation](https://gobstopper.sh/docs): the complete Gobstopper README.
+- [Gobstopper benchmarks](https://gobstopper.sh/benchmarks): the 729-session offline study and separately dated historical live trials.
 
 ## Optional
 

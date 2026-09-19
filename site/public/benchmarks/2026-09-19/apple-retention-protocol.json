@@ -1,0 +1,54 @@
+{
+  "schema": "gobstopper-public-apple-retention-protocol-v1",
+  "registered_at": "2026-09-19T17:41:54.218833+00:00",
+  "sample_count": 3,
+  "selection": "Exactly the original three frozen Codex root-task Apple pilot inputs, convenience selected before this cutoff experiment; no replacement or outcome selection.",
+  "separate_from_729_session_study": true,
+  "binary_sha256": "0d924d0b8322bd58c8ab4cee7318c41177c809433c61d12aa0ddb7cd26f5b88a",
+  "bridge_sha256": "788f4a8aaae8860028f66634e6b5c46046deeb3bccc47fdcc0327917e6739796",
+  "policy": {
+    "trigger_tokens": 80000,
+    "floor_tokens": 40000,
+    "keep_recent_tool_outputs": 8,
+    "min_savings_tokens": 4096,
+    "adaptive": false,
+    "quota_pressure": "normal",
+    "keep_score_threshold": 0.5
+  },
+  "variants": [
+    "heuristic",
+    "bounded_apple_overlay_with_heuristic_remainder"
+  ],
+  "apple_limits": {
+    "max_candidates": 32,
+    "batch_size": 8,
+    "max_batches": 4,
+    "content_bytes": 200,
+    "request_timeout_ms": 60000,
+    "cache_enabled": false
+  },
+  "execution": "One fresh eval process per input and variant; deterministic preregistered within-input order; cache disabled. Each command bounded to 270 seconds and 8 MiB total captured output. Apple uses only the pinned on-device bridge, under the mac-native scheduler. Remote scorer and judge settings are removed; isolated config/data roots.",
+  "metrics": [
+    "plans and no-ops",
+    "projected token reduction including no-ops",
+    "literal probe retention",
+    "protected-tail literal probes",
+    "new structural verifier findings versus each source",
+    "Apple model calls, overlays, failed batches and fallback diagnostics",
+    "wall, scorer and rewrite time",
+    "paired selected-output changes"
+  ],
+  "no_op_rule": "A no-op retains the counterpart variant's pre-edit probe set unchanged when available. If both variants have no plan, probes remain unavailable; no invented perfect score.",
+  "failure_rule": "Retain every registered input and outcome. Do not substitute heuristic fallback for successful Apple qualification. If a command fails, its metrics stay unavailable and it remains in failure counts.",
+  "limitations": [
+    "Three convenience inputs from one Mac; this qualifies the Apple-plus-cutoff execution mechanism only.",
+    "Both variants use the preregistered 0.5 threshold; this does not tune or establish an optimal threshold.",
+    "Apple overlays at most 32 selected candidates; unscored candidates retain heuristic scores. Heuristic remainder is expected coverage, distinct from backend failure fallback.",
+    "Literal string survival is not semantic understanding, task correctness, or resume qualification. Protected-tail probes can be absent.",
+    "Token changes are offline estimates, not measured provider-billed savings, live context, cache cost, or productivity.",
+    "One pass without repeatability or model cold/warm control; timings are descriptive and model outputs may vary.",
+    "Raw inputs, input hashes, selected line positions, prompts, responses and missed probes are never public."
+  ],
+  "cutoff_config_negative_smoke_passed": true,
+  "privacy": "Aggregate methodology only. Private inputs, input hashes, selected line positions, prompts, responses, missed probes and per-input records are excluded."
+}

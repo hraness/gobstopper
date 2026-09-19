@@ -1,0 +1,75 @@
+{
+  "schema": "gobstopper-public-study-protocol-v1",
+  "study_date": "2026-09-19",
+  "collection_period": {
+    "from": "2026-07-30",
+    "through": "2026-09-19"
+  },
+  "measurement": "Portable local transcript replay using deterministic scoring; no provider calls.",
+  "policy": {
+    "trigger_tokens": 80000,
+    "floor_tokens": 40000,
+    "keep_recent_tool_outputs": 8,
+    "min_savings_tokens": 4096,
+    "adaptive": false,
+    "quota_pressure": "normal"
+  },
+  "strategies": [
+    "elide",
+    "scored",
+    "cache_aware",
+    "compacted",
+    "dedupe"
+  ],
+  "initial_discovery": {
+    "selection_frozen_at": "2026-09-19T15:51:35.594016+00:00",
+    "analysis_registered_at": "2026-09-19T16:44:18.258236+00:00",
+    "inventory_records": 8195,
+    "selected_sessions": 615,
+    "selection": "Exclude recently active files (<180 seconds by modification time), unavailable/zero usage, files over 128 MiB and invalid JSONL. Deterministic hash ranking; one candidate per observed ancestor family per provider/cohort. Caps: 512 high-context and 64 below-trigger Codex; all eligible Claude families above the trigger and 16 controls. No selection by compaction result.",
+    "counts": {
+      "high_context_codex_subagents": 512,
+      "below_trigger_codex_subagents": 64,
+      "high_context_claude": 23,
+      "below_trigger_claude": 16
+    }
+  },
+  "archived_codex_roots": {
+    "selection_registered_at": "2026-09-19T16:42:24.963135+00:00",
+    "frozen_at": "2026-09-19T16:48:31.011801+00:00",
+    "analysis_registered_at": "2026-09-19T16:53:42.930791+00:00",
+    "inventory_files": 4812,
+    "explicit_subagents_excluded": 4656,
+    "strict_root_candidates": 146,
+    "over_size_bound_excluded": 31,
+    "missing_live_usage_excluded": 1,
+    "selected_sessions": 114,
+    "root_definition": "Recognized root source metadata and no parent, fork or subagent metadata. This is a metadata classification, not proof of absent undisclosed ancestry.",
+    "selection": "Regular owned non-symlink files, at most 128 MiB, older than 180 seconds, complete valid object JSONL and positive provider usage after the latest native boundary. One candidate per root identity, exact event-body deduplication, deterministic hash ranking. All eligible high-context roots up to 512 plus up to 64 controls. No replacement after freeze-time exclusions; no selection by compaction result.",
+    "counts": {
+      "high_context_roots": 73,
+      "below_trigger_controls": 41,
+      "prior_native_compaction": 79
+    },
+    "audit_correction": "Source metadata reclassification identified 4,656 excluded files as explicit subagents; selected roots and frozen bytes were unchanged."
+  },
+  "analysis": {
+    "no_op_handling": "No-plan cases remain in reduction denominators as zero reduction; failures are reported separately.",
+    "usage_denominator": "Latest provider usage after the live native boundary was checked against the measured binary normalized context. All selected sessions matched; no primary numerical exclusions were needed.",
+    "native_compaction": "Counts include historical native records; reduction concerns the current live context, not all transcript bytes.",
+    "overlap": "Cross-cohort session identity and exact event-body checks found no overlap. The earlier six-root convenience pilot is excluded.",
+    "structural": "Compare baseline and rewritten verifier severity/code counts; not provider resume qualification.",
+    "recall": "Bounded deterministic literal probes. No semantic importance, answer accuracy or task outcome is established.",
+    "privacy": "Only aggregate results and methodology are public. Raw inputs and per-session metadata remain private, so the exact corpus cannot be independently replayed from these downloads."
+  },
+  "limitations": [
+    "One person and one Mac; sessions may share prompts, projects or unobserved ancestry.",
+    "No provider continuation, billing, semantic judge or remote model was evaluated.",
+    "The measured extractor had a nominal 64-probe cap but could emit 65\u201367 probes; the reported denominators are actual counts.",
+    "Structural deltas compare severity/code counts, not finding identity or proof of safe provider resume.",
+    "Resampling intervals describe the selected stratum only; they are not population confidence intervals.",
+    "Cohort strata overlap: do not add native-compacted, no-native-compaction and no-observed-parent rows together.",
+    "The 128 MiB input bound excludes some long tasks and may bias the distribution.",
+    "Modification time is an activity heuristic, not a process-liveness guarantee."
+  ]
+}

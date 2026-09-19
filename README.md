@@ -201,9 +201,31 @@ at 256 candidates, 64 items per batch, 16 batches, and a 100–30,000 ms
 timeout. The built-in heuristic remains the recommended published path because
 current live trials did not show a better plan from the LLM scorer.
 
+The `scored` strategy also supports an optional keep-score cutoff. For example,
+add this named preset to your config:
+
+```toml
+[presets.retained]
+strategy = "scored"
+keep_score_threshold = 0.5
+```
+
+Inspect it with `gobstopper plan <session-id> --preset retained`; use the same
+flag with `gobstopper apply` to create a fork. Candidates
+at or above the cutoff are preserved, even if that prevents reaching the token
+target. Missing, invalid, or duplicate candidate scores are also preserved.
+The value must be finite and between `0.0` and `1.0`. The heuristic score is a
+ranking signal, not a calibrated probability; `0.5` is an experimental example,
+not a tuned recommendation. Model scorers still use heuristic fallback for
+partial or failed responses, so the cutoff does not guarantee provider
+confidence. Set `strategy = "scored"` explicitly: `auto`, `compacted`, and other
+strategies ignore the cutoff. Omitting it in a later configuration layer
+inherits an earlier value rather than clearing it. The default configuration
+has no cutoff and retains its existing behavior.
+
 `GOBSTOPPER_SCORER=jev` scores with TypeSafe's System One API — typed
-`noul` keep-probabilities, ~100ms per batch of 64 questions, no prose
-generation. Onboarding vaults the key in the OS credential store
+`noul` keep-probabilities without prose generation. Onboarding vaults the key
+in the OS credential store
 (macOS Keychain, Windows Credential Manager, Linux kernel keyring):
 
 ```sh
@@ -241,9 +263,10 @@ a bounded worker pool: execution is parallel, but results are overlaid in
 stable order, a failed or panicked batch retains heuristic scores, and
 cached answers still overlay when a batch's remote half fails. Each pass logs one summary line
 to stderr (candidates, unique/cached/sent questions, calls, failures,
-elapsed). On one three-batch 336k-token Claude session, bounded
-parallelism reduced live planning from 148.64s to 19.47s (about 7.6×); this is
-a latency observation, not a provider-wide guarantee.
+elapsed). In a historical trial recorded on September 19, 2026, one three-batch
+336k-token Claude session took 148.64s before bounded parallelism and 19.47s
+afterward (about 7.6×). This single-session latency observation does not
+establish current or provider-wide performance.
 
 `eval` and `bench` now honor `GOBSTOPPER_SCORER` for their `scored` row, so
 an A/B run measures the same Jev or Apple ranking used by `plan` rather than
@@ -398,12 +421,34 @@ transactional, and available only behind `--experimental-compacted`; ordinary
   verify / undo / vault / history / show / recall / diff / bench /
   mcp / watch / policy-check / presets / explain.
 
-## Live qualification
+## Current benchmark evidence
 
-`gobstopper` has been live-qualified on real provider sessions. The most
-recent trial used a 333k-token Claude session, asked the same resume
-question under four conditions, and measured the tokens the provider
-actually consumed on the next turn:
+The [September 19, 2026 retrospective](https://gobstopper.sh/benchmarks#retrospective-2026-09-19)
+evaluated 729 frozen sessions on one Mac. Portable `compacted` projected a
+**36.4% median reduction across 73 high-context archived Codex roots**, with
+**76.9% sampled-string retention**. Across all 729 sessions, 637 produced no
+plan and the median reduction was **0%**. These are offline projections, not
+billing savings or task-accuracy measurements. The page includes all cohorts,
+limitations, and downloadable aggregate results and methodology.
+
+A separate [paired scored-policy replay](https://gobstopper.sh/benchmarks#retention-policy-2026-09-19)
+reused the 114 archived roots with the corrected probe limit. This development
+comparison is not held-out validation; the original baseline was already known.
+On the 73
+high-context tasks, a `0.35` cutoff increased sampled-string retention from
+77.05% to 80.78% while median projected reduction fell from 36.44% to 34.96%.
+Two tasks produced no plan, and their retention is derived from leaving the
+source unchanged. All three registered cutoffs and both disabled baselines are
+reported; the default remains unchanged. This is a limited retention/size
+tradeoff, not a task-quality result or a recommended optimum.
+
+## Historical live qualification — recorded September 17, 2026
+
+The following single-session experiments were recorded in the repository on
+September 17 using earlier builds and workflows. They are separate from the
+729-session retrospective and do not establish current provider-wide savings
+or general task quality. One 333k-token Claude session was asked the same
+resume question under four conditions, measuring provider tokens on that turn:
 
 | condition | input tokens on resume | output tokens | recalled the standing task? |
 |---|---|---|---|
@@ -426,8 +471,8 @@ The same question was then asked on a 101k-token Codex session:
 | `gobstopper compacted` | 34,503 | 159 | yes — same BEAM experiment and expansion gate |
 
 On Codex, `compacted` cut resume input tokens by **66%** and `elide` cut
-them by **43%**, both with accurate answers. There is no one-shot Codex
-native compact to compare against.
+them by **43%**, both with accurate answers to that question. Provider-native
+Codex compaction was not included in this historical trial.
 
 The same-session `cache_aware` A/B (339k-token Claude session, floor 310k,
 real provider cache counters):
@@ -438,19 +483,16 @@ real provider cache counters):
 | `gobstopper cache_aware` | 13,536 | 258,517 | 107,884 tokens | $5.19 | yes |
 | `gobstopper compacted` | 13,536 | 257,505 | 6,639 tokens | $5.18 | yes |
 
-Honest result: `cache_aware` and `compacted` cost the same on the API —
-Claude Code's prompt-cache breakpoints sit at ~13.5k regardless of how much
-file-level prefix stays byte-identical. What `cache_aware` actually buys is
-**16x more preserved prefix at the transcript level**, which is what keeps
-`gobstopper diff` audits small and Merkle-dedup efficient across repeated
-compactions. Choose it when auditability matters; choose `compacted` when
-you want the Codex-native record.
+In this trial, `cache_aware` and `compacted` had almost the same API cost and
+both recorded 13,536 cache-read tokens, versus 10,010 in the baseline.
+`cache_aware` preserved **16x more identical transcript prefix**, an
+auditability result; this trial did not establish extra provider cache savings
+from the preserved prefix. Current `compacted` uses a portable forked digest;
+synthetic Codex-native records require `--experimental-compacted`.
 
-That is the difference gobstopper is built for: measured, auditable
-compaction that does not replace the transcript's actual state with a
-plausible invention. Every pre- and post-state is in the vault, so you can
-`gobstopper diff` the exact structural changes and decide which strategy to
-trust.
+Snapshots and `gobstopper diff` make compaction inspectable and provide a
+recovery path. They do not guarantee that omitted facts are unimportant or
+that a continuation will retrieve them automatically.
 
 - **Codex custom `compacted` record** — a gobstopper-written `compacted`
   record with a correct window chain was accepted by `codex exec resume` and
