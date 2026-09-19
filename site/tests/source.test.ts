@@ -221,6 +221,8 @@ describe("published September 19 compaction study", () => {
       read(`${directory}/report.md`),
       read(`${directory}/retention-ablation.json`),
       read(`${directory}/retention-ablation-protocol.json`),
+      read(`${directory}/apple-retention-pilot.json`),
+      read(`${directory}/apple-retention-protocol.json`),
     ]);
     for (const text of files) {
       expect(text).not.toMatch(/\/Users\/|\/home\/|session-\d{4}|rollout-/u);
@@ -286,5 +288,57 @@ describe("published September 19 compaction study", () => {
     expect(summary.total_evaluations).toBe(rows.reduce((sum, row) => sum + (row.selected as number), 0));
     expect(summary.failed_evaluations).toBe(0);
     expect(summary.disabled_equivalence).toBe(true);
+  });
+
+  test("Apple receipt exposes aggregates without per-input data and labels no-op retention", async () => {
+    const study = record(JSON.parse(await read(`${directory}/apple-retention-pilot.json`)) as unknown, "Apple pilot");
+    expect(Object.keys(study).sort()).toEqual([
+      "aggregates", "completed_at", "coverage", "interpretation", "limitations", "paired",
+      "privacy", "provenance", "retention_accounting", "schema", "scope", "started_at", "study_date", "summary",
+    ]);
+    const provenance = record(study.provenance, "Apple provenance");
+    expect(Object.keys(provenance).sort()).toEqual([
+      "binary_and_bridge_unchanged", "binary_sha256", "bridge_sha256", "inputs_unchanged",
+    ]);
+    const allowedFields = new Set([
+      "variant", "selected_inputs", "successful_evaluations", "failed_evaluations", "plans", "no_plan",
+      "sum_context_before", "sum_projected_reclaimed", "median_projected_reduction_percent_including_noops",
+      "min_projected_reduction_percent", "max_projected_reduction_percent", "literal_samples", "literal_total",
+      "literal_retained", "literal_unchanged_source_derived_samples", "tail_samples_with_probes", "tail_total",
+      "tail_retained", "new_errors", "new_warnings", "selected_outputs", "score_protected_outputs_reported_for_plans",
+      "median_wall_ms", "sum_wall_ms", "sum_apply_ms", "apple_summary_available_samples",
+      "apple_overlay_successful_samples", "fallback_diagnostic_samples", "apple_totals",
+    ]);
+    expect(Array.isArray(study.aggregates)).toBe(true);
+    const rows = (study.aggregates as unknown[]).map((value) => record(value, "Apple aggregate"));
+    expect(rows.map((row) => row.variant).sort()).toEqual(["apple", "heuristic"]);
+    for (const row of rows) {
+      expect(Object.keys(row).every((key) => allowedFields.has(key))).toBe(true);
+      for (const [key, field] of Object.entries(row)) {
+        if (key !== "variant" && key !== "apple_totals") {
+          expect(typeof field === "number" && Number.isFinite(field)).toBe(true);
+        }
+      }
+      expect(row.selected_inputs).toBe(3);
+      expect((row.plans as number) + (row.no_plan as number) + (row.failed_evaluations as number)).toBe(3);
+      expect(row.literal_total).toBe(192);
+      expect(row.literal_unchanged_source_derived_samples).toBe(row.no_plan);
+      if (row.variant === "apple") {
+        expect(row.no_plan).toBe(2);
+        const totals = record(row.apple_totals, "Apple totals");
+        expect(Object.keys(totals).sort()).toEqual([
+          "cached_batches", "failed_batches", "items_overlaid", "model_calls", "scoring_duration_ms", "selected_candidates", "unique_lines",
+        ]);
+        expect(Object.values(totals).every((value) => typeof value === "number" && Number.isFinite(value))).toBe(true);
+        expect(totals.items_overlaid).toBe(totals.selected_candidates);
+        expect(totals.model_calls).toBe(12);
+        expect(totals.failed_batches).toBe(0);
+      }
+    }
+    const summary = record(study.summary, "Apple summary");
+    expect(summary.total_evaluations).toBe(6);
+    expect(summary.failed_evaluations).toBe(0);
+    expect(summary.remote_model_calls).toBe(0);
+    expect(study.retention_accounting).toContain("128 of 192 retained probes are derived");
   });
 });

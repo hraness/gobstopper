@@ -11,7 +11,7 @@
     "local_model_calls": 0,
     "remote_model_calls": 0,
     "candidate_base_commit": "ded1d0c9e645ea6644e326e632949225765d39da",
-    "candidate_source_state": "Local build of the reviewed keep-score-cutoff patch on the stated main commit; a source-header comment was changed after the measured build. The candidate is distinct from the installed baseline."
+    "candidate_source_state": "Local build of the reviewed keep-score-cutoff patch on the stated main commit; a source-header comment was changed after the measured build. The candidate is distinct from the baseline installed when this experiment ran."
   },
   "summary": {
     "total_evaluations": 570,

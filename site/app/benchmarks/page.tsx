@@ -209,8 +209,70 @@ export default function Benchmarks() {
               The downloads identify the measured baseline and candidate
               executables. The candidate was a local build of the reviewed
               cutoff patch on main commit <code>ded1d0c</code>, separate from
-              the installed baseline. Downloads exclude private transcripts, session identifiers,
+              the baseline installed when this experiment ran. Downloads exclude
+              private transcripts, session identifiers,
               paths, corpus manifests and per-session records.
+            </p>
+          </section>
+
+          <section aria-labelledby="apple-cutoff-2026-09-19">
+            <h2 id="apple-cutoff-2026-09-19">Bounded Apple pilot · September 19, 2026</h2>
+            <p>
+              A separate mechanism check used three frozen, convenience-selected
+              Codex root-task inputs from one Mac, excluded from the 729-session
+              study. It compared the deterministic heuristic with a bounded
+              on-device Apple Intelligence overlay. Both used <code>scored</code>{" "}
+              and a 0.5 keep-score cutoff. This small pilot qualifies execution
+              of that configuration, not general model quality.
+            </p>
+            <table>
+              <caption>All three inputs, including no-plan cases; one pass per variant</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Scorer</th>
+                  <th scope="col">Plans / no plan</th>
+                  <th scope="col">Median projected reduction</th>
+                  <th scope="col">Literal retention</th>
+                  <th scope="col">Median wall time</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr><th scope="row">Deterministic heuristic</th><td>3 / 0</td><td>50.35%</td><td>148 / 192</td><td>0.090 s</td></tr>
+                <tr><th scope="row">Bounded Apple overlay</th><td>1 / 2</td><td>0%</td><td>192 / 192</td><td>11.912 s</td></tr>
+              </tbody>
+            </table>
+            <p>
+              Of Apple&apos;s 192 retained probes, <strong>128 are derived from
+              the two unchanged no-plan inputs</strong>; 64 were checked against
+              its one rewritten output. Apple reclaimed only 5,574 projected
+              tokens in total, versus 323,532 for the heuristic. It was more
+              conservative and took longer in this pass. This is not evidence
+              of a better compaction policy or more successful continuation.
+            </p>
+            <p>
+              The model made 12 on-device calls and supplied 92 of 92 selected
+              score overlays, with no failed batches or fallback diagnostics.
+              Coverage was capped at 32 candidates per input; candidates outside
+              that bound kept heuristic scores. That expected heuristic remainder
+              is distinct from failure fallback. No remote model was called.
+            </p>
+            <p>
+              All six evaluations completed without failures, source inputs and
+              executables stayed unchanged, and verifier error/warning counts
+              did not increase. The three available protected-tail probes
+              survived under both variants, but only two inputs had such probes.
+              There was no provider resume, task-success test, billing measurement,
+              repeatability trial, or model cold/warm control. Wall times are
+              descriptive observations from one pass.
+            </p>
+            <ul>
+              <li><a href="/benchmarks/2026-09-19/apple-retention-pilot.json">Apple pilot aggregate receipt (JSON)</a></li>
+              <li><a href="/benchmarks/2026-09-19/apple-retention-protocol.json">Registered Apple pilot protocol (JSON)</a></li>
+            </ul>
+            <p>
+              The receipt pins the measured Gobstopper executable and local
+              Apple bridge. It excludes per-input records, hashes, identifiers,
+              private paths, prompts and model responses.
             </p>
           </section>
 
