@@ -417,6 +417,9 @@ pub fn extract_probes(text: &str) -> Vec<Probe> {
     while probes.len() < MAX_PROBES {
         let mut progressed = false;
         for (k, bucket) in buckets.iter().enumerate() {
+            if probes.len() == MAX_PROBES {
+                break;
+            }
             if cursors[k] < bucket.len() {
                 probes.push(bucket[cursors[k]].clone());
                 cursors[k] += 1;
@@ -613,6 +616,35 @@ mod tests {
         // Dedupe: same text on two lines yields one probe.
         let dupes = extract_probes("x /a/b/c.rs\ny /a/b/c.rs\n");
         assert_eq!(dupes.iter().filter(|p| p.text == "/a/b/c.rs").count(), 1);
+    }
+
+    #[test]
+    fn global_cap_stops_mid_round_without_starving_late_kinds() {
+        let mut text = String::new();
+        for i in 0..24 {
+            text.push_str(&format!("/project/file{i}.rs\n"));
+        }
+        for i in 0..16 {
+            text.push_str(&format!("cargo test case{i}\n"));
+            text.push_str(&format!("decided option {i}\n"));
+            text.push_str(&format!("error: failure {i}\n"));
+        }
+        // This kind appears only at the end, after the other buckets fill.
+        for i in 0..16 {
+            text.push_str(&format!("context_marker_{i}\n"));
+        }
+
+        let probes = extract_probes(&text);
+        assert_eq!(probes.len(), MAX_PROBES);
+        assert_eq!(probes, extract_probes(&text));
+        let counts = ProbeKind::ALL.map(|kind| probes.iter().filter(|p| p.kind == kind).count());
+        assert_eq!(counts, [11, 11, 11, 11, 10, 10]);
+        assert!(has(&probes, ProbeKind::Identifier, "context_marker_9"));
+        assert!(!has(&probes, ProbeKind::Identifier, "context_marker_10"));
+        assert!(probes.windows(2).all(|pair| {
+            (pair[0].line_index, pair[0].kind as usize)
+                <= (pair[1].line_index, pair[1].kind as usize)
+        }));
     }
 
     #[test]
