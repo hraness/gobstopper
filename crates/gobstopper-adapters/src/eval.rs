@@ -21,8 +21,9 @@ use gobstopper_core::strategy::{
     builtin_strategies, strategy_by_id, PolicyConfig, ScoreDriver, ScoredStrategy, Strategy,
 };
 use gobstopper_core::{Provider, SessionHandle, Transcript};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::verify::{self, Severity, VerifyFinding};
@@ -175,11 +176,13 @@ pub fn prefix_tokens(transcript: &Transcript, plan: &CompactionPlan) -> u64 {
 pub struct EvalHooks<'a> {
     /// Driver for the `scored` strategy row. `None` keeps the
     /// deterministic heuristic path — eval matches what `plan` would
-    /// produce with no scorer env configured.
+    /// produce with no scorer env configured. Only used in the
+    /// sequential planning phase, so no `Sync` bound is needed.
     pub scorer: Option<&'a dyn ScoreDriver>,
     /// Semantic probe judge; scores each rewritten temp copy beyond
-    /// verbatim matching. `None` skips the pass entirely.
-    pub probe_judge: Option<&'a dyn ProbeJudge>,
+    /// verbatim matching. `None` skips the pass entirely. Shared across
+    /// the parallel rewrite worker pool, so it must be `Sync`.
+    pub probe_judge: Option<&'a (dyn ProbeJudge + Sync)>,
 }
 
 /// Copy `src` to `tmp`, run the plan's file edits against the copy,
@@ -192,7 +195,7 @@ fn run_on_copy(
     plan: &CompactionPlan,
     probes: &[Probe],
     tail_start_line: usize,
-    judge: Option<&dyn ProbeJudge>,
+    judge: Option<&(dyn ProbeJudge + Sync)>,
 ) -> anyhow::Result<(u64, Vec<VerifyFinding>, ProbeScore, Option<ProbeScore>)> {
     std::fs::copy(src, tmp).with_context(|| format!("copy {} to temp eval file", src.display()))?;
     let started = Instant::now();
@@ -236,6 +239,82 @@ fn run_on_copy(
     Ok((duration_ms, findings, score, semantic))
 }
 
+/// `GOBSTOPPER_EVAL_PARALLEL`: worker-pool width for the per-strategy
+/// temp-copy rewrite phase. The (often remote) judge call dominates
+/// eval wall time, so rows fan out; `1` restores sequential behavior.
+const DEFAULT_EVAL_PARALLEL: usize = 4;
+const MAX_EVAL_PARALLEL: usize = 8;
+
+fn parse_parallelism(raw: Option<String>) -> usize {
+    raw.and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_EVAL_PARALLEL)
+        .clamp(1, MAX_EVAL_PARALLEL)
+}
+
+fn eval_parallelism() -> usize {
+    parse_parallelism(std::env::var("GOBSTOPPER_EVAL_PARALLEL").ok())
+}
+
+/// Bounded worker pool: `parallelism` scoped threads pull task indices
+/// from a shared counter, so a slow row never stalls the next wave the
+/// way a join-per-wave barrier would. Panics are caught per task so one
+/// bad rewrite neither kills the worker nor forfeits the rest of its
+/// items. Outcomes come back in index order regardless of completion
+/// order, keeping the row merge deterministic.
+fn run_indexed<T, F>(count: usize, parallelism: usize, task: F) -> Vec<std::thread::Result<T>>
+where
+    T: Send,
+    F: Fn(usize) -> T + Sync,
+{
+    if count == 0 {
+        return Vec::new();
+    }
+    let workers = parallelism.max(1).min(count);
+    let next = AtomicUsize::new(0);
+    let slots: Vec<Mutex<Option<std::thread::Result<T>>>> =
+        (0..count).map(|_| Mutex::new(None)).collect();
+    std::thread::scope(|scope| {
+        for _ in 0..workers {
+            let next = &next;
+            let slots = &slots;
+            let task = &task;
+            scope.spawn(move || loop {
+                let index = next.fetch_add(1, Ordering::Relaxed);
+                if index >= count {
+                    break;
+                }
+                let outcome =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| task(index)));
+                if let Ok(mut slot) = slots[index].lock() {
+                    *slot = Some(outcome);
+                }
+            });
+        }
+    });
+    slots
+        .into_iter()
+        .map(|slot| {
+            slot.into_inner()
+                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|| {
+                    Err(Box::new("eval worker stopped before claiming task")
+                        as Box<dyn std::any::Any + Send>)
+                })
+        })
+        .collect()
+}
+
+/// Best-effort panic payload rendering for `row.error`: the payload is
+/// opaque, but panic messages are almost always `&'static str` or
+/// `String`.
+fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
+    payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("unknown panic")
+}
+
 /// Evaluate every built-in strategy (or `only` when set) against one
 /// transcript file. Each file-mutating strategy runs on its own temp
 /// copy; the source file is never modified.
@@ -255,6 +334,19 @@ pub fn eval_transcript_with_hooks(
     policy: &PolicyConfig,
     only: Option<&str>,
     hooks: &EvalHooks,
+) -> anyhow::Result<Vec<EvalRow>> {
+    eval_transcript_inner(provider, src, policy, only, hooks, eval_parallelism())
+}
+
+/// [`eval_transcript_with_hooks`] with an explicit rewrite-pool width,
+/// so tests can pin concurrency without touching the process env.
+fn eval_transcript_inner(
+    provider: Provider,
+    src: &Path,
+    policy: &PolicyConfig,
+    only: Option<&str>,
+    hooks: &EvalHooks,
+    parallelism: usize,
 ) -> anyhow::Result<Vec<EvalRow>> {
     let transcript = load(provider, src)?;
     let source_bytes = std::fs::read(src)
@@ -280,7 +372,12 @@ pub fn eval_transcript_with_hooks(
         None => builtin_strategies(),
     };
 
-    let mut rows = Vec::with_capacity(strategies.len());
+    // Phase 1 (sequential): build each row skeleton and compute its
+    // plan. `hooks.scorer` is only ever used here, so it carries no
+    // `Sync` bound. Plans that rewrite the file become phase-2 work
+    // items carrying their own temp path.
+    let mut items: Vec<(EvalRow, Option<(CompactionPlan, PathBuf)>)> =
+        Vec::with_capacity(strategies.len());
     for strat in &strategies {
         let mut row = EvalRow {
             strategy: strat.id().to_string(),
@@ -306,6 +403,7 @@ pub fn eval_transcript_with_hooks(
             }
             None => strat.evaluate(&transcript, policy),
         };
+        let mut work = None;
         if let Some(plan) = plan_opt.filter(|plan| {
             policy.accepts_savings(plan.context_tokens_before, plan.context_tokens_after)
         }) {
@@ -321,43 +419,64 @@ pub fn eval_transcript_with_hooks(
                     std::process::id(),
                     NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
                 ));
-                let outcome = run_on_copy(
-                    provider,
-                    src,
-                    &tmp,
-                    &plan,
-                    &probes,
-                    tail_start,
-                    hooks.probe_judge,
-                );
-                // Always clean up: the temp copy itself, plus the
-                // intermediate an adapter may have written before a
-                // failed rename.
-                let _ = std::fs::remove_file(&tmp);
-                let _ = std::fs::remove_file(tmp.with_extension("jsonl.gobstopper-tmp"));
-                match outcome {
-                    Ok((duration_ms, findings, score, semantic)) => {
-                        row.duration_ms = duration_ms;
-                        row.verify_errors = findings
-                            .iter()
-                            .filter(|f| f.severity == Severity::Error)
-                            .count();
-                        row.verify_warnings = findings
-                            .iter()
-                            .filter(|f| f.severity == Severity::Warning)
-                            .count();
-                        row.findings = findings;
-                        row.probe_score = Some(score);
-                        row.semantic_score = semantic;
-                    }
-                    Err(e) => row.error = Some(e.to_string()),
-                }
+                work = Some((plan, tmp));
+            } else {
+                row.plan = Some(plan);
             }
-            row.plan = Some(plan);
         }
-        rows.push(row);
+        items.push((row, work));
     }
-    Ok(rows)
+
+    // Phase 2 (parallel): every file-rewriting plan runs against its
+    // own temp copy through the bounded pool. Results merge back in
+    // strategy order; one row's failure or panic never touches another.
+    let work_indices: Vec<usize> = items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, (_, work))| work.is_some().then_some(i))
+        .collect();
+    let judge = hooks.probe_judge;
+    let outcomes = run_indexed(work_indices.len(), parallelism, |k| {
+        let (plan, tmp) = items[work_indices[k]]
+            .1
+            .as_ref()
+            .expect("work item recorded for this row");
+        let outcome = run_on_copy(provider, src, tmp, plan, &probes, tail_start, judge);
+        // Always clean up: the temp copy itself, plus the intermediate
+        // an adapter may have written before a failed rename.
+        let _ = std::fs::remove_file(tmp);
+        let _ = std::fs::remove_file(tmp.with_extension("jsonl.gobstopper-tmp"));
+        outcome
+    });
+    for (k, outcome) in outcomes.into_iter().enumerate() {
+        let (row, work) = &mut items[work_indices[k]];
+        let (plan, _) = work.take().expect("work item still present");
+        row.plan = Some(plan);
+        match outcome {
+            Ok(Ok((duration_ms, findings, score, semantic))) => {
+                row.duration_ms = duration_ms;
+                row.verify_errors = findings
+                    .iter()
+                    .filter(|f| f.severity == Severity::Error)
+                    .count();
+                row.verify_warnings = findings
+                    .iter()
+                    .filter(|f| f.severity == Severity::Warning)
+                    .count();
+                row.findings = findings;
+                row.probe_score = Some(score);
+                row.semantic_score = semantic;
+            }
+            Ok(Err(e)) => row.error = Some(e.to_string()),
+            Err(payload) => {
+                row.error = Some(format!(
+                    "eval worker panicked: {}",
+                    panic_message(&*payload)
+                ))
+            }
+        }
+    }
+    Ok(items.into_iter().map(|(row, _)| row).collect())
 }
 
 #[cfg(test)]
@@ -821,5 +940,140 @@ mod tests {
         assert_eq!(semantic.unwrap().recall, 1.0);
         assert_eq!(judge.calls.load(Ordering::Relaxed), 0);
         assert_eq!(judge.probes_seen.load(Ordering::Relaxed), 0);
+    }
+
+    /// Rows whose verbatim probe pass missed at least one probe —
+    /// exactly the rows that invoked the judge. (A fully recalled row
+    /// still gets a `semantic_score` clone without a judge call.)
+    fn judged_rows(rows: &[EvalRow]) -> usize {
+        rows.iter()
+            .filter(|r| {
+                r.probe_score
+                    .as_ref()
+                    .is_some_and(|s| !s.missed_probes.is_empty())
+            })
+            .count()
+    }
+
+    /// Sync judge that tracks in-flight calls so tests can observe the
+    /// pool's peak concurrency. Each call sleeps `sleep_ms` to widen the
+    /// overlap window; the earliest-claimed call sleeps `first_ms`
+    /// instead, so one row can be made to finish after all the others.
+    struct SlowJudge {
+        active: AtomicUsize,
+        peak: AtomicUsize,
+        calls: AtomicUsize,
+        sleep_ms: u64,
+        first_ms: u64,
+    }
+
+    impl SlowJudge {
+        fn new(sleep_ms: u64, first_ms: u64) -> Self {
+            Self {
+                active: AtomicUsize::new(0),
+                peak: AtomicUsize::new(0),
+                calls: AtomicUsize::new(0),
+                sleep_ms,
+                first_ms,
+            }
+        }
+    }
+
+    impl ProbeJudge for SlowJudge {
+        fn score(&self, probes: &[Probe], _post_text: &str) -> Option<Vec<f64>> {
+            let seq = self.calls.fetch_add(1, Ordering::SeqCst);
+            let in_flight = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(in_flight, Ordering::SeqCst);
+            let ms = if seq == 0 {
+                self.first_ms.max(self.sleep_ms)
+            } else {
+                self.sleep_ms
+            };
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            Some(vec![1.0; probes.len()])
+        }
+    }
+
+    #[test]
+    fn rewrite_phase_bounds_concurrency_and_judges_every_row() {
+        let _guard = EVAL_LOCK.lock().unwrap();
+        let dir = TestDir::new();
+        let src = write_probe_transcript(&dir.0);
+        let judge = SlowJudge::new(20, 20);
+        let hooks = EvalHooks {
+            scorer: None,
+            probe_judge: Some(&judge),
+        };
+
+        let rows =
+            eval_transcript_inner(Provider::ClaudeCode, &src, &low_policy(), None, &hooks, 2)
+                .unwrap();
+
+        let expected = judged_rows(&rows);
+        assert!(
+            expected >= 2,
+            "test needs multiple judged rows; got {:?}",
+            rows.iter().map(|r| r.strategy.as_str()).collect::<Vec<_>>()
+        );
+        // Every row that needed the judge got it — none lost in the pool.
+        assert_eq!(judge.calls.load(Ordering::SeqCst), expected);
+        let peak = judge.peak.load(Ordering::SeqCst);
+        assert!(peak <= 2, "peak concurrency {peak} exceeded bound 2");
+        assert!(
+            peak >= 2,
+            "judge calls never overlapped — pool ran serially"
+        );
+        // Row order is still strategy order.
+        let ids: Vec<&str> = rows.iter().map(|r| r.strategy.as_str()).collect();
+        let expected_order: Vec<&str> = builtin_strategies().iter().map(|s| s.id()).collect();
+        assert_eq!(ids, expected_order);
+    }
+
+    #[test]
+    fn rewrite_phase_preserves_row_order_when_rows_finish_out_of_order() {
+        let _guard = EVAL_LOCK.lock().unwrap();
+        let dir = TestDir::new();
+        let src = write_probe_transcript(&dir.0);
+        // The earliest-claimed row sleeps far longer than the rest, so
+        // under a wide pool at least one later row completes first.
+        let judge = SlowJudge::new(5, 120);
+        let hooks = EvalHooks {
+            scorer: None,
+            probe_judge: Some(&judge),
+        };
+
+        let rows = eval_transcript_inner(
+            Provider::ClaudeCode,
+            &src,
+            &low_policy(),
+            None,
+            &hooks,
+            MAX_EVAL_PARALLEL,
+        )
+        .unwrap();
+
+        assert!(
+            judged_rows(&rows) >= 2,
+            "test needs multiple judged rows to observe reordering"
+        );
+        let ids: Vec<&str> = rows.iter().map(|r| r.strategy.as_str()).collect();
+        let expected_order: Vec<&str> = builtin_strategies().iter().map(|s| s.id()).collect();
+        assert_eq!(ids, expected_order);
+        for r in &rows {
+            assert!(r.error.is_none(), "{} unexpectedly errored", r.strategy);
+        }
+    }
+
+    #[test]
+    fn eval_parallel_env_parse_defaults_and_clamps() {
+        assert_eq!(parse_parallelism(None), DEFAULT_EVAL_PARALLEL);
+        assert_eq!(parse_parallelism(Some("2".into())), 2);
+        assert_eq!(parse_parallelism(Some("0".into())), 1);
+        assert_eq!(parse_parallelism(Some("64".into())), MAX_EVAL_PARALLEL);
+        assert_eq!(
+            parse_parallelism(Some("junk".into())),
+            DEFAULT_EVAL_PARALLEL
+        );
     }
 }
