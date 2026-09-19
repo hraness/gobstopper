@@ -204,6 +204,14 @@ The same call also writes a one-line stub per excerpted record — e.g.
 template where the payload was removed. Records the model did not cover
 keep the generic stub; invalid or oversized stubs are dropped by validation.
 
+Apple requests are cached in-process on the (prompt, schema) pair: `watch`
+re-evaluates an unchanged transcript every poll interval, and identical
+model inputs return the recorded response instead of another generation —
+a live dry-run poll went from ~17s to milliseconds per re-eval. Bounded at
+64 entries; `GOBSTOPPER_APPLE_CACHE=0` disables reads. The savings gate
+also prices the residual stub text left behind by elision so
+`context_tokens_after` doesn't overstate reclaim.
+
 With `adaptive = true`, the effective trigger/floor are re-derived per
 session at each decision point: the trigger is capped at a quarter of
 the provider-advertised context window, backed off (bounded 2x) when
