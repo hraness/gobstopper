@@ -191,7 +191,8 @@ gobstopper auth jev --delete      # remove the stored key
 The key is verified against the API before it is stored; a rejected key
 never reaches the keychain. Resolution order at scoring time is
 `TYPESAFE_API_KEY` → `GOBSTOPPER_JEV_API_KEY` → OS keychain, so CI keeps
-working from env alone. `GOBSTOPPER_JEV_CONTENT_BYTES` (default `0`)
+working from env alone. On macOS, a self-built unsigned binary may show a
+one-time keychain access prompt on first read. `GOBSTOPPER_JEV_CONTENT_BYTES` (default `0`)
 opts in to attaching bounded per-candidate content excerpts to each
 question — Jev is a remote API, so content only leaves the device when
 explicitly enabled.
