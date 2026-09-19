@@ -173,9 +173,9 @@ point gobstopper at them with `--codex-home` / `--claude-home`.
 external scoring is opt-in with `GOBSTOPPER_SCORER=llm`,
 `GOBSTOPPER_SCORER=jev`, or `GOBSTOPPER_SCORER=apple`; merely setting an API
 key never sends data. External scorers receive bounded labels and summaries,
-not full tool payloads, and fall back to the heuristic on failure. The
-built-in heuristic is the recommended published path because current live
-trials did not show a better plan from the LLM scorer.
+not full tool payloads, and fail closed to deterministic heuristic or neutral
+scores. The built-in heuristic is the recommended published path because
+current live trials did not show a better plan from the LLM scorer.
 
 `GOBSTOPPER_SCORER=jev` scores with TypeSafe's System One API — typed
 `noul` keep-probabilities, ~100ms per batch of 64 questions, no prose
@@ -197,13 +197,15 @@ noninteractive Linux automation. On macOS, a self-built unsigned binary may
 show a one-time keychain access prompt on first read.
 `GOBSTOPPER_JEV_CONTENT_BYTES` (default `0`, maximum `1024`) opts in to
 attaching bounded per-candidate content excerpts to each question — Jev is a
-remote API, so content only leaves the device when explicitly enabled.
+remote API, so content only leaves the device when explicitly enabled. A
+post-fix 141k-token A/B run selected the same six records with labels-only and
+400-byte excerpts, so the private default remains `0`.
 Every numeric runtime knob is clamped: 1–64 questions per call, 1–128 state
 items, 100–30,000 ms timeout, and 1–16 batches per scoring pass
 (`GOBSTOPPER_JEV_MAX_BATCHES`, default `4`). Only the newest
-`MAX_Q × MAX_BATCHES` tailward candidates are sent; an older prefix remains
-neutral at `0.5`. This caps the default at four calls and 256 remote-scored
-candidates even for unusually large transcripts.
+`MAX_Q × MAX_BATCHES` tailward candidates are sent; an older prefix keeps its
+deterministic heuristic score. This caps the default at four calls and 256
+remote-scored candidates even for unusually large transcripts.
 
 `eval` and `bench` now honor `GOBSTOPPER_SCORER` for their `scored` row, so
 an A/B run measures the same Jev or Apple ranking used by `plan` rather than
@@ -225,14 +227,15 @@ GOBSTOPPER_SCORER=jev GOBSTOPPER_EVAL_JUDGE=jev \
 
 Gobstopper reads the official `answers.<id>.noul` probability returned by
 System One, while retaining bounded compatibility fallbacks for older response
-shapes. A missing or malformed scorer response makes the whole chunk neutral
-at `0.5`; semantic eval omits its model score instead of crediting unknown
-facts. In one post-fix 80k-token A/B run, Jev chose five smaller records where
-the heuristic chose four larger ones, reclaimed about 649 more tokens, and
-both retained all 38 extracted probes. At a more aggressive floor, one probe
-lost verbatim was not falsely credited by the semantic judge (37/38 on both
-scores). This is single-session qualification, not a general ranking-quality
-claim.
+shapes. Jev starts from the complete deterministic heuristic ranking and
+overlays only valid remote answers; capped candidates, missing answers, and
+failed or malformed chunks keep their heuristic scores. Semantic eval omits
+its model score instead of crediting unknown facts. In one post-fix 80k-token
+A/B run, Jev chose five smaller records where the heuristic chose four larger
+ones, reclaimed about 649 more tokens, and both retained all 38 extracted
+probes. At a more aggressive floor, one probe lost verbatim was not falsely
+credited by the semantic judge (37/38 on both scores). This is single-session
+qualification, not a general ranking-quality claim.
 
 Successful Jev responses are cached in-process for five minutes, keyed by
 endpoint, credential identity, and the exact serialized request. This keeps
