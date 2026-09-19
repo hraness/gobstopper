@@ -10,8 +10,12 @@
 //! Requests are serialized through one persistent bridge process: the
 //! on-device model is serial anyway, so batches queue in-process rather
 //! than fanning out. The bridge is reused across scoring rounds (model
-//! warm-up paid once), killed and respawned on timeout, and any failure
-//! falls back to neutral 0.5 scores or the heuristic scorer.
+//! warm-up paid once), killed and respawned on timeout, and items the
+//! model leaves unanswered keep their deterministic heuristic score.
+//!
+//! Request economy: identical candidate lines in one pass are scored
+//! once and the answer fans out to every item that produced the line,
+//! so repeated tool outputs cost one generation instead of one each.
 //!
 //! Configuration (all optional, defaults listed):
 //!   GOBSTOPPER_APPLE_BRIDGE      - env → sibling of the gobstopper binary →
@@ -28,9 +32,11 @@
 //!     on-device inference lifts the labels-only boundary remote scorers
 //!     need, so candidates include bounded payload excerpts by default)
 
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::time::Instant;
 
-use gobstopper_core::{ScoreDriver, ScoredItem, Transcript};
+use gobstopper_core::{HeuristicScorer, ScoreDriver, ScoredItem, Transcript};
 use serde_json::Value;
 
 use crate::{apple, llm_scorer};
@@ -123,51 +129,113 @@ impl AppleScorer {
 
 impl ScoreDriver for AppleScorer {
     fn score(&self, transcript: &Transcript, candidates: &[usize]) -> Vec<ScoredItem> {
-        let Some(bridge) = apple::shared_bridge(&self.cfg.bridge, self.cfg.timeout_ms) else {
-            return neutral(candidates);
-        };
+        if candidates.is_empty() {
+            return Vec::new();
+        }
+        // The deterministic heuristic pass seeds every item; model
+        // answers only overwrite the locals they actually scored, so a
+        // missing bridge, a failed batch, or a skipped id never loses
+        // the quality signal.
+        let mut results = HeuristicScorer.score(transcript, candidates);
+        let started = Instant::now();
         let ctx = llm_scorer::scoring_context(transcript, candidates, self.cfg.max_candidates);
-        if ctx.inputs.is_empty() {
-            return neutral(candidates);
-        }
-        let inputs = self.with_content(transcript, ctx.inputs);
-        let schema: Value = serde_json::from_str(SCORES_SCHEMA).unwrap();
-        let mut by_local: std::collections::HashMap<usize, f64> = Default::default();
-        for chunk in inputs
-            .chunks(self.cfg.batch_size)
-            .take(self.cfg.max_batches)
-        {
-            match score_batch(
-                bridge,
-                &ctx.goal,
-                &ctx.tail,
-                chunk,
-                &schema,
-                self.cfg.content_bytes > 0,
-            ) {
-                Ok(scores) => by_local.extend(scores),
-                Err(e) => eprintln!("apple scorer batch failed: {e:#}"),
+        let lines = ctx.inputs.len();
+        let mut unique = 0usize;
+        let mut calls = 0usize;
+        let mut overlaid = 0usize;
+        let mut failed = 0usize;
+
+        if let Some(bridge) = apple::shared_bridge(&self.cfg.bridge, self.cfg.timeout_ms) {
+            let inputs = self.with_content(transcript, ctx.inputs);
+            // Repeated tool outputs produce identical lines: score each
+            // unique line once and fan the answer out to every member
+            // local. `max_batches` caps unique-line batches.
+            let uniques = unique_lines(&inputs);
+            unique = uniques.len();
+            let schema: Value = serde_json::from_str(SCORES_SCHEMA).unwrap();
+            let mut answers: Vec<(usize, f64)> = Vec::new();
+            for chunk in uniques
+                .chunks(self.cfg.batch_size.max(1))
+                .take(self.cfg.max_batches)
+            {
+                calls += 1;
+                let batch: Vec<(usize, usize, String)> = chunk
+                    .iter()
+                    .map(|&(position, _)| inputs[position].clone())
+                    .collect();
+                match score_batch(
+                    bridge,
+                    &ctx.goal,
+                    &ctx.tail,
+                    &batch,
+                    &schema,
+                    self.cfg.content_bytes > 0,
+                ) {
+                    Ok(scores) => answers.extend(fan_out_answers(&inputs, &uniques, &scores)),
+                    Err(e) => {
+                        failed += 1;
+                        eprintln!("apple scorer batch failed: {e:#}");
+                    }
+                }
             }
+            overlaid = llm_scorer::overlay_answers(&mut results, candidates, &answers);
         }
-        candidates
-            .iter()
-            .enumerate()
-            .map(|(local, &idx)| ScoredItem {
-                item_index: idx,
-                keep_probability: by_local.remove(&local).unwrap_or(0.5).clamp(0.0, 1.0),
-            })
-            .collect()
+        eprintln!(
+            "apple: {lines} candidates → {unique} unique lines in {calls} batch call(s), {overlaid} items overlaid, {failed} failed, {}ms",
+            started.elapsed().as_millis()
+        );
+        results
     }
 }
 
-fn neutral(candidates: &[usize]) -> Vec<ScoredItem> {
-    candidates
+/// The line content minus the `[local] ` bracket the prompt embeds as
+/// the answer id. The bracket is the only difference between lines from
+/// repeated identical tool outputs, so the body is the dedup key.
+fn line_body(local: usize, text: &str) -> &str {
+    text.strip_prefix(&format!("[{local}] ")).unwrap_or(text)
+}
+
+/// Group scoring inputs by identical line content, keeping
+/// first-occurrence order so chunking stays deterministic. Each entry
+/// is `(representative_position, member_locals)`: only the
+/// representative's line — carrying its own bracketed local id — goes
+/// into the prompt, and its score fans out to every member local.
+fn unique_lines(inputs: &[(usize, usize, String)]) -> Vec<(usize, Vec<usize>)> {
+    let mut uniques: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    for (position, (local, _, text)) in inputs.iter().enumerate() {
+        let key = line_body(*local, text);
+        if let Some(&u) = seen.get(key) {
+            uniques[u].1.push(*local);
+        } else {
+            seen.insert(key, uniques.len());
+            uniques.push((position, vec![*local]));
+        }
+    }
+    uniques
+}
+
+/// Fan a batch's answers out to member locals. The model's `id` is the
+/// representative's bracketed local; every candidate that produced an
+/// identical line receives the same probability. Ids matching no
+/// representative (an id the prompt never listed) are dropped.
+fn fan_out_answers(
+    inputs: &[(usize, usize, String)],
+    uniques: &[(usize, Vec<usize>)],
+    answered: &[(usize, f64)],
+) -> Vec<(usize, f64)> {
+    let representative: HashMap<usize, usize> = uniques
         .iter()
-        .map(|&idx| ScoredItem {
-            item_index: idx,
-            keep_probability: 0.5,
-        })
-        .collect()
+        .enumerate()
+        .map(|(u, &(position, _))| (inputs[position].0, u))
+        .collect();
+    let mut out = Vec::new();
+    for &(id, probability) in answered {
+        if let Some(&u) = representative.get(&id) {
+            out.extend(uniques[u].1.iter().map(|&local| (local, probability)));
+        }
+    }
+    out
 }
 
 fn score_batch(
@@ -234,4 +302,114 @@ fn env_usize(name: &str, default: usize) -> usize {
 /// Falls back to the heuristic scorer when unavailable or the build fails.
 pub fn maybe_apple_scorer() -> Option<Box<dyn ScoreDriver>> {
     AppleConfig::resolve().map(|cfg| Box::new(AppleScorer::new(cfg)) as Box<dyn ScoreDriver>)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_item(line_index: usize, label: &str, summary: &str) -> gobstopper_core::TranscriptItem {
+        gobstopper_core::TranscriptItem {
+            line_index,
+            kind: gobstopper_core::ItemKind::ToolResult,
+            est_tokens: 10,
+            elidable_bytes: Some(40),
+            elidable_parts: 1,
+            label: label.into(),
+            summary: Some(summary.into()),
+            uuid: None,
+            parent_uuid: None,
+            tool_use_ids: Vec::new(),
+            payload_sha256: None,
+        }
+    }
+
+    fn test_transcript(items: Vec<gobstopper_core::TranscriptItem>) -> Transcript {
+        Transcript {
+            session: gobstopper_core::SessionHandle {
+                provider: gobstopper_core::Provider::Codex,
+                session_id: "s".into(),
+                path: std::path::PathBuf::from("/tmp/s.jsonl"),
+                cwd: None,
+                age_secs: 0,
+            },
+            items,
+            usage: Default::default(),
+        }
+    }
+
+    fn input(local: usize, item_index: usize, text: &str) -> (usize, usize, String) {
+        (local, item_index, text.to_string())
+    }
+
+    #[test]
+    fn line_body_strips_only_the_own_bracket_prefix() {
+        assert_eq!(line_body(2, "[2] exec = ok"), "exec = ok");
+        // A bracket belonging to another local is content, not a prefix.
+        assert_eq!(line_body(1, "[0] exec = ok"), "[0] exec = ok");
+        assert_eq!(line_body(0, "no bracket"), "no bracket");
+    }
+
+    #[test]
+    fn unique_lines_groups_identical_bodies_in_first_occurrence_order() {
+        let inputs = vec![
+            input(0, 10, "[0] exec = cargo test: pass"),
+            input(1, 11, "[1] exec = cargo build: ok"),
+            input(2, 12, "[2] exec = cargo test: pass"),
+            input(3, 13, "[3] exec = cargo test: pass"),
+        ];
+        let uniques = unique_lines(&inputs);
+        // One unique line per distinct text body; the bracketed local id
+        // differs per line and never prevents the dedup.
+        assert_eq!(uniques.len(), 2);
+        assert_eq!(uniques[0], (0, vec![0, 2, 3]));
+        assert_eq!(uniques[1], (1, vec![1]));
+        // The representative's line keeps its own bracketed id.
+        assert_eq!(inputs[uniques[0].0].2, "[0] exec = cargo test: pass");
+    }
+
+    #[test]
+    fn fan_out_spreads_representative_answer_to_member_locals() {
+        let inputs = vec![
+            input(0, 10, "[0] exec = cargo test: pass"),
+            input(1, 11, "[1] exec = cargo build: ok"),
+            input(2, 12, "[2] exec = cargo test: pass"),
+            input(3, 13, "[3] exec = cargo test: pass"),
+        ];
+        let uniques = unique_lines(&inputs);
+        let out = fan_out_answers(&inputs, &uniques, &[(0, 0.9), (1, 0.2), (99, 0.5)]);
+        // The rep's score reaches every member; the unknown id 99 drops.
+        assert_eq!(out, vec![(0, 0.9), (2, 0.9), (3, 0.9), (1, 0.2)]);
+    }
+
+    #[test]
+    fn dedup_then_overlay_preserves_heuristic_and_local_mapping() {
+        let transcript = test_transcript(vec![
+            test_item(0, "exec", "cargo test: pass"),
+            test_item(1, "exec", "cargo build: ok"),
+            test_item(2, "exec", "cargo test: pass"),
+        ]);
+        let candidates = [0, 1, 2];
+        let mut results = HeuristicScorer.score(&transcript, &candidates);
+        let baseline1 = results[1].keep_probability;
+
+        let inputs = vec![
+            input(0, 0, "[0] exec = cargo test: pass"),
+            input(1, 1, "[1] exec = cargo build: ok"),
+            input(2, 2, "[2] exec = cargo test: pass"),
+        ];
+        let uniques = unique_lines(&inputs);
+        assert_eq!(uniques.len(), 2);
+
+        // The model answered only the first unique line (rep local 0):
+        // members 0 and 2 overlay, local 1 keeps its heuristic score.
+        let answers = fan_out_answers(&inputs, &uniques, &[(0, 0.9)]);
+        let overlaid = llm_scorer::overlay_answers(&mut results, &candidates, &answers);
+        assert_eq!(overlaid, 2);
+        assert_eq!(results[0].item_index, 0);
+        assert_eq!(results[0].keep_probability, 0.9);
+        assert_eq!(results[1].keep_probability, baseline1);
+        assert_eq!(results[2].item_index, 2);
+        assert_eq!(results[2].keep_probability, 0.9);
+    }
 }
