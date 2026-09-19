@@ -36,7 +36,7 @@ use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use gobstopper_core::{ScoreDriver, ScoredItem, Transcript};
+use gobstopper_core::{HeuristicScorer, ScoreDriver, ScoredItem, Transcript};
 
 /// Where the API key was found — reported by `gobstopper auth jev
 /// --status` so the source is never ambiguous.
@@ -321,12 +321,30 @@ fn split_candidates(
     candidates.split_at(candidates.len().saturating_sub(requested))
 }
 
+fn overlay_probabilities(
+    results: &mut [ScoredItem],
+    result_positions: &HashMap<usize, usize>,
+    chunk: &[usize],
+    chunk_index: usize,
+    probabilities: &HashMap<String, f64>,
+) {
+    for (question_index, &item_index) in chunk.iter().enumerate() {
+        let question_id = format!("q_{chunk_index}_{question_index}");
+        let Some(probability) = probabilities.get(&question_id) else {
+            continue;
+        };
+        if let Some(position) = result_positions.get(&item_index) {
+            results[*position].keep_probability = probability.clamp(0.0, 1.0);
+        }
+    }
+}
+
 impl ScoreDriver for JevScorer {
     fn score(&self, transcript: &Transcript, candidates: &[usize]) -> Vec<ScoredItem> {
         if candidates.is_empty() {
             return Vec::new();
         }
-        let (neutral, requested) = split_candidates(
+        let (_, requested) = split_candidates(
             candidates,
             self.cfg.max_questions_per_call,
             self.cfg.max_batches,
@@ -355,37 +373,26 @@ impl ScoreDriver for JevScorer {
             Default::default()
         };
 
-        let mut results: Vec<ScoredItem> = neutral
+        let mut results = HeuristicScorer.score(transcript, candidates);
+        let result_positions: HashMap<usize, usize> = results
             .iter()
-            .map(|&item_index| ScoredItem {
-                item_index,
-                keep_probability: 0.5,
-            })
+            .enumerate()
+            .map(|(position, item)| (item.item_index, position))
             .collect();
-        results.reserve(requested.len());
         for (chunk_idx, chunk) in chunks.iter().enumerate() {
             let request = build_request(&state, chunk, transcript, &excerpts, chunk_idx);
             match call_jev(&request, &self.cfg) {
-                Ok(probs) => {
-                    for (i, &idx) in chunk.iter().enumerate() {
-                        let qid = format!("q_{}_{}", chunk_idx, i);
-                        let prob = probs.get(&qid).copied().unwrap_or(0.5);
-                        results.push(ScoredItem {
-                            item_index: idx,
-                            keep_probability: prob.clamp(0.0, 1.0),
-                        });
-                    }
-                }
-                Err(e) => {
-                    eprintln!("jev scorer call failed for chunk {chunk_idx}: {e:#}");
-                    // Treat failures as neutral 0.5 so the run can fall
-                    // back to position-based ordering rather than abort.
-                    for &idx in chunk.iter() {
-                        results.push(ScoredItem {
-                            item_index: idx,
-                            keep_probability: 0.5,
-                        });
-                    }
+                Ok(probabilities) => overlay_probabilities(
+                    &mut results,
+                    &result_positions,
+                    chunk,
+                    chunk_idx,
+                    &probabilities,
+                ),
+                Err(error) => {
+                    eprintln!(
+                        "jev scorer call failed for chunk {chunk_idx}; retaining heuristic scores: {error:#}"
+                    );
                 }
             }
         }
@@ -803,6 +810,20 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Content excerpt: bounded content"));
+
+        let mut scores = HeuristicScorer.score(&transcript, &[0]);
+        let fallback = scores[0].keep_probability;
+        let positions = HashMap::from([(0, 0)]);
+        overlay_probabilities(&mut scores, &positions, &[0], 3, &HashMap::new());
+        assert_eq!(scores[0].keep_probability, fallback);
+        overlay_probabilities(
+            &mut scores,
+            &positions,
+            &[0],
+            3,
+            &HashMap::from([("q_3_0".into(), 1.7)]),
+        );
+        assert_eq!(scores[0].keep_probability, 1.0);
     }
 
     #[test]
