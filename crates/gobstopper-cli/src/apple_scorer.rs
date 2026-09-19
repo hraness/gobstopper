@@ -21,6 +21,9 @@
 //!   GOBSTOPPER_APPLE_MAX_CANDIDATES - 64
 //!   GOBSTOPPER_APPLE_BATCH_SIZE  - 32 (8 when content excerpts are on)
 //!   GOBSTOPPER_APPLE_MAX_BATCHES - 4 (8 when content excerpts are on)
+//!   GOBSTOPPER_APPLE_CACHE         - set to 0 to disable the shared
+//!     prompt→response cache (identical batches under watch re-evals
+//!     cost zero model calls)
 //!   GOBSTOPPER_APPLE_CONTENT_BYTES - 400 per candidate (0 = labels only;
 //!     on-device inference lifts the labels-only boundary remote scorers
 //!     need, so candidates include bounded payload excerpts by default)
@@ -188,15 +191,23 @@ fn score_batch(
     let prompt = format!(
         "You are scoring stale tool outputs for context compaction. The agent's current task is:\n{goal}\n\nRecent conversation tail:\n{tail}\n\nFor each candidate below, estimate the probability (0.0 to 1.0) that the tool output must remain visible for the agent to continue accurately. Score every candidate id.{note}\n\n{list}\n"
     );
-    let value = bridge.request(&apple_foundation::Request {
-        prompt,
-        instructions: Some(
-            "Score every listed candidate id. Probabilities are numbers from 0.0 to 1.0.".into(),
-        ),
-        schema: Some(schema.clone()),
-        expect_json: false,
-        max_output_bytes: Some(8192),
-    })?;
+    let value = match apple::cache_get(&prompt, schema) {
+        Some(v) => v,
+        None => {
+            let v = bridge.request(&apple_foundation::Request {
+                prompt: prompt.clone(),
+                instructions: Some(
+                    "Score every listed candidate id. Probabilities are numbers from 0.0 to 1.0."
+                        .into(),
+                ),
+                schema: Some(schema.clone()),
+                expect_json: false,
+                max_output_bytes: Some(8192),
+            })?;
+            apple::cache_put(&prompt, schema, &v);
+            v
+        }
+    };
     let scores = value
         .get("scores")
         .and_then(Value::as_array)

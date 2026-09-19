@@ -84,6 +84,51 @@ pub(crate) fn shared_bridge(
         .as_ref()
 }
 
+/// Process-wide prompt→response cache shared by every apple feature.
+/// `watch` re-evaluates an unchanged transcript each poll interval; the
+/// model inputs (excerpts of immutable lines plus the tail) are identical
+/// while nothing new has been appended, so a bounded cache turns repeat
+/// evaluations into zero model calls. The schema text is part of the key
+/// so distinct request shapes never collide. Bounded at 64 entries —
+/// a stale entry only means a regenerated response, never a wrong one.
+/// `GOBSTOPPER_APPLE_CACHE=0` disables reads (writes still land).
+const CACHE_MAX: usize = 64;
+
+pub(crate) fn cache_get(prompt: &str, schema: &serde_json::Value) -> Option<serde_json::Value> {
+    if std::env::var("GOBSTOPPER_APPLE_CACHE").as_deref() == Ok("0") {
+        return None;
+    }
+    response_cache()
+        .lock()
+        .ok()?
+        .get(&cache_key(prompt, schema))
+        .cloned()
+}
+
+pub(crate) fn cache_put(prompt: &str, schema: &serde_json::Value, value: &serde_json::Value) {
+    if let Ok(mut c) = response_cache().lock() {
+        if c.len() >= CACHE_MAX {
+            c.clear();
+        }
+        c.insert(cache_key(prompt, schema), value.clone());
+    }
+}
+
+fn response_cache() -> &'static std::sync::Mutex<std::collections::HashMap<u64, serde_json::Value>>
+{
+    static CACHE: OnceLock<std::sync::Mutex<std::collections::HashMap<u64, serde_json::Value>>> =
+        OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn cache_key(prompt: &str, schema: &serde_json::Value) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    schema.to_string().hash(&mut h);
+    prompt.hash(&mut h);
+    h.finish()
+}
+
 /// Head+tail window of a record: errors tend to sit at the end of tool
 /// output, so the tail is kept alongside the opening context.
 pub(crate) fn excerpt(line: &str, max_bytes: usize) -> String {
@@ -143,4 +188,35 @@ pub(crate) fn read_excerpts(
         idx += 1;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The response cache is a process-wide static — serialize these tests
+    // so one cannot evict the other's entries mid-assertion.
+    static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn cache_round_trip_and_schema_isolation() {
+        let _g = LOCK.lock().unwrap();
+        let schema_a = serde_json::json!({"kind": "a"});
+        let schema_b = serde_json::json!({"kind": "b"});
+        let v = serde_json::json!({"digest": {}});
+        cache_put("cache-test-prompt-1", &schema_a, &v);
+        assert_eq!(cache_get("cache-test-prompt-1", &schema_a), Some(v));
+        assert_eq!(cache_get("cache-test-prompt-1", &schema_b), None);
+        assert_eq!(cache_get("cache-test-prompt-2", &schema_a), None);
+    }
+
+    #[test]
+    fn cache_stays_bounded() {
+        let _g = LOCK.lock().unwrap();
+        let schema = serde_json::json!({});
+        for i in 0..(CACHE_MAX + 16) {
+            cache_put(&format!("bound-{i}"), &schema, &serde_json::json!(i));
+        }
+        assert!(response_cache().lock().unwrap().len() <= CACHE_MAX);
+    }
 }
