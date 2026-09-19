@@ -215,11 +215,11 @@ GOBSTOPPER_SCORER=jev GOBSTOPPER_EVAL_JUDGE=jev \
   gobstopper eval <session> --strategy scored
 ```
 
-In a live 80k-token run, the same valid Jev-scored plan measured 97%
-verbatim probe recall and 100% semantic recall: Jev credited one fact that
-the state card preserved after its original bytes were elided. Jev and the
-heuristic selected the same three unambiguously stale records in that run,
-so the measurement does not claim a ranking-quality win.
+Gobstopper reads the official `answers.<id>.noul` probability returned by
+System One, while retaining bounded compatibility fallbacks for older response
+shapes; missing or malformed answers remain neutral at `0.5`. The eval harness
+now makes a post-parser Jev-versus-heuristic quality trial possible, but no
+ranking-quality win is claimed until that live comparison is rerun.
 
 Successful Jev responses are cached in-process for five minutes, keyed by
 endpoint, credential identity, and the exact serialized request. This keeps

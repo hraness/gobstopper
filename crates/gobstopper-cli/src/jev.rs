@@ -143,8 +143,8 @@ struct JevRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 struct JevAnswer {
-    /// Primary answer probability; accepted forms: a number 0..1, a
-    /// boolean, or a nested `probability` field.
+    #[serde(default)]
+    noul: Option<f64>,
     #[serde(default)]
     probability: Option<f64>,
     #[serde(default)]
@@ -398,6 +398,27 @@ fn post_json(
     Ok((code, body.to_string()))
 }
 
+fn answer_probability(value: serde_json::Value) -> f64 {
+    if let Ok(answer) = serde_json::from_value::<JevAnswer>(value.clone()) {
+        answer
+            .noul
+            .or(answer.probability)
+            .or(answer.p)
+            .or(answer.score)
+            .or_else(|| answer.answer.map(|yes| if yes { 1.0 } else { 0.0 }))
+            .unwrap_or(0.5)
+            .clamp(0.0, 1.0)
+    } else if let Some(yes) = value.as_bool() {
+        if yes {
+            1.0
+        } else {
+            0.0
+        }
+    } else {
+        value.as_f64().unwrap_or(0.5).clamp(0.0, 1.0)
+    }
+}
+
 fn call_jev(request: &JevRequest, cfg: &JevConfig) -> anyhow::Result<HashMap<String, f64>> {
     let body = serde_json::to_vec(request)?;
     let key = response_cache_key(&cfg.endpoint, &cfg.api_key, &body);
@@ -414,24 +435,7 @@ fn call_jev(request: &JevRequest, cfg: &JevConfig) -> anyhow::Result<HashMap<Str
         .answers
         .unwrap_or_default()
         .into_iter()
-        .map(|(k, v)| {
-            let prob = if let Ok(a) = serde_json::from_value::<JevAnswer>(v.clone()) {
-                a.probability
-                    .or(a.p)
-                    .or(a.score)
-                    .or_else(|| a.answer.map(|b| if b { 1.0 } else { 0.0 }))
-                    .unwrap_or(0.5)
-            } else if let Some(b) = v.as_bool() {
-                if b {
-                    1.0
-                } else {
-                    0.0
-                }
-            } else {
-                v.as_f64().unwrap_or(0.5)
-            };
-            (k, prob.clamp(0.0, 1.0))
-        })
+        .map(|(key, value)| (key, answer_probability(value)))
         .collect();
     cache_put(key, &answers);
     Ok(answers)
@@ -590,6 +594,18 @@ mod tests {
     #[test]
     fn judge_state_preserves_short_input() {
         assert_eq!(bounded_judge_state("small"), "small");
+    }
+
+    #[test]
+    fn parses_official_noul_response_shape() {
+        assert_eq!(
+            answer_probability(json!({"type": "noul", "noul": 0.83})),
+            0.83
+        );
+        assert_eq!(answer_probability(json!({"probability": 0.2})), 0.2);
+        assert_eq!(answer_probability(json!(true)), 1.0);
+        assert_eq!(answer_probability(json!(1.7)), 1.0);
+        assert_eq!(answer_probability(json!({"unknown": 1})), 0.5);
     }
 
     #[test]
