@@ -510,19 +510,52 @@ pub struct JevProbeJudge {
 const JUDGE_MAX_PROBES: usize = 64;
 /// Longest probe text forwarded into a question.
 const JUDGE_PROBE_BYTES: usize = 200;
-/// Rewritten-transcript bytes forwarded as judge state — head+tail of
-/// the post-compaction file, ~25k tokens.
+/// Rewritten-transcript bytes forwarded as judge evidence — compaction
+/// artifacts and short tool records, with head+tail fallback (~25k tokens).
 const JUDGE_STATE_BYTES: usize = 100_000;
 
 fn bounded_judge_state(post_text: &str) -> String {
     if post_text.len() <= JUDGE_STATE_BYTES {
         return post_text.to_string();
     }
+    let is_marker = |line: &str| {
+        line.contains("[gobstopper state card]") || line.contains("elided by gobstopper")
+    };
+    let is_short_tool = |line: &str| {
+        line.len() <= 4_096
+            && (line.contains("function_call_output")
+                || line.contains("custom_tool_call_output")
+                || line.contains("tool_result"))
+    };
+    let mut evidence = String::new();
+    for line in post_text.lines().filter(|line| is_marker(line)) {
+        append_judge_evidence(&mut evidence, line);
+    }
+    for line in post_text
+        .lines()
+        .filter(|line| !is_marker(line) && is_short_tool(line))
+    {
+        append_judge_evidence(&mut evidence, line);
+    }
+    if !evidence.is_empty() {
+        return evidence;
+    }
     const MARKER: &str = "\n[...]\n";
     let content_budget = JUDGE_STATE_BYTES.saturating_sub(MARKER.len());
     let head = safe_prefix(post_text, content_budget / 2);
     let tail = safe_suffix(post_text, content_budget.saturating_sub(head.len()));
     format!("{head}{MARKER}{tail}")
+}
+
+fn append_judge_evidence(evidence: &mut String, line: &str) {
+    if evidence.len() >= JUDGE_STATE_BYTES {
+        return;
+    }
+    if !evidence.is_empty() {
+        evidence.push('\n');
+    }
+    let remaining = JUDGE_STATE_BYTES.saturating_sub(evidence.len());
+    evidence.push_str(safe_prefix(line, remaining));
 }
 
 impl gobstopper_core::probe::ProbeJudge for JevProbeJudge {
@@ -590,6 +623,20 @@ mod tests {
     #[test]
     fn judge_state_preserves_short_input() {
         assert_eq!(bounded_judge_state("small"), "small");
+    }
+
+    #[test]
+    fn judge_state_prioritizes_compaction_evidence() {
+        let input = format!(
+            "{}\n{{\"text\":\"[gobstopper state card] kept src/lib.rs\"}}\n{{\"type\":\"function_call_output\",\"output\":\"tests passed\"}}\n{}",
+            "x".repeat(JUDGE_STATE_BYTES),
+            "y".repeat(JUDGE_STATE_BYTES)
+        );
+        let state = bounded_judge_state(&input);
+        assert!(state.len() <= JUDGE_STATE_BYTES);
+        assert!(state.contains("[gobstopper state card]"));
+        assert!(state.contains("tests passed"));
+        assert!(!state.starts_with('x'));
     }
 
     #[test]
