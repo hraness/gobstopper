@@ -174,6 +174,7 @@ struct Agg {
     min_ts: u64,
     max_ts: u64,
     applied: u64,
+    native_hook_applied: u64,
     est_reclaimed: u64,
     last_applied_ts: u64,
     last_strategy: Option<String>,
@@ -189,6 +190,9 @@ fn aggregate<'a>(events: &'a [CompactionEvent]) -> HashMap<(Provider, &'a str), 
         agg.max_ts = agg.max_ts.max(e.ts);
         if e.outcome == "applied" {
             agg.applied += 1;
+            if e.strategy == "native" && e.action == "provider_compact" {
+                agg.native_hook_applied += 1;
+            }
             agg.est_reclaimed = agg.est_reclaimed.saturating_add(e.est_reclaimed_tokens);
             if e.ts >= agg.last_applied_ts {
                 agg.last_applied_ts = e.ts;
@@ -294,6 +298,7 @@ pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Valu
                 "lastActivityMs": last_activity_ms,
                 "compactions": {
                     "applied": applied,
+                    "nativeHookApplied": agg.map(|a| a.native_hook_applied).unwrap_or(0),
                     "estReclaimedTokens": est_reclaimed,
                     "lastAppliedMs": last_applied_ms,
                     "lastStrategy": last_strategy,
@@ -466,6 +471,23 @@ mod tests {
         assert!(g2["compactions"]["lastStrategy"].is_null());
         // No events: window is the single last-activity instant.
         assert_eq!(list[1]["window"]["startMs"], list[1]["window"]["endMs"]);
+    }
+
+    #[test]
+    fn native_hook_count_excludes_other_applied_or_unfinished_events() {
+        let sessions = vec![discovered(Provider::Codex, UUID_A, 0)];
+        let mut native = event(Provider::Codex, UUID_A, 1, "applied", "native", 0);
+        native.action = "provider_compact".into();
+        let mut planned = native.clone();
+        planned.outcome = "planned".into();
+        let mut skipped = native.clone();
+        skipped.outcome = "skipped".into();
+        let other = event(Provider::Codex, UUID_A, 1, "applied", "elide", 100);
+        let report = build_report(&sessions, &[native, planned, skipped, other]);
+        let counts = &report["sessions"][0]["gobstopper"]["compactions"];
+        assert_eq!(counts["applied"], 2);
+        assert_eq!(counts["nativeHookApplied"], 1);
+        assert_eq!(counts["estReclaimedTokens"], 100);
     }
 
     #[test]

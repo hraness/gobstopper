@@ -193,6 +193,9 @@ enum Cmd {
         /// strictly against aicharts' session-observations-v1 schema.
         #[arg(long)]
         strict: bool,
+        /// Report only files updated in the last 180 seconds.
+        #[arg(long)]
+        active_only: bool,
     },
     /// Show compaction telemetry: recent events and cumulative savings.
     Events {
@@ -294,6 +297,12 @@ enum Cmd {
         /// Report plans without applying them.
         #[arg(long)]
         dry_run: bool,
+        /// Inspect only recently updated sessions (activity is an mtime heuristic).
+        #[arg(long)]
+        active_only: bool,
+        /// Run one discovery pass and exit, useful for supervised monitoring.
+        #[arg(long)]
+        once: bool,
         /// Retired compatibility flag; in-place staged swaps are disabled.
         #[arg(long)]
         double_buffer: bool,
@@ -1518,9 +1527,20 @@ fn cmd_hook(event: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_report(cli: &Cli, strict: bool) -> Result<()> {
-    let sessions = detect::discover(&roots(cli), 0);
-    let events = gobstopper_core::events::read_events(&default_log_path()).unwrap_or_default();
+fn cmd_report(cli: &Cli, strict: bool, active_only: bool) -> Result<()> {
+    let sessions = detect::discover(
+        &roots(cli),
+        if active_only {
+            gobstopper_core::SessionHandle::HOT_SECS
+        } else {
+            0
+        },
+    );
+    let events = match gobstopper_core::events::read_events(&default_log_path()) {
+        Ok(events) => events,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => return Err(error).context("compaction telemetry unavailable"),
+    };
     let mut report = report::build_report(&sessions, &events);
     if strict {
         if let Some(list) = report["sessions"].as_array_mut() {
@@ -2276,6 +2296,8 @@ fn cmd_watch(
     interval: u64,
     dry_run: bool,
     double_buffer: bool,
+    active_only: bool,
+    once: bool,
 ) -> Result<()> {
     if interval == 0 {
         bail!("watch interval must be positive");
@@ -2291,9 +2313,16 @@ fn cmd_watch(
         let cfg = config::load()?;
         for d in detect::discover_cached(
             &roots(cli),
-            detect::default_max_age_secs(),
+            if active_only {
+                gobstopper_core::SessionHandle::HOT_SECS
+            } else {
+                detect::default_max_age_secs()
+            },
             &mut discovery_cache,
         ) {
+            if active_only && !d.handle.is_active() {
+                continue;
+            }
             let session_key = format!("{}:{}", d.handle.provider.as_str(), d.handle.path.display());
             let Ok(resolved) = cfg.resolve(d.handle.provider, &d.handle.session_id, None, None)
             else {
@@ -2388,7 +2417,9 @@ fn cmd_watch(
                         continue;
                     }
                     let started = std::time::Instant::now();
-                    let trigger = resolved.policy.trigger_tokens;
+                    let trigger = effective_policy(&transcript, &resolved)
+                        .0
+                        .effective_trigger();
                     let is_provider = plan.edits.iter().any(|e| {
                         matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. })
                     });
@@ -2401,15 +2432,32 @@ fn cmd_watch(
                         last_fire.clear();
                     }
                     last_fire.insert(session_key.clone(), std::time::Instant::now());
-                    let r = if is_provider {
-                        Err(anyhow::anyhow!("native compaction requires the session owner; watch will not create a second writer"))
-                    } else {
-                        copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root()).map(
-                            |receipt| {
-                                eprintln!("prepared copy {}", receipt.path.display());
-                            },
-                        )
-                    };
+                    if is_provider {
+                        // Delegation is an expected boundary, not an apply failure.
+                        // Nothing ran: do not credit the strategy's projected floor
+                        // as reclaimed context in telemetry.
+                        let unchanged = CompactionPlan {
+                            context_tokens_after: plan.context_tokens_before,
+                            ..plan.clone()
+                        };
+                        emit_event(
+                            &d,
+                            &unchanged,
+                            action,
+                            "skipped",
+                            trigger,
+                            started.elapsed().as_millis() as u64,
+                            None,
+                        );
+                        eprintln!(
+                            "deferred native compaction: session owner required; source unchanged"
+                        );
+                        continue;
+                    }
+                    let r = copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root())
+                        .map(|receipt| {
+                            eprintln!("prepared copy {}", receipt.path.display());
+                        });
                     match r {
                         Ok(()) => {
                             last_fire.insert(session_key.clone(), std::time::Instant::now());
@@ -2441,6 +2489,9 @@ fn cmd_watch(
                 Ok(None) => {}
                 Err(e) => eprintln!("plan {} failed: {e}", d.handle.session_id),
             }
+        }
+        if once {
+            return Ok(());
         }
         std::thread::sleep(std::time::Duration::from_secs(interval));
     }
@@ -2775,7 +2826,10 @@ fn main() -> Result<()> {
         Cmd::InstallHooks => cmd_install_hooks(false, &roots(&cli)),
         Cmd::UninstallHooks => cmd_install_hooks(true, &roots(&cli)),
         Cmd::Hook { event } => cmd_hook(event),
-        Cmd::Report { strict } => cmd_report(&cli, *strict),
+        Cmd::Report {
+            strict,
+            active_only,
+        } => cmd_report(&cli, *strict, *active_only),
         Cmd::Events {
             session,
             tail,
@@ -2818,7 +2872,17 @@ fn main() -> Result<()> {
             interval,
             dry_run,
             double_buffer,
-        } => cmd_watch(&cli, &cfg, *interval, *dry_run, *double_buffer),
+            active_only,
+            once,
+        } => cmd_watch(
+            &cli,
+            &cfg,
+            *interval,
+            *dry_run,
+            *double_buffer,
+            *active_only,
+            *once,
+        ),
         Cmd::PolicyCheck {
             provider,
             context_tokens,

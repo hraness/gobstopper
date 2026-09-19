@@ -121,6 +121,7 @@ gobstopper undo <session>          # restore a pre-compaction snapshot into a ne
 gobstopper vault                   # list snapshots in the undo vault
 gobstopper install-hooks           # Claude + Codex compaction lifecycle hooks
 gobstopper watch --dry-run         # the daemon path: poll, threshold, prepare copy
+gobstopper watch --dry-run --active-only --once  # bounded recent-session inspection
 gobstopper explain                 # the occupancy math above
 gobstopper recall --query <q>      # search state-card digests across all archived sessions
 gobstopper history <session>       # every archived state of one session
@@ -168,6 +169,23 @@ trusted_legacy_command = true
 
 Managed sessions (oompa profiles, sandboxed homes) use different roots:
 point gobstopper at them with `--codex-home` / `--claude-home`.
+
+### Monitoring an existing Codex desktop session
+
+Standalone `watch` cannot compact the context already held by another Codex
+process. It reports native delegation as `skipped`, with zero credited savings;
+the owning runtime must perform that operation. `--active-only` limits discovery
+to files updated within the last 180 seconds (a recency heuristic, not proof of
+an owning process), and `--once` exits after one pass. A dry run writes no forks
+or compaction events. Existing trusted lifecycle hooks can snapshot native
+compactions and provide the session with a recovery pointer.
+
+The optional [local monitor](scripts/monitor.md) records numeric observations
+for an explicit list of sessions and checks a deterministic dry-run watcher.
+It separates observed context drops, native hook activity, and projected
+compaction plans; none is automatically counted as Gobstopper-caused usage
+savings. Current Codex `event_msg/token_count` accounting and legacy usage
+records are both supported, including the advertised model context window.
 
 `scored` uses the deterministic offline heuristic by default. Experimental
 external scoring is opt-in with `GOBSTOPPER_SCORER=llm`,
