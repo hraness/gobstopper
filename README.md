@@ -221,6 +221,15 @@ the state card preserved after its original bytes were elided. Jev and the
 heuristic selected the same three unambiguously stale records in that run,
 so the measurement does not claim a ranking-quality win.
 
+Successful Jev responses are cached in-process for five minutes, keyed by
+endpoint, credential identity, and the exact serialized request. This keeps
+`watch` from paying for identical scorer calls on an unchanged transcript
+while periodically refreshing against the remote model. The cache stores
+only parsed probabilities (not transcript text), clears at 64 entries, and
+never caches failures. Set `GOBSTOPPER_JEV_CACHE=0` or
+`GOBSTOPPER_JEV_CACHE_TTL_SECS=0` to disable reads; change the TTL with the
+latter variable.
+
 `GOBSTOPPER_SCORER=apple` (macOS 26+, Apple Silicon) scores on-device with
 Apple Intelligence Foundation Models via the shared `apple-foundation`
 bridge — free, private, no API key. The bridge auto-builds to
