@@ -217,9 +217,11 @@ GOBSTOPPER_SCORER=jev GOBSTOPPER_EVAL_JUDGE=jev \
 
 Gobstopper reads the official `answers.<id>.noul` probability returned by
 System One, while retaining bounded compatibility fallbacks for older response
-shapes; missing or malformed answers remain neutral at `0.5`. The eval harness
-now makes a post-parser Jev-versus-heuristic quality trial possible, but no
-ranking-quality win is claimed until that live comparison is rerun.
+shapes. A missing or malformed scorer response makes the whole chunk neutral
+at `0.5`; semantic eval omits its model score instead of crediting unknown
+facts. The eval harness now makes a post-parser Jev-versus-heuristic quality
+trial possible, but no ranking-quality win is claimed until that live
+comparison is rerun.
 
 Successful Jev responses are cached in-process for five minutes, keyed by
 endpoint, credential identity, and the exact serialized request. This keeps

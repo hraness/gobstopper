@@ -157,8 +157,7 @@ struct JevAnswer {
 
 #[derive(Debug, Clone, Deserialize)]
 struct JevAnswers {
-    #[serde(default)]
-    answers: Option<serde_json::Map<String, serde_json::Value>>,
+    answers: serde_json::Map<String, serde_json::Value>,
 }
 
 const CACHE_MAX: usize = 64;
@@ -398,16 +397,14 @@ fn post_json(
     Ok((code, body.to_string()))
 }
 
-fn answer_probability(value: serde_json::Value) -> f64 {
-    if let Ok(answer) = serde_json::from_value::<JevAnswer>(value.clone()) {
+fn answer_probability(value: serde_json::Value) -> Option<f64> {
+    let probability = if let Ok(answer) = serde_json::from_value::<JevAnswer>(value.clone()) {
         answer
             .noul
             .or(answer.probability)
             .or(answer.p)
             .or(answer.score)
-            .or_else(|| answer.answer.map(|yes| if yes { 1.0 } else { 0.0 }))
-            .unwrap_or(0.5)
-            .clamp(0.0, 1.0)
+            .or_else(|| answer.answer.map(|yes| if yes { 1.0 } else { 0.0 }))?
     } else if let Some(yes) = value.as_bool() {
         if yes {
             1.0
@@ -415,8 +412,9 @@ fn answer_probability(value: serde_json::Value) -> f64 {
             0.0
         }
     } else {
-        value.as_f64().unwrap_or(0.5).clamp(0.0, 1.0)
-    }
+        value.as_f64()?
+    };
+    probability.is_finite().then(|| probability.clamp(0.0, 1.0))
 }
 
 fn call_jev(request: &JevRequest, cfg: &JevConfig) -> anyhow::Result<HashMap<String, f64>> {
@@ -431,12 +429,12 @@ fn call_jev(request: &JevRequest, cfg: &JevConfig) -> anyhow::Result<HashMap<Str
     }
     let parsed: JevAnswers =
         serde_json::from_str(&text).with_context(|| format!("parse jev response: {text}"))?;
-    let answers = parsed
+    let answers: Option<HashMap<String, f64>> = parsed
         .answers
-        .unwrap_or_default()
         .into_iter()
-        .map(|(key, value)| (key, answer_probability(value)))
+        .map(|(key, value)| answer_probability(value).map(|probability| (key, probability)))
         .collect();
+    let answers = answers.context("jev response contains an invalid answer")?;
     cache_put(key, &answers);
     Ok(answers)
 }
@@ -557,11 +555,9 @@ impl gobstopper_core::probe::ProbeJudge for JevProbeJudge {
             questions,
         };
         let answers = call_jev(&request, &self.cfg).ok()?;
-        Some(
-            (0..judged)
-                .map(|i| answers.get(&format!("p_{i}")).copied().unwrap_or(0.0))
-                .collect(),
-        )
+        (0..judged)
+            .map(|i| answers.get(&format!("p_{i}")).copied())
+            .collect()
     }
 }
 
@@ -600,12 +596,13 @@ mod tests {
     fn parses_official_noul_response_shape() {
         assert_eq!(
             answer_probability(json!({"type": "noul", "noul": 0.83})),
-            0.83
+            Some(0.83)
         );
-        assert_eq!(answer_probability(json!({"probability": 0.2})), 0.2);
-        assert_eq!(answer_probability(json!(true)), 1.0);
-        assert_eq!(answer_probability(json!(1.7)), 1.0);
-        assert_eq!(answer_probability(json!({"unknown": 1})), 0.5);
+        assert_eq!(answer_probability(json!({"probability": 0.2})), Some(0.2));
+        assert_eq!(answer_probability(json!(true)), Some(1.0));
+        assert_eq!(answer_probability(json!(1.7)), Some(1.0));
+        assert_eq!(answer_probability(json!({"unknown": 1})), None);
+        assert!(serde_json::from_str::<JevAnswers>("{}").is_err());
     }
 
     #[test]
