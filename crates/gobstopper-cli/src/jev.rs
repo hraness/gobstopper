@@ -371,11 +371,18 @@ fn question_cache_put(key: CacheKey, probability: f64, ttl: Option<Duration>) {
 
 pub struct JevScorer {
     cfg: JevConfig,
+    /// One-line summary of the most recent `score` pass, surfaced via
+    /// `ScoreDriver::last_run_summary` so plan rationale and compaction
+    /// events carry the request-economy numbers.
+    last_summary: Mutex<Option<String>>,
 }
 
 impl JevScorer {
     pub fn new(cfg: JevConfig) -> Self {
-        Self { cfg: cfg.bounded() }
+        Self {
+            cfg: cfg.bounded(),
+            last_summary: Mutex::new(None),
+        }
     }
 }
 
@@ -520,12 +527,20 @@ impl ScoreDriver for JevScorer {
                 }
             }
         }
-        eprintln!(
+        let summary = format!(
             "jev: {} candidates → {unique_total} unique questions ({cached} cached, {sent} sent) in {calls} call(s), {answered_items} items overlaid, {failed} failed, {}ms",
             requested.len(),
             started.elapsed().as_millis()
         );
+        eprintln!("{summary}");
+        if let Ok(mut slot) = self.last_summary.lock() {
+            *slot = Some(summary);
+        }
         results
+    }
+
+    fn last_run_summary(&self) -> Option<String> {
+        self.last_summary.lock().ok().and_then(|slot| slot.clone())
     }
 }
 
@@ -1366,17 +1381,24 @@ mod tests {
             test_item(2, "exec", "cargo test: pass"),
         ]);
 
+        assert!(scorer.last_run_summary().is_none());
         let scores = scorer.score(&transcript, &[0, 1, 2]);
         assert_eq!(scores[0].keep_probability, 0.9);
         assert_eq!(scores[1].keep_probability, 0.1);
         assert_eq!(scores[2].keep_probability, 0.9);
         assert_eq!(server.bodies.lock().unwrap().len(), 1);
+        let summary = scorer.last_run_summary().unwrap();
+        assert!(summary.contains("3 candidates → 2 unique questions"));
 
         // Second pass on the same questions: fully served from the
         // per-question cache — zero wire requests.
         let scores = scorer.score(&transcript, &[0, 1, 2]);
         assert_eq!(scores[0].keep_probability, 0.9);
         assert_eq!(server.bodies.lock().unwrap().len(), 1);
+        assert!(scorer
+            .last_run_summary()
+            .unwrap()
+            .contains("(2 cached, 0 sent)"));
     }
 
     #[test]

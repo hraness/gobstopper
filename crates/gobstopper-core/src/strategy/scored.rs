@@ -29,6 +29,16 @@ pub trait ScoreDriver {
     /// avoid consuming full payload text — only `item.label` and
     /// `item.summary` are safe.
     fn score(&self, transcript: &Transcript, candidates: &[usize]) -> Vec<ScoredItem>;
+
+    /// One-line summary of the most recent [`score`](Self::score) pass
+    /// (e.g. `jev: 18 candidates → 18 unique questions (18 cached, 0
+    /// sent) in 0 call(s), 18 items overlaid, 0 failed, 4ms`). The CLI
+    /// appends it to the plan rationale so request-economy stats land
+    /// in compaction events instead of staying stderr-only. `None` for
+    /// drivers that do not report.
+    fn last_run_summary(&self) -> Option<String> {
+        None
+    }
 }
 
 /// Deterministic built-in scorer. It reads item metadata only and makes

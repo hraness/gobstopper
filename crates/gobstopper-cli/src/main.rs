@@ -489,12 +489,23 @@ fn effective_policy(
 fn maybe_scorer() -> Option<Box<dyn gobstopper_core::ScoreDriver>> {
     // The LLM and Jev scorers are opt-in. The built-in heuristic is the
     // default because it is fast, deterministic, and private.
-    match std::env::var("GOBSTOPPER_SCORER").ok()?.as_str() {
+    let name = std::env::var("GOBSTOPPER_SCORER").ok()?;
+    let driver = match name.as_str() {
         "llm" => llm_scorer::maybe_llm_scorer(),
         "jev" => jev::maybe_jev_scorer(),
         "apple" => apple_scorer::maybe_apple_scorer(),
         _ => None,
+    };
+    if driver.is_none() {
+        // A configured scorer that resolves to nothing silently becomes
+        // the heuristic — say so once per process so a missing key,
+        // unavailable bridge, or typo'd name is never invisible.
+        static WARN: std::sync::Once = std::sync::Once::new();
+        WARN.call_once(|| {
+            eprintln!("warning: GOBSTOPPER_SCORER={name} resolved no driver; using heuristic");
+        });
     }
+    driver
 }
 
 fn evaluate(
@@ -568,12 +579,20 @@ fn evaluate(
     }
     let mut plan = if resolved.strategy == "scored" {
         let candidates = ScoredStrategy::candidates(transcript, &policy);
-        let scores = if let Some(driver) = maybe_scorer() {
-            driver.score(transcript, &candidates)
+        let (scores, scorer_summary) = if let Some(driver) = maybe_scorer() {
+            let scores = driver.score(transcript, &candidates);
+            (scores, driver.last_run_summary())
         } else {
-            HeuristicScorer.score(transcript, &candidates)
+            (HeuristicScorer.score(transcript, &candidates), None)
         };
-        ScoredStrategy::scores_to_plan(transcript, &policy, &scores)
+        let mut plan = ScoredStrategy::scores_to_plan(transcript, &policy, &scores);
+        if let (Some(plan), Some(summary)) = (&mut plan, scorer_summary) {
+            // The scorer's request-economy line joins the rationale, so
+            // it reaches compaction events and `plan` output rather than
+            // staying stderr-only.
+            plan.rationale = format!("{} | {summary}", plan.rationale);
+        }
+        plan
     } else {
         let strat = strategy::strategy_by_id(&resolved.strategy)
             .ok_or_else(|| anyhow::anyhow!("unknown strategy '{}'", resolved.strategy))?;
