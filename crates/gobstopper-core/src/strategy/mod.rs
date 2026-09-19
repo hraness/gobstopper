@@ -52,6 +52,12 @@ pub struct PolicyConfig {
     pub floor_tokens: u64,
     /// Tool outputs newer than this many from the tail are never elided.
     pub keep_recent_tool_outputs: usize,
+    /// Optional retention cutoff for `scored`: candidates at or above this
+    /// keep score are preserved even if the size target cannot be reached.
+    /// Missing, ambiguous or invalid scores are also preserved when enabled.
+    /// Heuristic scores are ranking signals, not calibrated probabilities.
+    #[serde(default)]
+    pub keep_score_threshold: Option<f64>,
     /// Minimum seconds between compactions of one session.
     pub min_interval_secs: u64,
     #[serde(default = "default_min_savings_tokens")]
@@ -78,6 +84,7 @@ impl Default for PolicyConfig {
             trigger_tokens: 250_000,
             floor_tokens: 40_000,
             keep_recent_tool_outputs: 8,
+            keep_score_threshold: None,
             min_interval_secs: 300,
             min_savings_tokens: default_min_savings_tokens(),
             quota_pressure: QuotaPressure::Normal,

@@ -22,6 +22,8 @@ pub struct PolicyPatch {
     pub trigger_tokens: Option<u64>,
     pub floor_tokens: Option<u64>,
     pub keep_recent_tool_outputs: Option<usize>,
+    /// Scored-only opt-in retention cutoff; independent of the size target.
+    pub keep_score_threshold: Option<f64>,
     pub min_interval_secs: Option<u64>,
     pub min_savings_tokens: Option<u64>,
     /// Provider quota pressure: `low` compacts later, `high` earlier.
@@ -52,6 +54,9 @@ impl PolicyPatch {
         }
         if let Some(v) = self.keep_recent_tool_outputs {
             policy.keep_recent_tool_outputs = v;
+        }
+        if let Some(v) = self.keep_score_threshold {
+            policy.keep_score_threshold = Some(v);
         }
         if let Some(v) = self.min_interval_secs {
             policy.min_interval_secs = v;
@@ -101,6 +106,12 @@ pub fn load() -> anyhow::Result<Config> {
 }
 
 pub fn validate_policy(policy: &PolicyConfig) -> anyhow::Result<()> {
+    if policy
+        .keep_score_threshold
+        .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
+    {
+        anyhow::bail!("keep_score_threshold must be a finite value between 0 and 1");
+    }
     if policy.trigger_tokens == 0
         || policy.trigger_tokens > 10_000_000
         || policy.floor_tokens >= policy.trigger_tokens
@@ -277,5 +288,43 @@ mod tests {
         )
         .unwrap();
         assert!(cfg.resolve(Provider::Codex, "s", None, None).is_err());
+    }
+
+    #[test]
+    fn scored_retention_cutoff_is_opt_in_layered_and_bounded() {
+        assert_eq!(
+            Config::default()
+                .resolve(Provider::Codex, "s", None, None)
+                .unwrap()
+                .policy
+                .keep_score_threshold,
+            None
+        );
+        let cfg = parse("[policy]\nkeep_score_threshold = 0.7\n[presets.retained]\nstrategy = 'scored'\nkeep_score_threshold = 0.5\n[sessions.s]\nkeep_score_threshold = 0.4").unwrap();
+        assert_eq!(
+            cfg.resolve(Provider::Codex, "other", None, None)
+                .unwrap()
+                .policy
+                .keep_score_threshold,
+            Some(0.7)
+        );
+        assert_eq!(
+            cfg.resolve(Provider::Codex, "other", Some("retained"), None)
+                .unwrap()
+                .policy
+                .keep_score_threshold,
+            Some(0.5)
+        );
+        assert_eq!(
+            cfg.resolve(Provider::Codex, "s", Some("retained"), None)
+                .unwrap()
+                .policy
+                .keep_score_threshold,
+            Some(0.4)
+        );
+        for value in ["nan", "inf", "-0.1", "1.1"] {
+            let cfg = parse(&format!("[policy]\nkeep_score_threshold = {value}")).unwrap();
+            assert!(cfg.resolve(Provider::Codex, "s", None, None).is_err());
+        }
     }
 }

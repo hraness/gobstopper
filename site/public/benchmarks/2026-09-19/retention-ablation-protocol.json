@@ -1,0 +1,45 @@
+{
+  "schema": "gobstopper-public-retention-ablation-protocol-v1",
+  "study_date": "2026-09-19",
+  "registered_at": "2026-09-19T17:21:44.099556+00:00",
+  "corpus": "All 114 previously frozen archived Codex roots: 73 high-context sessions and 41 below-trigger controls. Selection is unchanged from the archived-root cohort of the 729-session study.",
+  "selection_protocol": "protocol.json",
+  "strategy": "scored",
+  "variants": [
+    "baseline_disabled",
+    "candidate_disabled",
+    "cutoff_0.35",
+    "cutoff_0.5",
+    "cutoff_0.65"
+  ],
+  "policy": {
+    "trigger_tokens": 80000,
+    "floor_tokens": 40000,
+    "keep_recent_tool_outputs": 8,
+    "min_savings_tokens": 4096,
+    "adaptive": false
+  },
+  "scorer": "Deterministic offline heuristic; no local or remote model calls.",
+  "probe_cap": 64,
+  "hypothesis": "An optional keep-score cutoff may preserve more sampled source evidence at the cost of less reduction. Reaching the context target is not required if the cutoff protects remaining candidates.",
+  "analysis": {
+    "disabled_equivalence": "Compare baseline and candidate with no cutoff on all 114 inputs; ignore timings and rationale, but require matching plans and probe results.",
+    "paired_retention": "Compare each fixed cutoff with the disabled baseline on the same probes. Keep all high-context sessions in the denominator. When a cutoff produces no plan, leaving the source unchanged retains the baseline probes by construction; label these cases as derived.",
+    "controls": "All 41 below-trigger controls must remain no-ops under every variant. Controls have no reported literal-probe result.",
+    "failures": "Retain failures and no-plan cases in reporting; no numerical exclusions.",
+    "integrity": "Check each frozen input hash before and after evaluation and compare verifier severity/code counts.",
+    "default": "The cutoff is opt-in for scored only. Existing defaults remain unchanged."
+  },
+  "limitations": [
+    "The same 114 archived root sessions from one person and one Mac were replayed; this is not a new independent sample.",
+    "This development comparison reuses an already studied corpus. The original baseline was already known when the three cutoffs were registered before this run; this is not held-out or external validation.",
+    "All three cutoffs were registered before outcomes, but none is established as a tuned optimum on held-out tasks.",
+    "Literal matching is not semantic importance, correct continuation, task success or automatic recovery.",
+    "No provider continuation, billing, local model or remote model was evaluated; this is not a fast-jev-compaction comparison.",
+    "No-plan cases remain in reduction denominators as zero. For two high-context no-plan cases at cutoff 0.35, retention is derived from leaving the source unchanged, not measured on a rewrite.",
+    "The baseline and candidate use the corrected 64-probe cap. Probe totals differ from the original 729-session study; do not compare their retention ratios as a policy effect.",
+    "Structural severity/code counts did not increase; that does not establish safe provider resume.",
+    "Timing is descriptive under shared host load, not a latency benchmark.",
+    "Private transcripts, session identifiers, paths, per-session hashes, corpus manifests and per-session results are excluded; the exact private corpus cannot be independently replayed from this download."
+  ]
+}

@@ -1,5 +1,6 @@
 //! Scored: a relevance scorer ranks each elidable item by keep
-//! probability; the lowest-scoring items are elided until the floor.
+//! probability; the lowest-scoring items are elided toward the floor.
+//! An opt-in keep-score cutoff can protect candidates even above that target.
 //!
 //! Unlike position-ordered strategies, this can keep an important older
 //! result while dropping a more recent but irrelevant one inside the
@@ -316,14 +317,42 @@ impl ScoredStrategy {
         if before < policy.effective_trigger() {
             return None;
         }
-        let eligible = Self::candidates(transcript, policy);
+        let threshold = policy.keep_score_threshold;
+        if threshold.is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v)) {
+            return None;
+        }
+        let mut score_by_index = std::collections::HashMap::new();
+        for score in scores {
+            score_by_index
+                .entry(score.item_index)
+                .and_modify(|value| {
+                    // Ambiguous scorer output must not defeat retention.
+                    *value = if threshold.is_some() {
+                        f64::NAN
+                    } else {
+                        score.keep_probability
+                    };
+                })
+                .or_insert(score.keep_probability);
+        }
+        let mut eligible = Self::candidates(transcript, policy);
+        let eligible_before_retention = eligible.len();
+        if let Some(cutoff) = threshold {
+            eligible.retain(|idx| {
+                score_by_index.get(idx).is_some_and(|score| {
+                    score.is_finite() && (0.0..=1.0).contains(score) && *score < cutoff
+                })
+            });
+        }
+        let retained_by_score = eligible_before_retention - eligible.len();
         if eligible.is_empty() {
             return None;
         }
-        let score_by_index: std::collections::HashMap<usize, f64> = scores
-            .iter()
-            .map(|s| (s.item_index, s.keep_probability))
-            .collect();
+        let retention_note = threshold
+            .map(|cutoff| {
+                format!("; {retained_by_score} outputs protected by keep-score cutoff {cutoff}")
+            })
+            .unwrap_or_default();
 
         let target_savings = before.saturating_sub(policy.floor_tokens);
         let window_savings = target_savings.saturating_add(STATE_CARD_RESERVE_TOKENS);
@@ -391,7 +420,7 @@ impl ScoredStrategy {
                 return Some(CompactionPlan {
                     strategy: "scored".to_string(),
                     rationale: format!(
-                        "context {before} tokens exceeds trigger {}; eliding {} scored stale outputs, {} prefix records unchanged",
+                        "context {before} tokens exceeds trigger {}; eliding {} scored stale outputs, {} prefix records unchanged{retention_note}",
                         policy.trigger_tokens,
                         chosen.len(),
                         prefix_items
@@ -448,7 +477,7 @@ impl ScoredStrategy {
         Some(CompactionPlan {
             strategy: "scored".to_string(),
             rationale: format!(
-                "context {before} tokens exceeds trigger {}; eliding {} scored stale outputs, {} prefix records unchanged",
+                "context {before} tokens exceeds trigger {}; eliding {} scored stale outputs, {} prefix records unchanged{retention_note}",
                 policy.trigger_tokens,
                 chosen.len(),
                 prefix_items
@@ -534,6 +563,86 @@ mod tests {
             quota_pressure: QuotaPressure::Normal,
             ..Default::default()
         }
+    }
+
+    fn elided_lines(plan: &CompactionPlan) -> Vec<usize> {
+        plan.edits
+            .iter()
+            .flat_map(|edit| match edit {
+                Edit::Elide { line_indexes, .. } => line_indexes.clone(),
+                _ => Vec::new(),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn retention_cutoff_survives_unreachable_target_and_uncertain_scores() {
+        let t = transcript(
+            (0..10)
+                .map(|line| item(line, ItemKind::ToolResult, 1_000, true, "tool", None))
+                .collect(),
+            30_000,
+        );
+        let scores: Vec<_> = [
+            (0, 0.9),
+            (1, 0.1),
+            (3, f64::NAN),
+            (4, 0.9),
+            (4, 0.1),
+            (5, -0.1),
+            (6, 0.5),
+            (7, 0.49),
+        ]
+        .into_iter()
+        .map(|(item_index, keep_probability)| ScoredItem {
+            item_index,
+            keep_probability,
+        })
+        .collect();
+        // The previous/default budget-only policy exhausts all eight candidates.
+        let baseline = ScoredStrategy::scores_to_plan(&t, &policy(), &scores).unwrap();
+        assert_eq!(elided_lines(&baseline), (0..8).collect::<Vec<_>>());
+        let mut retained = policy();
+        retained.keep_score_threshold = Some(0.5);
+        let plan = ScoredStrategy::scores_to_plan(&t, &retained, &scores).unwrap();
+        assert_eq!(elided_lines(&plan), vec![1, 7]);
+        assert!(plan.context_tokens_after > retained.floor_tokens);
+        assert!(plan.rationale.contains("6 outputs protected"));
+        assert!(ScoredStrategy::scores_to_plan(&t, &retained, &[]).is_none());
+    }
+
+    #[test]
+    fn retention_cutoff_applies_when_the_remaining_window_can_reach_target() {
+        let t = transcript(
+            vec![
+                item(0, ItemKind::ToolResult, 30_000, true, "old noise", None),
+                item(1, ItemKind::ToolResult, 30_000, true, "important", None),
+            ],
+            60_000,
+        );
+        let mut p = policy();
+        p.floor_tokens = 40_000;
+        p.keep_recent_tool_outputs = 0;
+        p.keep_score_threshold = Some(0.5);
+        let scores = vec![
+            ScoredItem {
+                item_index: 0,
+                keep_probability: 0.1,
+            },
+            ScoredItem {
+                item_index: 1,
+                keep_probability: 0.9,
+            },
+        ];
+        let plan = ScoredStrategy::scores_to_plan(&t, &p, &scores).unwrap();
+        assert_eq!(elided_lines(&plan), vec![0]);
+        assert!(plan.context_tokens_after <= p.floor_tokens);
+        for invalid in [f64::NAN, f64::INFINITY, -0.1, 1.1] {
+            p.keep_score_threshold = Some(invalid);
+            assert!(ScoredStrategy::scores_to_plan(&t, &p, &scores).is_none());
+        }
+        p.keep_score_threshold = Some(0.0);
+        assert!(ScoredStrategy::scores_to_plan(&t, &p, &scores).is_none());
     }
 
     #[test]
