@@ -194,7 +194,11 @@ never reaches the keychain. Resolution order at scoring time is
 working from env alone. Linux kernel-keyring entries are session-scoped and
 do not survive a reboot; use an environment variable for persistent
 noninteractive Linux automation. On macOS, a self-built unsigned binary may
-show a one-time keychain access prompt on first read.
+show a one-time keychain access prompt on first read. Remote scorers require
+curl 8.3+: bearer credentials are imported from a child-only environment
+variable and expanded inside curl, never placed in process argv; Gobstopper
+also disables `.curlrc` for these calls so user defaults cannot enable verbose
+header logging.
 `GOBSTOPPER_JEV_CONTENT_BYTES` (default `0`, maximum `1024`) opts in to
 attaching bounded per-candidate content excerpts to each question — Jev is a
 remote API, so content only leaves the device when explicitly enabled. A
