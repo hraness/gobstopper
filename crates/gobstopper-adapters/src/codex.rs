@@ -4,10 +4,11 @@
 //!   `{"timestamp": ..., "ordinal": n, "type": ..., "payload": {...}}`
 //!
 //! Context-carrying records are `response_item` payloads (messages,
-//! function calls and outputs, reasoning). `token_usage_record` lines
-//! carry the provider's own accounting — `usage.input_tokens` of the last
-//! record approximates current context occupancy, and
-//! `thread_token_usage` is the cumulative quota burn.
+//! function calls and outputs, reasoning). Both `token_usage_record` and
+//! `event_msg`/`token_count` lines carry provider accounting. The latest
+//! request's input plus output approximates current context occupancy;
+//! thread/total usage supplies cumulative counters. `token_count.info`
+//! also advertises the active model's context window when available.
 
 use gobstopper_core::estimate::estimate_tokens;
 use gobstopper_core::model::{ItemKind, SessionHandle, TranscriptItem, UsageSample};
@@ -202,7 +203,7 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
             continue;
         };
         match record.get("type").and_then(Value::as_str) {
-            Some("token_usage_record") => absorb_usage(&record, &mut usage),
+            Some("token_usage_record" | "event_msg") => absorb_usage(&record, &mut usage),
             Some("response_item") => {
                 let payload = &record["payload"];
                 let ptype = payload.get("type").and_then(Value::as_str).unwrap_or("");
@@ -325,18 +326,38 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
 
 fn absorb_usage(record: &Value, sample: &mut UsageSample) {
     let payload = &record["payload"];
-    let get = |scope: &str, key: &str| -> u64 {
-        payload
-            .get(scope)
-            .and_then(|s| s.get(key))
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
+    let (last, total, window) = match record["type"].as_str() {
+        Some("token_usage_record") => (
+            &payload["usage"],
+            &payload["thread_token_usage"],
+            &payload["model_context_window"],
+        ),
+        Some("event_msg") if payload["type"].as_str() == Some("token_count") => {
+            let info = &payload["info"];
+            (
+                &info["last_token_usage"],
+                &info["total_token_usage"],
+                &info["model_context_window"],
+            )
+        }
+        _ => return,
     };
-    // `input_tokens` already includes the cached portion on this schema.
-    sample.context_tokens =
-        get("usage", "input_tokens").saturating_add(get("usage", "output_tokens"));
-    sample.lifetime_input_tokens = get("thread_token_usage", "input_tokens");
-    sample.lifetime_cached_tokens = get("thread_token_usage", "cached_input_tokens");
+    // Each dialect may appear for the same request, so replace cumulative
+    // counters instead of adding them. Cached input is already in input.
+    // Rate-limit-only token_count events have null info; missing fields must
+    // not erase the last known usage or provider-advertised window.
+    if let Some(input) = last["input_tokens"].as_u64() {
+        sample.context_tokens = input.saturating_add(last["output_tokens"].as_u64().unwrap_or(0));
+    }
+    if let Some(input) = total["input_tokens"].as_u64() {
+        sample.lifetime_input_tokens = input;
+    }
+    if let Some(cached) = total["cached_input_tokens"].as_u64() {
+        sample.lifetime_cached_tokens = cached;
+    }
+    if let Some(window) = window.as_u64().filter(|window| *window > 0) {
+        sample.model_context_window = Some(window);
+    }
 }
 
 /// Cheap usage pass for `detect`: read only the tail of the file.
@@ -344,7 +365,7 @@ pub fn scan_usage(path: &Path) -> UsageSample {
     let mut sample = UsageSample::default();
     for record in crate::tail_records(path, TAIL_SCAN_BYTES) {
         match record.get("type").and_then(Value::as_str) {
-            Some("token_usage_record") => absorb_usage(&record, &mut sample),
+            Some("token_usage_record" | "event_msg") => absorb_usage(&record, &mut sample),
             Some("compacted") => sample.context_tokens = 0,
             _ => {}
         }
@@ -591,4 +612,161 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
 
 pub fn provider() -> Provider {
     Provider::Codex
+}
+
+#[cfg(test)]
+mod usage_tests {
+    use super::*;
+    use serde_json::json;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    struct Scratch(PathBuf);
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+
+    fn assert_usage(records: &[Value], expected: UsageSample) {
+        let path = Scratch(std::env::temp_dir().join(format!(
+            "gob-codex-usage-{}-{}.jsonl",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        )));
+        let raw = records
+            .iter()
+            .map(Value::to_string)
+            .collect::<Vec<_>>()
+            .join("\n")
+            + "\n";
+        fs::write(&path.0, &raw).unwrap();
+        let handle = SessionHandle {
+            provider: Provider::Codex,
+            session_id: "usage-test".into(),
+            path: path.0.clone(),
+            cwd: None,
+            age_secs: 0,
+        };
+        for sample in [scan_usage(&path.0), load(handle).unwrap().usage] {
+            assert_eq!(sample.context_tokens, expected.context_tokens);
+            assert_eq!(sample.lifetime_input_tokens, expected.lifetime_input_tokens);
+            assert_eq!(
+                sample.lifetime_cached_tokens,
+                expected.lifetime_cached_tokens
+            );
+            assert_eq!(sample.model_context_window, expected.model_context_window);
+        }
+    }
+
+    fn token_count(info: Value) -> Value {
+        json!({"type": "event_msg", "payload": {"type": "token_count", "info": info}})
+    }
+
+    #[test]
+    fn current_token_count_uses_last_usage_for_context_and_total_for_lifetime() {
+        assert_usage(
+            &[token_count(json!({
+                "last_token_usage": {"input_tokens": 82620, "cached_input_tokens": 75776, "output_tokens": 130, "total_tokens": 82750},
+                "total_token_usage": {"input_tokens": 647640, "cached_input_tokens": 583680, "output_tokens": 2420, "total_tokens": 650060},
+                "model_context_window": 258400
+            }))],
+            UsageSample {
+                context_tokens: 82750,
+                lifetime_input_tokens: 647640,
+                lifetime_cached_tokens: 583680,
+                model_context_window: Some(258400),
+            },
+        );
+    }
+
+    #[test]
+    fn mixed_usage_dialects_preserve_window_without_double_counting() {
+        assert_usage(
+            &[
+                token_count(json!({
+                    "last_token_usage": {"input_tokens": 1000, "output_tokens": 100},
+                    "total_token_usage": {"input_tokens": 5000, "cached_input_tokens": 4000},
+                    "model_context_window": 258400
+                })),
+                json!({"type": "token_usage_record", "payload": {
+                    "usage": {"input_tokens": 2000, "output_tokens": 200},
+                    "thread_token_usage": {"input_tokens": 7000, "cached_input_tokens": 5500}
+                }}),
+                token_count(json!({
+                    "last_token_usage": {"input_tokens": 2000, "output_tokens": 200},
+                    "total_token_usage": {"input_tokens": 7000, "cached_input_tokens": 5500},
+                    "model_context_window": null
+                })),
+                token_count(Value::Null),
+                json!({"type": "event_msg", "payload": {"type": "task_complete"}}),
+            ],
+            UsageSample {
+                context_tokens: 2200,
+                lifetime_input_tokens: 7000,
+                lifetime_cached_tokens: 5500,
+                model_context_window: Some(258400),
+            },
+        );
+    }
+
+    #[test]
+    fn legacy_usage_without_window_remains_unknown() {
+        assert_usage(
+            &[json!({"type": "token_usage_record", "payload": {
+                "usage": {"input_tokens": 2000, "output_tokens": 200},
+                "thread_token_usage": {"input_tokens": 7000, "cached_input_tokens": 5500}
+            }})],
+            UsageSample {
+                context_tokens: 2200,
+                lifetime_input_tokens: 7000,
+                lifetime_cached_tokens: 5500,
+                model_context_window: None,
+            },
+        );
+    }
+
+    #[test]
+    fn compaction_clears_stale_context_but_retains_accounting_and_window() {
+        assert_usage(
+            &[
+                token_count(json!({
+                    "last_token_usage": {"input_tokens": 2000, "output_tokens": 200},
+                    "total_token_usage": {"input_tokens": 7000, "cached_input_tokens": 5500},
+                    "model_context_window": 258400
+                })),
+                json!({"type": "compacted", "payload": {"replacement_history": []}}),
+                token_count(Value::Null),
+            ],
+            UsageSample {
+                context_tokens: 0,
+                lifetime_input_tokens: 7000,
+                lifetime_cached_tokens: 5500,
+                model_context_window: Some(258400),
+            },
+        );
+    }
+
+    #[test]
+    fn newest_valid_window_wins_and_missing_counters_do_not_erase_usage() {
+        assert_usage(
+            &[
+                token_count(json!({
+                    "last_token_usage": {"input_tokens": 2000, "output_tokens": 200},
+                    "total_token_usage": {"input_tokens": 7000, "cached_input_tokens": 5500},
+                    "model_context_window": 258400
+                })),
+                token_count(json!({"model_context_window": 1000000})),
+                token_count(json!({"model_context_window": 0})),
+            ],
+            UsageSample {
+                context_tokens: 2200,
+                lifetime_input_tokens: 7000,
+                lifetime_cached_tokens: 5500,
+                model_context_window: Some(1000000),
+            },
+        );
+    }
 }
