@@ -203,8 +203,35 @@ fn run_on_copy(
     let post_text = String::from_utf8_lossy(&bytes);
     let score = score_probes(probes, &post_text, tail_start_line);
     let semantic = judge.and_then(|j| {
-        j.score(probes, &post_text)
-            .map(|probs| score_from_probabilities(probes, &probs, tail_start_line))
+        let missed: Vec<(usize, Probe)> = probes
+            .iter()
+            .enumerate()
+            .filter(|(_, probe)| !post_text.contains(&probe.text))
+            .map(|(index, probe)| (index, probe.clone()))
+            .collect();
+        if missed.is_empty() {
+            return Some(score.clone());
+        }
+        let missed_probes: Vec<Probe> = missed.iter().map(|(_, probe)| probe.clone()).collect();
+        let judged = j.score(&missed_probes, &post_text)?;
+        let mut probabilities: Vec<f64> = probes
+            .iter()
+            .map(|probe| {
+                if post_text.contains(&probe.text) {
+                    1.0
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        for ((index, _), probability) in missed.iter().zip(judged) {
+            probabilities[*index] = probability;
+        }
+        Some(score_from_probabilities(
+            probes,
+            &probabilities,
+            tail_start_line,
+        ))
     });
     Ok((duration_ms, findings, score, semantic))
 }
@@ -694,10 +721,15 @@ mod tests {
     }
 
     /// Judge that reports every probe as surviving.
-    struct AllSurviveJudge;
+    struct AllSurviveJudge {
+        calls: AtomicUsize,
+        probes_seen: AtomicUsize,
+    }
 
     impl ProbeJudge for AllSurviveJudge {
         fn score(&self, probes: &[Probe], _post_text: &str) -> Option<Vec<f64>> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            self.probes_seen.store(probes.len(), Ordering::Relaxed);
             Some(vec![1.0; probes.len()])
         }
     }
@@ -710,7 +742,10 @@ mod tests {
         let driver = KeepAllDriver {
             calls: AtomicUsize::new(0),
         };
-        let judge = AllSurviveJudge;
+        let judge = AllSurviveJudge {
+            calls: AtomicUsize::new(0),
+            probes_seen: AtomicUsize::new(0),
+        };
         let hooks = EvalHooks {
             scorer: Some(&driver),
             probe_judge: Some(&judge),
@@ -738,12 +773,53 @@ mod tests {
             .as_ref()
             .expect("judge produced a semantic score");
         assert_eq!(semantic.recall, 1.0);
+        let verbatim = scored.probe_score.as_ref().unwrap();
+        assert_eq!(semantic.probes_total, verbatim.probes_total);
+        assert_eq!(judge.calls.load(Ordering::Relaxed), 1);
         assert_eq!(
-            semantic.probes_total,
-            scored.probe_score.as_ref().unwrap().probes_total
+            judge.probes_seen.load(Ordering::Relaxed),
+            verbatim.probes_total - verbatim.probes_recalled
         );
         // And the verbatim score still shows real losses — the two
         // scores measure different things.
-        assert!(scored.probe_score.as_ref().unwrap().recall < 1.0);
+        assert!(verbatim.recall < 1.0);
+        assert!(semantic.recall >= verbatim.recall);
+    }
+
+    #[test]
+    fn semantic_judge_skips_verbatim_survivors() {
+        let _guard = EVAL_LOCK.lock().unwrap();
+        let dir = TestDir::new();
+        let src = write_probe_transcript(&dir.0);
+        let source = fs::read_to_string(&src).unwrap();
+        let probes = extract_probes(&source);
+        let plan = CompactionPlan {
+            strategy: "test".into(),
+            rationale: "test".into(),
+            edits: vec![Edit::InjectDigest {
+                digest: gobstopper_core::plan::DigestBlock::default(),
+            }],
+            context_tokens_before: 1,
+            context_tokens_after: 1,
+        };
+        let judge = AllSurviveJudge {
+            calls: AtomicUsize::new(0),
+            probes_seen: AtomicUsize::new(0),
+        };
+        let tmp = dir.0.join("semantic-intact.jsonl");
+        let (_, _, verbatim, semantic) = run_on_copy(
+            Provider::ClaudeCode,
+            &src,
+            &tmp,
+            &plan,
+            &probes,
+            usize::MAX,
+            Some(&judge),
+        )
+        .unwrap();
+        assert_eq!(verbatim.recall, 1.0);
+        assert_eq!(semantic.unwrap().recall, 1.0);
+        assert_eq!(judge.calls.load(Ordering::Relaxed), 0);
+        assert_eq!(judge.probes_seen.load(Ordering::Relaxed), 0);
     }
 }

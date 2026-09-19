@@ -202,13 +202,15 @@ content only leaves the device when explicitly enabled.
 `eval` and `bench` now honor `GOBSTOPPER_SCORER` for their `scored` row, so
 an A/B run measures the same Jev or Apple ranking used by `plan` rather than
 silently substituting the heuristic. `GOBSTOPPER_EVAL_JUDGE=jev` adds a
-separate semantic recall score to `eval`: up to 64 extracted facts are asked
-as typed `noul` questions against at most 100,000 bytes of the rewritten
-transcript (bounded head + tail), crediting facts preserved as paraphrase in
-a state card or per-item stub. The judge is off by default because it sends
-that bounded rewritten context to the remote API; failures simply omit the
-semantic score, while deterministic verbatim probe recall still runs.
-Restricting the run to `--strategy scored` uses one judge request:
+separate semantic recall score to `eval`. Verbatim survivors are credited
+locally; only up to 64 facts absent from the rewritten file become typed
+`noul` questions. They are judged against at most 100,000 bytes of bounded
+compaction evidence (state cards, elision stubs, and short tool records, with
+a head+tail fallback), so semantic recall cannot be lower than verbatim
+recall and an intact rewrite costs no judge request. The judge is off by
+default because missed-fact evaluation sends that bounded evidence to the
+remote API; failures simply omit the semantic score. Restricting the run to
+`--strategy scored` uses at most one judge request:
 
 ```sh
 GOBSTOPPER_SCORER=jev GOBSTOPPER_EVAL_JUDGE=jev \
@@ -219,9 +221,12 @@ Gobstopper reads the official `answers.<id>.noul` probability returned by
 System One, while retaining bounded compatibility fallbacks for older response
 shapes. A missing or malformed scorer response makes the whole chunk neutral
 at `0.5`; semantic eval omits its model score instead of crediting unknown
-facts. The eval harness now makes a post-parser Jev-versus-heuristic quality
-trial possible, but no ranking-quality win is claimed until that live
-comparison is rerun.
+facts. In one post-fix 80k-token A/B run, Jev chose five smaller records where
+the heuristic chose four larger ones, reclaimed about 649 more tokens, and
+both retained all 38 extracted probes. At a more aggressive floor, one probe
+lost verbatim was not falsely credited by the semantic judge (37/38 on both
+scores). This is single-session qualification, not a general ranking-quality
+claim.
 
 Successful Jev responses are cached in-process for five minutes, keyed by
 endpoint, credential identity, and the exact serialized request. This keeps
