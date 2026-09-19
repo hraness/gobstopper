@@ -2449,7 +2449,9 @@ fn cmd_watch(
                             started.elapsed().as_millis() as u64,
                             None,
                         );
-                        eprintln!("deferred {}: native compaction requires the session owner; source unchanged", d.handle.session_id);
+                        eprintln!(
+                            "deferred native compaction: session owner required; source unchanged"
+                        );
                         continue;
                     }
                     let r = copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root())
