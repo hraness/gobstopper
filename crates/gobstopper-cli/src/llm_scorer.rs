@@ -19,6 +19,7 @@ use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Command;
+use std::sync::Mutex;
 use std::time::Instant;
 
 use gobstopper_core::{HeuristicScorer, ScoreDriver, ScoredItem, Transcript};
@@ -115,11 +116,18 @@ struct ScoreResponse {
 
 pub struct LlmScorer {
     cfg: LlmConfig,
+    /// One-line summary of the most recent `score` pass, surfaced via
+    /// `ScoreDriver::last_run_summary` so plan rationale and compaction
+    /// events carry the request-economy numbers.
+    last_summary: Mutex<Option<String>>,
 }
 
 impl LlmScorer {
     pub fn new(cfg: LlmConfig) -> Self {
-        Self { cfg }
+        Self {
+            cfg,
+            last_summary: Mutex::new(None),
+        }
     }
 }
 
@@ -205,6 +213,56 @@ pub(crate) fn overlay_answers(
     overlaid
 }
 
+/// The line content minus the `[local] ` bracket the prompt embeds as
+/// the answer id. The bracket is the only difference between lines from
+/// repeated identical tool outputs, so the body is the dedup key.
+pub(crate) fn line_body(local: usize, text: &str) -> &str {
+    text.strip_prefix(&format!("[{local}] ")).unwrap_or(text)
+}
+
+/// Group scoring inputs by identical line content, keeping
+/// first-occurrence order so chunking stays deterministic. Each entry
+/// is `(representative_position, member_locals)`: only the
+/// representative's line — carrying its own bracketed local id — goes
+/// into the prompt, and its score fans out to every member local.
+pub(crate) fn unique_lines(inputs: &[(usize, usize, String)]) -> Vec<(usize, Vec<usize>)> {
+    let mut uniques: Vec<(usize, Vec<usize>)> = Vec::new();
+    let mut seen: HashMap<&str, usize> = HashMap::new();
+    for (position, (local, _, text)) in inputs.iter().enumerate() {
+        let key = line_body(*local, text);
+        if let Some(&u) = seen.get(key) {
+            uniques[u].1.push(*local);
+        } else {
+            seen.insert(key, uniques.len());
+            uniques.push((position, vec![*local]));
+        }
+    }
+    uniques
+}
+
+/// Fan a batch's answers out to member locals. The model's `id` is the
+/// representative's bracketed local; every candidate that produced an
+/// identical line receives the same probability. Ids matching no
+/// representative (an id the prompt never listed) are dropped.
+pub(crate) fn fan_out_answers(
+    inputs: &[(usize, usize, String)],
+    uniques: &[(usize, Vec<usize>)],
+    answered: &[(usize, f64)],
+) -> Vec<(usize, f64)> {
+    let representative: HashMap<usize, usize> = uniques
+        .iter()
+        .enumerate()
+        .map(|(u, &(position, _))| (inputs[position].0, u))
+        .collect();
+    let mut out = Vec::new();
+    for &(id, probability) in answered {
+        if let Some(&u) = representative.get(&id) {
+            out.extend(uniques[u].1.iter().map(|&local| (local, probability)));
+        }
+    }
+    out
+}
+
 impl ScoreDriver for LlmScorer {
     fn score(&self, transcript: &Transcript, candidates: &[usize]) -> Vec<ScoredItem> {
         if candidates.is_empty() {
@@ -217,6 +275,7 @@ impl ScoreDriver for LlmScorer {
         let started = Instant::now();
         let ctx = scoring_context(transcript, candidates, self.cfg.max_candidates);
         let inputs = ctx.inputs;
+        let mut unique = 0usize;
         let mut calls = 0usize;
         let mut overlaid = 0usize;
         let mut failed = 0usize;
@@ -224,19 +283,29 @@ impl ScoreDriver for LlmScorer {
         if !inputs.is_empty() {
             let goal = ctx.goal;
             let tail = ctx.tail;
-            let mut all_scores = Vec::new();
-            let chunks: Vec<&[(usize, usize, String)]> = inputs
+            // Repeated tool outputs produce identical lines: send each
+            // unique line once and fan the answer out to every member
+            // local. `max_batches` caps unique-line batches.
+            let uniques = unique_lines(&inputs);
+            unique = uniques.len();
+            let batches: Vec<Vec<(usize, usize, String)>> = uniques
                 .chunks(self.cfg.batch_size.max(1))
                 .take(self.cfg.max_batches)
+                .map(|chunk| {
+                    chunk
+                        .iter()
+                        .map(|&(position, _)| inputs[position].clone())
+                        .collect()
+                })
                 .collect();
-            calls = chunks.len();
+            calls = batches.len();
+            let mut all_scores = Vec::new();
             std::thread::scope(|s| {
-                let mut handles = Vec::with_capacity(chunks.len());
-                for chunk in chunks {
+                let mut handles = Vec::with_capacity(batches.len());
+                for batch in batches {
                     let cfg = self.cfg.clone();
                     let goal = goal.clone();
                     let tail = tail.clone();
-                    let batch = chunk.to_vec();
                     handles.push(s.spawn(move || score_batch(&cfg, &goal, &tail, &batch)));
                 }
                 for h in handles {
@@ -254,18 +323,27 @@ impl ScoreDriver for LlmScorer {
                 }
             });
 
-            let answers: Vec<(usize, f64)> = all_scores
+            let answered: Vec<(usize, f64)> = all_scores
                 .iter()
                 .map(|s| (s.id, s.keep_probability))
                 .collect();
+            let answers = fan_out_answers(&inputs, &uniques, &answered);
             overlaid = overlay_answers(&mut results, candidates, &answers);
         }
-        eprintln!(
-            "llm: {} candidates in {calls} batch call(s), {overlaid} items overlaid, {failed} failed, {}ms",
+        let summary = format!(
+            "llm: {} candidates → {unique} unique lines in {calls} batch call(s), {overlaid} items overlaid, {failed} failed, {}ms",
             inputs.len(),
             started.elapsed().as_millis()
         );
+        eprintln!("{summary}");
+        if let Ok(mut slot) = self.last_summary.lock() {
+            *slot = Some(summary);
+        }
         results
+    }
+
+    fn last_run_summary(&self) -> Option<String> {
+        self.last_summary.lock().ok().and_then(|slot| slot.clone())
     }
 }
 
@@ -393,6 +471,50 @@ mod tests {
             item_index,
             keep_probability,
         }
+    }
+
+    fn input(local: usize, item_index: usize, text: &str) -> (usize, usize, String) {
+        (local, item_index, text.to_string())
+    }
+
+    #[test]
+    fn line_body_strips_only_the_own_bracket_prefix() {
+        assert_eq!(line_body(2, "[2] exec = ok"), "exec = ok");
+        // A bracket belonging to another local is content, not a prefix.
+        assert_eq!(line_body(1, "[0] exec = ok"), "[0] exec = ok");
+        assert_eq!(line_body(0, "no bracket"), "no bracket");
+    }
+
+    #[test]
+    fn unique_lines_groups_identical_bodies_in_first_occurrence_order() {
+        let inputs = vec![
+            input(0, 10, "[0] exec = cargo test: pass"),
+            input(1, 11, "[1] exec = cargo build: ok"),
+            input(2, 12, "[2] exec = cargo test: pass"),
+            input(3, 13, "[3] exec = cargo test: pass"),
+        ];
+        let uniques = unique_lines(&inputs);
+        // One unique line per distinct text body; the bracketed local id
+        // differs per line and never prevents the dedup.
+        assert_eq!(uniques.len(), 2);
+        assert_eq!(uniques[0], (0, vec![0, 2, 3]));
+        assert_eq!(uniques[1], (1, vec![1]));
+        // The representative's line keeps its own bracketed id.
+        assert_eq!(inputs[uniques[0].0].2, "[0] exec = cargo test: pass");
+    }
+
+    #[test]
+    fn fan_out_spreads_representative_answer_to_member_locals() {
+        let inputs = vec![
+            input(0, 10, "[0] exec = cargo test: pass"),
+            input(1, 11, "[1] exec = cargo build: ok"),
+            input(2, 12, "[2] exec = cargo test: pass"),
+            input(3, 13, "[3] exec = cargo test: pass"),
+        ];
+        let uniques = unique_lines(&inputs);
+        let out = fan_out_answers(&inputs, &uniques, &[(0, 0.9), (1, 0.2), (99, 0.5)]);
+        // The rep's score reaches every member; the unknown id 99 drops.
+        assert_eq!(out, vec![(0, 0.9), (2, 0.9), (3, 0.9), (1, 0.2)]);
     }
 
     #[test]
