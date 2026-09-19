@@ -3010,8 +3010,8 @@ done
         let dir = tempdir("failed");
         let stub = stub_codex(&dir);
         let err = codex_compact(&stub, "fail-thread", None).unwrap_err();
-        assert!(err.to_string().contains("failed"), "got: {err}");
-        assert!(err.to_string().contains("usage limit"), "got: {err}");
+        assert!(err.to_string().contains("failed"), "got: {err:#}");
+        assert!(err.to_string().contains("usage limit"), "got: {err:#}");
         let _ = fs::remove_dir_all(&dir);
     }
 
@@ -3020,9 +3020,9 @@ done
         let dir = tempdir("err");
         let stub = stub_codex(&dir);
         let err = codex_compact(&stub, "bad-resume", None).unwrap_err();
-        assert!(err.to_string().contains("cannot resume"), "got: {err}");
+        assert!(err.to_string().contains("cannot resume"), "got: {err:#}");
         let err = codex_compact(&stub, "error-thread", None).unwrap_err();
-        assert!(err.to_string().contains("thread not found"), "got: {err}");
+        assert!(err.to_string().contains("thread not found"), "got: {err:#}");
         let _ = fs::remove_dir_all(&dir);
     }
 
