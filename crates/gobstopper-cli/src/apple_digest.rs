@@ -16,12 +16,12 @@
 //!
 //! Configuration (all optional, defaults listed):
 //!   GOBSTOPPER_DIGEST                - "apple" enables; unset = mechanical
-//!   GOBSTOPPER_APPLE_DIGEST_ITEMS    - 8 (max elided records excerpted)
-//!   GOBSTOPPER_APPLE_DIGEST_ITEM_BYTES  - 500 (per-record excerpt cap)
+//!   GOBSTOPPER_APPLE_DIGEST_ITEMS    - 8 (0..32 elided records)
+//!   GOBSTOPPER_APPLE_DIGEST_ITEM_BYTES  - 500 (0..2048 per record)
 //!   GOBSTOPPER_APPLE_CACHE         - set to 0 to disable the shared
 //!     prompt→response cache (watch re-evals an unchanged transcript
 //!     each poll; cached responses make those re-evals free)
-//!   GOBSTOPPER_APPLE_DIGEST_TOTAL_BYTES - 4000 (prompt excerpt budget;
+//!   GOBSTOPPER_APPLE_DIGEST_TOTAL_BYTES - 4000 (0..16000 prompt bytes;
 //!     raw JSONL tokenizes at ~2-3 chars/token and the on-device context
 //!     window is ~4k tokens, so excerpts, goal/tail, instructions, and the
 //!     guided schema together stay near ~2.5k tokens)
@@ -38,6 +38,9 @@ use crate::{apple, llm_scorer};
 
 const MAX_FIELD_ITEMS: usize = 8;
 const MAX_FIELD_CHARS: usize = 300;
+const MAX_DIGEST_ITEMS: usize = 32;
+const MAX_DIGEST_ITEM_BYTES: usize = 2_048;
+const MAX_DIGEST_TOTAL_BYTES: usize = 16_000;
 
 const DIGEST_SCHEMA: &str = r#"{"type":"object","properties":{"digest":{"type":"object","properties":{"summary":{"type":"string"},"concepts":{"type":"array","items":{"type":"string"}},"files_touched":{"type":"array","items":{"type":"string"}},"decisions":{"type":"array","items":{"type":"string"}},"errors":{"type":"array","items":{"type":"string"}},"open_tasks":{"type":"array","items":{"type":"string"}},"current_work":{"type":"string"}}},"stubs":{"type":"array","items":{"type":"object","properties":{"id":{"type":"integer"},"stub":{"type":"string"}},"required":["id","stub"]}}},"required":["digest","stubs"]}"#;
 
@@ -179,15 +182,32 @@ fn stub_residual_tokens(
     }
 }
 
+fn digest_input_bounds(
+    max_items: usize,
+    item_bytes: usize,
+    total_bytes: usize,
+) -> (usize, usize, usize) {
+    (
+        max_items.min(MAX_DIGEST_ITEMS),
+        item_bytes.min(MAX_DIGEST_ITEM_BYTES),
+        total_bytes.min(MAX_DIGEST_TOTAL_BYTES),
+    )
+}
+
 fn write_card(
     bridge: &apple_foundation::Bridge,
     transcript: &Transcript,
     digest: &mut DigestBlock,
     elided: &HashSet<usize>,
 ) -> anyhow::Result<(bool, std::collections::BTreeMap<usize, String>)> {
-    let max_items = env_usize("GOBSTOPPER_APPLE_DIGEST_ITEMS", 8);
-    let item_bytes = env_usize("GOBSTOPPER_APPLE_DIGEST_ITEM_BYTES", 500);
-    let total_bytes = env_usize("GOBSTOPPER_APPLE_DIGEST_TOTAL_BYTES", 4_000);
+    let (max_items, item_bytes, total_bytes) = digest_input_bounds(
+        env_usize("GOBSTOPPER_APPLE_DIGEST_ITEMS", 8),
+        env_usize("GOBSTOPPER_APPLE_DIGEST_ITEM_BYTES", 500),
+        env_usize("GOBSTOPPER_APPLE_DIGEST_TOTAL_BYTES", 4_000),
+    );
+    if max_items == 0 || item_bytes == 0 || total_bytes == 0 {
+        return Ok((false, Default::default()));
+    }
 
     let by_line: HashMap<usize, &gobstopper_core::model::TranscriptItem> =
         transcript.items.iter().map(|i| (i.line_index, i)).collect();
@@ -378,6 +398,19 @@ fn env_usize(name: &str, default: usize) -> usize {
 mod tests {
     use super::*;
     use crate::apple::excerpt;
+
+    #[test]
+    fn digest_input_geometry_is_bounded_and_zero_preserving() {
+        assert_eq!(
+            digest_input_bounds(usize::MAX, usize::MAX, usize::MAX),
+            (
+                MAX_DIGEST_ITEMS,
+                MAX_DIGEST_ITEM_BYTES,
+                MAX_DIGEST_TOTAL_BYTES
+            )
+        );
+        assert_eq!(digest_input_bounds(0, 0, 0), (0, 0, 0));
+    }
 
     #[test]
     fn excerpt_windows_head_and_tail() {

@@ -173,8 +173,10 @@ point gobstopper at them with `--codex-home` / `--claude-home`.
 external scoring is opt-in with `GOBSTOPPER_SCORER=llm`,
 `GOBSTOPPER_SCORER=jev`, or `GOBSTOPPER_SCORER=apple`; merely setting an API
 key never sends data. External scorers receive bounded labels and summaries,
-not full tool payloads, and fail closed to deterministic heuristic or neutral
-scores. The built-in heuristic is the recommended published path because
+not full tool payloads, and retain deterministic heuristic scores whenever a
+model omits an answer or a request fails. Hosted LLM settings are hard-capped
+at 256 candidates, 64 items per batch, 16 batches, and a 100–30,000 ms
+timeout. The built-in heuristic remains the recommended published path because
 current live trials did not show a better plan from the LLM scorer.
 
 `GOBSTOPPER_SCORER=jev` scores with TypeSafe's System One API — typed
@@ -280,12 +282,16 @@ Apple Intelligence Foundation Models via the shared `apple-foundation`
 bridge — free, private, no API key. The bridge auto-builds to
 `~/.local/share/gobstopper/apple-bridge` on first use (or set
 `GOBSTOPPER_APPLE_BRIDGE`), requests queue through one persistent process
-with guided JSON output, and any failure degrades to neutral scores.
+with guided JSON output, and any failure retains heuristic scores.
 `GOBSTOPPER_APPLE_TIMEOUT_MS`, `_MAX_CANDIDATES`, `_BATCH_SIZE`, and
-`_MAX_BATCHES` tune it. Since inference is local, the scorer also reads a
-bounded excerpt of each candidate record (`GOBSTOPPER_APPLE_CONTENT_BYTES`,
-default 400; `0` restores labels-only scoring) and shrinks its default
-batch sizes to fit the ~4k-token context window.
+`_MAX_BATCHES` tune it, hard-capped at 100–600,000 ms, 256 candidates, 64
+labels-only items per batch (8 with content), and 16 batches. Since inference
+is local, the scorer also reads a bounded excerpt of each candidate record
+(`GOBSTOPPER_APPLE_CONTENT_BYTES`, default and maximum 400; `0` restores
+labels-only scoring) and shrinks its default batch sizes to fit the ~4k-token
+context window. Each batch's guided schema contains one required `p_<id>` field
+per candidate, so omitted or duplicate array IDs cannot silently distort the
+ranking; a malformed batch retains its heuristic scores.
 
 `GOBSTOPPER_DIGEST=apple` goes further: the injected state card is written
 by the on-device model instead of keyword extraction. Because inference is
@@ -294,7 +300,8 @@ labels-only boundary only exists for remote endpoints. Each field still
 lands in the same `DigestBlock` shape via guided output, capped to a small
 token overhead, and falls back to the mechanical card on any failure.
 `GOBSTOPPER_APPLE_DIGEST_ITEMS`, `_ITEM_BYTES`, and `_TOTAL_BYTES` tune the
-excerpt budget, which defaults are sized to the model's ~4k-token window.
+excerpt budget, hard-capped at 32 records, 2,048 bytes per record, and 16,000
+bytes total; zero disables the model digest and preserves the mechanical card.
 
 The same call also writes a one-line stub per excerpted record — e.g.
 `Script completed Wall time 4.4 seconds` — stored in the elide edit's

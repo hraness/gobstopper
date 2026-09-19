@@ -21,16 +21,16 @@
 //!   GOBSTOPPER_APPLE_BRIDGE      - env → sibling of the gobstopper binary →
 //!                                  ~/.local/share/gobstopper/apple-bridge
 //!                                  (auto-built via swiftc when absent)
-//!   GOBSTOPPER_APPLE_TIMEOUT_MS  - 180000 (first request pays model warm-up)
-//!   GOBSTOPPER_APPLE_MAX_CANDIDATES - 64
-//!   GOBSTOPPER_APPLE_BATCH_SIZE  - 32 (8 when content excerpts are on)
-//!   GOBSTOPPER_APPLE_MAX_BATCHES - 4 (8 when content excerpts are on)
+//!   GOBSTOPPER_APPLE_TIMEOUT_MS  - 180000 (100..600000; first request warms)
+//!   GOBSTOPPER_APPLE_MAX_CANDIDATES - 64 (0..256)
+//!   GOBSTOPPER_APPLE_BATCH_SIZE  - 32 (1..64; max 8 with content)
+//!   GOBSTOPPER_APPLE_MAX_BATCHES - 4 (0..16; default 8 with content)
 //!   GOBSTOPPER_APPLE_CACHE         - set to 0 to disable the shared
 //!     prompt→response cache (identical batches under watch re-evals
 //!     cost zero model calls)
-//!   GOBSTOPPER_APPLE_CONTENT_BYTES - 400 per candidate (0 = labels only;
-//!     on-device inference lifts the labels-only boundary remote scorers
-//!     need, so candidates include bounded payload excerpts by default)
+//!   GOBSTOPPER_APPLE_CONTENT_BYTES - 400 per candidate (0 = labels only,
+//!     maximum 400; on-device inference lifts the labels-only boundary
+//!     remote scorers need, so candidates include bounded excerpts by default)
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -40,6 +40,12 @@ use gobstopper_core::{HeuristicScorer, ScoreDriver, ScoredItem, Transcript};
 use serde_json::Value;
 
 use crate::{apple, llm_scorer};
+
+const MAX_CANDIDATES: usize = 256;
+const MAX_BATCH_SIZE: usize = 64;
+const MAX_CONTENT_BATCH_SIZE: usize = 8;
+const MAX_BATCHES: usize = 16;
+const MAX_CONTENT_BYTES: usize = 400;
 
 #[derive(Debug, Clone)]
 pub struct AppleConfig {
@@ -61,24 +67,39 @@ impl AppleConfig {
             return None;
         }
         let content_bytes = env_usize("GOBSTOPPER_APPLE_CONTENT_BYTES", 400);
-        Some(Self {
-            bridge,
-            timeout_ms: apple::timeout_ms(),
-            max_candidates: env_usize("GOBSTOPPER_APPLE_MAX_CANDIDATES", 64),
-            batch_size: env_usize(
-                "GOBSTOPPER_APPLE_BATCH_SIZE",
-                if content_bytes > 0 { 8 } else { 32 },
-            ),
-            max_batches: env_usize(
-                "GOBSTOPPER_APPLE_MAX_BATCHES",
-                if content_bytes > 0 { 8 } else { 4 },
-            ),
-            content_bytes,
-        })
+        Some(
+            Self {
+                bridge,
+                timeout_ms: apple::timeout_ms(),
+                max_candidates: env_usize("GOBSTOPPER_APPLE_MAX_CANDIDATES", 64),
+                batch_size: env_usize(
+                    "GOBSTOPPER_APPLE_BATCH_SIZE",
+                    if content_bytes > 0 { 8 } else { 32 },
+                ),
+                max_batches: env_usize(
+                    "GOBSTOPPER_APPLE_MAX_BATCHES",
+                    if content_bytes > 0 { 8 } else { 4 },
+                ),
+                content_bytes,
+            }
+            .bounded(),
+        )
+    }
+
+    fn bounded(mut self) -> Self {
+        self.timeout_ms = self.timeout_ms.clamp(100, 600_000);
+        self.max_candidates = self.max_candidates.min(MAX_CANDIDATES);
+        self.content_bytes = self.content_bytes.min(MAX_CONTENT_BYTES);
+        let max_batch = if self.content_bytes > 0 {
+            MAX_CONTENT_BATCH_SIZE
+        } else {
+            MAX_BATCH_SIZE
+        };
+        self.batch_size = self.batch_size.clamp(1, max_batch);
+        self.max_batches = self.max_batches.min(MAX_BATCHES);
+        self
     }
 }
-
-const SCORES_SCHEMA: &str = r#"{"type":"object","properties":{"scores":{"type":"array","items":{"type":"object","properties":{"id":{"type":"integer"},"keep_probability":{"type":"number"}},"required":["id","keep_probability"]}}},"required":["scores"]}"#;
 
 pub struct AppleScorer {
     cfg: AppleConfig,
@@ -91,7 +112,7 @@ pub struct AppleScorer {
 impl AppleScorer {
     pub fn new(cfg: AppleConfig) -> Self {
         Self {
-            cfg,
+            cfg: cfg.bounded(),
             last_summary: Mutex::new(None),
         }
     }
@@ -160,7 +181,6 @@ impl ScoreDriver for AppleScorer {
             // local. `max_batches` caps unique-line batches.
             let uniques = llm_scorer::unique_lines(&inputs);
             unique = uniques.len();
-            let schema: Value = serde_json::from_str(SCORES_SCHEMA).unwrap();
             let mut answers: Vec<(usize, f64)> = Vec::new();
             for chunk in uniques
                 .chunks(self.cfg.batch_size.max(1))
@@ -170,25 +190,23 @@ impl ScoreDriver for AppleScorer {
                     .iter()
                     .map(|&(position, _)| inputs[position].clone())
                     .collect();
-                match score_batch(
+                let schema = score_schema(&batch);
+                let attempt = score_batch(
                     bridge,
                     &ctx.goal,
                     &ctx.tail,
                     &batch,
                     &schema,
                     self.cfg.content_bytes > 0,
-                ) {
+                );
+                if attempt.cached {
+                    cached += 1;
+                } else {
+                    generated += 1;
+                }
+                match attempt.answers {
                     Ok(scores) => {
-                        if scores.cached {
-                            cached += 1;
-                        } else {
-                            generated += 1;
-                        }
-                        answers.extend(llm_scorer::fan_out_answers(
-                            &inputs,
-                            &uniques,
-                            &scores.answers,
-                        ));
+                        answers.extend(llm_scorer::fan_out_answers(&inputs, &uniques, &scores))
                     }
                     Err(e) => {
                         failed += 1;
@@ -214,8 +232,50 @@ impl ScoreDriver for AppleScorer {
     }
 }
 
-struct BatchScores {
-    answers: Vec<(usize, f64)>,
+fn score_schema(batch: &[(usize, usize, String)]) -> Value {
+    let properties: serde_json::Map<String, Value> = batch
+        .iter()
+        .map(|(local, _, _)| (format!("p_{local}"), serde_json::json!({"type": "number"})))
+        .collect();
+    let required: Vec<String> = batch
+        .iter()
+        .map(|(local, _, _)| format!("p_{local}"))
+        .collect();
+    serde_json::json!({
+        "type": "object",
+        "properties": {
+            "scores": {
+                "type": "object",
+                "properties": properties,
+                "required": required
+            }
+        },
+        "required": ["scores"]
+    })
+}
+
+fn parse_scores(
+    value: &Value,
+    batch: &[(usize, usize, String)],
+) -> anyhow::Result<Vec<(usize, f64)>> {
+    let scores = value
+        .get("scores")
+        .and_then(Value::as_object)
+        .ok_or_else(|| anyhow::anyhow!("apple response missing `scores` object"))?;
+    batch
+        .iter()
+        .map(|(local, _, _)| {
+            scores
+                .get(&format!("p_{local}"))
+                .and_then(Value::as_f64)
+                .map(|probability| (*local, probability))
+                .ok_or_else(|| anyhow::anyhow!("apple response missing score p_{local}"))
+        })
+        .collect()
+}
+
+struct BatchAttempt {
+    answers: anyhow::Result<Vec<(usize, f64)>>,
     cached: bool,
 }
 
@@ -236,7 +296,7 @@ fn batch_prompt(
         ""
     };
     format!(
-        "You are scoring stale tool outputs for context compaction. The agent's current task is:\n{goal}\n\nRecent conversation tail:\n{tail}\n\nFor each candidate below, estimate the probability (0.0 to 1.0) that the tool output must remain visible for the agent to continue accurately. Score every candidate id.{note}\n\n{list}\n"
+        "You are scoring stale tool outputs for context compaction. The agent's current task is:\n{goal}\n\nRecent conversation tail:\n{tail}\n\nFor each candidate below, estimate the probability (0.0 to 1.0) that the tool output must remain visible for the agent to continue accurately. Set every required `p_<id>` score field.{note}\n\n{list}\n"
     )
 }
 
@@ -247,39 +307,36 @@ fn score_batch(
     batch: &[(usize, usize, String)],
     schema: &Value,
     content_on: bool,
-) -> anyhow::Result<BatchScores> {
+) -> BatchAttempt {
     let prompt = batch_prompt(goal, tail, batch, content_on);
     let (value, cached) = match apple::cache_get(&prompt, schema) {
         Some(value) => (value, true),
-        None => {
-            let value = bridge.request(&apple_foundation::Request {
-                prompt: prompt.clone(),
-                instructions: Some(
-                    "Score every listed candidate id. Probabilities are numbers from 0.0 to 1.0."
-                        .into(),
-                ),
-                schema: Some(schema.clone()),
-                expect_json: false,
-                max_output_bytes: Some(8192),
-            })?;
-            apple::cache_put(&prompt, schema, &value);
-            (value, false)
-        }
+        None => match bridge.request(&apple_foundation::Request {
+            prompt: prompt.clone(),
+            instructions: Some(
+                "Set every required p_<id> score field. Probabilities are numbers from 0.0 to 1.0."
+                    .into(),
+            ),
+            schema: Some(schema.clone()),
+            expect_json: false,
+            max_output_bytes: Some(8192),
+        }) {
+            Ok(value) => {
+                apple::cache_put(&prompt, schema, &value);
+                (value, false)
+            }
+            Err(error) => {
+                return BatchAttempt {
+                    answers: Err(error.into()),
+                    cached: false,
+                };
+            }
+        },
     };
-    let scores = value
-        .get("scores")
-        .and_then(Value::as_array)
-        .ok_or_else(|| anyhow::anyhow!("apple response missing `scores` array"))?;
-    let answers = scores
-        .iter()
-        .filter_map(|s| {
-            Some((
-                s.get("id")?.as_u64()? as usize,
-                s.get("keep_probability")?.as_f64()?,
-            ))
-        })
-        .collect();
-    Ok(BatchScores { answers, cached })
+    BatchAttempt {
+        answers: parse_scores(&value, batch),
+        cached,
+    }
 }
 
 fn env_usize(name: &str, default: usize) -> usize {
@@ -364,17 +421,66 @@ mod tests {
         assert_eq!(results[2].keep_probability, 0.9);
     }
 
+    #[test]
+    fn config_bounds_request_geometry_and_timeout() {
+        let cfg = AppleConfig {
+            bridge: PathBuf::from("bridge"),
+            timeout_ms: u64::MAX,
+            max_candidates: usize::MAX,
+            batch_size: usize::MAX,
+            max_batches: usize::MAX,
+            content_bytes: usize::MAX,
+        }
+        .bounded();
+        assert_eq!(cfg.timeout_ms, 600_000);
+        assert_eq!(cfg.max_candidates, MAX_CANDIDATES);
+        assert_eq!(cfg.batch_size, MAX_CONTENT_BATCH_SIZE);
+        assert_eq!(cfg.max_batches, MAX_BATCHES);
+        assert_eq!(cfg.content_bytes, MAX_CONTENT_BYTES);
+
+        let cfg = AppleConfig {
+            timeout_ms: 0,
+            batch_size: 0,
+            content_bytes: 0,
+            ..cfg
+        }
+        .bounded();
+        assert_eq!(cfg.timeout_ms, 100);
+        assert_eq!(cfg.batch_size, 1);
+        assert_eq!(cfg.content_bytes, 0);
+    }
+
+    #[test]
+    fn score_schema_requires_every_batch_id() {
+        let batch = vec![
+            input(2, 4, "[2] exec = first"),
+            input(7, 9, "[7] exec = second"),
+        ];
+        let schema = score_schema(&batch);
+        assert_eq!(
+            schema.pointer("/properties/scores/required"),
+            Some(&serde_json::json!(["p_2", "p_7"]))
+        );
+        let complete = serde_json::json!({"scores": {"p_2": 0.2, "p_7": 0.7}});
+        assert_eq!(
+            parse_scores(&complete, &batch).unwrap(),
+            vec![(2, 0.2), (7, 0.7)]
+        );
+        let incomplete = serde_json::json!({"scores": {"p_2": 0.2}});
+        assert!(parse_scores(&incomplete, &batch).is_err());
+    }
+
     #[cfg(target_os = "macos")]
     #[test]
     fn score_batch_reports_cache_hit_without_spawning_bridge() {
         let bridge = apple_foundation::Bridge::new(&["must-not-spawn".to_string()]).unwrap();
-        let schema: Value = serde_json::from_str(SCORES_SCHEMA).unwrap();
         let batch = vec![input(0, 4, "[0] exec = cargo test: pass")];
+        let schema = score_schema(&batch);
         let prompt = batch_prompt("goal-cache-test", "tail-cache-test", &batch, false);
         apple::cache_put(
             &prompt,
             &schema,
-            &serde_json::json!({"scores": [{"id": 0, "keep_probability": 0.81}]}),
+            &serde_json::json!({"scores": {"p_0": 0.81}}),
         );
         let scored = score_batch(
             &bridge,
@@ -383,10 +489,9 @@ mod tests {
             &batch,
             &schema,
             false,
-        )
-        .unwrap();
+        );
         assert!(scored.cached);
-        assert_eq!(scored.answers, vec![(0, 0.81)]);
+        assert_eq!(scored.answers.unwrap(), vec![(0, 0.81)]);
     }
 
     #[test]
