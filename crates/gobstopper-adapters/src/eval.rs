@@ -139,6 +139,42 @@ fn protected_tail_start(transcript: &Transcript, policy: &PolicyConfig) -> usize
         })
 }
 
+/// Project only context-carrying records before probe extraction and
+/// matching. Blank dead lines keep source line indexes stable for tail
+/// scoring without letting historical branches consume the probe budget.
+/// A Codex compaction record carries its live context in replacement_history;
+/// the surrounding record (including an obsolete summary) is not that context.
+fn live_context_text(transcript: &Transcript, raw: &str) -> String {
+    let live_lines: std::collections::HashSet<usize> = transcript
+        .items
+        .iter()
+        .filter(|item| item.est_tokens > 0)
+        .map(|item| item.line_index)
+        .collect();
+    let mut projected = String::new();
+    for (line_index, line) in raw.lines().enumerate() {
+        if live_lines.contains(&line_index) {
+            let compacted = (transcript.session.provider == Provider::Codex)
+                .then(|| serde_json::from_str::<serde_json::Value>(line).ok())
+                .flatten()
+                .filter(|record| record["type"].as_str() == Some("compacted"));
+            if let Some(record) = compacted {
+                if let Some(history) = record["payload"]["replacement_history"].as_array() {
+                    // Serialization stays on one physical line, preserving the
+                    // original line anchor for every nested replacement item.
+                    projected.push_str(&serde_json::to_string(history).unwrap_or_default());
+                }
+                // Invalid/unknown compacted shapes remain verifier findings;
+                // do not treat their wrapper text as successful live recall.
+            } else {
+                projected.push_str(line);
+            }
+        }
+        projected.push('\n');
+    }
+    projected
+}
+
 /// Estimated tokens that remain byte-identical before the first in-place
 /// edit in `plan`. Provider-compact plans touch no local file, so the
 /// whole transcript is considered preserved. A larger number means more
@@ -189,7 +225,7 @@ pub struct EvalHooks<'a> {
 /// verify the result, and score probe recall. Returns (apply duration
 /// ms, findings, probe score, semantic probe score).
 fn run_on_copy(
-    provider: Provider,
+    transcript: &Transcript,
     src: &Path,
     tmp: &Path,
     plan: &CompactionPlan,
@@ -197,13 +233,21 @@ fn run_on_copy(
     tail_start_line: usize,
     judge: Option<&(dyn ProbeJudge + Sync)>,
 ) -> anyhow::Result<(u64, Vec<VerifyFinding>, ProbeScore, Option<ProbeScore>)> {
+    let provider = transcript.session.provider;
     std::fs::copy(src, tmp).with_context(|| format!("copy {} to temp eval file", src.display()))?;
     let started = Instant::now();
     apply(provider, tmp, &plan.edits).map_err(|e| anyhow::anyhow!(e))?;
     let duration_ms = started.elapsed().as_millis() as u64;
     let bytes = std::fs::read(tmp).with_context(|| "reading back temp eval file")?;
     let findings = verify::verify(provider, &bytes);
-    let post_text = String::from_utf8_lossy(&bytes);
+    let mut handle = transcript.session.clone();
+    handle.path = tmp.to_path_buf();
+    let post_transcript = match provider {
+        Provider::Codex => crate::codex::load_bytes(handle, &bytes),
+        Provider::ClaudeCode => crate::claude::load_bytes(handle, &bytes),
+    }
+    .context("loading rewritten live context for probe scoring")?;
+    let post_text = live_context_text(&post_transcript, &String::from_utf8_lossy(&bytes));
     let score = score_probes(probes, &post_text, tail_start_line);
     let semantic = judge.and_then(|j| {
         let missed: Vec<(usize, Probe)> = probes
@@ -352,17 +396,10 @@ fn eval_transcript_inner(
     let source_bytes = std::fs::read(src)
         .with_context(|| format!("reading {} for probe extraction", src.display()))?;
 
-    // One probe set shared by every strategy keeps scores comparable.
-    // Probes come only from context-carrying lines: `est_tokens > 0`
-    // excludes provably dead branches and zero-cost bookkeeping.
-    let live_lines: std::collections::HashSet<usize> = transcript
-        .items
-        .iter()
-        .filter(|i| i.est_tokens > 0)
-        .map(|i| i.line_index)
-        .collect();
-    let mut probes = extract_probes(&String::from_utf8_lossy(&source_bytes));
-    probes.retain(|p| live_lines.contains(&p.line_index));
+    // Restrict extraction before the global/per-kind caps and deduplication:
+    // old history must neither starve live probes nor satisfy their recall.
+    let source_context = live_context_text(&transcript, &String::from_utf8_lossy(&source_bytes));
+    let probes = extract_probes(&source_context);
     let tail_start = protected_tail_start(&transcript, policy);
 
     let strategies: Vec<Box<dyn Strategy>> = match only {
@@ -441,7 +478,7 @@ fn eval_transcript_inner(
             .1
             .as_ref()
             .expect("work item recorded for this row");
-        let outcome = run_on_copy(provider, src, tmp, plan, &probes, tail_start, judge);
+        let outcome = run_on_copy(&transcript, src, tmp, plan, &probes, tail_start, judge);
         // Always clean up: the temp copy itself, plus the intermediate
         // an adapter may have written before a failed rename.
         let _ = std::fs::remove_file(tmp);
@@ -615,6 +652,102 @@ mod tests {
         rows.iter()
             .find(|r| r.strategy == id)
             .unwrap_or_else(|| panic!("missing eval row for '{id}'"))
+    }
+
+    #[test]
+    fn native_compaction_probes_use_replacement_context_before_capping() {
+        let _guard = EVAL_LOCK.lock().unwrap();
+        let dir = TestDir::new();
+        let mut records = Vec::new();
+        // Dead history exceeds every per-kind probe cap and also retains
+        // the exact live output we will remove. Neither may affect recall.
+        for i in 0..80 {
+            records.push(serde_json::json!({
+                "type": "response_item", "payload": {"type": "message", "role": "user",
+                    "content": [{"type": "input_text", "text": format!(
+                        "/dead/file_{i}.rs cargo dead_{i} decided dead_choice_{i} error: dead_failure_{i} /live/removed.rs"
+                    )}]}
+            }));
+        }
+        records.push(serde_json::json!({"type": "compacted", "payload": {
+            "message": "/not-in-replacement/phantom.rs",
+            "replacement_history": [
+                {"type": "function_call", "call_id": "old", "name": "read", "arguments": "{}"},
+                {"type": "function_call_output", "call_id": "old",
+                    "output": format!("/live/removed.rs {}", "x".repeat(3000))}
+            ]
+        }}));
+        records.push(serde_json::json!({"type": "response_item", "payload": {
+            "type": "function_call", "call_id": "tail", "name": "read", "arguments": "{}"
+        }}));
+        records.push(serde_json::json!({"type": "response_item", "payload": {
+            "type": "function_call_output", "call_id": "tail",
+            "output": format!("/live/tail_keeper.rs {}", "y".repeat(3000))
+        }}));
+        let src = dir.0.join("rollout.jsonl");
+        let original = records
+            .iter()
+            .map(|r| r.to_string() + "\n")
+            .collect::<String>();
+        fs::write(&src, &original).unwrap();
+        let rows = eval_transcript(Provider::Codex, &src, &low_policy(), Some("elide")).unwrap();
+        let evaluated = &rows[0];
+        assert!(evaluated.error.is_none(), "{:?}", evaluated.error);
+        assert_eq!(evaluated.verify_errors, 0);
+        let score = evaluated.probe_score.as_ref().unwrap();
+        assert!(
+            score.probes_total > 0,
+            "dead history must not exhaust the live probe budget"
+        );
+        assert!(
+            score.missed_probes.iter().any(|p| p == "/live/removed.rs"),
+            "dead history must not satisfy a removed live probe: {score:?}"
+        );
+        assert!(
+            score.tail_probes_total > 0,
+            "original source line indexes must survive projection"
+        );
+        assert!(score.tail_intact);
+        let paths = score
+            .by_kind
+            .iter()
+            .find(|kind| kind.kind == gobstopper_core::probe::ProbeKind::Path)
+            .unwrap();
+        assert_eq!(
+            paths.total, 2,
+            "only replacement and tail paths are live; wrapper summary is not"
+        );
+        assert_eq!(paths.recalled, 1);
+        assert_eq!(fs::read_to_string(&src).unwrap(), original);
+    }
+
+    #[test]
+    fn dead_claude_branch_does_not_satisfy_removed_live_probes() {
+        let _guard = EVAL_LOCK.lock().unwrap();
+        let dir = TestDir::new();
+        let src = write_probe_transcript(&dir.0);
+        let live = fs::read_to_string(&src).unwrap();
+        let dead = serde_json::json!({
+            "type": "user", "uuid": "dead-root",
+            "message": {"role": "user", "content":
+                "error[E0308]: mismatched types in /project/crates/core/src/lib.rs FAILED"}
+        });
+        fs::write(&src, format!("{dead}\n{live}")).unwrap();
+        let rows =
+            eval_transcript(Provider::ClaudeCode, &src, &low_policy(), Some("elide")).unwrap();
+        let evaluated = &rows[0];
+        assert!(evaluated.error.is_none(), "{:?}", evaluated.error);
+        assert_eq!(evaluated.verify_errors, 0);
+        let score = evaluated.probe_score.as_ref().unwrap();
+        assert!(
+            score
+                .missed_probes
+                .iter()
+                .any(|p| p == "/project/crates/core/src/lib.rs"),
+            "the dead branch must neither consume nor satisfy live probes: {score:?}"
+        );
+        assert!(score.tail_probes_total > 0);
+        assert!(score.tail_intact);
     }
 
     #[test]
@@ -926,8 +1059,9 @@ mod tests {
             probes_seen: AtomicUsize::new(0),
         };
         let tmp = dir.0.join("semantic-intact.jsonl");
+        let transcript = load(Provider::ClaudeCode, &src).unwrap();
         let (_, _, verbatim, semantic) = run_on_copy(
-            Provider::ClaudeCode,
+            &transcript,
             &src,
             &tmp,
             &plan,

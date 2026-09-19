@@ -188,11 +188,15 @@ savings. Current Codex `event_msg/token_count` accounting and legacy usage
 records are both supported, including the advertised model context window.
 
 `scored` uses the deterministic offline heuristic by default. Experimental
-external scoring is opt-in with `GOBSTOPPER_SCORER=llm`,
+model scoring is opt-in with `GOBSTOPPER_SCORER=llm`,
 `GOBSTOPPER_SCORER=jev`, or `GOBSTOPPER_SCORER=apple`; merely setting an API
-key never sends data. External scorers receive bounded labels and summaries,
-not full tool payloads, and retain deterministic heuristic scores whenever a
-model omits an answer or a request fails. Hosted LLM settings are hard-capped
+key never sends data. Remote Jev and LLM scorers receive bounded labels and
+summaries, including tool arguments, short output tails, and user-prompt
+snippets. These are transcript-derived text, not redacted metadata; enabling
+a remote scorer sends them to its configured endpoint even when additional
+content excerpts are disabled. Apple scoring runs on-device. All model
+scorers retain deterministic heuristic scores whenever a model omits an
+answer or a request fails. Hosted LLM settings are hard-capped
 at 256 candidates, 64 items per batch, 16 batches, and a 100–30,000 ms
 timeout. The built-in heuristic remains the recommended published path because
 current live trials did not show a better plan from the LLM scorer.
@@ -220,10 +224,10 @@ variable and expanded inside curl, never placed in process argv; Gobstopper
 also disables `.curlrc` for these calls so user defaults cannot enable verbose
 header logging.
 `GOBSTOPPER_JEV_CONTENT_BYTES` (default `0`, maximum `1024`) opts in to
-attaching bounded per-candidate content excerpts to each question — Jev is a
-remote API, so content only leaves the device when explicitly enabled. A
-post-fix 141k-token A/B run selected the same six records with labels-only and
-400-byte excerpts, so the private default remains `0`.
+attaching additional bounded per-candidate content excerpts to each question.
+The remote scorer already receives the bounded labels and summaries described
+above. A post-fix 141k-token A/B run selected the same six records with and
+without 400-byte additional excerpts, so those excerpts remain off by default.
 Every numeric runtime knob is clamped: 1–64 questions per call, 1–128 state
 items, 100–30,000 ms timeout, 1–16 batches per scoring pass, and 1–4
 concurrent calls (`GOBSTOPPER_JEV_PARALLEL`, default `2`).
@@ -272,21 +276,22 @@ credited by the semantic judge (37/38 on both scores). This is single-session
 qualification, not a general ranking-quality claim.
 
 Successful Jev answers are cached in-process for five minutes under two
-scopes. The scorer caches per question — each unique question text maps to
-its probability — so a growing `watch` session only pays for genuinely new
-questions. On one live 124k-token session the first pass sent 18 questions
-(~500ms), every unchanged poll after sent zero (~4ms), and a pass taken
-after the transcript grew sent exactly one question while the other 18 came
-from cache. The eval judge keeps the stricter exact-request cache because
-its answers depend on the entire submitted context. Cache keys cover
-endpoint, credential identity, and question or request text; values are
+scopes. The scorer caches each question together with the complete scoring
+state and model identifier. Unchanged polls reuse judgments, including across
+different question batches. A changed goal or tail requires fresh answers
+when that change is represented in the bounded scoring state; the cache cannot
+detect task changes omitted from that state. The eval judge caches whole exact
+requests.
+Cache keys cover endpoint, credential identity, and question plus scoring
+state or full request text; values are
 parsed probabilities only (never transcript text), evict oldest-first at
 512 questions and 64 requests, and failures are never cached. The
 question layer also persists to
 `~/.local/share/gobstopper/jev-cache.json` — only sha256 key digests
 mapped to probability + timestamp, never text — so a cold `plan` inside
-the TTL still skips the wire (one live session: 588ms cold, 4ms warm in
-a second process). Transient
+the TTL can reuse an answer when its question and scoring state match.
+Older question-only cache entries cannot match the context-bound keys.
+Transient
 transport errors and HTTP 5xx responses are retried once; auth rejections
 are not. The scorer and judge resolve the API key once per process, so
 `watch` does not re-read the OS credential store every pass. Set
@@ -313,8 +318,8 @@ ranking; a malformed batch retains its heuristic scores.
 
 `GOBSTOPPER_DIGEST=apple` goes further: the injected state card is written
 by the on-device model instead of keyword extraction. Because inference is
-local, it may read bounded excerpts of the records being elided — the
-labels-only boundary only exists for remote endpoints. Each field still
+local, it may read bounded excerpts of the records being elided without a
+remote request. Each field still
 lands in the same `DigestBlock` shape via guided output, capped to a small
 token overhead, and falls back to the mechanical card on any failure.
 `GOBSTOPPER_APPLE_DIGEST_ITEMS`, `_ITEM_BYTES`, and `_TOTAL_BYTES` tune the
