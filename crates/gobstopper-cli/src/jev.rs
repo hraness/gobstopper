@@ -856,13 +856,12 @@ fn post_json(
     timeout_ms: u64,
 ) -> anyhow::Result<(u16, String)> {
     let mut cmd = Command::new("curl");
+    crate::secrets::configure_curl_bearer(&mut cmd, api_key)?;
     cmd.arg("-sS")
         .arg("-X")
         .arg("POST")
         .arg("-H")
         .arg("Content-Type: application/json")
-        .arg("-H")
-        .arg(format!("Authorization: Bearer {api_key}"))
         .arg("-d")
         .arg("@-")
         .arg("-w")
@@ -1337,6 +1336,7 @@ mod tests {
     struct TestServer {
         endpoint: String,
         bodies: std::sync::Arc<Mutex<Vec<String>>>,
+        headers: std::sync::Arc<Mutex<Vec<String>>>,
     }
 
     fn serve(responses: Vec<(u16, String)>) -> TestServer {
@@ -1344,7 +1344,9 @@ mod tests {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let port = listener.local_addr().unwrap().port();
         let bodies = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let headers = std::sync::Arc::new(Mutex::new(Vec::new()));
         let recorded = bodies.clone();
+        let recorded_headers = headers.clone();
         std::thread::spawn(move || {
             for (code, body) in responses {
                 let Ok((mut stream, _)) = listener.accept() else {
@@ -1362,6 +1364,7 @@ mod tests {
                     }
                 }
                 let head = String::from_utf8_lossy(&head).to_string();
+                recorded_headers.lock().unwrap().push(head.clone());
                 if head.to_ascii_lowercase().contains("expect: 100-continue")
                     && stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").is_err()
                 {
@@ -1395,12 +1398,13 @@ mod tests {
         TestServer {
             endpoint: format!("http://127.0.0.1:{port}"),
             bodies,
+            headers,
         }
     }
 
     fn test_cfg(endpoint: String) -> JevConfig {
         JevConfig {
-            api_key: "test-key".into(),
+            api_key: "test-api-key-123".into(),
             endpoint,
             ..Default::default()
         }
@@ -1436,6 +1440,12 @@ mod tests {
         let answers = call_jev(&request, &cfg, ttl).unwrap();
         assert_eq!(answers["q_0"], 0.7);
         assert_eq!(server.bodies.lock().unwrap().len(), 2);
+        let headers = server.headers.lock().unwrap();
+        assert_eq!(headers.len(), 2);
+        assert!(headers.iter().all(|head| head
+            .to_ascii_lowercase()
+            .contains("authorization: bearer test-api-key-123")));
+        drop(headers);
 
         // Exact-request cache: the replay never reaches the wire.
         let again = call_jev(&request, &cfg, ttl).unwrap();

@@ -385,13 +385,12 @@ fn score_batch(
 fn call_llm(request: &ChatCompletionRequest, cfg: &LlmConfig) -> anyhow::Result<Vec<LlmScore>> {
     let body = serde_json::to_vec(request)?;
     let mut cmd = Command::new("curl");
+    crate::secrets::configure_curl_bearer(&mut cmd, &cfg.api_key)?;
     cmd.arg("-sS")
         .arg("-X")
         .arg("POST")
         .arg("-H")
         .arg("Content-Type: application/json")
-        .arg("-H")
-        .arg(format!("Authorization: Bearer {}", cfg.api_key))
         .arg("-d")
         .arg("@-")
         .arg(&cfg.endpoint);
@@ -475,6 +474,65 @@ mod tests {
 
     fn input(local: usize, item_index: usize, text: &str) -> (usize, usize, String) {
         (local, item_index, text.to_string())
+    }
+
+    fn serve_once(response: String) -> (String, std::sync::mpsc::Receiver<String>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut head = Vec::new();
+            let mut byte = [0u8; 1];
+            while !head.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            let head = String::from_utf8(head).unwrap();
+            let len = head
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .and_then(|value| value.trim().parse::<usize>().ok())
+                })
+                .unwrap_or(0);
+            let mut body = vec![0u8; len];
+            stream.read_exact(&mut body).unwrap();
+            tx.send(head).unwrap();
+            let reply = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}",
+                response.len()
+            );
+            stream.write_all(reply.as_bytes()).unwrap();
+        });
+        (endpoint, rx)
+    }
+
+    #[test]
+    fn llm_http_auth_expands_from_environment_with_short_local_key() {
+        let content = r#"{"scores":[{"id":0,"keep_probability":0.8}]}"#;
+        let response = serde_json::json!({"choices": [{"message": {"content": content}}]});
+        let (endpoint, headers) = serve_once(response.to_string());
+        let cfg = LlmConfig {
+            api_key: "x".into(),
+            endpoint,
+            model: "local".into(),
+            timeout_ms: 3_000,
+            max_candidates: 1,
+            batch_size: 1,
+            max_batches: 1,
+        };
+        let scores = score_batch(&cfg, "goal", "tail", &[input(0, 0, "[0] exec = ok")]).unwrap();
+        assert_eq!(scores.len(), 1);
+        assert_eq!(scores[0].keep_probability, 0.8);
+        let head = headers
+            .recv_timeout(std::time::Duration::from_secs(1))
+            .unwrap();
+        assert!(head
+            .to_ascii_lowercase()
+            .contains("authorization: bearer x"));
     }
 
     #[test]
