@@ -11,12 +11,13 @@
 //!   GOBSTOPPER_APPLE_BRIDGE     - explicit bridge binary path
 //!   GOBSTOPPER_APPLE_TIMEOUT_MS - 180000 (first request pays model warm-up)
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::Context;
+use sha2::{Digest, Sha256};
 
 /// Bridge binary resolution. The managed share path rebuilds automatically
 /// when the embedded bridge source changes; env/sibling paths are
@@ -84,49 +85,96 @@ pub(crate) fn shared_bridge(
         .as_ref()
 }
 
-/// Process-wide prompt→response cache shared by every apple feature.
+/// Process-wide prompt→response cache shared by every Apple feature.
 /// `watch` re-evaluates an unchanged transcript each poll interval; the
 /// model inputs (excerpts of immutable lines plus the tail) are identical
 /// while nothing new has been appended, so a bounded cache turns repeat
 /// evaluations into zero model calls. The schema text is part of the key
-/// so distinct request shapes never collide. Bounded at 64 entries —
-/// a stale entry only means a regenerated response, never a wrong one.
-/// `GOBSTOPPER_APPLE_CACHE=0` disables reads (writes still land).
+/// so distinct request shapes never collide. Bounded at 64 entries with
+/// oldest-first eviction — a stale entry only means a regenerated
+/// response, never a wrong one. `GOBSTOPPER_APPLE_CACHE=0` disables both
+/// reads and writes.
 const CACHE_MAX: usize = 64;
+type CacheKey = [u8; 32];
+
+struct CacheEntry {
+    sequence: u64,
+    value: serde_json::Value,
+}
+
+#[derive(Default)]
+struct ResponseCache {
+    entries: HashMap<CacheKey, CacheEntry>,
+    next_sequence: u64,
+}
+
+impl ResponseCache {
+    fn get(&self, key: &CacheKey) -> Option<serde_json::Value> {
+        self.entries.get(key).map(|entry| entry.value.clone())
+    }
+
+    fn put(&mut self, key: CacheKey, value: serde_json::Value) {
+        if self.entries.len() >= CACHE_MAX && !self.entries.contains_key(&key) {
+            if let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.sequence)
+                .map(|(key, _)| *key)
+            {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.next_sequence = self.next_sequence.wrapping_add(1);
+        self.entries.insert(
+            key,
+            CacheEntry {
+                sequence: self.next_sequence,
+                value,
+            },
+        );
+    }
+}
+
+fn cache_enabled(raw: Option<&str>) -> bool {
+    raw != Some("0")
+}
+
+fn apple_cache_enabled() -> bool {
+    cache_enabled(std::env::var("GOBSTOPPER_APPLE_CACHE").ok().as_deref())
+}
 
 pub(crate) fn cache_get(prompt: &str, schema: &serde_json::Value) -> Option<serde_json::Value> {
-    if std::env::var("GOBSTOPPER_APPLE_CACHE").as_deref() == Ok("0") {
+    if !apple_cache_enabled() {
         return None;
     }
     response_cache()
         .lock()
         .ok()?
         .get(&cache_key(prompt, schema))
-        .cloned()
 }
 
 pub(crate) fn cache_put(prompt: &str, schema: &serde_json::Value, value: &serde_json::Value) {
-    if let Ok(mut c) = response_cache().lock() {
-        if c.len() >= CACHE_MAX {
-            c.clear();
-        }
-        c.insert(cache_key(prompt, schema), value.clone());
+    if !apple_cache_enabled() {
+        return;
+    }
+    if let Ok(mut cache) = response_cache().lock() {
+        cache.put(cache_key(prompt, schema), value.clone());
     }
 }
 
-fn response_cache() -> &'static std::sync::Mutex<std::collections::HashMap<u64, serde_json::Value>>
-{
-    static CACHE: OnceLock<std::sync::Mutex<std::collections::HashMap<u64, serde_json::Value>>> =
-        OnceLock::new();
-    CACHE.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+fn response_cache() -> &'static std::sync::Mutex<ResponseCache> {
+    static CACHE: OnceLock<std::sync::Mutex<ResponseCache>> = OnceLock::new();
+    CACHE.get_or_init(|| std::sync::Mutex::new(ResponseCache::default()))
 }
 
-fn cache_key(prompt: &str, schema: &serde_json::Value) -> u64 {
-    use std::hash::{Hash, Hasher};
-    let mut h = std::collections::hash_map::DefaultHasher::new();
-    schema.to_string().hash(&mut h);
-    prompt.hash(&mut h);
-    h.finish()
+fn cache_key(prompt: &str, schema: &serde_json::Value) -> CacheKey {
+    let schema = schema.to_string();
+    let mut hasher = Sha256::new();
+    for part in [schema.as_bytes(), prompt.as_bytes()] {
+        hasher.update((part.len() as u64).to_le_bytes());
+        hasher.update(part);
+    }
+    hasher.finalize().into()
 }
 
 /// Head+tail window of a record: errors tend to sit at the end of tool
@@ -211,12 +259,32 @@ mod tests {
     }
 
     #[test]
-    fn cache_stays_bounded() {
-        let _g = LOCK.lock().unwrap();
-        let schema = serde_json::json!({});
-        for i in 0..(CACHE_MAX + 16) {
-            cache_put(&format!("bound-{i}"), &schema, &serde_json::json!(i));
+    fn cache_stays_bounded_and_evicts_oldest_only() {
+        let mut cache = ResponseCache::default();
+        for i in 0..CACHE_MAX {
+            cache.put([i as u8; 32], serde_json::json!(i));
         }
-        assert!(response_cache().lock().unwrap().len() <= CACHE_MAX);
+        cache.put([255; 32], serde_json::json!(255));
+        assert_eq!(cache.entries.len(), CACHE_MAX);
+        assert!(cache.get(&[0; 32]).is_none());
+        assert_eq!(cache.get(&[1; 32]), Some(serde_json::json!(1)));
+        assert_eq!(cache.get(&[255; 32]), Some(serde_json::json!(255)));
+    }
+
+    #[test]
+    fn cache_disable_value_applies_to_reads_and_writes() {
+        assert!(cache_enabled(None));
+        assert!(cache_enabled(Some("1")));
+        assert!(cache_enabled(Some("false")));
+        assert!(!cache_enabled(Some("0")));
+    }
+
+    #[test]
+    fn cache_key_is_stable_and_schema_isolated() {
+        let a = serde_json::json!({"kind": "a"});
+        let b = serde_json::json!({"kind": "b"});
+        assert_eq!(cache_key("prompt", &a), cache_key("prompt", &a));
+        assert_ne!(cache_key("prompt", &a), cache_key("prompt", &b));
+        assert_ne!(cache_key("prompt", &a), cache_key("other", &a));
     }
 }
