@@ -206,10 +206,14 @@ concurrent calls (`GOBSTOPPER_JEV_PARALLEL`, default `2`).
 `GOBSTOPPER_JEV_MAX_BATCHES` defaults to `4`. Only the newest
 `MAX_Q × MAX_BATCHES` tailward candidates are sent; an older prefix keeps its
 deterministic heuristic score. This caps the default at four calls and 256
-remote-scored candidates even for unusually large transcripts. Batches run
-in deterministic waves of two: request execution is parallel, but results
-are overlaid in stable batch order and each failure retains that batch's
-heuristic scores. On one three-batch 336k-token Claude session, bounded
+remote-scored candidates even for unusually large transcripts. Identical
+question texts within a pass are asked once: repeated tool outputs share a
+single remote answer instead of being billed per item. Batches run through
+a bounded worker pool: execution is parallel, but results are overlaid in
+stable order, a failed or panicked batch retains heuristic scores, and
+cached answers still overlay when a batch's remote half fails. Each pass logs one summary line
+to stderr (candidates, unique/cached/sent questions, calls, failures,
+elapsed). On one three-batch 336k-token Claude session, bounded
 parallelism reduced live planning from 148.64s to 19.47s (about 7.6×); this is
 a latency observation, not a provider-wide guarantee.
 
@@ -243,14 +247,22 @@ probes. At a more aggressive floor, one probe lost verbatim was not falsely
 credited by the semantic judge (37/38 on both scores). This is single-session
 qualification, not a general ranking-quality claim.
 
-Successful Jev responses are cached in-process for five minutes, keyed by
-endpoint, credential identity, and the exact serialized request. This keeps
-`watch` from paying for identical scorer calls on an unchanged transcript
-while periodically refreshing against the remote model. The cache stores
-only parsed probabilities (not transcript text), clears at 64 entries, and
-never caches failures. Set `GOBSTOPPER_JEV_CACHE=0` or
-`GOBSTOPPER_JEV_CACHE_TTL_SECS=0` to disable reads; change the TTL with the
-latter variable (maximum 3,600 seconds).
+Successful Jev answers are cached in-process for five minutes under two
+scopes. The scorer caches per question — each unique question text maps to
+its probability — so a growing `watch` session only pays for genuinely new
+questions. On one live 124k-token session the first pass sent 18 questions
+(~500ms), every unchanged poll after sent zero (~4ms), and a pass taken
+after the transcript grew sent exactly one question while the other 18 came
+from cache. The eval judge keeps the stricter exact-request cache because
+its answers depend on the entire submitted context. Cache keys cover
+endpoint, credential identity, and question or request text; values are
+parsed probabilities only (never transcript text), evict oldest-first at
+512 questions and 64 requests, and failures are never cached. Transient
+transport errors and HTTP 5xx responses are retried once; auth rejections
+are not. The scorer and judge resolve the API key once per process, so
+`watch` does not re-read the OS credential store every pass. Set
+`GOBSTOPPER_JEV_CACHE=0` or `GOBSTOPPER_JEV_CACHE_TTL_SECS=0` to disable;
+the TTL maximum is 3,600 seconds.
 
 `GOBSTOPPER_SCORER=apple` (macOS 26+, Apple Silicon) scores on-device with
 Apple Intelligence Foundation Models via the shared `apple-foundation`
