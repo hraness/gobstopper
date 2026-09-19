@@ -11,6 +11,18 @@
 //! Calls are made via `curl` (spawning the system binary) so gobstopper
 //! needs no HTTP dependency. Batching keeps the request under Jev's 32k
 //! context window and a bounded runtime.
+//!
+//! API key resolution: `TYPESAFE_API_KEY` → `GOBSTOPPER_JEV_API_KEY` →
+//! the OS keychain written by `gobstopper auth jev` (macOS Keychain /
+//! Windows Credential Manager / Linux Secret Service).
+//!
+//!   GOBSTOPPER_JEV_ENDPOINT      - https://api.typesafe.ai/v1/systemone
+//!   GOBSTOPPER_JEV_MAX_Q         - 64 questions per call
+//!   GOBSTOPPER_JEV_MAX_STATE     - 40 state items
+//!   GOBSTOPPER_JEV_TIMEOUT_MS    - 8000
+//!   GOBSTOPPER_JEV_CONTENT_BYTES - 0 = labels only; >0 attaches a bounded
+//!     per-candidate content excerpt to each question. Jev is a remote
+//!     API — content only leaves the device when the user opts in.
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -18,6 +30,44 @@ use serde_json::json;
 use std::process::Command;
 
 use gobstopper_core::{ScoreDriver, ScoredItem, Transcript};
+
+/// Where the API key was found — reported by `gobstopper auth jev
+/// --status` so the source is never ambiguous.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeySource {
+    /// `TYPESAFE_API_KEY` in the environment.
+    EnvTypesafe,
+    /// `GOBSTOPPER_JEV_API_KEY` in the environment.
+    EnvGobstopper,
+    /// OS credential store via `gobstopper auth jev`.
+    Keychain,
+}
+
+impl KeySource {
+    pub fn describe(self) -> &'static str {
+        match self {
+            Self::EnvTypesafe => "env TYPESAFE_API_KEY",
+            Self::EnvGobstopper => "env GOBSTOPPER_JEV_API_KEY",
+            Self::Keychain => "OS keychain",
+        }
+    }
+}
+
+/// Key resolution order: env first (CI and ad-hoc shells keep working),
+/// then the OS keychain written by `gobstopper auth jev`.
+pub fn resolve_key() -> Option<(String, KeySource)> {
+    if let Ok(k) = std::env::var("TYPESAFE_API_KEY") {
+        if !k.trim().is_empty() {
+            return Some((k, KeySource::EnvTypesafe));
+        }
+    }
+    if let Ok(k) = std::env::var("GOBSTOPPER_JEV_API_KEY") {
+        if !k.trim().is_empty() {
+            return Some((k, KeySource::EnvGobstopper));
+        }
+    }
+    crate::secrets::jev_key().map(|k| (k, KeySource::Keychain))
+}
 
 /// Runtime configuration for the Jev scorer. Lives in gobstopper.toml as
 /// `[scorer]` or `[scorer.jev]` depending on which design we ship.
@@ -28,31 +78,44 @@ pub struct JevConfig {
     pub max_questions_per_call: usize,
     pub max_state_items: usize,
     pub timeout_ms: u64,
+    /// Bounded per-candidate excerpt bytes attached to each question.
+    /// Defaults to 0: Jev is a remote API, so the labels-only privacy
+    /// boundary stays unless the user opts in to content.
+    pub content_bytes: usize,
 }
 
 impl JevConfig {
-    /// Load from env (default) or config. Returns `None` if no key.
+    /// Load from env (default) or the OS keychain. Returns `None` if no key.
     pub fn resolve() -> Option<Self> {
-        let api_key = std::env::var("TYPESAFE_API_KEY")
-            .ok()
-            .or_else(|| std::env::var("GOBSTOPPER_JEV_API_KEY").ok())?;
-        Some(Self {
-            api_key,
-            endpoint: std::env::var("GOBSTOPPER_JEV_ENDPOINT")
-                .unwrap_or_else(|_| "https://api.typesafe.ai/v1/systemone".into()),
-            max_questions_per_call: std::env::var("GOBSTOPPER_JEV_MAX_Q")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(64),
-            max_state_items: std::env::var("GOBSTOPPER_JEV_MAX_STATE")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(40),
-            timeout_ms: std::env::var("GOBSTOPPER_JEV_TIMEOUT_MS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(8_000),
-        })
+        Self::resolve_with_source().map(|(cfg, _)| cfg)
+    }
+
+    pub fn resolve_with_source() -> Option<(Self, KeySource)> {
+        let (api_key, source) = resolve_key()?;
+        Some((
+            Self {
+                api_key,
+                endpoint: std::env::var("GOBSTOPPER_JEV_ENDPOINT")
+                    .unwrap_or_else(|_| "https://api.typesafe.ai/v1/systemone".into()),
+                max_questions_per_call: std::env::var("GOBSTOPPER_JEV_MAX_Q")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(64),
+                max_state_items: std::env::var("GOBSTOPPER_JEV_MAX_STATE")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(40),
+                timeout_ms: std::env::var("GOBSTOPPER_JEV_TIMEOUT_MS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(8_000),
+                content_bytes: std::env::var("GOBSTOPPER_JEV_CONTENT_BYTES")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
+            },
+            source,
+        ))
     }
 }
 
@@ -112,9 +175,28 @@ impl ScoreDriver for JevScorer {
             .chunks(self.cfg.max_questions_per_call)
             .collect::<Vec<_>>();
 
+        // Optional content excerpts: remote API, so this stays labels-only
+        // unless the user opted in via GOBSTOPPER_JEV_CONTENT_BYTES.
+        let excerpts: std::collections::HashMap<usize, String> = if self.cfg.content_bytes > 0 {
+            let lines: Vec<usize> = candidates
+                .iter()
+                .filter_map(|&idx| transcript.items.get(idx).map(|i| i.line_index))
+                .collect();
+            crate::apple::read_excerpts(
+                &transcript.session.path,
+                &lines,
+                self.cfg.content_bytes,
+                self.cfg.content_bytes.saturating_mul(candidates.len()),
+            )
+            .map(|v| v.into_iter().collect())
+            .unwrap_or_default()
+        } else {
+            Default::default()
+        };
+
         let mut results: Vec<ScoredItem> = Vec::with_capacity(candidates.len());
         for (chunk_idx, chunk) in chunks.iter().enumerate() {
-            let request = build_request(&state, chunk, transcript);
+            let request = build_request(&state, chunk, transcript, &excerpts);
             match call_jev(&request, &self.cfg) {
                 Ok(probs) => {
                     for (i, &idx) in chunk.iter().enumerate() {
@@ -172,6 +254,7 @@ fn build_request(
     state: &serde_json::Value,
     chunk: &[usize],
     transcript: &Transcript,
+    excerpts: &std::collections::HashMap<usize, String>,
 ) -> JevRequest {
     let mut questions = serde_json::Map::new();
     for (i, &idx) in chunk.iter().enumerate() {
@@ -181,12 +264,16 @@ fn build_request(
             } else {
                 item.label.clone()
             };
+            let excerpt = excerpts
+                .get(&item.line_index)
+                .map(|e| format!(" Content excerpt: {e}"))
+                .unwrap_or_default();
             questions.insert(
                 format!("q_0_{i}"),
                 serde_json::to_value(NoulQuestion {
                     qtype: "noul",
                     instructions: format!(
-                        "Does the output of `{desc}` need to stay visible for the agent to continue its current task?"
+                        "Does the output of `{desc}` need to stay visible for the agent to continue its current task?{excerpt}"
                     ),
                 })
                 .unwrap(),
@@ -200,11 +287,14 @@ fn build_request(
     }
 }
 
-fn call_jev(
-    request: &JevRequest,
-    cfg: &JevConfig,
-) -> anyhow::Result<std::collections::HashMap<String, f64>> {
-    let body = serde_json::to_vec(request)?;
+/// POST a JSON body to the Jev endpoint via curl; returns the HTTP
+/// status and response body. `-w` appends the status on its own line.
+fn post_json(
+    endpoint: &str,
+    api_key: &str,
+    body: &[u8],
+    timeout_ms: u64,
+) -> anyhow::Result<(u16, String)> {
     let mut cmd = Command::new("curl");
     cmd.arg("-sS")
         .arg("-X")
@@ -212,15 +302,33 @@ fn call_jev(
         .arg("-H")
         .arg("Content-Type: application/json")
         .arg("-H")
-        .arg(format!("Authorization: Bearer {}", cfg.api_key))
+        .arg(format!("Authorization: Bearer {api_key}"))
         .arg("-d")
         .arg("@-")
-        .arg(&cfg.endpoint);
+        .arg("-w")
+        .arg("\n%{http_code}")
+        .arg(endpoint);
+    let raw =
+        gobstopper_adapters::plugins::run_bounded(cmd, body.to_vec(), timeout_ms, 1024 * 1024)?;
+    let text = String::from_utf8(raw).context("jev response is not utf8")?;
+    let (body, code) = text
+        .rsplit_once('\n')
+        .and_then(|(b, c)| c.trim().parse::<u16>().ok().map(|n| (b, n)))
+        .context("jev response missing http status")?;
+    Ok((code, body.to_string()))
+}
 
-    let raw = gobstopper_adapters::plugins::run_bounded(cmd, body, cfg.timeout_ms, 1024 * 1024)?;
-    let text = std::str::from_utf8(&raw).context("jev response is not utf8")?;
+fn call_jev(
+    request: &JevRequest,
+    cfg: &JevConfig,
+) -> anyhow::Result<std::collections::HashMap<String, f64>> {
+    let body = serde_json::to_vec(request)?;
+    let (code, text) = post_json(&cfg.endpoint, &cfg.api_key, &body, cfg.timeout_ms)?;
+    if !(200..300).contains(&code) {
+        anyhow::bail!("jev HTTP {code}");
+    }
     let parsed: JevAnswers =
-        serde_json::from_str(text).with_context(|| format!("parse jev response: {text}"))?;
+        serde_json::from_str(&text).with_context(|| format!("parse jev response: {text}"))?;
     let answers = parsed.answers.unwrap_or_default();
     Ok(answers
         .into_iter()
@@ -250,4 +358,32 @@ fn call_jev(
 /// heuristic scorer (no key), and never fails the compaction.
 pub fn maybe_jev_scorer() -> Option<Box<dyn ScoreDriver>> {
     JevConfig::resolve().map(|cfg| Box::new(JevScorer::new(cfg)) as Box<dyn ScoreDriver>)
+}
+
+/// Live key verification for `gobstopper auth`: one minimal noul
+/// question. Distinguishes a rejected key (401/403 → refuse to store)
+/// from transport/other failures (stored anyway, reported as
+/// unverified).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Health {
+    Ok,
+    /// HTTP 401/403 — the key is wrong or expired.
+    Rejected,
+    /// Non-auth HTTP error or transport failure.
+    Unverified,
+}
+
+pub fn health_check(api_key: &str, endpoint: &str) -> Health {
+    let body = serde_json::json!({
+        "model": "jev-latest",
+        "state": {"probe": "gobstopper auth"},
+        "questions": {
+            "health": {"type": "noul", "instructions": "Is two plus two equal to four?"}
+        }
+    });
+    match post_json(endpoint, api_key, body.to_string().as_bytes(), 8_000) {
+        Ok((code, _)) if (200..300).contains(&code) => Health::Ok,
+        Ok((401 | 403, _)) => Health::Rejected,
+        Ok(_) | Err(_) => Health::Unverified,
+    }
 }

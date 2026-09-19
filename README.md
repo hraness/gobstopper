@@ -177,6 +177,25 @@ not full tool payloads, and fall back to the heuristic on failure. The
 built-in heuristic is the recommended published path because current live
 trials did not show a better plan from the LLM scorer.
 
+`GOBSTOPPER_SCORER=jev` scores with TypeSafe's System One API — typed
+`noul` keep-probabilities, ~100ms per batch of 64 questions, no prose
+generation. Onboarding vaults the key in the OS credential store
+(macOS Keychain, Windows Credential Manager, Linux Secret Service):
+
+```sh
+pbpaste | gobstopper auth jev     # or run it bare to use the clipboard
+gobstopper auth jev --status      # key source + masked value + live check
+gobstopper auth jev --delete      # remove the stored key
+```
+
+The key is verified against the API before it is stored; a rejected key
+never reaches the keychain. Resolution order at scoring time is
+`TYPESAFE_API_KEY` → `GOBSTOPPER_JEV_API_KEY` → OS keychain, so CI keeps
+working from env alone. `GOBSTOPPER_JEV_CONTENT_BYTES` (default `0`)
+opts in to attaching bounded per-candidate content excerpts to each
+question — Jev is a remote API, so content only leaves the device when
+explicitly enabled.
+
 `GOBSTOPPER_SCORER=apple` (macOS 26+, Apple Silicon) scores on-device with
 Apple Intelligence Foundation Models via the shared `apple-foundation`
 bridge — free, private, no API key. The bridge auto-builds to
