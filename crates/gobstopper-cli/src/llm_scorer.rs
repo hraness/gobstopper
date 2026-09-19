@@ -17,9 +17,11 @@
 
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::process::Command;
+use std::time::Instant;
 
-use gobstopper_core::{ScoreDriver, ScoredItem, Transcript};
+use gobstopper_core::{HeuristicScorer, ScoreDriver, ScoredItem, Transcript};
 
 #[derive(Debug, Clone, Default)]
 pub struct LlmConfig {
@@ -175,60 +177,95 @@ pub(crate) fn scoring_context(
     ScoringContext { inputs, goal, tail }
 }
 
+/// Overlay model answers — keyed by the candidate's local position in
+/// the prompt (the `[id]` bracket, an index into `candidates`) — onto
+/// heuristic-seeded results. Each answered local is clamped into 0..=1;
+/// locals the model never answered keep their deterministic heuristic
+/// score. Returns the number of items overlaid.
+pub(crate) fn overlay_answers(
+    results: &mut [ScoredItem],
+    candidates: &[usize],
+    answers: &[(usize, f64)],
+) -> usize {
+    let positions: HashMap<usize, usize> = results
+        .iter()
+        .enumerate()
+        .map(|(position, item)| (item.item_index, position))
+        .collect();
+    let mut overlaid = 0;
+    for &(local, probability) in answers {
+        let Some(&item_index) = candidates.get(local) else {
+            continue;
+        };
+        if let Some(&position) = positions.get(&item_index) {
+            results[position].keep_probability = probability.clamp(0.0, 1.0);
+            overlaid += 1;
+        }
+    }
+    overlaid
+}
+
 impl ScoreDriver for LlmScorer {
     fn score(&self, transcript: &Transcript, candidates: &[usize]) -> Vec<ScoredItem> {
         if candidates.is_empty() {
             return Vec::new();
         }
-
+        // The deterministic heuristic pass seeds every item; model
+        // answers only overwrite the locals they actually scored, so a
+        // failed or panicking batch never collapses items to a flat 0.5.
+        let mut results = HeuristicScorer.score(transcript, candidates);
+        let started = Instant::now();
         let ctx = scoring_context(transcript, candidates, self.cfg.max_candidates);
         let inputs = ctx.inputs;
-        if inputs.is_empty() {
-            return candidates
-                .iter()
-                .map(|&idx| ScoredItem {
-                    item_index: idx,
-                    keep_probability: 0.5,
-                })
+        let mut calls = 0usize;
+        let mut overlaid = 0usize;
+        let mut failed = 0usize;
+
+        if !inputs.is_empty() {
+            let goal = ctx.goal;
+            let tail = ctx.tail;
+            let mut all_scores = Vec::new();
+            let chunks: Vec<&[(usize, usize, String)]> = inputs
+                .chunks(self.cfg.batch_size.max(1))
+                .take(self.cfg.max_batches)
                 .collect();
-        }
-        let goal = ctx.goal;
-        let tail = ctx.tail;
-
-        let mut all_scores = Vec::new();
-        let chunks: Vec<&[(usize, usize, String)]> = inputs
-            .chunks(self.cfg.batch_size)
-            .take(self.cfg.max_batches)
-            .collect();
-        std::thread::scope(|s| {
-            let mut handles = Vec::with_capacity(chunks.len());
-            for chunk in chunks {
-                let cfg = self.cfg.clone();
-                let goal = goal.clone();
-                let tail = tail.clone();
-                let batch = chunk.to_vec();
-                handles.push(s.spawn(move || score_batch(&cfg, &goal, &tail, &batch)));
-            }
-            for h in handles {
-                match h.join().unwrap_or_else(|_| Ok(Vec::new())) {
-                    Ok(scores) => all_scores.extend(scores),
-                    Err(e) => eprintln!("llm scorer batch failed: {e:#}"),
+            calls = chunks.len();
+            std::thread::scope(|s| {
+                let mut handles = Vec::with_capacity(chunks.len());
+                for chunk in chunks {
+                    let cfg = self.cfg.clone();
+                    let goal = goal.clone();
+                    let tail = tail.clone();
+                    let batch = chunk.to_vec();
+                    handles.push(s.spawn(move || score_batch(&cfg, &goal, &tail, &batch)));
                 }
-            }
-        });
+                for h in handles {
+                    match h.join() {
+                        Ok(Ok(scores)) => all_scores.extend(scores),
+                        Ok(Err(e)) => {
+                            failed += 1;
+                            eprintln!("llm scorer batch failed: {e:#}");
+                        }
+                        Err(_) => {
+                            failed += 1;
+                            eprintln!("llm scorer batch panicked; retaining heuristic scores");
+                        }
+                    }
+                }
+            });
 
-        let mut by_local: std::collections::HashMap<usize, f64> = all_scores
-            .into_iter()
-            .map(|s| (s.id, s.keep_probability.clamp(0.0, 1.0)))
-            .collect();
-        candidates
-            .iter()
-            .enumerate()
-            .map(|(local, &idx)| ScoredItem {
-                item_index: idx,
-                keep_probability: by_local.remove(&local).unwrap_or(0.5),
-            })
-            .collect()
+            let answers: Vec<(usize, f64)> = all_scores
+                .iter()
+                .map(|s| (s.id, s.keep_probability))
+                .collect();
+            overlaid = overlay_answers(&mut results, candidates, &answers);
+        }
+        eprintln!(
+            "llm: {} candidates in {calls} batch call(s), {overlaid} items overlaid, {failed} failed, {}ms",
+            inputs.len(),
+            started.elapsed().as_millis()
+        );
+        results
     }
 }
 
@@ -315,4 +352,103 @@ fn call_llm(request: &ChatCompletionRequest, cfg: &LlmConfig) -> anyhow::Result<
 /// to heuristic if the key is absent or the call fails.
 pub fn maybe_llm_scorer() -> Option<Box<dyn ScoreDriver>> {
     LlmConfig::resolve().map(|cfg| Box::new(LlmScorer::new(cfg)) as Box<dyn ScoreDriver>)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_item(line_index: usize, label: &str, summary: &str) -> gobstopper_core::TranscriptItem {
+        gobstopper_core::TranscriptItem {
+            line_index,
+            kind: gobstopper_core::ItemKind::ToolResult,
+            est_tokens: 10,
+            elidable_bytes: Some(40),
+            elidable_parts: 1,
+            label: label.into(),
+            summary: Some(summary.into()),
+            uuid: None,
+            parent_uuid: None,
+            tool_use_ids: Vec::new(),
+            payload_sha256: None,
+        }
+    }
+
+    fn test_transcript(items: Vec<gobstopper_core::TranscriptItem>) -> Transcript {
+        Transcript {
+            session: gobstopper_core::SessionHandle {
+                provider: gobstopper_core::Provider::Codex,
+                session_id: "s".into(),
+                path: std::path::PathBuf::from("/tmp/s.jsonl"),
+                cwd: None,
+                age_secs: 0,
+            },
+            items,
+            usage: Default::default(),
+        }
+    }
+
+    fn scored(item_index: usize, keep_probability: f64) -> ScoredItem {
+        ScoredItem {
+            item_index,
+            keep_probability,
+        }
+    }
+
+    #[test]
+    fn overlay_keeps_heuristic_for_unanswered_and_clamps_answers() {
+        let candidates = [4, 7, 9];
+        let mut results = vec![scored(4, 0.11), scored(7, 0.22), scored(9, 0.33)];
+        let overlaid = overlay_answers(&mut results, &candidates, &[(0, 1.7), (2, -0.4)]);
+        assert_eq!(overlaid, 2);
+        assert_eq!(results[0].keep_probability, 1.0);
+        assert_eq!(results[1].keep_probability, 0.22);
+        assert_eq!(results[2].keep_probability, 0.0);
+    }
+
+    #[test]
+    fn overlay_maps_answer_id_to_local_position_not_item_index() {
+        // The answer id is the position in `candidates` (the `[i]`
+        // bracket), so local 1 resolves to item_index 20 even when the
+        // results vector is not in candidate order.
+        let candidates = [10, 20];
+        let mut results = vec![scored(20, 0.5), scored(10, 0.4)];
+        let overlaid = overlay_answers(&mut results, &candidates, &[(1, 0.9)]);
+        assert_eq!(overlaid, 1);
+        assert_eq!(results[0].keep_probability, 0.9);
+        assert_eq!(results[1].keep_probability, 0.4);
+    }
+
+    #[test]
+    fn overlay_ignores_out_of_range_answer_ids() {
+        let candidates = [10, 20];
+        let mut results = vec![scored(10, 0.5), scored(20, 0.6)];
+        let overlaid = overlay_answers(&mut results, &candidates, &[(5, 0.1)]);
+        assert_eq!(overlaid, 0);
+        assert_eq!(results[0].keep_probability, 0.5);
+        assert_eq!(results[1].keep_probability, 0.6);
+    }
+
+    #[test]
+    fn overlay_preserves_heuristic_baseline_for_unanswered_items() {
+        let transcript = test_transcript(vec![
+            test_item(0, "exec", "cargo test: pass"),
+            test_item(1, "exec", "cargo build: ok"),
+        ]);
+        let candidates = [0, 1];
+        let mut results = HeuristicScorer.score(&transcript, &candidates);
+        let baseline: Vec<f64> = results.iter().map(|r| r.keep_probability).collect();
+
+        let overlaid = overlay_answers(&mut results, &candidates, &[(1, 0.9)]);
+        assert_eq!(overlaid, 1);
+        assert_eq!(results[0].keep_probability, baseline[0]);
+        assert_eq!(results[1].keep_probability, 0.9);
+
+        // No answers at all: the heuristic scores survive untouched.
+        let mut results = HeuristicScorer.score(&transcript, &candidates);
+        let overlaid = overlay_answers(&mut results, &candidates, &[]);
+        assert_eq!(overlaid, 0);
+        assert_eq!(results[0].keep_probability, baseline[0]);
+        assert_eq!(results[1].keep_probability, baseline[1]);
+    }
 }
