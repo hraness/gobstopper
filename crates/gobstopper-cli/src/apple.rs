@@ -43,6 +43,7 @@ pub(crate) fn timeout_ms() -> u64 {
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(180_000)
+        .clamp(100, 600_000)
 }
 
 /// Live availability check against the bridge binary. Prints the model's

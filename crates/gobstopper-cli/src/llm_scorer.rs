@@ -10,19 +10,24 @@
 //!   AI_GATEWAY_API_KEY  - bearer token
 //!   GOBSTOPPER_LLM_ENDPOINT - https://ai-gateway.vercel.sh/v1/chat/completions
 //!   GOBSTOPPER_LLM_MODEL    - google/gemini-2.5-flash-lite
-//!   GOBSTOPPER_LLM_TIMEOUT_MS - 20000
-//!   GOBSTOPPER_LLM_MAX_CANDIDATES - 64
-//!   GOBSTOPPER_LLM_BATCH_SIZE - 16
-//!   GOBSTOPPER_LLM_MAX_BATCHES - 4
+//!   GOBSTOPPER_LLM_TIMEOUT_MS - 30000 (100..30000)
+//!   GOBSTOPPER_LLM_MAX_CANDIDATES - 64 (0..256)
+//!   GOBSTOPPER_LLM_BATCH_SIZE - 16 (1..64)
+//!   GOBSTOPPER_LLM_MAX_BATCHES - 4 (0..16)
 
 use anyhow::{bail, Context};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::Instant;
 
 use gobstopper_core::{HeuristicScorer, ScoreDriver, ScoredItem, Transcript};
+
+const MAX_TIMEOUT_MS: u64 = 30_000;
+const MAX_CANDIDATES: usize = 256;
+const MAX_BATCH_SIZE: usize = 64;
+const MAX_BATCHES: usize = 16;
 
 #[derive(Debug, Clone, Default)]
 pub struct LlmConfig {
@@ -40,29 +45,40 @@ impl LlmConfig {
         let api_key = std::env::var("AI_GATEWAY_API_KEY")
             .ok()
             .or_else(|| std::env::var("GOBSTOPPER_LLM_API_KEY").ok())?;
-        Some(Self {
-            api_key,
-            endpoint: std::env::var("GOBSTOPPER_LLM_ENDPOINT")
-                .unwrap_or_else(|_| "https://ai-gateway.vercel.sh/v1/chat/completions".into()),
-            model: std::env::var("GOBSTOPPER_LLM_MODEL")
-                .unwrap_or_else(|_| "google/gemini-2.5-flash-lite".into()),
-            timeout_ms: std::env::var("GOBSTOPPER_LLM_TIMEOUT_MS")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(30_000),
-            max_candidates: std::env::var("GOBSTOPPER_LLM_MAX_CANDIDATES")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(64),
-            batch_size: std::env::var("GOBSTOPPER_LLM_BATCH_SIZE")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(16),
-            max_batches: std::env::var("GOBSTOPPER_LLM_MAX_BATCHES")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(4),
-        })
+        Some(
+            Self {
+                api_key,
+                endpoint: std::env::var("GOBSTOPPER_LLM_ENDPOINT")
+                    .unwrap_or_else(|_| "https://ai-gateway.vercel.sh/v1/chat/completions".into()),
+                model: std::env::var("GOBSTOPPER_LLM_MODEL")
+                    .unwrap_or_else(|_| "google/gemini-2.5-flash-lite".into()),
+                timeout_ms: std::env::var("GOBSTOPPER_LLM_TIMEOUT_MS")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(30_000),
+                max_candidates: std::env::var("GOBSTOPPER_LLM_MAX_CANDIDATES")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(64),
+                batch_size: std::env::var("GOBSTOPPER_LLM_BATCH_SIZE")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(16),
+                max_batches: std::env::var("GOBSTOPPER_LLM_MAX_BATCHES")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(4),
+            }
+            .bounded(),
+        )
+    }
+
+    fn bounded(mut self) -> Self {
+        self.timeout_ms = self.timeout_ms.clamp(100, MAX_TIMEOUT_MS);
+        self.max_candidates = self.max_candidates.min(MAX_CANDIDATES);
+        self.batch_size = self.batch_size.clamp(1, MAX_BATCH_SIZE);
+        self.max_batches = self.max_batches.min(MAX_BATCHES);
+        self
     }
 }
 
@@ -125,7 +141,7 @@ pub struct LlmScorer {
 impl LlmScorer {
     pub fn new(cfg: LlmConfig) -> Self {
         Self {
-            cfg,
+            cfg: cfg.bounded(),
             last_summary: Mutex::new(None),
         }
     }
@@ -188,8 +204,9 @@ pub(crate) fn scoring_context(
 /// Overlay model answers — keyed by the candidate's local position in
 /// the prompt (the `[id]` bracket, an index into `candidates`) — onto
 /// heuristic-seeded results. Each answered local is clamped into 0..=1;
-/// locals the model never answered keep their deterministic heuristic
-/// score. Returns the number of items overlaid.
+/// duplicate ids are first-answer-wins, and locals the model never answered
+/// keep their deterministic heuristic score. Returns the number of distinct
+/// items overlaid.
 pub(crate) fn overlay_answers(
     results: &mut [ScoredItem],
     candidates: &[usize],
@@ -201,11 +218,15 @@ pub(crate) fn overlay_answers(
         .map(|(position, item)| (item.item_index, position))
         .collect();
     let mut overlaid = 0;
+    let mut seen = HashSet::new();
     for &(local, probability) in answers {
         let Some(&item_index) = candidates.get(local) else {
             continue;
         };
         if let Some(&position) = positions.get(&item_index) {
+            if !seen.insert(position) {
+                continue;
+            }
             results[position].keep_probability = probability.clamp(0.0, 1.0);
             overlaid += 1;
         }
@@ -511,6 +532,33 @@ mod tests {
     }
 
     #[test]
+    fn config_bounds_request_geometry_and_timeout() {
+        let cfg = LlmConfig {
+            api_key: "x".into(),
+            endpoint: "http://localhost".into(),
+            model: "local".into(),
+            timeout_ms: u64::MAX,
+            max_candidates: usize::MAX,
+            batch_size: usize::MAX,
+            max_batches: usize::MAX,
+        }
+        .bounded();
+        assert_eq!(cfg.timeout_ms, MAX_TIMEOUT_MS);
+        assert_eq!(cfg.max_candidates, MAX_CANDIDATES);
+        assert_eq!(cfg.batch_size, MAX_BATCH_SIZE);
+        assert_eq!(cfg.max_batches, MAX_BATCHES);
+
+        let cfg = LlmConfig {
+            timeout_ms: 0,
+            batch_size: 0,
+            ..cfg
+        }
+        .bounded();
+        assert_eq!(cfg.timeout_ms, 100);
+        assert_eq!(cfg.batch_size, 1);
+    }
+
+    #[test]
     fn llm_http_auth_expands_from_environment_with_short_local_key() {
         let content = r#"{"scores":[{"id":0,"keep_probability":0.8}]}"#;
         let response = serde_json::json!({"choices": [{"message": {"content": content}}]});
@@ -579,7 +627,7 @@ mod tests {
     fn overlay_keeps_heuristic_for_unanswered_and_clamps_answers() {
         let candidates = [4, 7, 9];
         let mut results = vec![scored(4, 0.11), scored(7, 0.22), scored(9, 0.33)];
-        let overlaid = overlay_answers(&mut results, &candidates, &[(0, 1.7), (2, -0.4)]);
+        let overlaid = overlay_answers(&mut results, &candidates, &[(0, 1.7), (0, 0.2), (2, -0.4)]);
         assert_eq!(overlaid, 2);
         assert_eq!(results[0].keep_probability, 1.0);
         assert_eq!(results[1].keep_probability, 0.22);
