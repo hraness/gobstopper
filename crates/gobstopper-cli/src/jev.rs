@@ -6,7 +6,8 @@
 //! we ask one `noul` (yes/no probability) question per eligible item:
 //! "Does the output of `{label}` need to stay visible for the agent to
 //! continue?". The conversation is stripped of full tool payloads before
-//! it reaches the request — only sanitized labels and summaries are sent.
+//! it reaches the request. Bounded labels and summaries still include
+//! transcript-derived text: tool arguments, output tails, and user snippets.
 //!
 //! Calls are made via `curl` (spawning the system binary) so gobstopper
 //! needs no HTTP dependency. Batching keeps the request under Jev's 32k
@@ -14,10 +15,9 @@
 //!
 //! Request economy: identical question texts in one pass are asked once
 //! (the answer fans out to every matching item), and a process-local
-//! per-question cache reuses recent answers as session state evolves —
-//! under `watch` a grown transcript only pays for genuinely new
-//! questions. The eval judge keeps a stricter exact-request cache since
-//! its answers depend on the whole submitted context. Transient
+//! per-question cache reuses recent answers only for the same scoring
+//! state. A changed goal or conversation tail requires new judgments.
+//! The eval judge caches whole exact requests. Transient
 //! transport errors and HTTP 5xx retry once; auth rejections never do.
 //! Scorer and judge resolve the API key once per process, so `watch`
 //! does not re-read the OS credential store every pass.
@@ -37,9 +37,9 @@
 //!   GOBSTOPPER_JEV_CACHE_PATH     - ~/.local/share/gobstopper/jev-cache.json
 //!     (per-question answers persist across processes; the file holds
 //!     only sha256 key digests → probability + timestamp, never text)
-//!   GOBSTOPPER_JEV_CONTENT_BYTES  - 0 = labels only; >0 attaches an excerpt
-//!     capped at 1024 bytes per candidate. Jev is a remote API — content
-//!     only leaves the device when the user opts in.
+//!   GOBSTOPPER_JEV_CONTENT_BYTES  - 0 = labels and summaries only; >0
+//!     attaches an additional excerpt capped at 1024 bytes per candidate.
+//!     Jev is remote; enabling the scorer sends bounded transcript text.
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -131,9 +131,9 @@ pub struct JevConfig {
     pub max_batches: usize,
     pub parallelism: usize,
     pub timeout_ms: u64,
-    /// Bounded per-candidate excerpt bytes attached to each question.
-    /// Defaults to 0: Jev is a remote API, so the labels-only privacy
-    /// boundary stays unless the user opts in to content.
+    /// Additional per-candidate excerpt bytes attached to each question.
+    /// Defaults to 0. Adapter summaries still contain bounded transcript text
+    /// (arguments, output tails, and user snippets) sent to the remote API.
     pub content_bytes: usize,
 }
 
@@ -328,11 +328,10 @@ fn request_cache() -> &'static Mutex<ResponseCache<HashMap<String, f64>>> {
     CACHE.get_or_init(|| Mutex::new(ResponseCache::with_cap(CACHE_MAX_REQUESTS)))
 }
 
-/// Per-question cache: one probability per question text. The scorer
-/// reuses answers as session state evolves within the TTL — on a live
-/// `watch` session the tail shifts every pass, so an exact-request
-/// cache would almost never hit. The eval judge deliberately does not
-/// use this: its answers depend on the whole compacted context.
+/// Per-question cache: one probability per question and scoring state.
+/// Relevance depends on the current goal and tail, so question text alone
+/// cannot identify a reusable judgment. Questions can still be reused
+/// across different batches when their shared state is unchanged.
 fn question_cache() -> &'static Mutex<ResponseCache<f64>> {
     static CACHE: OnceLock<Mutex<ResponseCache<f64>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(ResponseCache::with_cap(CACHE_MAX_QUESTIONS)))
@@ -345,6 +344,24 @@ fn cache_key(endpoint: &str, api_key: &str, payload: &[u8]) -> CacheKey {
         hasher.update(part);
     }
     hasher.finalize().into()
+}
+
+fn question_cache_key(
+    endpoint: &str,
+    api_key: &str,
+    state: &serde_json::Value,
+    instructions: &str,
+) -> CacheKey {
+    // The namespace strands old question-only entries in both memory and
+    // disk caches without rewriting or deleting the existing cache file.
+    let payload = serde_json::to_vec(&(
+        "gobstopper/jev-question-v2",
+        "jev-latest",
+        state,
+        instructions,
+    ))
+    .expect("JSON scoring state and strings are serializable");
+    cache_key(endpoint, api_key, &payload)
 }
 
 fn request_cache_get(key: CacheKey, ttl: Option<Duration>) -> Option<HashMap<String, f64>> {
@@ -614,8 +631,8 @@ impl ScoreDriver for JevScorer {
         );
         let state = build_state(transcript, self.cfg.max_state_items);
 
-        // Optional content excerpts: remote API, so this stays labels-only
-        // unless the user opted in via GOBSTOPPER_JEV_CONTENT_BYTES.
+        // Additional content excerpts are separately opt-in. Labels and
+        // summaries already contain bounded transcript-derived text.
         let excerpts: std::collections::HashMap<usize, String> = if self.cfg.content_bytes > 0 {
             let lines: Vec<usize> = requested
                 .iter()
@@ -703,7 +720,8 @@ impl ScoreDriver for JevScorer {
 }
 
 /// Build a small state object from recent non-elided context. No full
-/// tool output is included — only sanitized labels/summaries.
+/// tool output is included, but summaries can contain output tails,
+/// tool arguments, and user snippets.
 fn build_state(transcript: &Transcript, max_items: usize) -> serde_json::Value {
     let tail = transcript
         .items
@@ -727,9 +745,9 @@ fn build_state(transcript: &Transcript, max_items: usize) -> serde_json::Value {
     })
 }
 
-/// The question text sent for one item — sanitized label and summary
-/// plus the optional opt-in excerpt. Also the dedup and per-question
-/// cache key: identical text is an identical remote question.
+/// The question text sent for one item — bounded label and summary
+/// plus the optional additional excerpt. Identical text can be deduped
+/// within one state; cached judgments are also bound to that state.
 fn question_instructions(
     item: &gobstopper_core::TranscriptItem,
     excerpts: &std::collections::HashMap<usize, String>,
@@ -798,7 +816,7 @@ fn fetch_chunk(
     let mut item_answers: Vec<(usize, f64)> = Vec::new();
     let mut missing: Vec<usize> = Vec::new();
     for (j, (instructions, members)) in chunk.iter().enumerate() {
-        let key = cache_key(&cfg.endpoint, &cfg.api_key, instructions.as_bytes());
+        let key = question_cache_key(&cfg.endpoint, &cfg.api_key, state, instructions);
         if let Some(probability) = question_cache_get(key, ttl) {
             cached += 1;
             item_answers.extend(members.iter().map(|&idx| (idx, probability)));
@@ -831,7 +849,7 @@ fn fetch_chunk(
                     let Some(&probability) = answers.get(&question_id) else {
                         continue;
                     };
-                    let key = cache_key(&cfg.endpoint, &cfg.api_key, chunk[j].0.as_bytes());
+                    let key = question_cache_key(&cfg.endpoint, &cfg.api_key, state, &chunk[j].0);
                     question_cache_put(key, probability, ttl);
                     item_answers.extend(chunk[j].1.iter().map(|&idx| (idx, probability)));
                 }
@@ -1491,7 +1509,12 @@ mod tests {
             ("warm question text".to_string(), vec![0]),
             ("cold question text".to_string(), vec![1]),
         ];
-        let warm = cache_key(&cfg.endpoint, &cfg.api_key, b"warm question text");
+        let warm = question_cache_key(
+            &cfg.endpoint,
+            &cfg.api_key,
+            &json!({}),
+            "warm question text",
+        );
         question_cache_put(warm, 0.3, ttl);
 
         let fetch = fetch_chunk(&json!({}), &chunk, 0, &cfg, ttl);
@@ -1517,6 +1540,54 @@ mod tests {
     }
 
     #[test]
+    fn fetch_chunk_rescores_identical_question_when_task_context_changes() {
+        let server = serve(vec![
+            (200, r#"{"answers":{"q_0_0":{"noul":0.1}}}"#.into()),
+            (200, r#"{"answers":{"q_0_0":{"noul":0.9}}}"#.into()),
+        ]);
+        let cfg = test_cfg(server.endpoint.clone());
+        let ttl = Some(Duration::from_secs(60));
+        let question = "Does this old test failure need to stay visible?";
+        let chunk = vec![(question.to_string(), vec![0])];
+        let old_state = json!({"tail_summary": [{"summary": "Update the documentation"}]});
+        let new_state = json!({"tail_summary": [{"summary": "Investigate that test failure"}]});
+
+        // A persisted answer from the former question-only scheme must
+        // not suppress the first context-bound judgment.
+        question_cache_put(
+            cache_key(&cfg.endpoint, &cfg.api_key, question.as_bytes()),
+            0.5,
+            ttl,
+        );
+        let first = fetch_chunk(&old_state, &chunk, 0, &cfg, ttl);
+        assert_eq!((first.cached, first.sent), (0, 1));
+        assert_eq!(first.item_answers, vec![(0, 0.1)]);
+
+        let changed = fetch_chunk(&new_state, &chunk, 0, &cfg, ttl);
+        assert_eq!((changed.cached, changed.sent), (0, 1));
+        assert_eq!(changed.item_answers, vec![(0, 0.9)]);
+
+        // Identical states still reuse answers, even in another batch.
+        let repeated = fetch_chunk(&new_state, &chunk, 2, &cfg, ttl);
+        assert_eq!((repeated.cached, repeated.sent), (1, 0));
+        assert_eq!(repeated.item_answers, vec![(0, 0.9)]);
+        let old_again = fetch_chunk(&old_state, &chunk, 3, &cfg, ttl);
+        assert_eq!((old_again.cached, old_again.sent), (1, 0));
+        assert_eq!(old_again.item_answers, vec![(0, 0.1)]);
+
+        let bodies = server.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&bodies[0]).unwrap()["state"],
+            old_state
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&bodies[1]).unwrap()["state"],
+            new_state
+        );
+    }
+
+    #[test]
     fn fetch_chunk_keeps_cached_answers_when_remote_fails() {
         // No canned responses: the connection is refused, the remote
         // half fails, and the cached half still overlays.
@@ -1527,7 +1598,7 @@ mod tests {
             ("warm text".to_string(), vec![0]),
             ("cold text".to_string(), vec![1]),
         ];
-        let warm = cache_key(&cfg.endpoint, &cfg.api_key, b"warm text");
+        let warm = question_cache_key(&cfg.endpoint, &cfg.api_key, &json!({}), "warm text");
         question_cache_put(warm, 0.4, ttl);
 
         let fetch = fetch_chunk(&json!({}), &chunk, 0, &cfg, ttl);
