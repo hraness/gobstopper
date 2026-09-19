@@ -17,14 +17,15 @@
 //! Windows Credential Manager / Linux kernel keyring).
 //!
 //!   GOBSTOPPER_JEV_ENDPOINT       - https://api.typesafe.ai/v1/systemone
-//!   GOBSTOPPER_JEV_MAX_Q          - 64 questions per call
-//!   GOBSTOPPER_JEV_MAX_STATE      - 40 state items
-//!   GOBSTOPPER_JEV_TIMEOUT_MS     - 8000
+//!   GOBSTOPPER_JEV_MAX_Q          - 64 questions per call (1..64)
+//!   GOBSTOPPER_JEV_MAX_STATE      - 40 state items (1..128)
+//!   GOBSTOPPER_JEV_MAX_BATCHES    - 4 calls per scoring pass (1..16)
+//!   GOBSTOPPER_JEV_TIMEOUT_MS     - 8000 (100..30000)
 //!   GOBSTOPPER_JEV_CACHE          - 0 disables response-cache reads
-//!   GOBSTOPPER_JEV_CACHE_TTL_SECS - 300; 0 disables response-cache reads
-//!   GOBSTOPPER_JEV_CONTENT_BYTES  - 0 = labels only; >0 attaches a bounded
-//!     per-candidate content excerpt to each question. Jev is a remote
-//!     API — content only leaves the device when the user opts in.
+//!   GOBSTOPPER_JEV_CACHE_TTL_SECS - 300; 0 disables reads (max 3600)
+//!   GOBSTOPPER_JEV_CONTENT_BYTES  - 0 = labels only; >0 attaches an excerpt
+//!     capped at 1024 bytes per candidate. Jev is a remote API — content
+//!     only leaves the device when the user opts in.
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -75,19 +76,61 @@ pub fn resolve_key() -> Option<(String, KeySource)> {
     crate::secrets::jev_key().map(|k| (k, KeySource::Keychain))
 }
 
+const DEFAULT_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
+const MAX_QUESTIONS_PER_CALL: usize = 64;
+const DEFAULT_MAX_STATE_ITEMS: usize = 40;
+const MAX_STATE_ITEMS: usize = 128;
+const DEFAULT_MAX_BATCHES: usize = 4;
+const MAX_BATCHES: usize = 16;
+const DEFAULT_TIMEOUT_MS: u64 = 8_000;
+const MIN_TIMEOUT_MS: u64 = 100;
+const MAX_TIMEOUT_MS: u64 = 30_000;
+const MAX_CONTENT_BYTES: usize = 1_024;
+const DEFAULT_CACHE_TTL_SECS: u64 = 300;
+const MAX_CACHE_TTL_SECS: u64 = 3_600;
+
+fn bounded_usize(value: Option<String>, default: usize, min: usize, max: usize) -> usize {
+    value
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(default)
+        .clamp(min, max)
+}
+
+fn bounded_u64(value: Option<String>, default: u64, min: u64, max: u64) -> u64 {
+    value
+        .and_then(|raw| raw.parse().ok())
+        .unwrap_or(default)
+        .clamp(min, max)
+}
+
 /// Runtime configuration for the Jev scorer. Lives in gobstopper.toml as
 /// `[scorer]` or `[scorer.jev]` depending on which design we ship.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct JevConfig {
     pub api_key: String,
     pub endpoint: String,
     pub max_questions_per_call: usize,
     pub max_state_items: usize,
+    pub max_batches: usize,
     pub timeout_ms: u64,
     /// Bounded per-candidate excerpt bytes attached to each question.
     /// Defaults to 0: Jev is a remote API, so the labels-only privacy
     /// boundary stays unless the user opts in to content.
     pub content_bytes: usize,
+}
+
+impl Default for JevConfig {
+    fn default() -> Self {
+        Self {
+            api_key: String::new(),
+            endpoint: DEFAULT_ENDPOINT.into(),
+            max_questions_per_call: MAX_QUESTIONS_PER_CALL,
+            max_state_items: DEFAULT_MAX_STATE_ITEMS,
+            max_batches: DEFAULT_MAX_BATCHES,
+            timeout_ms: DEFAULT_TIMEOUT_MS,
+            content_bytes: 0,
+        }
+    }
 }
 
 impl JevConfig {
@@ -102,26 +145,49 @@ impl JevConfig {
             Self {
                 api_key,
                 endpoint: std::env::var("GOBSTOPPER_JEV_ENDPOINT")
-                    .unwrap_or_else(|_| "https://api.typesafe.ai/v1/systemone".into()),
-                max_questions_per_call: std::env::var("GOBSTOPPER_JEV_MAX_Q")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(64),
-                max_state_items: std::env::var("GOBSTOPPER_JEV_MAX_STATE")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(40),
-                timeout_ms: std::env::var("GOBSTOPPER_JEV_TIMEOUT_MS")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(8_000),
-                content_bytes: std::env::var("GOBSTOPPER_JEV_CONTENT_BYTES")
-                    .ok()
-                    .and_then(|s| s.parse().ok())
-                    .unwrap_or(0),
+                    .unwrap_or_else(|_| DEFAULT_ENDPOINT.into()),
+                max_questions_per_call: bounded_usize(
+                    std::env::var("GOBSTOPPER_JEV_MAX_Q").ok(),
+                    MAX_QUESTIONS_PER_CALL,
+                    1,
+                    MAX_QUESTIONS_PER_CALL,
+                ),
+                max_state_items: bounded_usize(
+                    std::env::var("GOBSTOPPER_JEV_MAX_STATE").ok(),
+                    DEFAULT_MAX_STATE_ITEMS,
+                    1,
+                    MAX_STATE_ITEMS,
+                ),
+                max_batches: bounded_usize(
+                    std::env::var("GOBSTOPPER_JEV_MAX_BATCHES").ok(),
+                    DEFAULT_MAX_BATCHES,
+                    1,
+                    MAX_BATCHES,
+                ),
+                timeout_ms: bounded_u64(
+                    std::env::var("GOBSTOPPER_JEV_TIMEOUT_MS").ok(),
+                    DEFAULT_TIMEOUT_MS,
+                    MIN_TIMEOUT_MS,
+                    MAX_TIMEOUT_MS,
+                ),
+                content_bytes: bounded_usize(
+                    std::env::var("GOBSTOPPER_JEV_CONTENT_BYTES").ok(),
+                    0,
+                    0,
+                    MAX_CONTENT_BYTES,
+                ),
             },
             source,
         ))
+    }
+
+    fn bounded(mut self) -> Self {
+        self.max_questions_per_call = self.max_questions_per_call.clamp(1, MAX_QUESTIONS_PER_CALL);
+        self.max_state_items = self.max_state_items.clamp(1, MAX_STATE_ITEMS);
+        self.max_batches = self.max_batches.clamp(1, MAX_BATCHES);
+        self.timeout_ms = self.timeout_ms.clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
+        self.content_bytes = self.content_bytes.min(MAX_CONTENT_BYTES);
+        self
     }
 }
 
@@ -202,10 +268,12 @@ fn cache_ttl() -> Option<Duration> {
     if std::env::var("GOBSTOPPER_JEV_CACHE").as_deref() == Ok("0") {
         return None;
     }
-    let secs = std::env::var("GOBSTOPPER_JEV_CACHE_TTL_SECS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(300);
+    let secs = bounded_u64(
+        std::env::var("GOBSTOPPER_JEV_CACHE_TTL_SECS").ok(),
+        DEFAULT_CACHE_TTL_SECS,
+        0,
+        MAX_CACHE_TTL_SECS,
+    );
     (secs > 0).then(|| Duration::from_secs(secs))
 }
 
@@ -240,8 +308,17 @@ pub struct JevScorer {
 
 impl JevScorer {
     pub fn new(cfg: JevConfig) -> Self {
-        Self { cfg }
+        Self { cfg: cfg.bounded() }
     }
+}
+
+fn split_candidates(
+    candidates: &[usize],
+    max_questions_per_call: usize,
+    max_batches: usize,
+) -> (&[usize], &[usize]) {
+    let requested = max_questions_per_call.saturating_mul(max_batches);
+    candidates.split_at(candidates.len().saturating_sub(requested))
 }
 
 impl ScoreDriver for JevScorer {
@@ -249,15 +326,20 @@ impl ScoreDriver for JevScorer {
         if candidates.is_empty() {
             return Vec::new();
         }
+        let (neutral, requested) = split_candidates(
+            candidates,
+            self.cfg.max_questions_per_call,
+            self.cfg.max_batches,
+        );
         let state = build_state(transcript, self.cfg.max_state_items);
-        let chunks = candidates
+        let chunks = requested
             .chunks(self.cfg.max_questions_per_call)
             .collect::<Vec<_>>();
 
         // Optional content excerpts: remote API, so this stays labels-only
         // unless the user opted in via GOBSTOPPER_JEV_CONTENT_BYTES.
         let excerpts: std::collections::HashMap<usize, String> = if self.cfg.content_bytes > 0 {
-            let lines: Vec<usize> = candidates
+            let lines: Vec<usize> = requested
                 .iter()
                 .filter_map(|&idx| transcript.items.get(idx).map(|i| i.line_index))
                 .collect();
@@ -265,7 +347,7 @@ impl ScoreDriver for JevScorer {
                 &transcript.session.path,
                 &lines,
                 self.cfg.content_bytes,
-                self.cfg.content_bytes.saturating_mul(candidates.len()),
+                self.cfg.content_bytes.saturating_mul(requested.len()),
             )
             .map(|v| v.into_iter().collect())
             .unwrap_or_default()
@@ -273,9 +355,16 @@ impl ScoreDriver for JevScorer {
             Default::default()
         };
 
-        let mut results: Vec<ScoredItem> = Vec::with_capacity(candidates.len());
+        let mut results: Vec<ScoredItem> = neutral
+            .iter()
+            .map(|&item_index| ScoredItem {
+                item_index,
+                keep_probability: 0.5,
+            })
+            .collect();
+        results.reserve(requested.len());
         for (chunk_idx, chunk) in chunks.iter().enumerate() {
-            let request = build_request(&state, chunk, transcript, &excerpts);
+            let request = build_request(&state, chunk, transcript, &excerpts, chunk_idx);
             match call_jev(&request, &self.cfg) {
                 Ok(probs) => {
                     for (i, &idx) in chunk.iter().enumerate() {
@@ -334,6 +423,7 @@ fn build_request(
     chunk: &[usize],
     transcript: &Transcript,
     excerpts: &std::collections::HashMap<usize, String>,
+    chunk_index: usize,
 ) -> JevRequest {
     let mut questions = serde_json::Map::new();
     for (i, &idx) in chunk.iter().enumerate() {
@@ -348,7 +438,7 @@ fn build_request(
                 .map(|e| format!(" Content excerpt: {e}"))
                 .unwrap_or_default();
             questions.insert(
-                format!("q_0_{i}"),
+                format!("q_{chunk_index}_{i}"),
                 serde_json::to_value(NoulQuestion {
                     qtype: "noul",
                     instructions: format!(
@@ -637,6 +727,82 @@ mod tests {
         assert!(state.contains("[gobstopper state card]"));
         assert!(state.contains("tests passed"));
         assert!(!state.starts_with('x'));
+    }
+
+    #[test]
+    fn runtime_knobs_are_bounded() {
+        assert_eq!(bounded_usize(Some("0".into()), 7, 1, 64), 1);
+        assert_eq!(bounded_usize(Some("999".into()), 7, 1, 64), 64);
+        assert_eq!(bounded_usize(Some("bad".into()), 7, 1, 64), 7);
+        assert_eq!(
+            bounded_u64(
+                Some("0".into()),
+                DEFAULT_TIMEOUT_MS,
+                MIN_TIMEOUT_MS,
+                MAX_TIMEOUT_MS
+            ),
+            MIN_TIMEOUT_MS
+        );
+
+        let scorer = JevScorer::new(JevConfig {
+            max_questions_per_call: 0,
+            max_state_items: usize::MAX,
+            max_batches: 0,
+            timeout_ms: u64::MAX,
+            content_bytes: usize::MAX,
+            ..Default::default()
+        });
+        assert_eq!(scorer.cfg.max_questions_per_call, 1);
+        assert_eq!(scorer.cfg.max_state_items, MAX_STATE_ITEMS);
+        assert_eq!(scorer.cfg.max_batches, 1);
+        assert_eq!(scorer.cfg.timeout_ms, MAX_TIMEOUT_MS);
+        assert_eq!(scorer.cfg.content_bytes, MAX_CONTENT_BYTES);
+    }
+
+    #[test]
+    fn candidate_batches_keep_the_tail_and_question_ids_do_not_collide() {
+        let candidates: Vec<usize> = (0..10).collect();
+        let (neutral, requested) = split_candidates(&candidates, 2, 2);
+        assert_eq!(neutral, &[0, 1, 2, 3, 4, 5]);
+        assert_eq!(requested, &[6, 7, 8, 9]);
+
+        let transcript = Transcript {
+            session: gobstopper_core::SessionHandle {
+                provider: gobstopper_core::Provider::Codex,
+                session_id: "s".into(),
+                path: std::path::PathBuf::from("/tmp/s.jsonl"),
+                cwd: None,
+                age_secs: 0,
+            },
+            items: vec![gobstopper_core::TranscriptItem {
+                line_index: 0,
+                kind: gobstopper_core::ItemKind::ToolResult,
+                est_tokens: 10,
+                elidable_bytes: Some(40),
+                elidable_parts: 1,
+                label: "exec".into(),
+                summary: Some("tests".into()),
+                uuid: None,
+                parent_uuid: None,
+                tool_use_ids: Vec::new(),
+                payload_sha256: None,
+            }],
+            usage: Default::default(),
+        };
+        let request = build_request(&json!({}), &[0], &transcript, &HashMap::new(), 3);
+        assert!(request.questions.contains_key("q_3_0"));
+        assert!(!request.questions.contains_key("q_0_0"));
+        assert!(!request.questions["q_3_0"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Content excerpt"));
+
+        let excerpts = HashMap::from([(0, "bounded content".to_string())]);
+        let with_content = build_request(&json!({}), &[0], &transcript, &excerpts, 3);
+        assert!(with_content.questions["q_3_0"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("Content excerpt: bounded content"));
     }
 
     #[test]

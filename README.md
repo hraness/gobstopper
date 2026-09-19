@@ -195,9 +195,15 @@ working from env alone. Linux kernel-keyring entries are session-scoped and
 do not survive a reboot; use an environment variable for persistent
 noninteractive Linux automation. On macOS, a self-built unsigned binary may
 show a one-time keychain access prompt on first read.
-`GOBSTOPPER_JEV_CONTENT_BYTES` (default `0`) opts in to attaching bounded
-per-candidate content excerpts to each question — Jev is a remote API, so
-content only leaves the device when explicitly enabled.
+`GOBSTOPPER_JEV_CONTENT_BYTES` (default `0`, maximum `1024`) opts in to
+attaching bounded per-candidate content excerpts to each question — Jev is a
+remote API, so content only leaves the device when explicitly enabled.
+Every numeric runtime knob is clamped: 1–64 questions per call, 1–128 state
+items, 100–30,000 ms timeout, and 1–16 batches per scoring pass
+(`GOBSTOPPER_JEV_MAX_BATCHES`, default `4`). Only the newest
+`MAX_Q × MAX_BATCHES` tailward candidates are sent; an older prefix remains
+neutral at `0.5`. This caps the default at four calls and 256 remote-scored
+candidates even for unusually large transcripts.
 
 `eval` and `bench` now honor `GOBSTOPPER_SCORER` for their `scored` row, so
 an A/B run measures the same Jev or Apple ranking used by `plan` rather than
@@ -235,7 +241,7 @@ while periodically refreshing against the remote model. The cache stores
 only parsed probabilities (not transcript text), clears at 64 entries, and
 never caches failures. Set `GOBSTOPPER_JEV_CACHE=0` or
 `GOBSTOPPER_JEV_CACHE_TTL_SECS=0` to disable reads; change the TTL with the
-latter variable.
+latter variable (maximum 3,600 seconds).
 
 `GOBSTOPPER_SCORER=apple` (macOS 26+, Apple Silicon) scores on-device with
 Apple Intelligence Foundation Models via the shared `apple-foundation`
