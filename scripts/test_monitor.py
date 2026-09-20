@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -19,6 +20,10 @@ SPEC.loader.exec_module(monitor)
 A = "01a00000-aaaa-7000-aaaa-aaaaaaaaaaaa"
 B = "01a00000-bbbb-7000-bbbb-bbbbbbbbbbbb"
 UNRELATED = "01a00000-cccc-7000-cccc-cccccccccccc"
+RESOURCE_FIELDS = {
+    "user_cpu_us", "system_cpu_us", "minor_page_faults", "major_page_faults",
+    "voluntary_context_switches", "involuntary_context_switches",
+}
 
 
 def report(context=100000, native=2):
@@ -90,6 +95,83 @@ else:
 
     def sample(self, sessions=None):
         return monitor.observe(self.binary, self.output, sessions or [A, B])
+
+    def assert_resources(self, value):
+        self.assertIsInstance(value, dict)
+        self.assertEqual(set(value), RESOURCE_FIELDS)
+        for counter in value.values():
+            self.assertIs(type(counter), int)
+            self.assertGreaterEqual(counter, 0)
+            self.assertLessEqual(counter, 2**64 - 1)
+
+    def test_successful_children_have_bounded_numeric_resource_deltas(self):
+        observation = self.sample()
+        for command in ("report", "watch"):
+            self.assertIsNone(observation[command]["error"])
+            self.assertEqual(observation[command]["exit_code"], 0)
+            self.assert_resources(observation[command]["resources"])
+        self.assertGreater(observation["report"]["resources"]["user_cpu_us"], 0)
+
+    def test_timeout_child_is_reaped_and_unstarted_watch_has_no_resources(self):
+        pid_file = self.root / "timeout.pid"
+        with patch.dict(os.environ, {"STUB_SLEEP": "30", "STUB_PID": str(pid_file)}), \
+                patch.object(monitor, "TIMEOUT_SECONDS", 0.5):
+            observation = self.sample()
+        self.assertEqual(observation["report"]["error"], "timeout")
+        self.assert_resources(observation["report"]["resources"])
+        self.assertEqual(observation["watch"]["error"], "timeout")
+        self.assertIsNone(observation["watch"]["resources"])
+        self.assertIsNone(observation["watch"]["exit_code"])
+        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(pid_file.read_text()), 0)
+
+    def test_resource_read_failure_preserves_result_and_timeout_cleanup(self):
+        environment = dict(os.environ, XDG_CONFIG_HOME=str(self.root))
+        with patch.object(monitor.resource, "getrusage", side_effect=RuntimeError("PRIVATE_METRIC_ERROR")):
+            result, _, _ = monitor.run_command(
+                [str(self.binary), "unsupported"], environment, time.monotonic() + 3)
+        self.assertEqual(result["error"], "command_failed")
+        self.assertEqual(result["exit_code"], 9)
+        self.assertIsNone(result["resources"])
+        self.assertNotIn("PRIVATE", json.dumps(result))
+
+        pid_file = self.root / "metric-failure.pid"
+        environment.update(STUB_SLEEP="30", STUB_PID=str(pid_file))
+        before = monitor.child_resources()
+        with patch.object(monitor.resource, "getrusage", side_effect=[before, RuntimeError("PRIVATE_METRIC_ERROR")]):
+            result, _, _ = monitor.run_command(
+                [str(self.binary), "report", "--active-only"], environment, time.monotonic() + 0.5)
+        self.assertEqual(result["error"], "timeout")
+        self.assertIsNone(result["resources"])
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(pid_file.read_text()), 0)
+
+    def test_unavailable_resource_module_does_not_hide_success(self):
+        with patch.object(monitor, "resource", None):
+            observation = self.sample()
+        for command in ("report", "watch"):
+            self.assertEqual(observation[command]["exit_code"], 0)
+            self.assertIsNone(observation[command]["error"])
+            self.assertIsNone(observation[command]["resources"])
+
+    def test_resource_counter_validation_rejects_invalid_and_regressing_values(self):
+        before = SimpleNamespace(ru_utime=1.25, ru_stime=0.5, ru_minflt=10,
+                                 ru_majflt=2, ru_nvcsw=30, ru_nivcsw=7)
+        after = SimpleNamespace(ru_utime=1.5, ru_stime=0.5, ru_minflt=14,
+                                ru_majflt=2, ru_nvcsw=35, ru_nivcsw=9)
+        self.assertEqual(monitor.resource_delta(before, after), {
+            "user_cpu_us": 250000, "system_cpu_us": 0, "minor_page_faults": 4,
+            "major_page_faults": 0, "voluntary_context_switches": 5,
+            "involuntary_context_switches": 2,
+        })
+        for invalid in (float("nan"), float("inf"), -1, True, "PRIVATE", 2**128):
+            with self.subTest(invalid_type=type(invalid).__name__):
+                broken = SimpleNamespace(**{field: invalid for field in vars(after)})
+                self.assertEqual(set(monitor.resource_delta(before, broken).values()), {None})
+        self.assertEqual(set(monitor.resource_delta(after, before).values()), {None, 0})
+        self.assertIsNone(monitor.resource_delta(before, object()))
+        self.assertIsNone(monitor.resource_delta(None, after))
 
     def test_realistic_samples_are_private_allowlisted_and_nonmutating(self):
         source = self.transcript.read_bytes()

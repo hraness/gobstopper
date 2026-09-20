@@ -6,6 +6,7 @@ import datetime
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -16,6 +17,11 @@ import subprocess
 import tempfile
 import time
 import uuid
+
+try:
+    import resource
+except ImportError:
+    resource = None
 
 SCHEMA = "gobstopper/local-monitor-v1"
 LOG_BYTES = 10 * 1024 * 1024
@@ -40,6 +46,44 @@ def interrupt(_signal, _frame):
 
 def number(value):
     return value if type(value) is int and 0 <= value <= 2**64 - 1 else None
+
+
+def child_resources():
+    """Best-effort aggregate counters; this monitor runs one child at a time."""
+    try:
+        return resource.getrusage(resource.RUSAGE_CHILDREN)
+    except Exception:
+        return None
+
+
+def resource_delta(before, after):
+    """Never let optional diagnostics replace a command result or cleanup."""
+    if before is None or after is None:
+        return None
+    try:
+        result = {}
+        for name, field, scale in (
+            ("user_cpu_us", "ru_utime", 1_000_000),
+            ("system_cpu_us", "ru_stime", 1_000_000),
+            ("minor_page_faults", "ru_minflt", 1),
+            ("major_page_faults", "ru_majflt", 1),
+            ("voluntary_context_switches", "ru_nvcsw", 1),
+            ("involuntary_context_switches", "ru_nivcsw", 1),
+        ):
+            start, end = getattr(before, field), getattr(after, field)
+            value = None
+            if scale == 1:
+                if number(start) is not None and number(end) is not None:
+                    value = number(end - start)
+            elif (type(start) in (int, float) and type(end) in (int, float)
+                  and math.isfinite(start) and math.isfinite(end) and 0 <= start <= end):
+                delta = (end - start) * scale
+                if math.isfinite(delta) and 0 <= delta <= 2**64 - 1:
+                    value = number(round(delta))
+            result[name] = value
+        return result
+    except Exception:
+        return None
 
 
 def private_file(fd):
@@ -103,11 +147,15 @@ def binary_hash(path):
 
 def run_command(arguments, environment, deadline):
     started = time.monotonic()
-    result = {"exit_code": None, "duration_ms": 0, "error": None}
+    result = {"exit_code": None, "duration_ms": 0, "error": None, "resources": None}
     output = [bytearray(), bytearray()]
     child = None
+    resources_before = None
     try:
         if started >= deadline:
+            raise MonitorError("timeout")
+        resources_before = child_resources()
+        if time.monotonic() >= deadline:
             raise MonitorError("timeout")
         child = subprocess.Popen(arguments, env=environment, stdin=subprocess.DEVNULL,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
@@ -149,6 +197,8 @@ def run_command(arguments, environment, deadline):
             child.wait()
             child.stdout.close()
             child.stderr.close()
+            # Sample only after reaping, including timeout-killed children.
+            result["resources"] = resource_delta(resources_before, child_resources())
         result["duration_ms"] = round((time.monotonic() - started) * 1000)
     return result, bytes(output[0]), bytes(output[1])
 
