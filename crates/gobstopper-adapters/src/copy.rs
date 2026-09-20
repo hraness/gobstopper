@@ -37,7 +37,21 @@ pub struct CopyReceipt {
     pub bytes_after: u64,
     pub reclaimed_bytes: u64,
     pub snapshot_sha256: String,
+    /// Vault object identity for bounded recovery. The older snapshot_sha256
+    /// field remains the source-byte digest for compatibility with receipts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_manifest_sha256: Option<String>,
     pub completed: bool,
+}
+
+fn verify_snapshot_reference(receipt: &CopyReceipt, root: &Path) -> anyhow::Result<()> {
+    if let Some(snapshot) = &receipt.snapshot_manifest_sha256 {
+        let original = vault::read_object(snapshot, root)?;
+        if sha256(&original) != receipt.source_sha256 {
+            bail!("copy receipt recovery snapshot does not match source");
+        }
+    }
+    Ok(())
 }
 
 pub fn compact(
@@ -102,6 +116,7 @@ pub fn compact(
         {
             bail!("copy receipt identity mismatch");
         }
+        verify_snapshot_reference(&receipt, vault_root)?;
         if transaction::read(&receipt.path)
             .map(|b| sha256(&b) == receipt.output_sha256)
             .unwrap_or(false)
@@ -167,6 +182,7 @@ pub fn compact(
         bytes_after,
         reclaimed_bytes: original.len() as u64 - bytes_after,
         snapshot_sha256: snapshot.source_sha256,
+        snapshot_manifest_sha256: Some(snapshot.sha256),
         completed: false,
     };
     let intent = serde_json::to_vec(&receipt)?;
@@ -269,6 +285,7 @@ pub fn compact_via_compacted(
         {
             bail!("copy receipt identity mismatch");
         }
+        verify_snapshot_reference(&receipt, vault_root)?;
         if transaction::read(&receipt.path)
             .map(|b| sha256(&b) == receipt.output_sha256)
             .unwrap_or(false)
@@ -333,6 +350,7 @@ pub fn compact_via_compacted(
         bytes_after,
         reclaimed_bytes: original.len().saturating_sub(output.len() as usize) as u64,
         snapshot_sha256: snapshot.source_sha256,
+        snapshot_manifest_sha256: Some(snapshot.sha256),
         completed: false,
     };
     let intent = serde_json::to_vec(&receipt)?;

@@ -1,0 +1,334 @@
+{
+  "schema": "gobstopper-public-recovery-study-result-v1",
+  "study_date": "2026-09-20",
+  "started_at": "2026-09-20T01:46:03.204929+00:00",
+  "scope": "Public synthetic recovery API admission: 36 snapshots across 12 related families, plus one malformed-record robustness fixture. Known queries and expected byte strings; no private corpus, model calls, provider resume or task continuation.",
+  "summary": {
+    "sample_count": 36,
+    "provider_count": 2,
+    "family_count": 12,
+    "additional_robustness_snapshots": 1,
+    "total_checks": 553,
+    "passed_checks": 553,
+    "failed_checks": 0,
+    "commands": 989,
+    "wall_seconds": 12.548,
+    "exact_record_recoveries": 108,
+    "exact_record_recovery_targets": 108,
+    "positive_search_targets_found": 108,
+    "positive_search_targets": 108,
+    "negative_query_checks": 144,
+    "bounded_search_checks": 36,
+    "baseline_state_card_queries_found": 18,
+    "candidate_state_card_queries_found": 108,
+    "state_card_query_denominator_per_backend": 108,
+    "local_model_calls": 0,
+    "remote_model_calls": 0
+  },
+  "provenance": {
+    "baseline_binary_sha256": "15fc7f16f37b2177d25a0dc6e7d3ba6772e292d844096c45560481d8c44bc51c",
+    "candidate_binary_sha256": "4b66b073562a753504a52f2402feaf47bc50b5785841e145b937786382056f10",
+    "runner_sha256": "a09d56a5d3bdb5da63b2af3d9b9b44a6b799a9d189ae61d8249b5d84fb3869ab"
+  },
+  "baseline_recovery_capabilities": {
+    "search-snapshot": "unsupported",
+    "read-snapshot": "unsupported"
+  },
+  "checks": [
+    {
+      "check": "baseline_v3_read_compatibility",
+      "total": 36,
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "check": "exact_read_fact",
+      "total": 36,
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "check": "exact_read_long",
+      "total": 36,
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "check": "exact_read_unicode",
+      "total": 36,
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "check": "integrity_fail_closed",
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "check": "invalid_input_0",
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "check": "invalid_input_1",
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "check": "invalid_input_2",
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "check": "invalid_input_3",
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "check": "invalid_input_4",
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "check": "invalid_input_5",
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "check": "invalid_input_6",
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "check": "invalid_input_7",
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "check": "invalid_input_8",
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "check": "limited_search",
+      "total": 36,
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "check": "malformed_physical_records",
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "check": "mcp_default_denial_and_opt_in",
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    {
+      "check": "negative_search_absent",
+      "total": 36,
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "check": "negative_search_case_sensitive",
+      "total": 36,
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "check": "negative_search_keys_not_values",
+      "total": 36,
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "check": "negative_search_other_version",
+      "total": 36,
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "check": "positive_search_fact",
+      "total": 36,
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "check": "positive_search_long",
+      "total": 36,
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "check": "positive_search_unicode",
+      "total": 36,
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "check": "recall_current",
+      "total": 36,
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "check": "recall_error",
+      "total": 36,
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "check": "recall_goal",
+      "total": 36,
+      "passed": 36,
+      "failed": 0
+    },
+    {
+      "check": "unicode_boundary_pagination",
+      "total": 1,
+      "passed": 1,
+      "failed": 0
+    }
+  ],
+  "recall": [
+    {
+      "backend": "baseline",
+      "provider": "codex",
+      "field": "goal",
+      "queries": 18,
+      "found": 0,
+      "absent": 18
+    },
+    {
+      "backend": "baseline",
+      "provider": "codex",
+      "field": "error",
+      "queries": 18,
+      "found": 0,
+      "absent": 18
+    },
+    {
+      "backend": "baseline",
+      "provider": "codex",
+      "field": "current",
+      "queries": 18,
+      "found": 0,
+      "absent": 18
+    },
+    {
+      "backend": "baseline",
+      "provider": "claude_code",
+      "field": "goal",
+      "queries": 18,
+      "found": 18,
+      "absent": 0
+    },
+    {
+      "backend": "baseline",
+      "provider": "claude_code",
+      "field": "error",
+      "queries": 18,
+      "found": 0,
+      "absent": 18
+    },
+    {
+      "backend": "baseline",
+      "provider": "claude_code",
+      "field": "current",
+      "queries": 18,
+      "found": 0,
+      "absent": 18
+    },
+    {
+      "backend": "candidate",
+      "provider": "codex",
+      "field": "goal",
+      "queries": 18,
+      "found": 18,
+      "absent": 0
+    },
+    {
+      "backend": "candidate",
+      "provider": "codex",
+      "field": "error",
+      "queries": 18,
+      "found": 18,
+      "absent": 0
+    },
+    {
+      "backend": "candidate",
+      "provider": "codex",
+      "field": "current",
+      "queries": 18,
+      "found": 18,
+      "absent": 0
+    },
+    {
+      "backend": "candidate",
+      "provider": "claude_code",
+      "field": "goal",
+      "queries": 18,
+      "found": 18,
+      "absent": 0
+    },
+    {
+      "backend": "candidate",
+      "provider": "claude_code",
+      "field": "error",
+      "queries": 18,
+      "found": 18,
+      "absent": 0
+    },
+    {
+      "backend": "candidate",
+      "provider": "claude_code",
+      "field": "current",
+      "queries": 18,
+      "found": 18,
+      "absent": 0
+    }
+  ],
+  "immutability": {
+    "original_vault_and_fixtures_unchanged": true,
+    "binaries_unchanged": true,
+    "frozen_registration_and_script_hashes_verified": true,
+    "vault_object_integrity_independently_verified": true
+  },
+  "bounds": {
+    "command_timeout_seconds": 20,
+    "command_output_bytes": 4194304,
+    "page_bytes": 4096,
+    "max_pages_per_record": 64,
+    "max_commands": 2200,
+    "study_timeout_seconds": 600
+  },
+  "timing": {
+    "command_wall_ms_median": 9.947000013198704,
+    "command_wall_ms_max": 349.3999580095988,
+    "interpretation": "Descriptive runtime across mixed CLI and MCP checks on one machine in one pass. Not a compaction or backend speed comparison."
+  },
+  "interpretation": "The candidate located and recovered every predeclared target exactly, including bounded Unicode pagination and cross-chunk records. State-card queries improved because the implementation now reads portable Codex cards and searches errors/current work. These mechanically chosen queries do not establish agent task-quality improvement.",
+  "limitations": [
+    "Entirely synthetic public data; no private provider transcript or model invocation.",
+    "Recovery API correctness is separate from in-context retention, useful search selection, task success, or provider resume.",
+    "Known target queries and deterministic facts are an oracle; this is not an agent reasoning or semantic retrieval benchmark.",
+    "Directly seeded v3 vault exercises the public read path; it does not prove snapshot creation or compaction-to-recovery pointer wiring.",
+    "Multiple versions share families; counts are cases, not independent tasks.",
+    "No generalized speed or backend superiority claim; unsupported baseline commands are capability observations."
+  ],
+  "privacy": "Synthetic public fixtures only. No private transcript, session identifier, per-case record, input hash, model prompt or machine path is included in this export."
+}

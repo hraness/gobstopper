@@ -617,9 +617,9 @@ pub struct RecallDigest {
 /// Search the vault for state-card digests belonging to `session`.
 ///
 /// `session` is a session-id prefix or a transcript path. `query`, if
-/// given, is a case-insensitive substring matched against goal, decisions,
-/// files, and open tasks. `sha` restricts the search to one snapshot.
-/// Results are newest-first by snapshot timestamp, then by record order.
+/// given, is a case-insensitive substring matched against every state-card
+/// text field. `sha` restricts the search to matching snapshot prefixes.
+/// Results rank match counts, then newest snapshot timestamps.
 pub fn recall(
     session: &str,
     query: Option<&str>,
@@ -663,9 +663,14 @@ pub fn recall(
             };
             let hay = [
                 digest.goal.as_deref().unwrap_or(""),
+                digest.summary.as_deref().unwrap_or(""),
+                &digest.concepts.join("\n"),
                 &digest.decisions.join("\n"),
                 &digest.files_touched.join("\n"),
+                &digest.errors.join("\n"),
                 &digest.open_tasks.join("\n"),
+                digest.current_work.as_deref().unwrap_or(""),
+                digest.context.as_deref().unwrap_or(""),
             ]
             .join("\n")
             .to_lowercase();
@@ -689,11 +694,38 @@ pub fn recall(
 }
 
 /// Extract the gobstopper state-card text from a single transcript record
-/// bytes, if one exists. Claude carries it in a `user` message; Codex
-/// carries it as the first `replacement_history` item of a `compacted`
-/// record.
+/// bytes, if one exists. Claude carries it in a `user` message; Codex uses
+/// a portable user response message or the first replacement-history item
+/// of an experimental `compacted` record. Card text is untrusted history.
 fn extract_digest_text(line: &[u8]) -> Option<String> {
     let record: serde_json::Value = serde_json::from_slice(line).ok()?;
+
+    // The default portable Codex writer appends a user response message.
+    // Do not accept lookalike markers in assistant messages or tool outputs.
+    if record.get("type").and_then(|v| v.as_str()) == Some("response_item") {
+        let payload = record.get("payload")?;
+        if payload.get("type").and_then(|v| v.as_str()) == Some("message")
+            && payload.get("role").and_then(|v| v.as_str()) == Some("user")
+        {
+            if let Some(text) =
+                payload
+                    .get("content")
+                    .and_then(|v| v.as_array())
+                    .and_then(|items| {
+                        items.iter().find_map(|item| {
+                            (item.get("type").and_then(|v| v.as_str()) == Some("input_text"))
+                                .then(|| item.get("text").and_then(|v| v.as_str()))
+                                .flatten()
+                                .filter(|text| {
+                                    text.starts_with(gobstopper_core::plan::DigestBlock::MARKER)
+                                })
+                        })
+                    })
+            {
+                return Some(text.to_string());
+            }
+        }
+    }
 
     // Claude: a user record with a plain string message.content.
     if record.get("type").and_then(|v| v.as_str()) == Some("user") {

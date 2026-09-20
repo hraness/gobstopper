@@ -19,31 +19,22 @@ snapshotted and never overwritten by standalone `apply` or `watch`.
 
 ## Why
 
-Providers compact late. Codex fires auto-compaction at ~90% of the model's
-context window; Claude Code similar. On a 1M-token window that means every
-turn near the end of a long session costs ~900k input tokens — and on
-subscription plans, those tokens come out of your weekly allowance.
+Long coding sessions mix stale tool output with details the next turn may
+need: an exact error, a constraint, or unfinished work. A smaller context is
+useful only if the agent can still do the job.
 
-Context is a sawtooth problem. If you compact at trigger `T` and the
-summary floor is `F`, steady-state *context occupancy* per turn is roughly
-`(T+F)/2`:
+Gobstopper makes that tradeoff inspectable. Preview a compaction, preserve
+the exact source, and recover a specific archived record when a summary
+isn't enough. Local rules work without a model; optional scorers change
+selection without replacing the snapshot and verification safeguards.
 
-| policy | trigger | floor | avg context/turn | relative occupancy |
-|---|---|---|---|---|
-| provider default (1M window) | ~900k | ~60k | ~480k | 1.0x |
-| gobstopper default | 250k | 40k | ~145k | ~3.3x lower occupancy |
-| gobstopper aggressive | 150k | 20k | ~85k | ~5.6x lower occupancy |
+Standalone compaction prepares a separate fork. Each provider runtime owns
+its loaded context; a background observer cannot replace it. Context
+reduction, successful continuation, recovery overhead, and billed usage are
+different measurements. The [published studies](https://gobstopper.sh/benchmarks)
+report their cohorts, no-ops, retention tradeoffs, and limitations separately.
 
-This is an **occupancy model**, not a measured subscription savings claim.
-Actual token cost depends on cache hit rates, whether summary turns are
-billed, re-fetches caused by lost detail, and how often compaction itself
-runs. Anthropic documents that clearing tool results can
-[invalidate the prompt cache](https://platform.claude.com/docs/en/build-with-claude/context-editing).
-gobstopper reports measured file-byte changes and observed provider usage
-where available; it does not project dollar or quota savings into its
-public claims.
-
-## Infinite memory
+## Recoverable history
 
 Every standalone compaction writes the exact source bytes into a
 content-addressed vault (`~/.local/share/gobstopper/vault/`) before publishing
@@ -57,6 +48,49 @@ query relevance, and returns the high-level state of the matching turns.
 The agent does not need to remember session IDs — it can ask for the last
 time it worked on a file, a goal, or a decision and get a ranked summary
 with a snapshot SHA it can `show` or `diff`.
+
+### Recover a specific detail
+
+When a state card omits an exact error, identifier, or tool result, search
+one verified snapshot and read only the matching record:
+
+```sh
+gobstopper search-snapshot <full-snapshot-sha> --query 'exact error text' --json
+gobstopper read-snapshot <full-snapshot-sha> --record 42 --max-bytes 4096 --json
+```
+
+Search returns record indexes and hashes, without archived content. It matches
+literal, case-sensitive substrings in decoded JSON string values, including
+native replacement histories. Reading returns a UTF-8 page of the physical
+JSONL record; follow `next_offset` for another page. Each page is capped at
+16 KiB and bound to the snapshot, source, and full record hashes. These commands
+verify stored bytes and never restore files, rewrite active sessions, or call a
+model. Invalid records are counted as unsearchable rather than silently claimed
+as searched.
+
+Search returns at most 50 references and reports the full match count; narrow
+the query when results are truncated. Each search or read verifies and
+reconstructs the bounded snapshot, up to 128 MiB. Paging a large record repeats
+that work; this is not an indexed random-access or semantic search service.
+
+Use the full object SHA from `history`, the native hook recovery pointer, or
+the new `snapshot_manifest_sha256` field in copy receipts. The older
+`snapshot_sha256` receipt field retains its source-byte-digest meaning.
+Older receipts can still be resolved through vault history. State-card recall
+also recognizes default portable Codex cards and searches every state field,
+including unresolved errors and current work; a new fork's card becomes
+searchable after that fork is snapshotted.
+
+For agents, snapshot search and content reads are available only when the MCP
+server is explicitly started with `gobstopper mcp --allow-transcript-content`.
+The default MCP registration does not advertise or permit either new tool.
+Opting in makes retrieved archived text visible to the connected agent/model
+service. Retrieved text is untrusted historical data, and may describe an old
+or superseded state; it is never an instruction to follow.
+
+Exact recovery is a capability, not proof that an agent will recognize a
+missing fact, choose a useful query, or complete its task more accurately.
+Measure those outcomes separately from context reduction and literal retention.
 
 `gobstopper mcp` exposes a read-only Model Context Protocol server on stdio —
 tools `policy_check`, `list_sessions`, `recall`, `history`, `show`, `diff`,

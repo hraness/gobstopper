@@ -342,3 +342,96 @@ describe("published September 19 compaction study", () => {
     expect(study.retention_accounting).toContain("128 of 192 retained probes are derived");
   });
 });
+
+describe("published September 20 synthetic recovery study", () => {
+  const directory = "public/benchmarks/2026-09-20";
+
+  test("keeps API check and state-card denominators distinct", async () => {
+    const study = record(JSON.parse(await read(`${directory}/recovery-study-results.json`)) as unknown, "recovery study");
+    const protocol = record(JSON.parse(await read(`${directory}/recovery-study-protocol.json`)) as unknown, "recovery protocol");
+    expect(Object.keys(study).sort()).toEqual([
+      "baseline_recovery_capabilities", "bounds", "checks", "immutability", "interpretation", "limitations",
+      "privacy", "provenance", "recall", "schema", "scope", "started_at", "study_date", "summary", "timing",
+    ]);
+    expect(Object.keys(protocol).sort()).toEqual([
+      "additional_robustness_snapshots", "bounds", "candidate_rule", "cross_chunk_fact_samples", "escaped_unicode_samples",
+      "evaluation", "families_per_provider", "fixture_seed", "limitations", "malformed_record_accounting", "metrics",
+      "privacy", "provider_counts", "public_reproduction", "read_contract", "registered_before_outcomes", "sample_count",
+      "schema", "search_contract", "selection", "separate_from_private_session_studies", "unsupported_baseline_rule", "versions_per_family",
+    ]);
+    expect(study.schema).toBe("gobstopper-public-recovery-study-result-v1");
+    expect(protocol.schema).toBe("gobstopper-public-recovery-study-protocol-v1");
+    const summary = record(study.summary, "recovery totals");
+    expect(Object.keys(summary).sort()).toEqual([
+      "additional_robustness_snapshots", "baseline_state_card_queries_found", "bounded_search_checks",
+      "candidate_state_card_queries_found", "commands", "exact_record_recoveries", "exact_record_recovery_targets",
+      "failed_checks", "family_count", "local_model_calls", "negative_query_checks", "passed_checks",
+      "positive_search_targets", "positive_search_targets_found", "provider_count", "remote_model_calls",
+      "sample_count", "state_card_query_denominator_per_backend", "total_checks", "wall_seconds",
+    ]);
+    expect(Object.values(summary).every((value) => typeof value === "number" && Number.isFinite(value))).toBe(true);
+    expect(summary.sample_count).toBe(protocol.sample_count);
+    expect(summary.additional_robustness_snapshots).toBe(1);
+    expect(protocol.additional_robustness_snapshots).toBe(1);
+    const providers = record(protocol.provider_counts, "provider counts");
+    expect(providers).toEqual({ codex: 18, claude_code: 18 });
+    expect(summary.sample_count).toBe(Object.values(providers).reduce<number>((sum, value) => sum + (value as number), 0));
+    expect(summary.family_count).toBe((protocol.families_per_provider as number) * (summary.provider_count as number));
+    expect(summary.sample_count).toBe((summary.family_count as number) * (protocol.versions_per_family as number));
+    expect(protocol.registered_before_outcomes).toBe(true);
+    expect(protocol.separate_from_private_session_studies).toBe(true);
+    expect(summary.local_model_calls).toBe(0);
+    expect(summary.remote_model_calls).toBe(0);
+    expect(Array.isArray(study.checks)).toBe(true);
+    const checks = (study.checks as unknown[]).map((value) => record(value, "recovery check"));
+    for (const check of checks) {
+      expect(Object.keys(check).sort()).toEqual(["check", "failed", "passed", "total"]);
+      expect(check.check).toMatch(/^(?:baseline_v3_read_compatibility|exact_read_(?:fact|long|unicode)|integrity_fail_closed|invalid_input_[0-8]|limited_search|malformed_physical_records|mcp_default_denial_and_opt_in|negative_search_(?:absent|case_sensitive|keys_not_values|other_version)|positive_search_(?:fact|long|unicode)|recall_(?:current|error|goal)|unicode_boundary_pagination)$/u);
+      for (const key of ["total", "passed", "failed"]) expect(Number.isInteger(check[key]) && (check[key] as number) >= 0).toBe(true);
+      expect(check.total).toBe((check.passed as number) + (check.failed as number));
+    }
+    expect(new Set(checks.map((check) => check.check)).size).toBe(checks.length);
+    const sumChecks = (prefix: string, key: string): number => checks
+      .filter((check) => (check.check as string).startsWith(prefix))
+      .reduce((sum, check) => sum + (check[key] as number), 0);
+    expect(summary.total_checks).toBe(sumChecks("", "total"));
+    expect(summary.passed_checks).toBe(sumChecks("", "passed"));
+    expect(summary.failed_checks).toBe(sumChecks("", "failed"));
+    expect(summary.exact_record_recovery_targets).toBe(sumChecks("exact_read_", "total"));
+    expect(summary.exact_record_recoveries).toBe(sumChecks("exact_read_", "passed"));
+    expect(summary.positive_search_targets).toBe(sumChecks("positive_search_", "total"));
+    expect(summary.positive_search_targets_found).toBe(sumChecks("positive_search_", "passed"));
+    expect(summary.negative_query_checks).toBe(sumChecks("negative_search_", "total"));
+    expect(summary.bounded_search_checks).toBe(sumChecks("limited_search", "total"));
+    expect(Array.isArray(study.recall)).toBe(true);
+    const recall = (study.recall as unknown[]).map((value) => record(value, "state-card aggregate"));
+    for (const row of recall) {
+      expect(Object.keys(row).sort()).toEqual(["absent", "backend", "field", "found", "provider", "queries"]);
+      expect(["baseline", "candidate"]).toContain(row.backend as string);
+      expect(["codex", "claude_code"]).toContain(row.provider as string);
+      expect(["goal", "error", "current"]).toContain(row.field as string);
+      expect(row.queries).toBe((row.found as number) + (row.absent as number));
+    }
+    expect(new Set(recall.map((row) => `${row.backend}/${row.provider}/${row.field}`)).size).toBe(12);
+    expect(recall).toHaveLength(12);
+    for (const backend of ["baseline", "candidate"]) {
+      const rows = recall.filter((row) => row.backend === backend);
+      expect(rows.reduce((sum, row) => sum + (row.queries as number), 0)).toBe(summary.state_card_query_denominator_per_backend as number);
+      expect(rows.reduce((sum, row) => sum + (row.found as number), 0)).toBe(summary[`${backend}_state_card_queries_found`] as number);
+    }
+    expect(study.baseline_recovery_capabilities).toEqual({ "search-snapshot": "unsupported", "read-snapshot": "unsupported" });
+    const provenance = record(study.provenance, "recovery provenance");
+    expect(Object.keys(provenance).sort()).toEqual(["baseline_binary_sha256", "candidate_binary_sha256", "runner_sha256"]);
+    for (const value of Object.values(provenance)) expect(value).toMatch(/^[a-f0-9]{64}$/u);
+    expect(study.bounds).toEqual(protocol.bounds);
+  });
+
+  test("exports no private inputs, per-case records or machine locations", async () => {
+    for (const name of ["recovery-study-results.json", "recovery-study-protocol.json"]) {
+      const text = await read(`${directory}/${name}`);
+      expect(text).not.toMatch(/\/Users\/|\/home\/|rollout-|session-\d{4}/u);
+      expect(text).not.toMatch(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/u);
+      expect(text).not.toMatch(/"(?:samples|rows|sample|session_id|path|snapshot|source_sha256|snapshot_sha256|manifest|manifest_sha256|missed_probes|argv|environment)"\s*:/u);
+    }
+  });
+});

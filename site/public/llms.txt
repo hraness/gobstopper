@@ -11,7 +11,7 @@ When to use this site:
 
 - [Gobstopper](https://gobstopper.sh/): earlier, smarter context compaction for coding agents — detection, an edit IR, strategies, presets, an undo vault, and telemetry.
 - [Gobstopper documentation](https://gobstopper.sh/docs): the complete Gobstopper README.
-- [Gobstopper benchmarks](https://gobstopper.sh/benchmarks): the 729-session offline study and separately dated historical live trials.
+- [Gobstopper benchmarks](https://gobstopper.sh/benchmarks): the 729-session offline study, public synthetic archive-recovery checks, and separately dated historical live trials.
 
 ## Optional
 

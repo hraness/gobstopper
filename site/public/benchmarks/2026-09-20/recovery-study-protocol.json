@@ -1,0 +1,51 @@
+{
+  "schema": "gobstopper-public-recovery-study-protocol-v1",
+  "registered_before_outcomes": true,
+  "selection": "All 36 deterministic public fixtures; no outcome-dependent exclusion or replacement.",
+  "sample_count": 36,
+  "provider_counts": {
+    "codex": 18,
+    "claude_code": 18
+  },
+  "families_per_provider": 6,
+  "versions_per_family": 3,
+  "fixture_seed": "public-recovery-v1",
+  "cross_chunk_fact_samples": 6,
+  "escaped_unicode_samples": 18,
+  "candidate_rule": "Copy and SHA-pin the exact provided release executable before any candidate commands; record provenance before outcomes.",
+  "search_contract": "Case-sensitive literal substring over decoded JSON string values only; no object-key matches or raw JSON escape matching. Require a full 64-character snapshot digest. Limit 1–50 results, default 20. Count all matching records, return at most the limit as metadata, and expose unsearchable_records, matched_records and truncated.",
+  "read_contract": "Return exact raw UTF-8 JSONL record bytes without the newline. Require a full 64-character snapshot digest, zero-based record index, a valid UTF-8 byte offset, and max_bytes from 4 through 16,384. Encoded content must fit that byte limit. next_offset is the exact byte continuation or null at the end.",
+  "evaluation": "For every fixture, baseline show checks compatibility with the seeded v3 vault. The candidate searches for three known targets and reads each exact record, paging long records in at most 4 KiB chunks. Negative queries cover absent facts, other versions, case sensitivity and object keys. A broad query with limit 2 checks total matches and truncation. Compare baseline and candidate state-card recall separately for goal, error and current-work fields. Additional checks cover malformed records, invalid inputs, UTF-8 boundaries, corrupt objects, and MCP default denial versus explicit enablement.",
+  "bounds": {
+    "command_timeout_seconds": 20,
+    "command_output_bytes": 4194304,
+    "page_bytes": 4096,
+    "max_pages_per_record": 64,
+    "max_commands": 2200,
+    "study_timeout_seconds": 600
+  },
+  "unsupported_baseline_rule": "Record new recovery commands as unsupported on old binary; do not count unsupported as retrieval failure or compare their speed.",
+  "metrics": [
+    "exact search targets and match counts",
+    "byte-exact recovered record and paged reconstruction",
+    "source and pinned binary unchanged",
+    "bounded output and malformed-record accounting",
+    "version isolation",
+    "recall shape/field coverage",
+    "default MCP gate and opt-in success",
+    "closed failure counts and descriptive latency"
+  ],
+  "limitations": [
+    "Entirely synthetic public data; no private provider transcript or model invocation.",
+    "Recovery API correctness is separate from in-context retention, useful search selection, task success, or provider resume.",
+    "Known target queries and deterministic facts are an oracle; this is not an agent reasoning or semantic retrieval benchmark.",
+    "Directly seeded v3 vault exercises the public read path; it does not prove snapshot creation or compaction-to-recovery pointer wiring.",
+    "Multiple versions share families; counts are cases, not independent tasks.",
+    "No generalized speed or backend superiority claim; unsupported baseline commands are capability observations."
+  ],
+  "additional_robustness_snapshots": 1,
+  "malformed_record_accounting": "One malformed JSON line and one empty physical line count as unsearchable. A valid numeric JSON line has no searchable strings; the final newline is not another record.",
+  "privacy": "Synthetic public fixtures only. No private transcript, session identifier, per-case record, input hash, model prompt or machine path is included in this export.",
+  "separate_from_private_session_studies": true,
+  "public_reproduction": "scripts/recovery-study/README.md describes generating the same fixtures from source using caller-supplied baseline and candidate executables."
+}
