@@ -1,5 +1,7 @@
 use gobstopper_adapters::{claude, codex, vault, verify};
-use gobstopper_core::strategy::{CacheEditsStrategy, DedupeStrategy, PolicyConfig, Strategy};
+use gobstopper_core::strategy::{
+    CacheAwareStrategy, CacheEditsStrategy, DedupeStrategy, PolicyConfig, Strategy,
+};
 use gobstopper_core::{DigestBlock, Edit, Provider, SessionHandle};
 use serde_json::{json, Value};
 use std::fs;
@@ -59,6 +61,67 @@ fn apply(
         Provider::Codex => codex::apply(path, edits),
         Provider::ClaudeCode => claude::apply(path, edits),
     }
+}
+
+fn assert_unicode_state_card_plan(provider: Provider) {
+    let dir = Scratch::new();
+    let path = dir.0.join("unicode-goal.jsonl");
+    let goal = format!("{}🙂z", "a".repeat(116));
+    assert_eq!(goal.len(), 121);
+    let records = match provider {
+        Provider::Codex => vec![
+            json!({"type":"session_meta","payload":{"id":"audit"}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":goal}]}}),
+            json!({"type":"response_item","payload":{"type":"function_call","call_id":"t1","name":"read_file","arguments":"{}"}}),
+            json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"t1","output":"x".repeat(20_000)}}),
+        ],
+        Provider::ClaudeCode => vec![
+            json!({"type":"user","uuid":"u1","parentUuid":null,"sessionId":"audit","message":{"role":"user","content":goal}}),
+            json!({"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"audit","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"read_file","input":{}}]}}),
+            json!({"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"audit","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"x".repeat(20_000)}]}}),
+        ],
+    };
+    let original = records
+        .iter()
+        .map(|record| format!("{record}\n"))
+        .collect::<String>();
+    fs::write(&path, &original).unwrap();
+    let transcript = match provider {
+        Provider::Codex => codex::load(handle(provider, &path)),
+        Provider::ClaudeCode => claude::load(handle(provider, &path)),
+    }
+    .unwrap();
+    let policy = PolicyConfig {
+        trigger_tokens: 1,
+        floor_tokens: 100,
+        keep_recent_tool_outputs: 0,
+        ..Default::default()
+    };
+    let plan = CacheAwareStrategy.evaluate(&transcript, &policy).unwrap();
+    gobstopper_core::validation::validate_edits(&transcript, &policy, &plan.edits).unwrap();
+    let digest = plan
+        .edits
+        .iter()
+        .find_map(|edit| match edit {
+            Edit::InjectDigest { digest } => Some(digest),
+            _ => None,
+        })
+        .unwrap();
+    assert_eq!(digest.goal.as_deref(), Some(goal.as_str()));
+    assert_eq!(digest.summary, Some(format!("{}...", "a".repeat(116))));
+    assert!(digest.summary.as_ref().unwrap().len() <= 120);
+    assert!(plan.est_savings() >= policy.min_savings_tokens);
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
+fn unicode_state_card_codex_adapter_goal_reaches_valid_plan() {
+    assert_unicode_state_card_plan(Provider::Codex);
+}
+
+#[test]
+fn unicode_state_card_claude_adapter_goal_reaches_valid_plan() {
+    assert_unicode_state_card_plan(Provider::ClaudeCode);
 }
 
 #[test]
