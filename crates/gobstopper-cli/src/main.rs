@@ -1155,6 +1155,16 @@ fn session_rows(cli: &Cli, all: bool) -> Vec<serde_json::Value> {
         .collect()
 }
 
+/// Shorten display-only text without splitting UTF-8 or exceeding the existing
+/// byte budget. Stored identities and machine-readable output stay untouched.
+fn display_prefix(value: &str, max_bytes: usize) -> &str {
+    let mut end = value.len().min(max_bytes);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    &value[..end]
+}
+
 fn cmd_detect(cli: &Cli, all: bool, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&session_rows(cli, all))?);
@@ -1174,7 +1184,7 @@ fn cmd_detect(cli: &Cli, all: bool, json: bool) -> Result<()> {
         println!(
             "{:<12} {:<38} {:<6} {:>12} {:>14}  {}",
             d.handle.provider.as_str(),
-            &d.handle.session_id[..d.handle.session_id.len().min(38)],
+            display_prefix(&d.handle.session_id, 38),
             if d.handle.is_active() { "live" } else { "idle" },
             d.usage.context_tokens,
             d.usage.lifetime_input_tokens,
@@ -1303,7 +1313,7 @@ fn cmd_vault(cli: &Cli, cfg: &config::Config, session: Option<&str>, json: bool)
             e.provider.as_str(),
             e.bytes,
             e.strategy.as_deref().unwrap_or("-"),
-            &e.session_id[..e.session_id.len().min(12)],
+            display_prefix(&e.session_id, 12),
             e.path.display(),
         );
     }
@@ -1330,7 +1340,7 @@ fn cmd_history(cli: &Cli, cfg: &config::Config, session: &str, json: bool) -> Re
             e.bytes,
             e.record_count,
             e.strategy.as_deref().unwrap_or("-"),
-            &e.session_id[..e.session_id.len().min(12)],
+            display_prefix(&e.session_id, 12),
             e.path.display(),
         );
     }
@@ -2560,7 +2570,7 @@ fn cmd_watch(
                         eprintln!(
                             "[dry-run] {} {}: {}",
                             d.handle.provider.as_str(),
-                            &d.handle.session_id[..d.handle.session_id.len().min(12)],
+                            display_prefix(&d.handle.session_id, 12),
                             plan.rationale
                         );
                         continue;
@@ -3110,6 +3120,37 @@ fn _assert_error_surface(e: AdapterError) -> anyhow::Error {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn display_prefix_preserves_utf8_and_existing_byte_budgets() {
+        for limit in [12, 38] {
+            for ch in ['é', '界', '😀'] {
+                let crossing = format!("{}{ch}tail", "a".repeat(limit - 1));
+                assert_eq!(display_prefix(&crossing, limit), "a".repeat(limit - 1));
+                let boundary = format!("{}{ch}tail", "a".repeat(limit - ch.len_utf8()));
+                let prefix = display_prefix(&boundary, limit);
+                assert_eq!(prefix.len(), limit);
+                assert!(prefix.ends_with(ch));
+            }
+        }
+        assert_eq!(display_prefix("😀", 0), "");
+        assert_eq!(display_prefix("😀", 3), "");
+        assert_eq!(display_prefix("😀", 4), "😀");
+    }
+
+    #[test]
+    fn display_prefix_preserves_ascii_and_short_values() {
+        let ascii = "a".repeat(50);
+        for limit in [0, 12, 38, 50, usize::MAX] {
+            assert_eq!(
+                display_prefix(&ascii, limit),
+                &ascii[..limit.min(ascii.len())]
+            );
+        }
+        assert_eq!(display_prefix("", 12), "");
+        assert_eq!(display_prefix("short", 12), "short");
+        assert_eq!(display_prefix("é界😀", 12), "é界😀");
+    }
 
     /// Use an immutable executable fixture: tests never write/chmod the file
     /// they execute. Each invocation logs under its explicit CODEX_HOME.
