@@ -3013,46 +3013,11 @@ fn _assert_error_surface(e: AdapterError) -> anyhow::Error {
 mod tests {
     use super::*;
     use std::fs;
-    use std::os::unix::fs::PermissionsExt;
 
-    /// Write a fake `codex` app-server: logs every inbound JSON-RPC line to
-    /// `requests.log` beside itself and answers initialize/resume/compact.
-    /// The emitted `turn/completed` status is keyed on the thread id so one
-    /// stub covers success, provider failure, and request-error paths.
-    fn stub_codex(dir: &std::path::Path) -> PathBuf {
-        let path = dir.join("codex-stub");
-        fs::write(
-            &path,
-            r#"#!/bin/sh
-log="$(dirname "$0")/requests.log"
-while IFS= read -r line; do
-  printf '%s\n' "$line" >> "$log"
-  case "$line" in
-    *'"initialize"'*) printf '{"id":0,"result":{}}\n' ;;
-    *'"thread/resume"'*)
-      case "$line" in
-        *bad-resume*) printf '{"id":1,"error":{"message":"cannot resume an unloaded multi-agent v2 sub-agent through its parent"}}\n' ;;
-        *) printf '{"id":1,"result":{}}\n' ;;
-      esac ;;
-    *'"thread/compact/start"'*)
-      case "$line" in
-        *fail-thread*)
-          printf '{"id":2,"result":{}}\n'
-          printf '{"method":"turn/completed","params":{"threadId":"fail-thread","turn":{"status":"failed","error":{"message":"usage limit exceeded"}}}}\n' ;;
-        *error-thread*) printf '{"id":2,"error":{"message":"thread not found"}}\n' ;;
-        *)
-          printf '{"id":2,"result":{}}\n'
-          printf '{"method":"turn/completed","params":{"threadId":"ok-thread","turn":{"status":"completed"}}}\n' ;;
-      esac ;;
-  esac
-done
-"#,
-        )
-        .unwrap();
-        let mut perms = fs::metadata(&path).unwrap().permissions();
-        perms.set_mode(0o700);
-        fs::set_permissions(&path, perms).unwrap();
-        path
+    /// Use an immutable executable fixture: tests never write/chmod the file
+    /// they execute. Each invocation logs under its explicit CODEX_HOME.
+    fn stub_codex() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/codex-app-server.sh")
     }
 
     fn tempdir(tag: &str) -> PathBuf {
@@ -3066,8 +3031,8 @@ done
     #[test]
     fn codex_compact_initializes_resumes_then_compacts() {
         let dir = tempdir("happy");
-        let stub = stub_codex(&dir);
-        codex_compact(&stub, "ok-thread", None).unwrap();
+        let stub = stub_codex();
+        codex_compact(&stub, "ok-thread", Some(&dir)).unwrap();
         let log = fs::read_to_string(dir.join("requests.log")).unwrap();
         let methods: Vec<String> = log
             .lines()
@@ -3099,8 +3064,8 @@ done
     #[test]
     fn codex_compact_reports_failed_turn_as_error() {
         let dir = tempdir("failed");
-        let stub = stub_codex(&dir);
-        let err = codex_compact(&stub, "fail-thread", None).unwrap_err();
+        let stub = stub_codex();
+        let err = codex_compact(&stub, "fail-thread", Some(&dir)).unwrap_err();
         assert!(err.to_string().contains("failed"), "got: {err:#}");
         assert!(err.to_string().contains("usage limit"), "got: {err:#}");
         let _ = fs::remove_dir_all(&dir);
@@ -3109,10 +3074,10 @@ done
     #[test]
     fn codex_compact_propagates_request_errors() {
         let dir = tempdir("err");
-        let stub = stub_codex(&dir);
-        let err = codex_compact(&stub, "bad-resume", None).unwrap_err();
+        let stub = stub_codex();
+        let err = codex_compact(&stub, "bad-resume", Some(&dir)).unwrap_err();
         assert!(err.to_string().contains("cannot resume"), "got: {err:#}");
-        let err = codex_compact(&stub, "error-thread", None).unwrap_err();
+        let err = codex_compact(&stub, "error-thread", Some(&dir)).unwrap_err();
         assert!(err.to_string().contains("thread not found"), "got: {err:#}");
         let _ = fs::remove_dir_all(&dir);
     }
