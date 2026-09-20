@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 
+import { FoilController } from "./foil-controller";
+
 import {
   GITHUB_URL,
   SITE_DESCRIPTION,
@@ -133,6 +135,7 @@ export default function RootLayout({
   return (
     <html lang="en" data-hraness-theme="paper" data-hraness-material="lantern">
       <body>
+        <FoilController />
         <script
           dangerouslySetInnerHTML={{ __html: serializeJsonLd(structuredData) }}
           type="application/ld+json"
