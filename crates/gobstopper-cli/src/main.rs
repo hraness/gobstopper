@@ -550,16 +550,88 @@ fn maybe_scorer() -> Option<Box<dyn gobstopper_core::ScoreDriver>> {
     driver
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+enum NoPlanReason {
+    BelowTrigger,
+    StrategyReturnedNoPlan,
+    EmptyExternalEdits,
+    MinimumSavingsNotMet,
+    ExternalNonreducingPlan,
+}
+
+/// Numeric diagnostics captured during the original evaluation. A policy target
+/// is not an achievable floor; projections exist only for a rejected proposal.
+#[derive(Debug, serde::Serialize)]
+struct NoPlanReport {
+    status: &'static str,
+    reason_code: NoPlanReason,
+    context_tokens_before: u64,
+    effective_trigger_tokens: u64,
+    target_context_tokens: u64,
+    min_savings_tokens: u64,
+    projected_context_tokens_after: Option<u64>,
+    projected_savings_tokens: Option<u64>,
+    #[serde(skip)]
+    adaptive_reasons: Vec<&'static str>,
+}
+
+impl NoPlanReport {
+    fn new(
+        before: u64,
+        policy: &gobstopper_core::PolicyConfig,
+        adaptive_reasons: Vec<&'static str>,
+    ) -> Self {
+        Self {
+            status: "no_plan",
+            reason_code: NoPlanReason::StrategyReturnedNoPlan,
+            context_tokens_before: before,
+            effective_trigger_tokens: policy.effective_trigger(),
+            target_context_tokens: policy.floor_tokens,
+            min_savings_tokens: policy.min_savings_tokens,
+            projected_context_tokens_after: None,
+            projected_savings_tokens: None,
+            adaptive_reasons,
+        }
+    }
+
+    fn reject(mut self, reason: NoPlanReason, projection: Option<(u64, u64)>) -> Evaluation {
+        self.reason_code = reason;
+        if let Some((before, after)) = projection {
+            self.context_tokens_before = before;
+            self.projected_context_tokens_after = Some(after);
+            self.projected_savings_tokens = Some(before.saturating_sub(after));
+        }
+        Evaluation::NoPlan(self)
+    }
+}
+
+enum Evaluation {
+    Plan(CompactionPlan),
+    NoPlan(NoPlanReport),
+}
+
 fn evaluate(
     transcript: &gobstopper_core::Transcript,
     resolved: &config::Resolved,
 ) -> Result<Option<CompactionPlan>> {
+    Ok(match evaluate_detailed(transcript, resolved)? {
+        Evaluation::Plan(plan) => Some(plan),
+        Evaluation::NoPlan(_) => None,
+    })
+}
+
+fn evaluate_detailed(
+    transcript: &gobstopper_core::Transcript,
+    resolved: &config::Resolved,
+) -> Result<Evaluation> {
     config::validate_policy(&resolved.policy)?;
     let (policy, adaptive_reasons) = effective_policy(transcript, resolved);
     config::validate_policy(&policy)?;
     let before = transcript.context_tokens();
+    let diagnostic = NoPlanReport::new(before, &policy, adaptive_reasons);
     if before < policy.effective_trigger() {
-        return Ok(None);
+        return Ok(diagnostic.reject(NoPlanReason::BelowTrigger, None));
     }
     if let Some(selection) = &resolved.plugin {
         let checked = plugins::check(&selection.manifest)?;
@@ -602,7 +674,13 @@ fn evaluate(
             content,
         };
         let response = plugins::invoke(&selection.manifest, &selection.trusted_sha256, &request)?;
-        return external_plan(transcript, &policy, &resolved.strategy, response.edits);
+        return external_plan(
+            transcript,
+            &policy,
+            &resolved.strategy,
+            response.edits,
+            diagnostic,
+        );
     }
     // Userspace command preset: feed the normalized transcript, read edits.
     if let Some(command) = &resolved.command {
@@ -612,12 +690,7 @@ fn evaluate(
         let plan_json = run_preset_command(command, transcript)?;
         let edits: Vec<Edit> = serde_json::from_value(plan_json["edits"].clone())
             .context("preset command returned invalid edits")?;
-        // An empty edit list is the command's defer answer — report no plan
-        // rather than applying nothing and recording a phantom compaction.
-        if edits.is_empty() {
-            return Ok(None);
-        }
-        return external_plan(transcript, &policy, &resolved.strategy, edits);
+        return external_plan(transcript, &policy, &resolved.strategy, edits, diagnostic);
     }
     let mut plan = if resolved.strategy == "scored" {
         let candidates = ScoredStrategy::candidates(transcript, &policy);
@@ -645,17 +718,23 @@ fn evaluate(
         gobstopper_core::validation::validate_edits(transcript, &policy, &plan.edits)
             .map_err(anyhow::Error::msg)?;
         if !policy.accepts_savings(plan.context_tokens_before, plan.context_tokens_after) {
-            return Ok(None);
+            return Ok(diagnostic.reject(
+                NoPlanReason::MinimumSavingsNotMet,
+                Some((plan.context_tokens_before, plan.context_tokens_after)),
+            ));
         }
-        if !adaptive_reasons.is_empty() {
+        if !diagnostic.adaptive_reasons.is_empty() {
             plan.rationale = format!(
                 "{} | adaptive: {}",
                 plan.rationale,
-                adaptive_reasons.join(", ")
+                diagnostic.adaptive_reasons.join(", ")
             );
         }
     }
-    Ok(plan)
+    Ok(match plan {
+        Some(plan) => Evaluation::Plan(plan),
+        None => diagnostic.reject(NoPlanReason::StrategyReturnedNoPlan, None),
+    })
 }
 
 fn external_plan(
@@ -663,9 +742,10 @@ fn external_plan(
     policy: &gobstopper_core::PolicyConfig,
     strategy_id: &str,
     edits: Vec<Edit>,
-) -> Result<Option<CompactionPlan>> {
+    diagnostic: NoPlanReport,
+) -> Result<Evaluation> {
     if edits.is_empty() {
-        return Ok(None);
+        return Ok(diagnostic.reject(NoPlanReason::EmptyExternalEdits, None));
     }
     gobstopper_core::validation::validate_edits(transcript, policy, &edits)
         .map_err(anyhow::Error::msg)?;
@@ -697,10 +777,13 @@ fn external_plan(
             }
         }
     }
-    if after >= before || !policy.accepts_savings(before, after) {
-        return Ok(None);
+    if after >= before {
+        return Ok(diagnostic.reject(NoPlanReason::ExternalNonreducingPlan, Some((before, after))));
     }
-    Ok(Some(CompactionPlan {
+    if !policy.accepts_savings(before, after) {
+        return Ok(diagnostic.reject(NoPlanReason::MinimumSavingsNotMet, Some((before, after))));
+    }
+    Ok(Evaluation::Plan(CompactionPlan {
         strategy: format!("preset:{strategy_id}"),
         rationale: "validated userspace proposal; savings are projected".into(),
         edits,
@@ -714,12 +797,16 @@ fn report_no_plan(transcript: &gobstopper_core::Transcript, resolved: &config::R
     let ctx = transcript.context_tokens();
     let (policy, reasons) = effective_policy(transcript, resolved);
     let trigger = policy.effective_trigger();
+    print_no_plan_text(ctx, trigger, &resolved.strategy, &reasons);
+}
+
+fn print_no_plan_text(ctx: u64, trigger: u64, strategy: &str, reasons: &[&str]) {
     if ctx < trigger {
         println!("nothing to do: context ~{ctx} under trigger {trigger}");
     } else {
         println!(
             "context ~{ctx} exceeds trigger {trigger} but the '{}' strategy found no applicable edits",
-            resolved.strategy
+            strategy
         );
     }
     if !reasons.is_empty() {
@@ -2824,13 +2911,22 @@ fn main() -> Result<()> {
                 resolved.policy.floor_tokens = *f;
             }
             let transcript = detect::load(&d)?;
-            match evaluate(&transcript, &resolved)? {
-                Some(plan) => {
+            match evaluate_detailed(&transcript, &resolved)? {
+                Evaluation::Plan(plan) => {
                     let prefix = eval::prefix_tokens(&transcript, &plan);
                     print_plan(&d, &plan, prefix, *json)
                 }
-                None => {
-                    report_no_plan(&transcript, &resolved);
+                Evaluation::NoPlan(report) => {
+                    if *json {
+                        println!("{}", serde_json::to_string_pretty(&report)?);
+                    } else {
+                        print_no_plan_text(
+                            report.context_tokens_before,
+                            report.effective_trigger_tokens,
+                            &resolved.strategy,
+                            &report.adaptive_reasons,
+                        );
+                    }
                     Ok(())
                 }
             }
@@ -3161,5 +3257,94 @@ mod tests {
     #[test]
     fn preset_command_invalid_json_is_an_error() {
         assert!(evaluate(&preset_transcript(), &preset_resolved("echo 'nope'")).is_err());
+    }
+
+    fn no_plan_external(edits: Vec<Edit>, minimum: u64) -> Result<Evaluation> {
+        let transcript = preset_transcript();
+        let mut policy = preset_resolved("").policy;
+        policy.min_savings_tokens = minimum;
+        let diagnostic = NoPlanReport::new(transcript.context_tokens(), &policy, Vec::new());
+        external_plan(&transcript, &policy, "synthetic", edits, diagnostic)
+    }
+
+    fn no_plan_report(outcome: Evaluation) -> serde_json::Value {
+        let Evaluation::NoPlan(report) = outcome else {
+            panic!("expected a rejected proposal");
+        };
+        serde_json::to_value(report).unwrap()
+    }
+
+    #[test]
+    fn no_plan_external_empty_edits_have_no_projection() {
+        let report = no_plan_report(no_plan_external(Vec::new(), 0).unwrap());
+        assert_eq!(report["reason_code"], "empty_external_edits");
+        assert!(report["projected_context_tokens_after"].is_null());
+        assert!(report["projected_savings_tokens"].is_null());
+    }
+
+    #[test]
+    fn no_plan_external_nonreducing_precedes_minimum_savings() {
+        for minimum in [0, 4096] {
+            for edits in [
+                vec![Edit::Elide {
+                    line_indexes: Vec::new(),
+                    stub_template: "[elided]".into(),
+                    per_item_stubs: Default::default(),
+                }],
+                vec![Edit::InjectDigest {
+                    digest: gobstopper_core::DigestBlock {
+                        summary: Some("synthetic additional state".into()),
+                        covers_items: 1,
+                        ..Default::default()
+                    },
+                }],
+            ] {
+                let report = no_plan_report(no_plan_external(edits, minimum).unwrap());
+                assert_eq!(report["reason_code"], "external_nonreducing_plan");
+                assert!(report["projected_context_tokens_after"].as_u64().unwrap() >= 50_000);
+                assert_eq!(report["projected_savings_tokens"], 0);
+            }
+        }
+    }
+
+    #[test]
+    fn no_plan_external_minimum_gate_preserves_its_estimates() {
+        let edits = vec![Edit::Elide {
+            line_indexes: vec![0],
+            stub_template: "[elided]".into(),
+            per_item_stubs: Default::default(),
+        }];
+        let report = no_plan_report(no_plan_external(edits, 4096).unwrap());
+        let saved = preset_transcript().items[0].estimated_elision_savings();
+        assert_eq!(report["reason_code"], "minimum_savings_not_met");
+        assert_eq!(report["projected_context_tokens_after"], 50_000 - saved);
+        assert_eq!(report["projected_savings_tokens"], saved);
+    }
+
+    #[test]
+    fn no_plan_diagnostics_preserve_real_errors() {
+        let transcript = preset_transcript();
+        for command in ["printf 'not-json'", "printf '{\"edits\":null}'", "exit 7"] {
+            assert!(evaluate_detailed(&transcript, &preset_resolved(command)).is_err());
+        }
+        let mut invalid_policy = preset_resolved("printf '{\"edits\":[]}'");
+        invalid_policy.policy.floor_tokens = invalid_policy.policy.trigger_tokens;
+        assert!(evaluate_detailed(&transcript, &invalid_policy).is_err());
+        let mut untrusted = preset_resolved("printf '{\"edits\":[]}'");
+        untrusted.trusted_legacy_command = false;
+        assert!(evaluate_detailed(&transcript, &untrusted).is_err());
+        let invalid_edits = vec![Edit::Elide {
+            line_indexes: vec![999],
+            stub_template: "[elided]".into(),
+            per_item_stubs: Default::default(),
+        }];
+        assert!(no_plan_external(invalid_edits, 0).is_err());
+        assert!(no_plan_external(
+            vec![Edit::ProviderCompact {
+                control: "synthetic".into()
+            }],
+            0
+        )
+        .is_err());
     }
 }

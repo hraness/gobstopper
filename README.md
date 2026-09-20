@@ -165,6 +165,38 @@ gobstopper tune <session>          # preview the adaptive trigger/floor for a se
 gobstopper mcp                     # read-only MCP server: the vault as agent tools
 ```
 
+For automation, `gobstopper plan <session> --json` returns the existing plan
+object when a plan is available. A successful inspection without a plan returns
+a separate JSON result, for example:
+
+```json
+{
+  "status": "no_plan",
+  "reason_code": "below_trigger",
+  "context_tokens_before": 100000,
+  "effective_trigger_tokens": 250000,
+  "target_context_tokens": 40000,
+  "min_savings_tokens": 4096,
+  "projected_context_tokens_after": null,
+  "projected_savings_tokens": null
+}
+```
+
+The reason identifies the decision actually reached:
+
+| `reason_code` | Meaning |
+| --- | --- |
+| `below_trigger` | Context is below the effective policy trigger. |
+| `strategy_returned_no_plan` | The strategy declined; its underlying reason is unknown. |
+| `empty_external_edits` | The configured command or plugin supplied no edits. |
+| `minimum_savings_not_met` | A proposal fell short of the minimum projected savings. |
+| `external_nonreducing_plan` | An external proposal did not reduce estimated context. |
+
+Projections are present only when a rejected proposal supplied them.
+The target is a policy setting, not a measured
+minimum context size, and projected savings are not billed savings. Invalid
+configuration, invalid proposals, and execution failures remain command errors.
+
 Every `apply`/`watch` compaction snapshots the source transcript into a
 content-addressed vault (`~/.local/share/gobstopper/vault/`) and publishes
 the result as a separate, verified file. The original transcript is never
