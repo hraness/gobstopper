@@ -1,19 +1,32 @@
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture(PathBuf);
 
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "gobstopper-watch-{}-{}",
-            std::process::id(),
+        Self::at_timestamp(
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+        )
+    }
+
+    fn at_timestamp(timestamp: u128) -> Self {
+        let root = std::env::temp_dir().join(format!(
+            "gobstopper-watch-{}-{}-{}",
+            std::process::id(),
+            timestamp,
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
         ));
+        // Clock resolution does not guarantee uniqueness across parallel tests.
+        // Claim this root exclusively before creating or later deleting its files.
+        fs::create_dir(&root).unwrap();
         fs::create_dir_all(root.join("codex/sessions")).unwrap();
         fs::create_dir_all(root.join("config/gobstopper")).unwrap();
         fs::write(
@@ -50,6 +63,24 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+#[test]
+fn fixture_roots_remain_isolated_when_clock_ticks_repeat() {
+    let first = Fixture::at_timestamp(0);
+    let second = Fixture::at_timestamp(0);
+    assert_ne!(
+        first.0, second.0,
+        "repeated clock values must not share state"
+    );
+    let event = first.0.join("data/gobstopper/events.jsonl");
+    fs::create_dir_all(event.parent().unwrap()).unwrap();
+    fs::write(&event, "first fixture event\n").unwrap();
+    assert!(!second.0.join("data").exists());
+    fs::create_dir_all(second.0.join("data/gobstopper/events.jsonl")).unwrap();
+    assert_eq!(fs::read_to_string(&event).unwrap(), "first fixture event\n");
+    drop(second);
+    assert_eq!(fs::read_to_string(&event).unwrap(), "first fixture event\n");
 }
 
 #[test]

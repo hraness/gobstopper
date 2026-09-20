@@ -213,7 +213,11 @@ pub(crate) fn state_card_digest(transcript: &Transcript, chosen: &[usize]) -> Di
         .map(|g| {
             let mut s = g.trim().to_string();
             if s.len() > 120 {
-                s.truncate(117);
+                let mut end = 117;
+                while !s.is_char_boundary(end) {
+                    end -= 1;
+                }
+                s.truncate(end);
                 s.push_str("...");
             }
             s
@@ -340,6 +344,70 @@ fn is_open_task_marker(text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn digest_for_goal(goal: &str) -> DigestBlock {
+        let transcript = Transcript {
+            session: crate::SessionHandle {
+                provider: crate::Provider::Codex,
+                session_id: "summary-fixture".into(),
+                path: "/unused/synthetic.jsonl".into(),
+                cwd: None,
+                age_secs: u64::MAX,
+            },
+            items: vec![crate::TranscriptItem {
+                line_index: 0,
+                kind: ItemKind::User,
+                est_tokens: 40,
+                elidable_bytes: None,
+                elidable_parts: 0,
+                label: "user".into(),
+                summary: Some(goal.into()),
+                uuid: None,
+                parent_uuid: None,
+                tool_use_ids: Vec::new(),
+                payload_sha256: None,
+            }],
+            usage: Default::default(),
+        };
+        state_card_digest(&transcript, &[])
+    }
+
+    #[test]
+    fn unicode_state_card_summary_truncates_at_safe_byte_boundaries() {
+        for character in ['é', '界', '🙂'] {
+            // Exercise every possible split within 2-, 3-, and 4-byte UTF-8.
+            for prefix_length in (118 - character.len_utf8())..117 {
+                let prefix = "a".repeat(prefix_length);
+                let goal = format!("{prefix}{character}tail");
+                assert!(goal.len() > 120);
+                assert!(!goal.is_char_boundary(117));
+                let digest = digest_for_goal(&goal);
+                assert_eq!(digest.goal.as_deref(), Some(goal.as_str()));
+                assert_eq!(digest.summary, Some(format!("{prefix}...")));
+                assert!(digest.summary.unwrap().len() <= 120);
+            }
+        }
+    }
+
+    #[test]
+    fn unicode_state_card_summary_preserves_short_text_and_ascii_behavior() {
+        for goal in [
+            String::new(),
+            "short goal".into(),
+            "a".repeat(120),
+            "é".repeat(60),
+            "界".repeat(40),
+            "🙂".repeat(30),
+        ] {
+            let digest = digest_for_goal(&goal);
+            assert_eq!(digest.goal.as_deref(), Some(goal.as_str()));
+            assert_eq!(digest.summary.as_deref(), Some(goal.as_str()));
+        }
+        let goal = "a".repeat(121);
+        let digest = digest_for_goal(&goal);
+        assert_eq!(digest.goal.as_deref(), Some(goal.as_str()));
+        assert_eq!(digest.summary, Some(format!("{}...", "a".repeat(117))));
+    }
 
     fn policy_with(pressure: QuotaPressure) -> PolicyConfig {
         PolicyConfig {
