@@ -31,6 +31,26 @@ of an owning process. The report is capped at 2,000 sessions. Only exact
 allowlisted Codex rows reach the saved observations. A missing or idle row is
 unavailable, never a zero-valued measurement.
 
+Each command also includes an additive `resources` object with `user_cpu_us`,
+`system_cpu_us`, `minor_page_faults`, `major_page_faults`,
+`voluntary_context_switches`, and `involuntary_context_switches`. CPU durations
+are integer microseconds; the other fields are integer counts. These are
+best-effort differences in the observer process's `RUSAGE_CHILDREN` counters,
+sampled before spawning and after fully reaping the child, including a child
+killed on timeout. The observer runs children serially and spawns no other
+children between those samples. The counters are cumulative OS child-accounting
+data, not a process-tree trace; descendant accounting and counter availability
+depend on the operating system and whether descendants were waited for. They do
+not measure all machine work or unaccounted surviving descendants.
+
+An unstarted command (including watch after report exhausts the shared deadline)
+or unavailable resource measurement has `resources: null`. Individual invalid,
+regressing, or out-of-range counters are `null`; valid unchanged counters are
+`0`. Values are restricted to unsigned 64-bit integers. Diagnostic failures do
+not change command errors, cleanup, the shared deadline, or capture limits.
+Resource and wall-clock durations can help investigate a slow pass, but do not
+establish its cause or prove Gobstopper token, cost, or quota savings.
+
 Children receive an empty temporary `XDG_CONFIG_HOME`, no inherited
 `GOBSTOPPER_*` settings, and an explicit heuristic scorer. This prevents a
 configured plugin, legacy command, model scorer, or digest generator from
@@ -73,4 +93,7 @@ Tests exercise realistic subprocess reports and dry-run output, source
 preservation, private permissions, allowlisting, environment isolation, missing
 data, counter resets, symlink refusal, overlap exclusion, log rotation, timeout,
 bounded capture, zero-exit evaluation failures, and cancellation cleanup. They
-do not establish live session compaction savings.
+also cover numeric child-resource deltas, timeout reaping versus an unstarted
+second command, unavailable or invalid counters, and diagnostic failure without
+losing command results or cleanup. They do not establish live session compaction
+savings.
