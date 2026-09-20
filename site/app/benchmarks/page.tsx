@@ -4,7 +4,7 @@ import { SiteHeader, SiteFooter } from "../_components/site-chrome";
 
 const title = "Gobstopper benchmarks";
 const description =
-  "A 729-session offline study: projected context reduction, sampled-string retention, no-op cases, and historical live trials.";
+  "Compaction and recovery evidence: a 729-session offline study, public synthetic archive checks, and separately scoped live trials.";
 
 export const metadata: Metadata = {
   title,
@@ -37,6 +37,9 @@ export default function Benchmarks() {
             Benchmarking compaction is split between offline structural checks
             and live provider trials. We do not claim subscription savings
             without completed live evidence.
+          </p>
+          <p>
+            Latest: <a href="#archived-recovery-2026-09-20">September 20 exact archived-evidence recovery checks</a>.
           </p>
 
           <section aria-labelledby="retrospective-2026-09-19">
@@ -273,6 +276,81 @@ export default function Benchmarks() {
               The receipt pins the measured Gobstopper executable and local
               Apple bridge. It excludes per-input records, hashes, identifiers,
               private paths, prompts and model responses.
+            </p>
+          </section>
+
+          <section aria-labelledby="archived-recovery-2026-09-20">
+            <h2 id="archived-recovery-2026-09-20">Exact archived-evidence recovery · September 20, 2026</h2>
+            <p>
+              Gobstopper found all <strong>108 predeclared search targets</strong>{" "}
+              and recovered all <strong>108 target records byte for byte</strong>{" "}
+              in a public synthetic API study. All 553 checks passed. These are
+              known-query recovery checks, not agent task-quality results.
+            </p>
+            <p>
+              The corpus contains 36 snapshots: 18 in Codex format and 18 in
+              Claude Code format, with six families per provider and three
+              versions per family. A separate malformed-record fixture tests
+              error accounting. Related versions are test cases, not independent
+              real tasks. The synthetic corpus is separate from the private
+              session studies above.
+            </p>
+            <table>
+              <caption>All registered recovery checks; no outcome-dependent exclusions</caption>
+              <thead>
+                <tr><th scope="col">Check group</th><th scope="col">Passed / total</th></tr>
+              </thead>
+              <tbody>
+                <tr><th scope="row">Known-target search</th><td>108 / 108</td></tr>
+                <tr><th scope="row">Byte-exact record recovery</th><td>108 / 108</td></tr>
+                <tr><th scope="row">Absent, case, key and version isolation queries</th><td>144 / 144</td></tr>
+                <tr><th scope="row">Bounded search and truncation accounting</th><td>36 / 36</td></tr>
+                <tr><th scope="row">Candidate state-card queries</th><td>108 / 108</td></tr>
+                <tr><th scope="row">Baseline vault-format compatibility</th><td>36 / 36</td></tr>
+                <tr><th scope="row">Invalid-input, integrity, pagination and MCP safeguards</th><td>13 / 13</td></tr>
+                <tr><th scope="row">All checks</th><td>553 / 553</td></tr>
+              </tbody>
+            </table>
+            <p>
+              Half the snapshots encode Unicode as JSON escapes; six place a
+              target record across a vault chunk boundary. Recovery reconstructs
+              long records through bounded 4 KiB pages. The checks also cover
+              corruption rejection, metadata-only search results, and MCP tools
+              that expose transcript content only after explicit enablement.
+            </p>
+            <p>
+              The existing state-card recall command found 18 of 108 declared
+              field queries in the baseline and 108 of 108 in the candidate.
+              The change adds portable Codex-card handling and searches error
+              and current-work fields. The baseline did not support the new{" "}
+              <code>search-snapshot</code> and <code>read-snapshot</code> commands;
+              those are recorded as unsupported capabilities, not retrieval
+              failures or a speed comparison.
+            </p>
+            <p>
+              Queries, expected bytes and limits were fixed before execution.
+              All 989 commands completed within the registered bounds; frozen
+              fixtures, vault contents and pinned executables stayed unchanged.
+              No local model, remote model or provider service was called.
+              Runtime figures in the receipt describe one pass on one machine.
+            </p>
+            <p>
+              The vault was seeded directly, so this study does not test snapshot
+              creation or whether compaction supplies the correct recovery
+              pointer. Known queries do not test an agent&apos;s ability to notice
+              missing information, choose useful searches, or finish a task.
+              This is not a semantic-recall, provider-resume, compaction-savings,
+              or matched Jev benchmark.
+            </p>
+            <ul>
+              <li><a href="/benchmarks/2026-09-20/recovery-study-results.json">Recovery results and check counts (JSON)</a></li>
+              <li><a href="/benchmarks/2026-09-20/recovery-study-protocol.json">Frozen recovery protocol (JSON)</a></li>
+              <li><a href="https://github.com/hraness/gobstopper/tree/main/scripts/recovery-study">Public fixture generator and reproduction instructions</a></li>
+            </ul>
+            <p>
+              Downloads contain aggregate checks, methodology and measured
+              executable hashes. They contain no private transcripts, per-case
+              records, machine paths or bundled executables.
             </p>
           </section>
 

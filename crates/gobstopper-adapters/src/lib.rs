@@ -14,6 +14,7 @@ pub mod eval;
 pub mod fork;
 mod payload;
 pub mod plugins;
+pub mod recovery;
 pub mod transaction;
 pub mod vault;
 pub mod verify;

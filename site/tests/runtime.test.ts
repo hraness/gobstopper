@@ -93,10 +93,10 @@ async function stopBuiltSite(server: Awaited<ReturnType<typeof startBuiltSite>>)
 }
 
 describe("built Gobstopper site", () => {
-  test("serves the homepage, docs, and static discovery files through Next", async () => {
+  test("serves public pages, recovery evidence, and discovery files through Next", async () => {
     const server = await startBuiltSite();
     try {
-      const [homeResponse, docsResponse, robotsResponse, llmsResponse, cardResponse, docsCardResponse, missingResponse] = await Promise.all([
+      const [homeResponse, docsResponse, robotsResponse, llmsResponse, cardResponse, docsCardResponse, missingResponse, benchmarksResponse, recoveryResultsResponse, recoveryProtocolResponse] = await Promise.all([
         fetch(`${server.origin}/`, { redirect: "manual" }),
         fetch(`${server.origin}/docs`, { redirect: "manual" }),
         fetch(`${server.origin}/robots.txt`, { redirect: "manual" }),
@@ -104,6 +104,9 @@ describe("built Gobstopper site", () => {
         fetch(`${server.origin}/opengraph-image`, { redirect: "manual" }),
         fetch(`${server.origin}/docs/opengraph-image`, { redirect: "manual" }),
         fetch(`${server.origin}/missing`, { redirect: "manual" }),
+        fetch(`${server.origin}/benchmarks`, { redirect: "manual" }),
+        fetch(`${server.origin}/benchmarks/2026-09-20/recovery-study-results.json`, { redirect: "manual" }),
+        fetch(`${server.origin}/benchmarks/2026-09-20/recovery-study-protocol.json`, { redirect: "manual" }),
       ]);
       const [rawHome, rawDocs, robots, llms] = await Promise.all([homeResponse.text(), docsResponse.text(), robotsResponse.text(), llmsResponse.text()]);
       const home = rawHome.replaceAll(/https:\/\/[a-z0-9-]+\.vercel\.app/gu, "https://gobstopper.sh");
@@ -128,6 +131,16 @@ describe("built Gobstopper site", () => {
       expect(docsCardResponse.status).toBe(200);
       expect(docsCardResponse.headers.get("content-type")).toContain("image/png");
       expect(missingResponse.status).toBe(404);
+      expect(benchmarksResponse.status).toBe(200);
+      expect(await benchmarksResponse.text()).toContain('id="archived-recovery-2026-09-20"');
+      for (const [response, file] of [
+        [recoveryResultsResponse, "recovery-study-results.json"],
+        [recoveryProtocolResponse, "recovery-study-protocol.json"],
+      ] as const) {
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toContain("application/json");
+        expect(await response.text()).toBe(await Bun.file(join(site, "public/benchmarks/2026-09-20", file)).text());
+      }
     } finally {
       await stopBuiltSite(server);
     }

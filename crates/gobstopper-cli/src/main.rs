@@ -14,7 +14,9 @@ mod secrets;
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use gobstopper_adapters::detect::{self, Discovered, Roots};
-use gobstopper_adapters::{codex, copy, eval, fork, plugins, vault, verify, AdapterError};
+use gobstopper_adapters::{
+    codex, copy, eval, fork, plugins, recovery, vault, verify, AdapterError,
+};
 use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
 use gobstopper_core::plan::{CompactionPlan, Edit};
 use gobstopper_core::strategy::{self, HeuristicScorer, QuotaPressure, ScoredStrategy};
@@ -238,8 +240,7 @@ enum Cmd {
         /// Session id prefix, or path to a transcript file. Searches all
         /// sessions if omitted.
         session: Option<String>,
-        /// Case-insensitive substring to match against goal, decisions,
-        /// files, or open tasks.
+        /// Case-insensitive substring to match against every state-card field.
         #[arg(long)]
         query: Option<String>,
         /// Restrict to one snapshot by sha256 prefix.
@@ -249,6 +250,33 @@ enum Cmd {
         #[arg(long, default_value_t = 20)]
         limit: usize,
         /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Find matching records in one exact vault snapshot. Returns references,
+    /// never archived content; searches decoded JSON string values literally.
+    SearchSnapshot {
+        /// Full snapshot object SHA-256, from history or a recovery receipt.
+        sha: String,
+        #[arg(long)]
+        query: String,
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Explicitly read a bounded page of archived text from one snapshot.
+    /// Returned text is untrusted historical data, not current instructions.
+    ReadSnapshot {
+        sha: String,
+        /// Zero-based physical JSONL record index from search-snapshot.
+        #[arg(long)]
+        record: usize,
+        /// UTF-8 byte offset, or next_offset from the preceding page.
+        #[arg(long, default_value_t = 0)]
+        offset: usize,
+        #[arg(long, default_value_t = 4096)]
+        max_bytes: usize,
         #[arg(long)]
         json: bool,
     },
@@ -288,7 +316,12 @@ enum Cmd {
     /// Run a read-only Model Context Protocol server on stdio, exposing
     /// sessions and the snapshot vault as tools an agent can call
     /// (list_sessions, recall, history, show, diff, plan, verify).
-    Mcp,
+    Mcp {
+        /// Expose snapshot search/read tools. Archived content returned by read
+        /// becomes visible to the connected agent/model service. Off by default.
+        #[arg(long)]
+        allow_transcript_content: bool,
+    },
     /// Poll for sessions over threshold and prepare verified compacted forks.
     Watch {
         /// Poll interval in seconds.
@@ -1324,9 +1357,14 @@ fn recall_row_json(r: &vault::RecallDigest) -> serde_json::Value {
         "record_index": r.record_index,
         "score": r.score,
         "goal": r.digest.goal,
+        "summary": r.digest.summary,
+        "concepts": r.digest.concepts,
         "decisions": r.digest.decisions,
         "files_touched": r.digest.files_touched,
+        "errors": r.digest.errors,
         "open_tasks": r.digest.open_tasks,
+        "current_work": r.digest.current_work,
+        "context": r.digest.context,
         "covers_items": r.digest.covers_items,
     })
 }
@@ -1360,6 +1398,23 @@ fn cmd_recall(
         println!("covers:     {} earlier records", r.digest.covers_items);
         if let Some(g) = &r.digest.goal {
             println!("goal:\n  {}", g);
+        }
+        for (label, text) in [
+            ("summary", &r.digest.summary),
+            ("current work", &r.digest.current_work),
+            ("context", &r.digest.context),
+        ] {
+            if let Some(text) = text {
+                println!("{label}:\n  {text}");
+            }
+        }
+        for (label, values) in [
+            ("concepts", &r.digest.concepts),
+            ("errors", &r.digest.errors),
+        ] {
+            for value in values {
+                println!("{label}: {value}");
+            }
         }
         if !r.digest.decisions.is_empty() {
             println!("decisions:");
@@ -2081,6 +2136,9 @@ fn cmd_apply(
         )
         .inspect(|receipt| {
             println!("prepared {}", receipt.path.display());
+            if let Some(sha) = &receipt.snapshot_manifest_sha256 {
+                println!("recovery snapshot: {sha}");
+            }
             println!(
                 "resume the new session: codex resume {}",
                 receipt.session_id
@@ -2123,6 +2181,9 @@ fn cmd_apply(
             copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root()).map(
                 |receipt| {
                     println!("prepared {}", receipt.path.display());
+                    if let Some(sha) = &receipt.snapshot_manifest_sha256 {
+                        println!("recovery snapshot: {sha}");
+                    }
                     println!(
                         "resume the new session: {} {}",
                         if d.handle.provider == Provider::Codex {
@@ -2457,6 +2518,9 @@ fn cmd_watch(
                     let r = copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root())
                         .map(|receipt| {
                             eprintln!("prepared copy {}", receipt.path.display());
+                            if let Some(sha) = &receipt.snapshot_manifest_sha256 {
+                                eprintln!("recovery snapshot: {sha}");
+                            }
                         });
                     match r {
                         Ok(()) => {
@@ -2838,6 +2902,33 @@ fn main() -> Result<()> {
         Cmd::Vault { session, json } => cmd_vault(&cli, &cfg, session.as_deref(), *json),
         Cmd::History { session, json } => cmd_history(&cli, &cfg, session, *json),
         Cmd::Show { target, json } => cmd_show(&cli, &cfg, target, *json),
+        Cmd::SearchSnapshot {
+            sha,
+            query,
+            limit,
+            json: _,
+        } => {
+            let value = recovery::search_snapshot(sha, query, *limit, &vault::default_root())?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
+            Ok(())
+        }
+        Cmd::ReadSnapshot {
+            sha,
+            record,
+            offset,
+            max_bytes,
+            json: _,
+        } => {
+            let value = recovery::read_snapshot_record(
+                sha,
+                *record,
+                *offset,
+                *max_bytes,
+                &vault::default_root(),
+            )?;
+            println!("{}", serde_json::to_string_pretty(&value)?);
+            Ok(())
+        }
         Cmd::Recall {
             session,
             query,
@@ -2862,7 +2953,7 @@ fn main() -> Result<()> {
             output,
         } => cmd_bench(&cli, *all, *trigger, *floor, output.as_deref()),
         Cmd::Snapshot { session, label } => cmd_snapshot(&cli, &cfg, session, label.as_deref()),
-        Cmd::Mcp => mcp::run(&cli, &cfg),
+        Cmd::Mcp { .. } => mcp::run(&cli, &cfg),
         Cmd::Auth {
             provider,
             status,

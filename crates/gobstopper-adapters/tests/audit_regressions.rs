@@ -262,6 +262,20 @@ fn compact_copy_keeps_open_writer_and_is_idempotent() {
     };
     let receipt = copy::compact(&h, &hash, &plan, &dir.0.join("vault")).unwrap();
     assert!(receipt.completed);
+    let snapshot = receipt.snapshot_manifest_sha256.as_deref().unwrap();
+    assert_eq!(
+        vault::read_object(snapshot, &dir.0.join("vault")).unwrap(),
+        original.as_bytes()
+    );
+    let recovered = gobstopper_adapters::recovery::read_snapshot_record(
+        snapshot,
+        1,
+        0,
+        16384,
+        &dir.0.join("vault"),
+    )
+    .unwrap();
+    assert_eq!(recovered.content, original.lines().nth(1).unwrap());
     assert_eq!(fs::read_to_string(&path).unwrap(), original);
     assert_eq!(
         receipt.reclaimed_bytes,
@@ -269,6 +283,39 @@ fn compact_copy_keeps_open_writer_and_is_idempotent() {
     );
     let again = copy::compact(&h, &hash, &plan, &dir.0.join("vault")).unwrap();
     assert_eq!(again.path, receipt.path);
+    let root = dir.0.join("vault");
+    let receipt_path = fs::read_dir(root.join("operations"))
+        .unwrap()
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| path.extension().is_some_and(|ext| ext == "json"))
+        .unwrap();
+    let saved_receipt = fs::read(&receipt_path).unwrap();
+    let saved_output = fs::read(&receipt.path).unwrap();
+    let other = dir.0.join("different-source.jsonl");
+    fs::write(&other, "{\"text\":\"different archived evidence\"}\n").unwrap();
+    let other_snapshot =
+        vault::snapshot(&other, Provider::Codex, "different", None, &root).unwrap();
+    let mut changed: serde_json::Value = serde_json::from_slice(&saved_receipt).unwrap();
+    changed["snapshot_manifest_sha256"] = json!(other_snapshot.sha256);
+    fs::write(&receipt_path, serde_json::to_vec(&changed).unwrap()).unwrap();
+    assert!(copy::compact(&h, &hash, &plan, &root)
+        .unwrap_err()
+        .to_string()
+        .contains("recovery snapshot does not match source"));
+    assert_eq!(fs::read(&receipt.path).unwrap(), saved_output);
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+    // Receipts made before the additive recovery field retain idempotency.
+    changed
+        .as_object_mut()
+        .unwrap()
+        .remove("snapshot_manifest_sha256");
+    fs::write(&receipt_path, serde_json::to_vec(&changed).unwrap()).unwrap();
+    assert!(copy::compact(&h, &hash, &plan, &root)
+        .unwrap()
+        .snapshot_manifest_sha256
+        .is_none());
+    fs::write(&receipt_path, saved_receipt).unwrap();
     writeln!(writer, "{}", json!({"type":"response_item","payload":{"type":"message","role":"user","content":"new turn"}})).unwrap();
     assert!(fs::read_to_string(&path).unwrap().contains("new turn"));
     let appended = fs::read(&path).unwrap();
