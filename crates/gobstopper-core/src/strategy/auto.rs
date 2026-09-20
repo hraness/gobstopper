@@ -71,15 +71,21 @@ fn prefix_tokens(transcript: &Transcript, plan: &CompactionPlan) -> u64 {
         .sum()
 }
 
-/// Quality score for a file-surgery plan. It rewards token savings but
-/// quadratically rewards preserving the prefix, so `auto` prefers plans
-/// that shrink the context without busting the prompt cache.
+/// Shared ranking heuristic for file-surgery plans: estimated savings
+/// times the preserved-prefix ratio cubed. Used by `auto` and evaluation
+/// reports so the same estimates receive the same score. This is not a
+/// measurement of provider cache hits or task quality.
+pub fn cache_preservation_score(saved: u64, prefix: u64, before: u64) -> f64 {
+    let prefix_ratio = prefix as f64 / before.max(1) as f64;
+    saved as f64 * prefix_ratio.powi(PREFIX_EXP)
+}
+
 fn plan_score(transcript: &Transcript, plan: &CompactionPlan) -> f64 {
-    let before = plan.context_tokens_before.max(1) as f64;
-    let saved = plan.est_savings() as f64;
-    let prefix = prefix_tokens(transcript, plan) as f64;
-    let prefix_ratio = prefix / before;
-    saved * prefix_ratio.powi(PREFIX_EXP)
+    cache_preservation_score(
+        plan.est_savings(),
+        prefix_tokens(transcript, plan),
+        plan.context_tokens_before,
+    )
 }
 
 impl AutoStrategy {
@@ -162,6 +168,27 @@ mod tests {
     use crate::model::{ItemKind, Provider, SessionHandle, Transcript, TranscriptItem};
     use crate::strategy::QuotaPressure;
     use std::path::PathBuf;
+
+    #[test]
+    fn shared_score_preserves_cubic_auto_ranking() {
+        // The former evaluation formula (prefix squared) chose the first
+        // candidate: 100 > 84.375. Auto's established cubic score chooses
+        // the second: 63.28125 > 50. Keep these independently worked values.
+        let more_savings = cache_preservation_score(400, 500, 1_000);
+        let more_prefix = cache_preservation_score(150, 750, 1_000);
+        assert_eq!(more_savings, 50.0);
+        assert_eq!(more_prefix, 63.28125);
+        assert!(more_prefix > more_savings);
+    }
+
+    #[test]
+    fn shared_score_handles_empty_and_zero_savings() {
+        assert_eq!(cache_preservation_score(0, 0, 0), 0.0);
+        assert_eq!(cache_preservation_score(400, 0, 1_000), 0.0);
+        assert_eq!(cache_preservation_score(0, 750, 1_000), 0.0);
+        assert_eq!(cache_preservation_score(400, 1_000, 1_000), 400.0);
+        assert!(cache_preservation_score(u64::MAX, u64::MAX, 0).is_finite());
+    }
 
     fn item(
         line: usize,

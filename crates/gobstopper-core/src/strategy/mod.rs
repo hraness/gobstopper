@@ -12,7 +12,7 @@ mod scored;
 mod structured;
 
 pub use agentic::{AgenticStrategy, EditorCall, EditorDriver};
-pub use auto::AutoStrategy;
+pub use auto::{cache_preservation_score, AutoStrategy};
 pub use cache_aware::CacheAwareStrategy;
 pub use cache_edits::CacheEditsStrategy;
 pub use compacted::CompactedStrategy;
