@@ -1831,7 +1831,7 @@ fn cmd_eval(
         }
     }
 
-    // Pareto summary: highest scoring plan (savings × prefix²) among the
+    // Pareto summary: highest scoring plan (savings × prefix³) among the
     // concrete strategies that verified clean. This is the same metric `auto`
     // uses, exposed for inspection.
     let best = rows
@@ -1853,10 +1853,11 @@ fn cmd_eval(
                 .plan
                 .as_ref()
                 .map(|p| p.context_tokens_before)
-                .unwrap_or(1)
-                .max(1) as f64;
-            let prefix_ratio = (r.prefix_tokens as f64) / before;
-            (r, (r.est_reclaimed as f64) * prefix_ratio.powi(2))
+                .unwrap_or(1);
+            (
+                r,
+                strategy::cache_preservation_score(r.est_reclaimed, r.prefix_tokens, before),
+            )
         })
         .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     if let Some((row, score)) = best {
@@ -2004,7 +2005,7 @@ fn cmd_bench(
             let score = if provider_compact {
                 0.0
             } else {
-                (row.est_reclaimed as f64) * prefix_ratio.powi(2)
+                strategy::cache_preservation_score(row.est_reclaimed, row.prefix_tokens, before)
             };
             csv.push_str(&format!(
                 "{},{},{},{},{},{},{},{:.4},{:.0},{},{},{},{},{:.2},{},{}\n",
