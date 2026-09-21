@@ -2803,10 +2803,16 @@ fn cmd_watch(
                                 started.elapsed().as_millis() as u64,
                                 None,
                             );
-                            eprintln!("prepared compacted fork for {}", d.handle.session_id);
+                            eprintln!(
+                                "prepared compacted fork for {}",
+                                d.handle.cwd.as_deref().unwrap_or(&d.handle.path).display()
+                            );
                             continue;
                         }
-                        Err(e) => eprintln!("staged swap {} failed: {e}", d.handle.session_id),
+                        Err(e) => eprintln!(
+                            "staged swap {} failed: {e}",
+                            d.handle.cwd.as_deref().unwrap_or(&d.handle.path).display()
+                        ),
                     }
                 }
                 let _ = std::fs::remove_file(&s.path); // stale or dry-run
@@ -2817,7 +2823,10 @@ fn cmd_watch(
                     if let Some(fp) = fp {
                         settled.insert(session_key.clone(), fp);
                     }
-                    eprintln!("load {} failed: {e}", d.handle.session_id);
+                    eprintln!(
+                        "load {} failed: {e}",
+                        d.handle.cwd.as_deref().unwrap_or(&d.handle.path).display()
+                    );
                     continue;
                 }
             };
@@ -3102,7 +3111,10 @@ fn cmd_watch(
                                 started.elapsed().as_millis() as u64,
                                 None,
                             );
-                            eprintln!("prepared compacted fork for {}", d.handle.session_id);
+                            eprintln!(
+                                "prepared compacted fork for {}",
+                                d.handle.cwd.as_deref().unwrap_or(&d.handle.path).display()
+                            );
                             // The fork does not touch the source; until the
                             // source changes there is nothing new to prepare.
                             if let Some(fp) = &fp {
@@ -3119,7 +3131,10 @@ fn cmd_watch(
                                 started.elapsed().as_millis() as u64,
                                 Some("apply_failed"),
                             );
-                            eprintln!("compact {} failed: {e}", d.handle.session_id);
+                            eprintln!(
+                                "compact {} failed: {e}",
+                                d.handle.cwd.as_deref().unwrap_or(&d.handle.path).display()
+                            );
                             if let Some(fp) = &fp {
                                 settled.insert(session_key.clone(), fp.clone());
                             }
@@ -3135,7 +3150,10 @@ fn cmd_watch(
                     if let Some(fp) = &fp {
                         settled.insert(session_key.clone(), fp.clone());
                     }
-                    eprintln!("plan {} failed: {e}", d.handle.session_id);
+                    eprintln!(
+                        "plan {} failed: {e}",
+                        d.handle.cwd.as_deref().unwrap_or(&d.handle.path).display()
+                    );
                 }
             }
         }
