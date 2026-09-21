@@ -60,6 +60,7 @@ fn apply(
     match provider {
         Provider::Codex => codex::apply(path, edits),
         Provider::ClaudeCode => claude::apply(path, edits),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     }
 }
 
@@ -80,6 +81,7 @@ fn assert_unicode_state_card_plan(provider: Provider) {
             json!({"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"audit","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"read_file","input":{}}]}}),
             json!({"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"audit","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"x".repeat(20_000)}]}}),
         ],
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     let original = records
         .iter()
@@ -89,6 +91,7 @@ fn assert_unicode_state_card_plan(provider: Provider) {
     let transcript = match provider {
         Provider::Codex => codex::load(handle(provider, &path)),
         Provider::ClaudeCode => claude::load(handle(provider, &path)),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     }
     .unwrap();
     let policy = PolicyConfig {
@@ -136,6 +139,7 @@ fn digest_starts_a_new_record_without_trailing_newline() {
             Provider::ClaudeCode => {
                 json!({"type":"user","uuid":"u1","sessionId":"audit","message":{"role":"user","content":"goal"}})
             }
+            Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
         };
         fs::write(&path, record.to_string()).unwrap();
         apply(provider, &path, &[digest()]).unwrap();
@@ -144,6 +148,7 @@ fn digest_starts_a_new_record_without_trailing_newline() {
             Provider::Codex => 2,
             // Claude now appends a synthetic user, a fresh last-prompt, and a mode record.
             Provider::ClaudeCode => 4,
+            Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
         };
         assert_eq!(raw.lines().count(), expected_lines);
         assert!(raw

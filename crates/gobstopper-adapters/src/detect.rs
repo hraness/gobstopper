@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{claude, codex};
+use crate::{claude, codex, devin};
 
 /// Where to look for provider state. Overridable because managed
 /// runtimes (e.g. oompa profiles) relocate these roots.
@@ -17,6 +17,10 @@ pub struct Roots {
     pub codex_home: PathBuf,
     /// `~/.claude` or `$CLAUDE_CONFIG_DIR`-style root.
     pub claude_home: PathBuf,
+    /// Directory containing `sessions.db` and `session_locks/`:
+    /// `$DEVIN_DATA_DIR`, else `$XDG_DATA_HOME/devin/cli`, else
+    /// `~/.local/share/devin/cli`.
+    pub devin_home: PathBuf,
 }
 
 impl Roots {
@@ -30,9 +34,17 @@ impl Roots {
         let claude_home = std::env::var_os("CLAUDE_CONFIG_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".claude"));
+        let devin_home = std::env::var_os("DEVIN_DATA_DIR")
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("XDG_DATA_HOME")
+                    .map(|p| PathBuf::from(p).join("devin").join("cli"))
+            })
+            .unwrap_or_else(|| home.join(".local/share/devin/cli"));
         Self {
             codex_home,
             claude_home,
+            devin_home,
         }
     }
 }
@@ -151,6 +163,9 @@ impl DiscoveryCache {
         let (meta, usage) = match provider {
             Provider::Codex => (codex::scan_meta(path), codex::scan_usage(path)),
             Provider::ClaudeCode => (claude::scan_meta(path), claude::scan_usage(path)),
+            // Devin sessions live in rows of a shared database, not in
+            // per-session files, so they bypass the file cache entirely.
+            Provider::Devin => ((None, None), UsageSample::default()),
         };
         if self.0.len() >= 4096 {
             self.0.clear();
@@ -204,6 +219,8 @@ pub fn discover_cached(
         found.push(Discovered { usage, handle });
     }
 
+    found.extend(devin::discover(&roots.devin_home, limit));
+
     found.sort_by_key(|d| d.handle.age_secs);
     found
 }
@@ -224,6 +241,15 @@ pub fn sniff_provider(path: &Path) -> Option<Provider> {
                 || v.get("type").and_then(serde_json::Value::as_str) == Some("session_meta"))
         {
             return Some(Provider::Codex);
+        }
+        // Devin canonical exports: `session_meta` + `main_chain_id`, or
+        // `message_node` records. Checked before Claude because the devin
+        // meta record also carries a `session_id` field.
+        let ty = v.get("type").and_then(serde_json::Value::as_str);
+        if (ty == Some("session_meta") && v.get("main_chain_id").is_some())
+            || (ty == Some("message_node") && v.get("node_id").is_some())
+        {
+            return Some(Provider::Devin);
         }
         if v.get("sessionId").is_some() || v.get("session_id").is_some() {
             return Some(Provider::ClaudeCode);
@@ -269,6 +295,7 @@ pub fn find(roots: &Roots, query: &str) -> Vec<Discovered> {
             found.push(Discovered { handle, usage });
         }
     }
+    found.extend(devin::find(&roots.devin_home, query));
     found
 }
 
@@ -276,6 +303,7 @@ pub fn find(roots: &Roots, query: &str) -> Vec<Discovered> {
 pub fn load(d: &Discovered) -> Result<gobstopper_core::Transcript, crate::AdapterError> {
     match d.handle.provider {
         Provider::Codex => codex::load(d.handle.clone()),
+        Provider::Devin => devin::load(d.handle.clone()),
         Provider::ClaudeCode => claude::load(d.handle.clone()),
     }
 }

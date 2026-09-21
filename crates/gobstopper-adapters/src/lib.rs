@@ -10,6 +10,7 @@ pub mod codex;
 pub mod codex_compact;
 pub mod copy;
 pub mod detect;
+pub mod devin;
 pub mod eval;
 pub mod fork;
 mod payload;

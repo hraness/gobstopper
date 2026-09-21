@@ -17,10 +17,18 @@ pub fn sha256(bytes: &[u8]) -> String {
 }
 
 pub fn load_bound(handle: SessionHandle) -> anyhow::Result<(Transcript, String)> {
-    let bytes = transaction::read(&handle.path)?;
+    // For Devin the transcript's byte identity is the canonical session
+    // export, not the shared database file — hashing `sessions.db` would
+    // pin every other session's rows too.
+    let bytes = match handle.provider {
+        Provider::Devin => crate::devin::export_bytes(&handle.path, &handle.session_id)
+            .map_err(|e| anyhow::anyhow!(e))?,
+        _ => transaction::read(&handle.path)?,
+    };
     let transcript = match handle.provider {
         Provider::Codex => codex::load_bytes(handle, &bytes)?,
         Provider::ClaudeCode => claude::load_bytes(handle, &bytes)?,
+        Provider::Devin => crate::devin::load_bytes(handle, &bytes)?,
     };
     Ok((transcript, sha256(&bytes)))
 }
@@ -60,6 +68,14 @@ pub fn compact(
     plan: &CompactionPlan,
     vault_root: &Path,
 ) -> anyhow::Result<CopyReceipt> {
+    // Devin sessions live inside a shared SQLite store: a file fork and a
+    // whole-file vault snapshot are both wrong for it. Bail before any
+    // read touches `handle.path`.
+    if handle.provider == Provider::Devin {
+        bail!(
+            "devin session-store writes are not implemented; compact live sessions with /compact in the Devin CLI"
+        );
+    }
     if plan
         .edits
         .iter()
@@ -147,6 +163,7 @@ pub fn compact(
     match handle.provider {
         Provider::Codex => codex::apply(&temp.path, &plan.edits)?,
         Provider::ClaudeCode => claude::apply(&temp.path, &plan.edits)?,
+        Provider::Devin => bail!("devin session-store writes are not implemented"),
     };
     let candidate = transaction::read(&temp.path)?;
     if candidate.len() >= original.len() {

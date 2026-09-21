@@ -38,6 +38,10 @@ struct Cli {
     /// Claude state root (default: $CLAUDE_CONFIG_DIR or ~/.claude).
     #[arg(long, global = true)]
     claude_home: Option<PathBuf>,
+    /// Devin data dir containing sessions.db (default: $DEVIN_DATA_DIR or
+    /// $XDG_DATA_HOME/devin/cli or ~/.local/share/devin/cli).
+    #[arg(long, global = true)]
+    devin_home: Option<PathBuf>,
     /// Codex CLI binary for provider controls (default: $GOBSTOPPER_CODEX_BIN or `codex` on PATH).
     #[arg(long, global = true)]
     codex_bin: Option<PathBuf>,
@@ -356,8 +360,14 @@ enum Cmd {
     PolicyCheck {
         #[arg(long)]
         provider: String,
+        /// Context occupancy. Optional when `--session` resolves it from
+        /// the provider's own store (currently devin only).
         #[arg(long)]
-        context_tokens: u64,
+        context_tokens: Option<u64>,
+        /// Devin session id: read context_tokens and lock state straight
+        /// from sessions.db instead of trusting caller-reported flags.
+        #[arg(long)]
+        session: Option<String>,
         #[arg(long, default_value = "false")]
         session_active: bool,
         /// Provider quota pressure; scales the effective trigger.
@@ -367,6 +377,13 @@ enum Cmd {
         preset: Option<String>,
         #[arg(long)]
         json: bool,
+    },
+    /// Write a session's canonical transcript form to stdout. For Devin
+    /// this is the sessions.db row set serialized as export JSONL — the
+    /// same bytes `plan`/`verify`/`eval` consume and snapshots preserve.
+    Export {
+        /// Session id prefix, or path to a transcript file.
+        session: String,
     },
     /// List configured presets.
     Presets,
@@ -421,12 +438,30 @@ fn roots(cli: &Cli) -> Roots {
     if let Some(p) = &cli.claude_home {
         r.claude_home = p.clone();
     }
+    if let Some(p) = &cli.devin_home {
+        r.devin_home = p.clone();
+    }
     r
 }
 
 fn find_session(cli: &Cli, cfg: &config::Config, query: &str) -> Result<Discovered> {
     let path = PathBuf::from(query);
     if path.is_file() {
+        // A SQLite store is never a transcript: resolve sessions inside it
+        // by id instead of treating the file as provider data.
+        if std::fs::File::open(&path)
+            .and_then(|mut f| {
+                use std::io::Read;
+                let mut magic = [0u8; 16];
+                f.read_exact(&mut magic).map(|_| magic)
+            })
+            .is_ok_and(|m| m == *b"SQLite format 3\0")
+        {
+            bail!(
+                "{} is a SQLite store; pass a devin session id (e.g. `gobstopper plan <id>`), not the file",
+                path.display()
+            );
+        }
         // Direct transcript path: construct a discovered entry ad hoc.
         let provider = detect::sniff_provider(&path).unwrap_or_else(|| {
             if query.contains("rollout-") || query.contains(".codex") {
@@ -438,10 +473,12 @@ fn find_session(cli: &Cli, cfg: &config::Config, query: &str) -> Result<Discover
         let meta = match provider {
             Provider::Codex => gobstopper_adapters::codex::scan_meta(&path),
             Provider::ClaudeCode => gobstopper_adapters::claude::scan_meta(&path),
+            Provider::Devin => gobstopper_adapters::devin::scan_meta_export(&path),
         };
         let usage = match provider {
             Provider::Codex => gobstopper_adapters::codex::scan_usage(&path),
             Provider::ClaudeCode => gobstopper_adapters::claude::scan_usage(&path),
+            Provider::Devin => gobstopper_adapters::devin::scan_usage_export(&path),
         };
         let age = std::fs::metadata(&path)
             .and_then(|m| m.modified())
@@ -889,6 +926,8 @@ fn apply_edits(d: &Discovered, plan: &CompactionPlan) -> Result<u64> {
             .map_err(|e| anyhow::anyhow!(e)),
         Provider::ClaudeCode => gobstopper_adapters::claude::apply(&d.handle.path, &plan.edits)
             .map_err(|e| anyhow::anyhow!(e)),
+        Provider::Devin => gobstopper_adapters::devin::apply(&d.handle.path, &plan.edits)
+            .map_err(|e| anyhow::anyhow!(e)),
     }
 }
 
@@ -903,6 +942,10 @@ fn provider_compact(
         Provider::ClaudeCode => bail!(
             "claude sessions compact via /compact in-session or --autocompact at launch; \
              gobstopper cannot inject into a running TUI"
+        ),
+        Provider::Devin => bail!(
+            "devin sessions compact via /compact in-session; \
+             gobstopper cannot inject into a running Devin CLI"
         ),
     }
 }
@@ -1196,8 +1239,18 @@ fn cmd_detect(cli: &Cli, all: bool, json: bool) -> Result<()> {
 
 fn cmd_verify(cli: &Cli, cfg: &config::Config, session: &str, json: bool) -> Result<()> {
     let d = find_session(cli, cfg, session)?;
-    let findings = verify::verify_path(d.handle.provider, &d.handle.path)
-        .with_context(|| format!("reading {}", d.handle.path.display()))?;
+    // Devin verification runs on the session's canonical export, not the
+    // shared database file (which is not a readable transcript).
+    let findings = if d.handle.provider == Provider::Devin
+        && gobstopper_adapters::devin::is_store_path(&d.handle.path)
+    {
+        let bytes = gobstopper_adapters::devin::export_bytes(&d.handle.path, &d.handle.session_id)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        verify::verify(d.handle.provider, &bytes)
+    } else {
+        verify::verify_path(d.handle.provider, &d.handle.path)
+            .with_context(|| format!("reading {}", d.handle.path.display()))?
+    };
     if json {
         println!("{}", serde_json::to_string_pretty(&findings)?);
     } else if findings.is_empty() {
@@ -2482,7 +2535,14 @@ fn cmd_watch(
             if active_only && !d.handle.is_active() {
                 continue;
             }
-            let session_key = format!("{}:{}", d.handle.provider.as_str(), d.handle.path.display());
+            // Devin sessions share one store path, so the key must carry
+            // the session id, not just the file.
+            let session_key = format!(
+                "{}:{}:{}",
+                d.handle.provider.as_str(),
+                d.handle.session_id,
+                d.handle.path.display()
+            );
             let Ok(resolved) = cfg.resolve(d.handle.provider, &d.handle.session_id, None, None)
             else {
                 continue;
@@ -2778,6 +2838,8 @@ fn policy_decision(
     Ok(serde_json::json!({
         "provider": provider_id,
         "action": action,
+        "context_tokens": context_tokens,
+        "session_active": session_active,
         "strategy": resolved.strategy,
         "trigger_tokens": resolved.policy.trigger_tokens,
         "effective_trigger_tokens": effective_trigger,
@@ -2787,15 +2849,34 @@ fn policy_decision(
     }))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_policy_check(
+    cli: &Cli,
     cfg: &config::Config,
     provider: &str,
-    context_tokens: u64,
+    context_tokens: Option<u64>,
+    session: Option<&str>,
     session_active: bool,
     quota_pressure: Option<QuotaArg>,
     preset: Option<&str>,
     json: bool,
 ) -> Result<()> {
+    // `--session` reads the provider's own store so hook scripts and
+    // wrappers don't have to measure context themselves.
+    let (context_tokens, session_active) = if let Some(session_id) = session {
+        if provider != "devin" {
+            bail!("--session store lookup is implemented for provider=devin only");
+        }
+        let root = roots(cli).devin_home;
+        let Some((usage, locked)) =
+            gobstopper_adapters::devin::session_observation(&root, session_id)
+        else {
+            bail!("no devin session '{session_id}' in {}", root.display());
+        };
+        (usage.context_tokens, locked)
+    } else {
+        (context_tokens.unwrap_or(0), session_active)
+    };
     let decision = policy_decision(
         cfg,
         provider,
@@ -2817,6 +2898,26 @@ fn cmd_policy_check(
         }
     }
     Ok(())
+}
+
+fn cmd_export(cli: &Cli, cfg: &config::Config, session: &str) -> Result<()> {
+    let d = find_session(cli, cfg, session)?;
+    use std::io::Write;
+    let bytes = match d.handle.provider {
+        Provider::Devin if gobstopper_adapters::devin::is_store_path(&d.handle.path) => {
+            gobstopper_adapters::devin::export_bytes(&d.handle.path, &d.handle.session_id)
+                .map_err(|e| anyhow::anyhow!(e))?
+        }
+        // Codex/Claude transcripts are already canonical files; a detached
+        // Devin export round-trips unchanged.
+        _ => transaction_read(&d.handle.path)?,
+    };
+    std::io::stdout().write_all(&bytes)?;
+    Ok(())
+}
+
+fn transaction_read(path: &std::path::Path) -> Result<Vec<u8>> {
+    gobstopper_adapters::transaction::read(path).map_err(|e| anyhow::anyhow!(e))
 }
 
 fn cmd_explain() {
@@ -3084,19 +3185,23 @@ fn main() -> Result<()> {
         Cmd::PolicyCheck {
             provider,
             context_tokens,
+            session,
             session_active,
             quota_pressure,
             preset,
             json,
         } => cmd_policy_check(
+            &cli,
             &cfg,
             provider,
             *context_tokens,
+            session.as_deref(),
             *session_active,
             *quota_pressure,
             preset.as_deref(),
             *json,
         ),
+        Cmd::Export { session } => cmd_export(&cli, &cfg, session),
         Cmd::Presets => {
             for name in cfg.presets.keys() {
                 println!("{name}");

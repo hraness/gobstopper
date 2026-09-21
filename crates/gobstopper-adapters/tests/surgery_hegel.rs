@@ -74,6 +74,7 @@ fn linkage(provider: Provider, line: &str) -> Option<Value> {
             "timestamp": record.get("timestamp"),
             "session_id": record.get("payload").and_then(|p| p.get("id")),
         }),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     })
 }
 
@@ -404,12 +405,14 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
     let path = dir.join(match provider {
         Provider::Codex => "rollout.jsonl",
         Provider::ClaudeCode => "session.jsonl",
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     });
     let vault_root = dir.join("vault");
 
     let mut lines = match provider {
         Provider::Codex => gen_codex_transcript(&tc, tc.draw(gs::booleans())),
         Provider::ClaudeCode => gen_claude_transcript(&tc),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     write_lines(&path, &lines);
     no_errors(provider, &path);
@@ -437,6 +440,9 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                 let reclaimed = match provider {
                     Provider::Codex => codex::apply(&path, &edits).unwrap(),
                     Provider::ClaudeCode => claude::apply(&path, &edits).unwrap(),
+                    Provider::Devin => {
+                        unreachable!("devin coverage lives in devin.rs fixture tests")
+                    }
                 };
                 let after = read_lines(&path);
                 assert_eq!(before.len(), after.len(), "elide changed the record count");
@@ -454,6 +460,9 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                 let again = match provider {
                     Provider::Codex => codex::apply(&path, &edits).unwrap(),
                     Provider::ClaudeCode => claude::apply(&path, &edits).unwrap(),
+                    Provider::Devin => {
+                        unreachable!("devin coverage lives in devin.rs fixture tests")
+                    }
                 };
                 assert_eq!(read_lines(&path), after, "second elide not idempotent");
                 let _ = reclaimed;
@@ -469,6 +478,9 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                 match provider {
                     Provider::Codex => codex::apply(&path, &edits).unwrap(),
                     Provider::ClaudeCode => claude::apply(&path, &edits).unwrap(),
+                    Provider::Devin => {
+                        unreachable!("devin coverage lives in devin.rs fixture tests")
+                    }
                 };
                 let after = read_lines(&path);
                 let expected = before.len()
@@ -477,6 +489,9 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                         Provider::Codex => 1,
                         // Claude injects a synthetic user, a last-prompt tail, and a mode record.
                         Provider::ClaudeCode => 3,
+                        Provider::Devin => {
+                            unreachable!("devin coverage lives in devin.rs fixture tests")
+                        }
                     };
                 assert_eq!(
                     expected,
@@ -503,6 +518,9 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                 match provider {
                     Provider::Codex => codex::apply(&path, &edits).unwrap(),
                     Provider::ClaudeCode => claude::apply(&path, &edits).unwrap(),
+                    Provider::Devin => {
+                        unreachable!("devin coverage lives in devin.rs fixture tests")
+                    }
                 };
                 vault::restore(&entry.sha256, &path, &vault_root).unwrap();
                 assert_eq!(
@@ -537,6 +555,9 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                             "message": {"role": "user", "content": "continue"}
                         }))
                         .unwrap()
+                    }
+                    Provider::Devin => {
+                        unreachable!("devin coverage lives in devin.rs fixture tests")
                     }
                 };
                 lines.push(appended);
@@ -735,6 +756,7 @@ fn plans_apply_cleanly(tc: TestCase) {
     let lines = match provider {
         Provider::Codex => gen_codex_transcript(&tc, tc.draw(gs::booleans())),
         Provider::ClaudeCode => gen_claude_transcript(&tc),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     write_lines(&path, &lines);
 
@@ -748,6 +770,7 @@ fn plans_apply_cleanly(tc: TestCase) {
     let transcript = match provider {
         Provider::Codex => codex::load(handle).unwrap(),
         Provider::ClaudeCode => claude::load(handle).unwrap(),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     let line_count = read_lines(&path).len();
     let policy = PolicyConfig {
@@ -795,6 +818,7 @@ fn plans_apply_cleanly(tc: TestCase) {
         match provider {
             Provider::Codex => codex::apply(&copy, &file_edits).unwrap(),
             Provider::ClaudeCode => claude::apply(&copy, &file_edits).unwrap(),
+            Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
         };
         no_errors(provider, &copy);
 
@@ -813,6 +837,7 @@ fn plans_apply_cleanly(tc: TestCase) {
             let t2 = match provider {
                 Provider::Codex => codex::load(handle).unwrap(),
                 Provider::ClaudeCode => claude::load(handle).unwrap(),
+                Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
             };
             let Some(plan2) = strategy.evaluate(&t2, &policy) else {
                 break;
@@ -836,6 +861,7 @@ fn plans_apply_cleanly(tc: TestCase) {
             match provider {
                 Provider::Codex => codex::apply(&copy, &file_edits2).unwrap(),
                 Provider::ClaudeCode => claude::apply(&copy, &file_edits2).unwrap(),
+                Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
             };
             no_errors(provider, &copy);
             current_lines = read_lines(&copy);
@@ -859,6 +885,7 @@ fn dirty_transcript_surgery_adds_no_findings(tc: TestCase) {
     let mut lines = match provider {
         Provider::Codex => gen_codex_transcript(&tc, false),
         Provider::ClaudeCode => gen_claude_transcript(&tc),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     // Inject k dirty lines at random positions.
     let junk = tc.draw(gs::integers::<usize>().min_value(1).max_value(5));
@@ -886,6 +913,7 @@ fn dirty_transcript_surgery_adds_no_findings(tc: TestCase) {
     match provider {
         Provider::Codex => codex::load(handle).unwrap(),
         Provider::ClaudeCode => claude::load(handle).unwrap(),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     let before: std::collections::HashSet<(&'static str, Option<usize>)> =
         verify::verify(provider, &fs::read(&path).unwrap())
@@ -912,6 +940,7 @@ fn dirty_transcript_surgery_adds_no_findings(tc: TestCase) {
             }],
         )
         .unwrap(),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     let after_lines = read_lines(&path);
     assert_eq!(lines.len(), after_lines.len());
@@ -949,6 +978,7 @@ fn stale_plan_survives_provider_appends(tc: TestCase) {
     let mut lines = match provider {
         Provider::Codex => gen_codex_transcript(&tc, false),
         Provider::ClaudeCode => gen_claude_transcript(&tc),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     write_lines(&path, &lines);
     // Plan against the current file.
@@ -977,6 +1007,7 @@ fn stale_plan_survives_provider_appends(tc: TestCase) {
                 }))
                 .unwrap()
             }
+            Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
         };
         lines.push(appended);
     }
@@ -1000,6 +1031,7 @@ fn stale_plan_survives_provider_appends(tc: TestCase) {
             }],
         )
         .unwrap(),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     let after = read_lines(&path);
     assert_eq!(lines.len(), after.len());
@@ -1152,6 +1184,7 @@ fn eval_never_mutates_source(tc: TestCase) {
     let lines = match provider {
         Provider::Codex => gen_codex_transcript(&tc, false),
         Provider::ClaudeCode => gen_claude_transcript(&tc),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     write_lines(&path, &lines);
     let before = fs::read(&path).unwrap();
@@ -1218,10 +1251,12 @@ fn fork_is_additive_and_linkage_preserving(tc: TestCase) {
     let path = dir.join(match provider {
         Provider::Codex => "rollout-2026-09-15T00-00-00-c0.jsonl",
         Provider::ClaudeCode => "session.jsonl",
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     });
     let lines = match provider {
         Provider::Codex => gen_codex_transcript(&tc, false),
         Provider::ClaudeCode => gen_claude_transcript(&tc),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     write_lines(&path, &lines);
     let original = fs::read(&path).unwrap();
@@ -1255,6 +1290,7 @@ fn fork_is_additive_and_linkage_preserving(tc: TestCase) {
                     }
                 }
             }
+            Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
         }
         assert_eq!(ra, rb, "fork changed non-identity fields on line {i}");
         // Session identity must be rewritten to the new id.
@@ -1275,6 +1311,7 @@ fn fork_is_additive_and_linkage_preserving(tc: TestCase) {
                     assert_eq!(id, Some(result.session_id.as_str()));
                 }
             }
+            Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
         }
     }
     no_errors(provider, &result.path);
@@ -1304,6 +1341,7 @@ fn vault_roundtrip_dedups_and_restores_exactly(tc: TestCase) {
     let lines = match provider {
         Provider::Codex => gen_codex_transcript(&tc, false),
         Provider::ClaudeCode => gen_claude_transcript(&tc),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     write_lines(&path, &lines);
     let original = fs::read(&path).unwrap();
@@ -1403,6 +1441,7 @@ fn hostile_digest_injects_as_one_line(tc: TestCase) {
     let lines = match provider {
         Provider::Codex => gen_codex_transcript(&tc, false),
         Provider::ClaudeCode => gen_claude_transcript(&tc),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     write_lines(&path, &lines);
     let digest = DigestBlock {
@@ -1420,11 +1459,13 @@ fn hostile_digest_injects_as_one_line(tc: TestCase) {
     match provider {
         Provider::Codex => codex::apply(&path, &[Edit::InjectDigest { digest }]).unwrap(),
         Provider::ClaudeCode => claude::apply(&path, &[Edit::InjectDigest { digest }]).unwrap(),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     let after = read_lines(&path);
     let expected_delta = match provider {
         Provider::Codex => 1,
         Provider::ClaudeCode => 3,
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     assert_eq!(
         before + expected_delta,
@@ -1455,6 +1496,7 @@ fn load_item_invariants_hold(tc: TestCase) {
     let lines = match provider {
         Provider::Codex => gen_codex_transcript(&tc, false),
         Provider::ClaudeCode => gen_claude_transcript(&tc),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     write_lines(&path, &lines);
     let handle = SessionHandle {
@@ -1467,6 +1509,7 @@ fn load_item_invariants_hold(tc: TestCase) {
     let t = match provider {
         Provider::Codex => codex::load(handle).unwrap(),
         Provider::ClaudeCode => claude::load(handle).unwrap(),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     let (linked, live) = if provider == Provider::ClaudeCode {
         claude_live_lines(&lines)
@@ -1520,6 +1563,7 @@ fn scan_usage_agrees_with_load(tc: TestCase) {
     let lines = match provider {
         Provider::Codex => gen_codex_transcript(&tc, false),
         Provider::ClaudeCode => gen_claude_transcript(&tc),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     write_lines(&path, &lines);
     assert!(
@@ -1529,6 +1573,7 @@ fn scan_usage_agrees_with_load(tc: TestCase) {
     let scanned = match provider {
         Provider::Codex => codex::scan_usage(&path),
         Provider::ClaudeCode => claude::scan_usage(&path),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     let loaded = match provider {
         Provider::Codex => codex::load(SessionHandle {
@@ -1547,6 +1592,7 @@ fn scan_usage_agrees_with_load(tc: TestCase) {
             age_secs: 0,
         })
         .unwrap(),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     assert_eq!(
         scanned.context_tokens, loaded.usage.context_tokens,
@@ -1565,6 +1611,7 @@ fn discover_finds_generated_sessions(tc: TestCase) {
     let roots = Roots {
         codex_home: dir.join("codex"),
         claude_home: dir.join("claude"),
+        devin_home: dir.join("devin"),
     };
     let n_codex = tc.draw(gs::integers::<usize>().max_value(3));
     let n_claude = tc.draw(gs::integers::<usize>().max_value(3));

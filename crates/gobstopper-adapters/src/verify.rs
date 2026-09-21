@@ -149,6 +149,7 @@ pub fn verify(provider: Provider, bytes: &[u8]) -> Vec<VerifyFinding> {
     match provider {
         Provider::ClaudeCode => verify_claude(&records, &mut findings),
         Provider::Codex => verify_codex(&records, &mut findings),
+        Provider::Devin => verify_devin(&records, &mut findings),
     }
 
     findings.sort_by_key(|f| f.line_index.unwrap_or(usize::MAX));
@@ -242,6 +243,136 @@ fn verify_claude(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
                 Some(line),
                 "orphaned_tool_result",
                 "tool_result block has no matching tool_use in an earlier record",
+            ));
+        }
+    }
+}
+
+/// Devin dialect checks against the canonical export form (see
+/// `devin::export_bytes`): line 0 is a `session_meta` record naming
+/// `main_chain_id`; every later line is a `message_node` with a unique
+/// `node_id`, a `parent_node_id` that resolves to an earlier node, and a
+/// `chat_message` object. Assistant `tool_calls[].id` values must be
+/// answered by a later `role == "tool"` node's `tool_call_id`, and every
+/// tool node's `tool_call_id` must match an earlier assistant call.
+fn verify_devin(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
+    let mut seen_nodes: HashSet<i64> = HashSet::new();
+    let mut saw_meta = false;
+    // (call id, line_index) for assistant calls; tool nodes likewise.
+    let mut calls: Vec<(&str, usize)> = Vec::new();
+    let mut results: Vec<(&str, usize)> = Vec::new();
+
+    for (i, record) in records.iter().enumerate() {
+        let Some(record) = record else { continue };
+        match record.get("type").and_then(Value::as_str) {
+            Some("session_meta") => {
+                saw_meta = true;
+                if i != 0 {
+                    findings.push(warning(
+                        Some(i),
+                        "misplaced_session_meta",
+                        "session_meta record is not the first line",
+                    ));
+                }
+                if record.get("main_chain_id").is_none() {
+                    findings.push(error(
+                        Some(i),
+                        "missing_main_chain",
+                        "session_meta record lacks main_chain_id",
+                    ));
+                }
+            }
+            Some("message_node") => {
+                let Some(node_id) = record.get("node_id").and_then(Value::as_i64) else {
+                    findings.push(error(
+                        Some(i),
+                        "missing_node_id",
+                        "message_node record lacks an integer node_id",
+                    ));
+                    continue;
+                };
+                if !seen_nodes.insert(node_id) {
+                    findings.push(error(
+                        Some(i),
+                        "duplicate_node_id",
+                        "node_id already appears on an earlier record",
+                    ));
+                }
+                if let Some(parent) = record.get("parent_node_id").and_then(Value::as_i64) {
+                    if !seen_nodes.contains(&parent) {
+                        findings.push(error(
+                            Some(i),
+                            "broken_parent_chain",
+                            "parent_node_id does not match any earlier node_id",
+                        ));
+                    }
+                }
+                match record.get("chat_message") {
+                    Some(msg) if msg.is_object() => match msg.get("role").and_then(Value::as_str) {
+                        Some("assistant") => {
+                            if let Some(tcs) = msg.get("tool_calls").and_then(Value::as_array) {
+                                for call in tcs {
+                                    if let Some(id) = call.get("id").and_then(Value::as_str) {
+                                        calls.push((id, i));
+                                    }
+                                }
+                            }
+                        }
+                        Some("tool") => {
+                            if let Some(id) = msg.get("tool_call_id").and_then(Value::as_str) {
+                                results.push((id, i));
+                            }
+                        }
+                        _ => {}
+                    },
+                    _ => findings.push(error(
+                        Some(i),
+                        "invalid_chat_message",
+                        "chat_message is missing or not an object",
+                    )),
+                }
+            }
+            _ => {}
+        }
+    }
+    if !saw_meta {
+        findings.push(error(
+            None,
+            "missing_session_meta",
+            "export has no session_meta record",
+        ));
+    }
+
+    // Devin call ids sometimes end in a bare `#` while the answering tool
+    // node's `tool_call_id` carries the full `#<nonce>` suffix — pairing is
+    // `result == call || result.starts_with(call)`, not strict equality.
+    let mut first_call: Vec<(&str, usize)> = Vec::new();
+    for &(id, line) in &calls {
+        if !first_call.iter().any(|&(c, _)| c == id) {
+            first_call.push((id, line));
+        }
+    }
+    for &(id, line) in &calls {
+        let answered = results
+            .iter()
+            .any(|&(rid, rline)| rline > line && (rid == id || rid.starts_with(id)));
+        if !answered {
+            findings.push(error(
+                Some(line),
+                "orphaned_tool_call",
+                "tool_calls entry has no matching tool node in a later record",
+            ));
+        }
+    }
+    for &(id, line) in &results {
+        let preceded = first_call
+            .iter()
+            .any(|&(cid, cline)| cline < line && (id == cid || id.starts_with(cid)));
+        if !preceded {
+            findings.push(warning(
+                Some(line),
+                "orphaned_tool_result",
+                "tool node has no matching assistant tool_calls entry in an earlier record",
             ));
         }
     }
