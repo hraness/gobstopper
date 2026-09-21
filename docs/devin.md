@@ -92,6 +92,12 @@ consecutive passes before writing, which closes the
 Sessions that are still live skip the transcript load entirely: `auto`
 delegates to the provider for active sessions unconditionally, so the
 loop emits the delegation decision straight from the cheap usage read.
+Two further bounds keep the loop cheap and fair: a successful in-place
+mutation holds the session out of evaluation for `apply_hold_secs`
+(default 1800 — a session that re-appends and re-triggers inside the
+window is churning, not accumulating), and each pass services sessions
+in ascending size order so one multi-minute apply cannot delay every
+session behind it.
 
 Long-running sessions can exceed the default 512 MiB transcript bound —
 raise it with `GOBSTOPPER_MAX_TRANSCRIPT_BYTES` (bytes) in the watch
@@ -216,7 +222,11 @@ claude_code = 50  # the other half stays silent (control)
 The bucket is `int(sha256(session_id)[:16], 16) % 100` — stable across
 prompts and machines. Every resolved decision is appended to the telemetry log as a
 `prompt-policy:treatment|control` event — numerator and denominator for an
-A/B readout both land in `events.jsonl`, and `gobstopper report` /
+A/B readout both land in `events.jsonl`. `gobstopper events --cohort`
+aggregates telemetry per provider per rollout arm — sessions, advisories
+shown/suppressed, watch cohort-skips, applies, and reclaimed tokens —
+recomputing each session's deterministic bucket rather than trusting
+event tags; `--json` emits the same table for tooling. `gobstopper report` /
 `scripts/monitor.py --provider <name>` supply the per-session context
 trajectories to compare cohorts.
 

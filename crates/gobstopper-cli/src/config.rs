@@ -25,6 +25,9 @@ pub struct PolicyPatch {
     /// Scored-only opt-in retention cutoff; independent of the size target.
     pub keep_score_threshold: Option<f64>,
     pub min_interval_secs: Option<u64>,
+    /// Minimum seconds between in-place mutations of one session
+    /// (watch store/in-place applies). Default 1800.
+    pub apply_hold_secs: Option<u64>,
     pub min_savings_tokens: Option<u64>,
     /// Provider quota pressure: `low` compacts later, `high` earlier.
     pub quota_pressure: Option<QuotaPressure>,
@@ -68,6 +71,9 @@ impl PolicyPatch {
         }
         if let Some(v) = self.min_interval_secs {
             policy.min_interval_secs = v;
+        }
+        if let Some(v) = self.apply_hold_secs {
+            policy.apply_hold_secs = v;
         }
         if let Some(v) = self.min_savings_tokens {
             policy.min_savings_tokens = v;
@@ -131,9 +137,10 @@ pub fn validate_policy(policy: &PolicyConfig) -> anyhow::Result<()> {
         || policy.floor_tokens >= policy.trigger_tokens
         || policy.keep_recent_tool_outputs > 100_000
         || policy.min_interval_secs > 86_400
+        || policy.apply_hold_secs > 86_400
         || policy.min_savings_tokens > 10_000_000
     {
-        anyhow::bail!("invalid policy bounds: require floor < trigger <= 10000000, min_savings_tokens <= 10000000, keep_recent_tool_outputs <= 100000, and min_interval_secs <= 86400");
+        anyhow::bail!("invalid policy bounds: require floor < trigger <= 10000000, min_savings_tokens <= 10000000, keep_recent_tool_outputs <= 100000, and min_interval_secs/apply_hold_secs <= 86400");
     }
     Ok(())
 }

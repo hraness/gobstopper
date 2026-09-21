@@ -60,6 +60,14 @@ pub struct PolicyConfig {
     pub keep_score_threshold: Option<f64>,
     /// Minimum seconds between compactions of one session.
     pub min_interval_secs: u64,
+    /// Minimum seconds between in-place mutations of one session.
+    /// Longer than `min_interval_secs`: a session that bounces back
+    /// over trigger right after an apply is appending churn, not
+    /// accumulated context — re-writing it every interval only grows
+    /// the vault and burns rewrite I/O. Applies to `watch`'s guarded
+    /// store/in-place writes; read-only fork preparation is unaffected.
+    #[serde(default = "default_apply_hold_secs")]
+    pub apply_hold_secs: u64,
     #[serde(default = "default_min_savings_tokens")]
     pub min_savings_tokens: u64,
     /// Scales `trigger_tokens`; see [`PolicyConfig::effective_trigger`].
@@ -76,6 +84,10 @@ const fn default_min_savings_tokens() -> u64 {
     4_096
 }
 
+const fn default_apply_hold_secs() -> u64 {
+    1_800
+}
+
 impl Default for PolicyConfig {
     /// Research-backed default: fire well below the provider's own
     /// threshold (~60% of a ~400k effective window, ~25% of a 1M window).
@@ -86,6 +98,7 @@ impl Default for PolicyConfig {
             keep_recent_tool_outputs: 8,
             keep_score_threshold: None,
             min_interval_secs: 300,
+            apply_hold_secs: default_apply_hold_secs(),
             min_savings_tokens: default_min_savings_tokens(),
             quota_pressure: QuotaPressure::Normal,
             adaptive: false,

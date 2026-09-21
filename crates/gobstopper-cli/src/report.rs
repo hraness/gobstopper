@@ -314,6 +314,121 @@ pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Valu
     })
 }
 
+/// `events --cohort` readout: per-provider, per-rollout-arm aggregation
+/// of compaction telemetry so the A/B effect is readable. The cohort is
+/// recomputed from the session id — the same deterministic bucket
+/// `hooks` and `watch` gate on — rather than trusting the strategy tag,
+/// so untagged `auto`/`watch` events still attribute to the right arm.
+pub fn cohort_summary(cfg: &crate::config::Config, events: &[CompactionEvent]) -> Value {
+    #[derive(Default)]
+    struct Acc {
+        sessions: HashSet<String>,
+        events: u64,
+        /// prompt-policy decision shown to the user (over trigger).
+        advisories_shown: u64,
+        /// prompt-policy decision suppressed by the rollout gate while
+        /// the session was over trigger — the withheld numerator.
+        advisories_suppressed: u64,
+        /// prompt-policy decision under trigger (or unresolved context):
+        /// no advisory would have fired anyway.
+        silent_decisions: u64,
+        /// `watch-apply:control` — an in-place apply withheld by cohort.
+        watch_suppressed: u64,
+        applies: u64,
+        reclaimed_tokens: u64,
+        /// error_code == unresolved_context; not a policy decision.
+        unresolved_context: u64,
+        first_ts: u64,
+        last_ts: u64,
+    }
+    impl Acc {
+        fn observe(&mut self, e: &CompactionEvent, cohort: &'static str) {
+            self.sessions.insert(e.session_id.clone());
+            self.events += 1;
+            if self.first_ts == 0 || e.ts < self.first_ts {
+                self.first_ts = e.ts;
+            }
+            self.last_ts = self.last_ts.max(e.ts);
+            if e.error_code.as_deref() == Some("unresolved_context") {
+                self.unresolved_context += 1;
+            }
+            if e.strategy.starts_with("prompt-policy") {
+                match e.outcome.as_str() {
+                    "planned" => self.advisories_shown += 1,
+                    // Unresolved context is not a decision at all —
+                    // counted above, excluded from both arms here.
+                    "skipped" if e.error_code.as_deref() == Some("unresolved_context") => {}
+                    "skipped" => {
+                        if cohort == "control" && e.context_tokens_before >= e.trigger_tokens {
+                            self.advisories_suppressed += 1;
+                        } else {
+                            self.silent_decisions += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            if e.strategy == "watch-apply:control" {
+                self.watch_suppressed += 1;
+            }
+            if e.outcome == "applied" {
+                self.applies += 1;
+                self.reclaimed_tokens += e.est_reclaimed_tokens;
+            }
+        }
+        fn json(&self) -> Value {
+            json!({
+                "sessions": self.sessions.len(),
+                "events": self.events,
+                "advisories_shown": self.advisories_shown,
+                "advisories_suppressed": self.advisories_suppressed,
+                "silent_decisions": self.silent_decisions,
+                "watch_suppressed": self.watch_suppressed,
+                "applies": self.applies,
+                "reclaimed_tokens": self.reclaimed_tokens,
+                "unresolved_context": self.unresolved_context,
+                "first_ts": self.first_ts,
+                "last_ts": self.last_ts,
+            })
+        }
+    }
+    #[derive(Default)]
+    struct ProviderAcc {
+        treatment: Acc,
+        control: Acc,
+        ungated: Acc,
+    }
+    let mut providers: HashMap<&'static str, ProviderAcc> = HashMap::new();
+    for e in events {
+        let pa = providers.entry(e.provider.as_str()).or_default();
+        let cohort = match crate::hooks::rollout_cohort(cfg, e.provider.as_str(), &e.session_id) {
+            Some(true) => "treatment",
+            Some(false) => "control",
+            None => "ungated",
+        };
+        match cohort {
+            "treatment" => pa.treatment.observe(e, cohort),
+            "control" => pa.control.observe(e, cohort),
+            _ => pa.ungated.observe(e, cohort),
+        }
+    }
+    let mut out = serde_json::Map::new();
+    for (pname, pa) in providers {
+        out.insert(
+            pname.to_string(),
+            json!({
+                "rollout_pct": cfg.rollout.get(pname).copied(),
+                "cohorts": {
+                    "treatment": pa.treatment.json(),
+                    "control": pa.control.json(),
+                    "ungated": pa.ungated.json(),
+                },
+            }),
+        );
+    }
+    json!({ "schema": "gobstopper-cohort-readout-v1", "providers": out })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,6 +480,77 @@ mod tests {
             duration_ms: 5,
             error_code: None,
         }
+    }
+
+    #[test]
+    fn cohort_summary_attributes_events_to_deterministic_arms() {
+        let mut cfg = crate::config::Config::default();
+        cfg.rollout.insert("claude_code".to_string(), 100);
+        let events = vec![
+            event(Provider::ClaudeCode, UUID_A, 100, "applied", "auto", 5_000),
+            event(
+                Provider::ClaudeCode,
+                UUID_A,
+                110,
+                "planned",
+                "prompt-policy:treatment",
+                0,
+            ),
+        ];
+        let summary = cohort_summary(&cfg, &events);
+        let t = &summary["providers"]["claude_code"]["cohorts"]["treatment"];
+        assert_eq!(t["applies"], 1);
+        assert_eq!(t["reclaimed_tokens"], 5_000);
+        assert_eq!(t["advisories_shown"], 1);
+        assert_eq!(t["sessions"], 1);
+        assert_eq!(summary["providers"]["claude_code"]["rollout_pct"], 100);
+        assert_eq!(
+            summary["providers"]["claude_code"]["cohorts"]["control"]["events"],
+            0
+        );
+
+        // 0% rollout: everyone is control; a prompt-policy skip recorded
+        // while over trigger is a genuinely suppressed advisory.
+        cfg.rollout.insert("claude_code".to_string(), 0);
+        let mut suppressed = event(
+            Provider::ClaudeCode,
+            UUID_A,
+            120,
+            "skipped",
+            "prompt-policy:control",
+            0,
+        );
+        suppressed.context_tokens_before = 300_000; // >= trigger 250_000
+        suppressed.context_tokens_after = 300_000;
+        let summary = cohort_summary(&cfg, &[suppressed]);
+        let c = &summary["providers"]["claude_code"]["cohorts"]["control"];
+        assert_eq!(c["advisories_suppressed"], 1);
+        assert_eq!(c["advisories_shown"], 0);
+
+        // Unresolved-context skips are excluded from decision counters.
+        let mut unresolved = event(
+            Provider::ClaudeCode,
+            UUID_A,
+            130,
+            "skipped",
+            "prompt-policy:control",
+            0,
+        );
+        unresolved.context_tokens_before = 0;
+        unresolved.context_tokens_after = 0;
+        unresolved.error_code = Some("unresolved_context".to_string());
+        let summary = cohort_summary(&cfg, &[unresolved]);
+        let c = &summary["providers"]["claude_code"]["cohorts"]["control"];
+        assert_eq!(c["unresolved_context"], 1);
+        assert_eq!(c["advisories_suppressed"], 0);
+        assert_eq!(c["silent_decisions"], 0);
+
+        // Providers with no rollout entry aggregate under "ungated".
+        let events = vec![event(Provider::Codex, UUID_A, 1, "applied", "auto", 7)];
+        let summary = cohort_summary(&cfg, &events);
+        let u = &summary["providers"]["codex"]["cohorts"]["ungated"];
+        assert_eq!(u["applies"], 1);
+        assert_eq!(u["reclaimed_tokens"], 7);
     }
 
     #[test]

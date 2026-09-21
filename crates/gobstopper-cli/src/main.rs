@@ -211,6 +211,10 @@ enum Cmd {
         /// Only the last N events (default 20).
         #[arg(long, default_value = "20")]
         tail: usize,
+        /// Aggregate per-provider rollout-cohort readout (treatment vs
+        /// control) instead of the raw event tail.
+        #[arg(long)]
+        cohort: bool,
         /// Emit JSON.
         #[arg(long)]
         json: bool,
@@ -1836,11 +1840,69 @@ fn cmd_report(cli: &Cli, strict: bool, active_only: bool) -> Result<()> {
     Ok(())
 }
 
-fn cmd_events(session: Option<&str>, tail: usize, json: bool) -> Result<()> {
+fn cmd_events(
+    cfg: &config::Config,
+    session: Option<&str>,
+    tail: usize,
+    cohort: bool,
+    json: bool,
+) -> Result<()> {
     let path = default_log_path();
     let mut events = gobstopper_core::events::read_events(&path).unwrap_or_default();
     if let Some(prefix) = session {
         events.retain(|e| e.session_id.starts_with(prefix));
+    }
+    if cohort {
+        let summary = report::cohort_summary(cfg, &events);
+        if json {
+            println!("{}", serde_json::to_string_pretty(&summary)?);
+            return Ok(());
+        }
+        println!("cohort readout — {} events", events.len());
+        let mut providers: Vec<(&String, &serde_json::Value)> = summary["providers"]
+            .as_object()
+            .into_iter()
+            .flatten()
+            .collect();
+        providers.sort_by(|a, b| a.0.cmp(b.0));
+        for (provider, p) in providers {
+            let rollout = p["rollout_pct"]
+                .as_u64()
+                .map(|v| format!("{v}%"))
+                .unwrap_or_else(|| "-".to_string());
+            println!("\n{provider} (rollout {rollout})");
+            println!(
+                "  {:<10} {:>8} {:>6} {:>6} {:>10} {:>7} {:>10} {:>10} {:>10}",
+                "cohort",
+                "sessions",
+                "shown",
+                "suppr.",
+                "watch-skip",
+                "applies",
+                "reclaimed",
+                "unresolved",
+                "events"
+            );
+            for cohort_name in ["treatment", "control", "ungated"] {
+                let c = &p["cohorts"][cohort_name];
+                if c["events"].as_u64().unwrap_or(0) == 0 {
+                    continue;
+                }
+                println!(
+                    "  {:<10} {:>8} {:>6} {:>6} {:>10} {:>7} {:>10} {:>10} {:>10}",
+                    cohort_name,
+                    c["sessions"],
+                    c["advisories_shown"],
+                    c["advisories_suppressed"],
+                    c["watch_suppressed"],
+                    c["applies"],
+                    c["reclaimed_tokens"],
+                    c["unresolved_context"],
+                    c["events"],
+                );
+            }
+        }
+        return Ok(());
     }
     if json {
         println!("{}", serde_json::to_string_pretty(&events)?);
@@ -2593,6 +2655,22 @@ fn session_fingerprint(d: &Discovered) -> Option<String> {
     Some(format!("{content}:{}", d.handle.is_active()))
 }
 
+/// Cheap per-pass cost estimate for ordering watch work: Devin sessions
+/// cost their chain length (the export walk is the expensive part),
+/// file providers cost their transcript bytes. Unknown sizes sort last
+/// so a giant session cannot starve every small session behind it in a
+/// serial pass.
+fn session_cost_hint(d: &Discovered) -> u64 {
+    match d.handle.provider {
+        Provider::Devin => devin::chain_fingerprint(&d.handle.path, &d.handle.session_id)
+            .and_then(|fp| fp.split(':').nth(1)?.parse().ok())
+            .unwrap_or(u64::MAX),
+        _ => std::fs::metadata(&d.handle.path)
+            .map(|m| m.len())
+            .unwrap_or(u64::MAX),
+    }
+}
+
 /// Content hash of a file, for the staged-swap unchanged check.
 fn sha256_file(path: &std::path::Path) -> Option<String> {
     use sha2::{Digest, Sha256};
@@ -2698,11 +2776,17 @@ fn cmd_watch(
     // fingerprint was identical on consecutive passes.
     let mut settle_pass: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
+    // Apply hold-down: session_key -> Instant of the last successful
+    // in-place mutation. A session that re-appends and re-triggers
+    // within `apply_hold_secs` is churning; hold it out so one bouncy
+    // session cannot snapshot+rewrite every cooldown.
+    let mut last_apply: std::collections::HashMap<String, std::time::Instant> =
+        std::collections::HashMap::new();
     let mut staged: std::collections::HashMap<String, Staged> = std::collections::HashMap::new();
     let mut discovery_cache = detect::DiscoveryCache::default();
     loop {
         let cfg = config::load()?;
-        for d in detect::discover_cached(
+        let mut found: Vec<Discovered> = detect::discover_cached(
             &roots(cli),
             if active_only {
                 gobstopper_core::SessionHandle::HOT_SECS
@@ -2710,7 +2794,11 @@ fn cmd_watch(
                 detect::default_max_age_secs()
             },
             &mut discovery_cache,
-        ) {
+        );
+        // Cheapest sessions first: a multi-minute apply on one giant
+        // session would otherwise delay every session behind it.
+        found.sort_by_key(session_cost_hint);
+        for d in found {
             if provider.is_some_and(|p| p != d.handle.provider) {
                 continue;
             }
@@ -2740,6 +2828,17 @@ fn cmd_watch(
             let fp = session_fingerprint(&d);
             if fp.is_some() && settled.get(&session_key) == fp.as_ref() {
                 continue;
+            }
+            // Apply hold-down: a session mutated in place within
+            // `apply_hold_secs` stays out of the loop even if a provider
+            // append moved its fingerprint or stale metrics still read
+            // over trigger. Skips the transcript load too — during the
+            // hold the pass costs two map lookups and one cheap
+            // fingerprint read.
+            if let Some(t) = last_apply.get(&session_key) {
+                if t.elapsed().as_secs() < resolved.policy.apply_hold_secs {
+                    continue;
+                }
             }
             let trigger = if resolved.policy.adaptive {
                 gobstopper_core::adapt(
@@ -2999,6 +3098,10 @@ fn cmd_watch(
                                 if let Some(nfp) = session_fingerprint(&d) {
                                     settled.insert(session_key.clone(), nfp);
                                 }
+                                if last_apply.len() >= 4096 {
+                                    last_apply.clear();
+                                }
+                                last_apply.insert(session_key.clone(), started);
                             }
                             Err(e) => {
                                 emit_event(
@@ -3114,6 +3217,10 @@ fn cmd_watch(
                                 if let Some(nfp) = session_fingerprint(&d) {
                                     settled.insert(session_key.clone(), nfp);
                                 }
+                                if last_apply.len() >= 4096 {
+                                    last_apply.clear();
+                                }
+                                last_apply.insert(session_key.clone(), started);
                             }
                             Err(e) => {
                                 emit_event(
@@ -3622,8 +3729,9 @@ fn main() -> Result<()> {
         Cmd::Events {
             session,
             tail,
+            cohort,
             json,
-        } => cmd_events(session.as_deref(), *tail, *json),
+        } => cmd_events(&cfg, session.as_deref(), *tail, *cohort, *json),
         Cmd::Vault { session, json } => cmd_vault(&cli, &cfg, session.as_deref(), *json),
         Cmd::History { session, json } => cmd_history(&cli, &cfg, session, *json),
         Cmd::Show { target, json } => cmd_show(&cli, &cfg, target, *json),
