@@ -99,6 +99,16 @@ window is churning, not accumulating), and each pass services sessions
 in ascending size order so one multi-minute apply cannot delay every
 session behind it.
 
+The suppression fingerprints, settle arms, and rate-limit clocks persist
+to `~/.local/share/gobstopper/watch-state-<provider>.json` after every
+pass (atomic write, clocks as epoch seconds, entries older than a day
+dropped on load), so restarting the daemon does not re-plan every
+session once. Per-provider state files mean concurrent `--provider`
+watches never share a file. Delegation decisions log only when the
+session's context actually moved — a live session appended to every
+pass would otherwise emit an identical `provider_compact/skipped`
+record each interval.
+
 Long-running sessions can exceed the default 512 MiB transcript bound —
 raise it with `GOBSTOPPER_MAX_TRANSCRIPT_BYTES` (bytes) in the watch
 environment when needed; oversized sessions are skipped, never truncated.
@@ -230,7 +240,8 @@ A/B readout both land in `events.jsonl`. `gobstopper events --cohort`
 aggregates telemetry per provider per rollout arm — sessions, advisories
 shown/suppressed, watch cohort-skips, applies, and reclaimed tokens —
 recomputing each session's deterministic bucket rather than trusting
-event tags; `--json` emits the same table for tooling. `gobstopper report` /
+event tags. `--since 24h` windows the readout (so pre-gate data does not
+pollute post-gate reads) and `--json` emits the same table for tooling. `gobstopper report` /
 `scripts/monitor.py --provider <name>` supply the per-session context
 trajectories to compare cohorts.
 
