@@ -2846,7 +2846,7 @@ fn cmd_watch(
                     eprintln!(
                         "[dry-run] {} {}: {}",
                         d.handle.provider.as_str(),
-                        display_prefix(&d.handle.session_id, 12),
+                        d.handle.cwd.as_deref().unwrap_or(&d.handle.path).display(),
                         delegated.rationale
                     );
                     continue;
@@ -2861,9 +2861,7 @@ fn cmd_watch(
                     0,
                     None,
                 );
-                eprintln!(
-                    "deferred native compaction: session owner required; source unchanged"
-                );
+                eprintln!("deferred native compaction: session owner required; source unchanged");
                 if let Some(fp) = &fp {
                     settled.insert(session_key.clone(), fp.clone());
                 }
