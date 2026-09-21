@@ -147,7 +147,11 @@ Legacy `preset.command` remains available only with
   run the guarded SQLite write on idle sessions, and
   `[provider.claude_code] auto_apply_inplace` lets `watch --provider
   claude_code` rewrite an idle transcript in place (Claude opens the file
-  per write, so the swap cannot orphan provider appends).
+  per write, so the swap cannot orphan provider appends). Watch auto-apply
+  respects `[rollout]` cohorts — control sessions are logged and skipped —
+  and a per-session fingerprint suppresses re-evaluation of unchanged
+  sources; Claude writes also require the fingerprint to be stable across
+  two consecutive passes before mutating.
 - Before publication, exact source bytes are stored as verified, deduplicated
   1 MiB chunks in the content-addressed vault.
 - Copy operations bind canonical source path, source hash, provider, and edits

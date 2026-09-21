@@ -75,7 +75,20 @@ auto_apply_store = true
 
 and only under a provider-scoped watch (`gobstopper watch --provider devin`)
 so Codex/Claude fork preparation is unaffected. Live sessions still defer to
-`/compact` regardless of the flag.
+`/compact` regardless of the flag. When a `[rollout]` entry exists for the
+provider, only the treatment cohort is auto-applied; control sessions log a
+`watch-apply:control` skipped event per content version so the experiment
+keeps its denominator.
+
+Watch caches a per-session fingerprint (chain head + node count for Devin,
+file length+mtime for JSONL, plus the live/idle bit) after every terminal
+decision — apply, terminal plan failure, provider delegation, or no-plan —
+and skips the transcript load while it is unchanged. This matters because
+store-reported context stays stale after a Gobstopper write; without the
+fingerprint every pass would re-plan an unchanged session. Claude in-place
+rewrites additionally require the fingerprint to hold across two
+consecutive passes before writing, which closes the
+`ChangedDuringWrite` race window that mtime-only idle detection leaked.
 
 Long-running sessions can exceed the default 512 MiB transcript bound —
 raise it with `GOBSTOPPER_MAX_TRANSCRIPT_BYTES` (bytes) in the watch
