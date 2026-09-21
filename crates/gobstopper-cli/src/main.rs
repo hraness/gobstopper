@@ -215,6 +215,10 @@ enum Cmd {
         /// control) instead of the raw event tail.
         #[arg(long)]
         cohort: bool,
+        /// Only events from the last N seconds/minutes/hours/days
+        /// (e.g. `3600`, `30m`, `6h`, `2d`).
+        #[arg(long)]
+        since: Option<String>,
         /// Emit JSON.
         #[arg(long)]
         json: bool,
@@ -1840,17 +1844,38 @@ fn cmd_report(cli: &Cli, strict: bool, active_only: bool) -> Result<()> {
     Ok(())
 }
 
+/// `--since` duration: bare seconds or a `s`/`m`/`h`/`d` suffix.
+fn parse_since(s: &str) -> Result<u64> {
+    // ASCII-suffix check via bytes avoids a non-char-boundary split_at.
+    let (num, mult) = match s.as_bytes().last() {
+        Some(b's') => (&s[..s.len() - 1], 1),
+        Some(b'm') => (&s[..s.len() - 1], 60),
+        Some(b'h') => (&s[..s.len() - 1], 3_600),
+        Some(b'd') => (&s[..s.len() - 1], 86_400),
+        _ => (s, 1),
+    };
+    let n: u64 = num
+        .parse()
+        .with_context(|| format!("invalid --since duration '{s}'"))?;
+    Ok(n.saturating_mul(mult))
+}
+
 fn cmd_events(
     cfg: &config::Config,
     session: Option<&str>,
     tail: usize,
     cohort: bool,
+    since: Option<&str>,
     json: bool,
 ) -> Result<()> {
     let path = default_log_path();
     let mut events = gobstopper_core::events::read_events(&path).unwrap_or_default();
     if let Some(prefix) = session {
         events.retain(|e| e.session_id.starts_with(prefix));
+    }
+    if let Some(dur) = since {
+        let cutoff = now_secs().saturating_sub(parse_since(dur)?);
+        events.retain(|e| e.ts >= cutoff);
     }
     if cohort {
         let summary = report::cohort_summary(cfg, &events);
@@ -2738,6 +2763,81 @@ fn stage_compaction(d: &Discovered, resolved: &config::Resolved) -> Option<Stage
     })
 }
 
+/// Per-daemon persisted watch state: terminal-decision fingerprints,
+/// the Claude settle arm, rate-limit clocks, and the last-emitted
+/// delegation context all survive a daemon restart, so relaunching does
+/// not re-plan every session once (the cold-pass burst). Clocks persist
+/// as epoch seconds and reload relative to `now`; entries older than a
+/// day are dropped rather than trusted across unknown downtime.
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+struct WatchState {
+    #[serde(default)]
+    settled: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    settle_pass: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    last_fire: std::collections::HashMap<String, u64>,
+    #[serde(default)]
+    last_apply: std::collections::HashMap<String, u64>,
+    #[serde(default)]
+    delegated_ctx: std::collections::HashMap<String, u64>,
+}
+
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn instant_to_epoch(t: std::time::Instant, now_secs: u64) -> u64 {
+    now_secs.saturating_sub(t.elapsed().as_secs())
+}
+
+/// Only meaningful within a day — a clock older than that is treated as
+/// absent rather than trusted across unknown downtime.
+fn epoch_to_instant(epoch: u64, now_secs: u64) -> Option<std::time::Instant> {
+    if epoch == 0 || epoch > now_secs {
+        return None;
+    }
+    let age = now_secs - epoch;
+    if age > 86_400 {
+        return None;
+    }
+    Some(std::time::Instant::now() - std::time::Duration::from_secs(age))
+}
+
+/// `watch-state-<provider|all>.json` beside the telemetry log — scoped
+/// per `--provider` so concurrently running provider daemons never share
+/// a file.
+fn watch_state_path(provider: Option<Provider>) -> PathBuf {
+    let dir = default_log_path()
+        .parent()
+        .map(|p| p.to_path_buf())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let tag = provider.map(|p| p.as_str()).unwrap_or("all");
+    dir.join(format!("watch-state-{tag}.json"))
+}
+
+fn load_watch_state(path: &Path) -> WatchState {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return WatchState::default();
+    };
+    serde_json::from_str(&text).unwrap_or_default()
+}
+
+/// Atomic write (tmp + rename) so a SIGKILL mid-save cannot leave a torn
+/// state file that wipes the suppression map on next load.
+fn save_watch_state(path: &Path, state: &WatchState) {
+    let Ok(text) = serde_json::to_string(state) else {
+        return;
+    };
+    let tmp = path.with_extension("json.tmp");
+    if std::fs::write(&tmp, text).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_watch(
     cli: &Cli,
@@ -2764,24 +2864,38 @@ fn cmd_watch(
     if double_buffer {
         bail!("in-place double-buffer swapping is retired; use copy-only watch without --double-buffer");
     }
-    let mut last_fire: std::collections::HashMap<String, std::time::Instant> =
-        std::collections::HashMap::new();
+    // Persisted watch state (watch-state-<provider>.json beside the
+    // telemetry log): fingerprints, settle arms, and rate-limit clocks
+    // survive restarts so a relaunch does not re-plan every session.
+    let state_path = watch_state_path(provider);
+    let persisted = load_watch_state(&state_path);
+    let boot_secs = now_secs();
+    let mut last_fire: std::collections::HashMap<String, std::time::Instant> = persisted
+        .last_fire
+        .iter()
+        .filter_map(|(k, &t)| epoch_to_instant(t, boot_secs).map(|i| (k.clone(), i)))
+        .collect();
     // Terminal-decision suppression: session_key -> fingerprint recorded
     // when a session was applied, failed, or judged unplannable. Skips
     // the expensive load until the provider actually appends — Devin
     // store metrics go stale post-apply, so context alone re-triggers
     // every pass otherwise.
-    let mut settled: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut settled = persisted.settled;
     // Claude two-pass settle: only rewrite in place when the transcript
     // fingerprint was identical on consecutive passes.
-    let mut settle_pass: std::collections::HashMap<String, String> =
-        std::collections::HashMap::new();
+    let mut settle_pass = persisted.settle_pass;
     // Apply hold-down: session_key -> Instant of the last successful
     // in-place mutation. A session that re-appends and re-triggers
     // within `apply_hold_secs` is churning; hold it out so one bouncy
     // session cannot snapshot+rewrite every cooldown.
-    let mut last_apply: std::collections::HashMap<String, std::time::Instant> =
-        std::collections::HashMap::new();
+    let mut last_apply: std::collections::HashMap<String, std::time::Instant> = persisted
+        .last_apply
+        .iter()
+        .filter_map(|(k, &t)| epoch_to_instant(t, boot_secs).map(|i| (k.clone(), i)))
+        .collect();
+    // Last emitted delegation context per session — identical
+    // provider_compact/skipped events are not re-logged every pass.
+    let mut delegated_ctx = persisted.delegated_ctx;
     let mut staged: std::collections::HashMap<String, Staged> = std::collections::HashMap::new();
     let mut discovery_cache = detect::DiscoveryCache::default();
     loop {
@@ -2945,15 +3059,21 @@ fn cmd_watch(
                     context_tokens_after: ctx,
                 };
                 last_fire.insert(session_key.clone(), std::time::Instant::now());
-                emit_event(
-                    &d,
-                    &delegated,
-                    "provider_compact",
-                    "skipped",
-                    trigger,
-                    0,
-                    None,
-                );
+                // A churning live session re-plans to delegation every
+                // pass; log only when the context actually moved so the
+                // event stream is deltas, not a per-pass heartbeat.
+                if delegated_ctx.get(&session_key) != Some(&ctx) {
+                    delegated_ctx.insert(session_key.clone(), ctx);
+                    emit_event(
+                        &d,
+                        &delegated,
+                        "provider_compact",
+                        "skipped",
+                        trigger,
+                        0,
+                        None,
+                    );
+                }
                 eprintln!("deferred native compaction: session owner required; source unchanged");
                 if let Some(fp) = &fp {
                     settled.insert(session_key.clone(), fp.clone());
@@ -3008,15 +3128,18 @@ fn cmd_watch(
                             context_tokens_after: plan.context_tokens_before,
                             ..plan.clone()
                         };
-                        emit_event(
-                            &d,
-                            &unchanged,
-                            action,
-                            "skipped",
-                            trigger,
-                            started.elapsed().as_millis() as u64,
-                            None,
-                        );
+                        if delegated_ctx.get(&session_key) != Some(&plan.context_tokens_before) {
+                            delegated_ctx.insert(session_key.clone(), plan.context_tokens_before);
+                            emit_event(
+                                &d,
+                                &unchanged,
+                                action,
+                                "skipped",
+                                trigger,
+                                started.elapsed().as_millis() as u64,
+                                None,
+                            );
+                        }
                         eprintln!(
                             "deferred native compaction: session owner required; source unchanged"
                         );
@@ -3308,6 +3431,26 @@ fn cmd_watch(
                 }
             }
         }
+        // Persist suppression/clocks each pass: a restart then resumes
+        // from the same terminal decisions instead of re-planning all
+        // sessions once. Small file, written atomically.
+        let save_secs = now_secs();
+        save_watch_state(
+            &state_path,
+            &WatchState {
+                settled: settled.clone(),
+                settle_pass: settle_pass.clone(),
+                last_fire: last_fire
+                    .iter()
+                    .map(|(k, t)| (k.clone(), instant_to_epoch(*t, save_secs)))
+                    .collect(),
+                last_apply: last_apply
+                    .iter()
+                    .map(|(k, t)| (k.clone(), instant_to_epoch(*t, save_secs)))
+                    .collect(),
+                delegated_ctx: delegated_ctx.clone(),
+            },
+        );
         if once {
             return Ok(());
         }
@@ -3730,8 +3873,16 @@ fn main() -> Result<()> {
             session,
             tail,
             cohort,
+            since,
             json,
-        } => cmd_events(&cfg, session.as_deref(), *tail, *cohort, *json),
+        } => cmd_events(
+            &cfg,
+            session.as_deref(),
+            *tail,
+            *cohort,
+            since.as_deref(),
+            *json,
+        ),
         Cmd::Vault { session, json } => cmd_vault(&cli, &cfg, session.as_deref(), *json),
         Cmd::History { session, json } => cmd_history(&cli, &cfg, session, *json),
         Cmd::Show { target, json } => cmd_show(&cli, &cfg, target, *json),
@@ -4155,6 +4306,48 @@ mod tests {
         fs::remove_file(&path).unwrap();
         assert!(session_fingerprint(&d).is_none());
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn watch_state_roundtrips_fingerprints_and_drops_stale_clocks() {
+        let dir = tempdir("watch-state");
+        let path = dir.join("state.json");
+        let now = now_secs();
+        let mut state = WatchState::default();
+        state.settled.insert("k".to_string(), "fp".to_string());
+        state.settle_pass.insert("k".to_string(), "fp".to_string());
+        state.last_fire.insert("fresh".to_string(), now - 60);
+        state.last_apply.insert("stale".to_string(), now - 200_000); // > 1 day old
+        state.delegated_ctx.insert("k".to_string(), 300_000);
+        save_watch_state(&path, &state);
+        let loaded = load_watch_state(&path);
+        assert_eq!(loaded.settled.get("k").map(String::as_str), Some("fp"));
+        assert_eq!(loaded.settle_pass.get("k").map(String::as_str), Some("fp"));
+        assert_eq!(loaded.delegated_ctx.get("k"), Some(&300_000));
+        assert_eq!(loaded.last_fire.get("fresh"), Some(&(now - 60)));
+        // The Instant conversion is exercised in cmd_watch; here verify
+        // the stale-entry policy boundary.
+        assert!(epoch_to_instant(now - 60, now).is_some());
+        assert!(epoch_to_instant(now - 200_000, now).is_none());
+        assert!(epoch_to_instant(0, now).is_none());
+        assert!(epoch_to_instant(now + 60, now).is_none());
+        // Corrupt or missing state falls back to empty, never fails.
+        fs::write(&path, "{not json").unwrap();
+        assert!(load_watch_state(&path).settled.is_empty());
+        fs::remove_file(&path).unwrap();
+        assert!(load_watch_state(&path).settled.is_empty());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn parse_since_accepts_suffixed_and_bare_durations() {
+        assert_eq!(parse_since("3600").unwrap(), 3_600);
+        assert_eq!(parse_since("30m").unwrap(), 1_800);
+        assert_eq!(parse_since("6h").unwrap(), 21_600);
+        assert_eq!(parse_since("2d").unwrap(), 172_800);
+        assert!(parse_since("").is_err());
+        assert!(parse_since("h").is_err());
+        assert!(parse_since("1x").is_err());
     }
 
     /// Touch a file's mtime without changing its length.

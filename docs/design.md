@@ -155,7 +155,10 @@ Legacy `preset.command` remains available only with
   additionally holds the session out for `apply_hold_secs` (default 1800)
   so append-over-trigger churn cannot re-apply every interval, and each
   watch pass services sessions in ascending size order so one giant
-  apply cannot starve the rest.
+  apply cannot starve the rest. Suppression fingerprints, settle state,
+  and rate-limit clocks persist per-provider to `watch-state-*.json`
+  after each pass, so a daemon restart resumes rather than re-planning
+  every session once.
 - Before publication, exact source bytes are stored as verified, deduplicated
   1 MiB chunks in the content-addressed vault.
 - Copy operations bind canonical source path, source hash, provider, and edits
