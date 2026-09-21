@@ -89,6 +89,9 @@ fingerprint every pass would re-plan an unchanged session. Claude in-place
 rewrites additionally require the fingerprint to hold across two
 consecutive passes before writing, which closes the
 `ChangedDuringWrite` race window that mtime-only idle detection leaked.
+Sessions that are still live skip the transcript load entirely: `auto`
+delegates to the provider for active sessions unconditionally, so the
+loop emits the delegation decision straight from the cheap usage read.
 
 Long-running sessions can exceed the default 512 MiB transcript bound —
 raise it with `GOBSTOPPER_MAX_TRANSCRIPT_BYTES` (bytes) in the watch
