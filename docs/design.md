@@ -151,7 +151,11 @@ Legacy `preset.command` remains available only with
   respects `[rollout]` cohorts — control sessions are logged and skipped —
   and a per-session fingerprint suppresses re-evaluation of unchanged
   sources; Claude writes also require the fingerprint to be stable across
-  two consecutive passes before mutating.
+  two consecutive passes before mutating. A successful in-place mutation
+  additionally holds the session out for `apply_hold_secs` (default 1800)
+  so append-over-trigger churn cannot re-apply every interval, and each
+  watch pass services sessions in ascending size order so one giant
+  apply cannot starve the rest.
 - Before publication, exact source bytes are stored as verified, deduplicated
   1 MiB chunks in the content-addressed vault.
 - Copy operations bind canonical source path, source hash, provider, and edits
