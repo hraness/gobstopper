@@ -37,7 +37,7 @@ command-transcript proof frame showing detect → plan → watch.
 This is an adoption of the user-approved shared appearance, not a new concept
 round. `data-hraness-marketing-preset="editorial"` is local to the homepage and
 encloses its header and main content. `/docs` retains its README reading type
-and layout. Existing kit/UI versions and the Paper snapshot are unchanged; the
+and layout. The Paper snapshot is unchanged; the
 separate marketing snapshot carries its own immutable source and file hashes.
 
 ## FINISH
@@ -60,5 +60,14 @@ colors. On phone widths the wrapping header stays in document flow so its
 variable height cannot cover section headings reached through navigation links.
 Desktop chrome remains sticky. The existing theme check calls the canonical
 offline snapshot checker. Docs/README typography, content, links and release
-facts remain unchanged, as do package versions and the pinned kit/UI peer
-graph.
+facts and the CLI release version remain unchanged. The site upgrades its
+pinned design-kit/UI peer graph for metallic headers.
+
+
+## METALLIC HEADER
+
+The header name and transparent product mark use the shared design-kit metallic
+foil treatment with a subtle rainbow reflection. Keep the original vector
+geometry, an accessible home link, and the image fallback for forced colors or
+unavailable masks. Static paint must remain legible without hover or animation.
+Browser/touch icons and the content footer retain their existing artwork.

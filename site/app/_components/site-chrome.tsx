@@ -25,7 +25,8 @@ export function SiteHeader({ path }: Readonly<{ path?: CanonicalPagePath }>) {
       <MarketingSiteHeader
         action={{ href: "/#install", label: "Install Gobstopper" }}
         ariaLabel="Primary navigation"
-        brand={<>{productMark}Gobstopper</>}
+        brand="Gobstopper"
+        brandMark="/marks/gobstopper.svg"
         brandLabel="Gobstopper home"
         className={
           path === "/"

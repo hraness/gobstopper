@@ -1,14 +1,24 @@
 # Gobstopper website identity
 
-The 🍬 identity marks the product: a gobstopper is a jawbreaker — concentric
-layers, which is what the tool peels back. Header marks use the native emoji;
-browser and touch icons use generated PNG artwork of the layered candy
-cross-section.
+The website header adopts the checked Gobstopper catalog mark from Hraness,
+`public/marks/gobstopper.svg`. Its two authored paths and 32×32 viewBox are
+unchanged. This aligns the project header with the portfolio identity; it is
+an intentional replacement of the older concentric-candy PNG in the header.
 
-The supplied PNGs are the website's checked artwork. Preserve their bytes when
-updating other branding. Regenerate them from a 512-viewBox SVG of concentric
-circles (`#d95f43` / `#e8a54b` / `#f4efe8` / `#7ba6a3` / `#d95f43` / `#8c3226`
-on `#f4efe8`, `rx=96`) through `qlmanage -t -s <size>`.
+`MarketingSiteHeader` paints metallic foil with a subtle rainbow reflection
+on the transparent mark and product name. It preserves the original image as
+the fallback when masking is unavailable or forced colors are active. The
+enclosing home link names the product once. Do not use the opaque PNG as a mask.
+
+The catalog source is `projects/hraness/public/marks/gobstopper.svg` in
+[hraness/jungle](https://github.com/hraness/jungle).
+
+| File | SHA-256 |
+| --- | --- |
+| marks/gobstopper.svg | `d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a` |
+
+Browser and touch icons retain the existing layered-candy artwork and bytes;
+the content footer also keeps its current PNG.
 
 | File | Size | SHA-256 |
 | --- | --- | --- |
