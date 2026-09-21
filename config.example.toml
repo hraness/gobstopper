@@ -17,6 +17,12 @@ min_savings_tokens = 4_096     # reject plans that reclaim less
 
 [provider.claude_code]
 # trigger_tokens = 180_000
+# auto_apply_inplace = true    # watch rewrites idle transcripts in place
+# auto_compact_closed = true   # watch runs `claude --resume <id> -p /compact`
+                               # on closed over-trigger sessions first
+# block_tokens = 500_000       # hard ceiling: the prompt-policy hook returns
+                               # decision:block at/above this context size
+                               # (treatment cohort only; 0 disables)
 
 [provider.devin]
 # Native policy only: over-threshold decisions return `/compact`.

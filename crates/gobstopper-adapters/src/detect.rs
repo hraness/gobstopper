@@ -226,13 +226,21 @@ pub fn discover_cached(
     if provider.is_none_or(|p| p == Provider::ClaudeCode) {
         let mut claude_files = Vec::new();
         collect_jsonl(&roots.claude_home.join("projects"), &mut claude_files, 3);
+        // Provider-reported ownership beats file mtime: a session open
+        // in a TUI can go quiet for minutes — `live_sessions` marks it
+        // active anyway so `auto` keeps delegating instead of rewriting
+        // a file the provider still owns.
+        let live = claude::live_sessions(&roots.claude_home);
         for path in claude_files {
             let age = age_secs(&path);
             if age > limit {
                 continue;
             }
             let (meta, usage) = cache.inspect(Provider::ClaudeCode, &path);
-            let handle = handle_for(Provider::ClaudeCode, path, meta, age);
+            let mut handle = handle_for(Provider::ClaudeCode, path, meta, age);
+            if live.contains_key(&handle.session_id) {
+                handle.age_secs = 0;
+            }
             found.push(Discovered { usage, handle });
         }
     }

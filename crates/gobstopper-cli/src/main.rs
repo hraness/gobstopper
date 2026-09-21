@@ -2819,6 +2819,27 @@ fn watch_state_path(provider: Option<Provider>) -> PathBuf {
     dir.join(format!("watch-state-{tag}.json"))
 }
 
+/// Locate the `claude` executable for headless `--resume -p /compact`.
+/// LaunchAgents run with a minimal PATH, so fall back to the standard
+/// install locations after searching PATH itself.
+fn claude_bin() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| {
+            std::env::split_paths(&p)
+                .map(|d| d.join("claude"))
+                .collect()
+        })
+        .unwrap_or_default();
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        candidates.push(home.join(".local/bin/claude"));
+        candidates.push(home.join(".claude/local/claude"));
+    }
+    candidates.push(PathBuf::from("/opt/homebrew/bin/claude"));
+    candidates.push(PathBuf::from("/usr/local/bin/claude"));
+    candidates.into_iter().find(|c| c.is_file())
+}
+
 fn load_watch_state(path: &Path) -> WatchState {
     let Ok(text) = std::fs::read_to_string(path) else {
         return WatchState::default();
@@ -2898,6 +2919,8 @@ fn cmd_watch(
     let mut delegated_ctx = persisted.delegated_ctx;
     let mut staged: std::collections::HashMap<String, Staged> = std::collections::HashMap::new();
     let mut discovery_cache = detect::DiscoveryCache::default();
+    // Resolved once: the claude binary path doesn't change mid-watch.
+    let claude_bin = claude_bin();
     loop {
         let cfg = config::load()?;
         let mut found: Vec<Discovered> = detect::discover_cached(
@@ -3251,12 +3274,16 @@ fn cmd_watch(
                         }
                         continue;
                     }
-                    if d.handle.provider == Provider::ClaudeCode && resolved.auto_apply_inplace {
-                        // In-place JSONL rewrite for idle sessions: the
-                        // provider opens the transcript per write (no
-                        // persistent handle), so the rename swap cannot
-                        // orphan appends, and transaction::apply rechecks
-                        // bytes before replacing. Snapshot first.
+                    if d.handle.provider == Provider::ClaudeCode
+                        && (resolved.auto_apply_inplace || resolved.auto_compact_closed)
+                    {
+                        // Closed-session handling for Claude: provider-native
+                        // headless compaction and/or in-place JSONL rewrite.
+                        // For in-place rewrite the provider opens the
+                        // transcript per write (no persistent handle), so
+                        // the rename swap cannot orphan appends, and
+                        // transaction::apply rechecks bytes before
+                        // replacing. Snapshot first.
                         if d.handle.is_active() {
                             continue;
                         }
@@ -3299,6 +3326,101 @@ fn cmd_watch(
                                 continue;
                             }
                             None => continue,
+                        }
+                        // Provider-native compaction for closed sessions:
+                        // no live pid owns this transcript (is_active
+                        // above is authoritative via ~/.claude/sessions),
+                        // and the fingerprint held steady across passes.
+                        // `claude --resume -p /compact` runs the
+                        // provider's own summarization — far deeper than
+                        // deterministic elision — and fires the
+                        // PreCompact hook that snapshots into the vault.
+                        if resolved.auto_compact_closed {
+                            if let Some(bin) = &claude_bin {
+                                match gobstopper_adapters::claude::headless_compact(
+                                    bin,
+                                    &d.handle.session_id,
+                                    240,
+                                ) {
+                                    Ok(()) => {
+                                        let after =
+                                            gobstopper_adapters::claude::scan_usage(&d.handle.path)
+                                                .context_tokens;
+                                        let mut done = plan.clone();
+                                        // The provider compacted — the
+                                        // plan's elision edits were not
+                                        // applied, so report items = 0.
+                                        done.edits.clear();
+                                        // Post-compact tail may carry no
+                                        // usage yet (boundary + summary);
+                                        // undercount reclaimed rather
+                                        // than claim before→0.
+                                        done.context_tokens_after = if after > 0 {
+                                            after
+                                        } else {
+                                            done.context_tokens_before
+                                        };
+                                        emit_event(
+                                            &d,
+                                            &done,
+                                            "provider_compact",
+                                            "applied",
+                                            trigger,
+                                            started.elapsed().as_millis() as u64,
+                                            if after == 0 {
+                                                Some("unresolved_context")
+                                            } else {
+                                                None
+                                            },
+                                        );
+                                        eprintln!(
+                                            "provider-compacted closed claude session {} via /compact",
+                                            d.handle.path.display()
+                                        );
+                                        if let Some(nfp) = session_fingerprint(&d) {
+                                            settled.insert(session_key.clone(), nfp);
+                                        }
+                                        if last_apply.len() >= 4096 {
+                                            last_apply.clear();
+                                        }
+                                        last_apply.insert(session_key.clone(), started);
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "headless claude /compact for {} failed ({e}){}",
+                                            d.handle.path.display(),
+                                            if resolved.auto_apply_inplace {
+                                                "; falling back to in-place elision"
+                                            } else {
+                                                ""
+                                            },
+                                        );
+                                        emit_event(
+                                            &d,
+                                            &plan,
+                                            "provider_compact",
+                                            "failed",
+                                            trigger,
+                                            started.elapsed().as_millis() as u64,
+                                            Some("provider_rejected"),
+                                        );
+                                        if let Some(fp) = &fp {
+                                            settled.insert(session_key.clone(), fp.clone());
+                                        }
+                                        if !resolved.auto_apply_inplace {
+                                            continue;
+                                        }
+                                    }
+                                }
+                            } else if !resolved.auto_apply_inplace {
+                                // Headless-only mode without a resolvable
+                                // claude binary: nothing else may mutate.
+                                continue;
+                            }
+                        }
+                        if !resolved.auto_apply_inplace {
+                            continue;
                         }
                         let file_edits: Vec<Edit> = plan
                             .edits
@@ -3590,6 +3712,7 @@ fn policy_decision(
         "strategy": resolved.strategy,
         "trigger_tokens": resolved.policy.trigger_tokens,
         "effective_trigger_tokens": effective_trigger,
+        "block_tokens": resolved.policy.block_tokens,
         "min_savings_tokens": resolved.policy.min_savings_tokens,
         "quota_pressure": resolved.policy.quota_pressure,
         "control": control,
@@ -4157,6 +4280,7 @@ mod tests {
             plugin: None,
             auto_apply_store: false,
             auto_apply_inplace: false,
+            auto_compact_closed: false,
         }
     }
 

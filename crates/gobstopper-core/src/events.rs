@@ -114,7 +114,7 @@ fn valid_event(event: &CompactionEvent) -> bool {
         )
         && matches!(
             event.outcome.as_str(),
-            "applied" | "planned" | "failed" | "skipped"
+            "applied" | "planned" | "failed" | "skipped" | "blocked"
         )
         && event.error_code.as_deref().is_none_or(|code| {
             matches!(

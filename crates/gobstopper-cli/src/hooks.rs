@@ -433,6 +433,16 @@ fn prompt_policy(
     let Some(session_id) = payload["session_id"].as_str() else {
         return Ok(None);
     };
+    // Slash commands are provider UI control, not prompts — and our own
+    // headless `claude --resume -p /compact` runs this hook with
+    // prompt="/compact". Advising or blocking on one would either inject
+    // noise into a compaction or block the compaction itself.
+    if payload["prompt"]
+        .as_str()
+        .is_some_and(|p| p.trim_start().starts_with('/'))
+    {
+        return Ok(None);
+    }
     let hinted = provider_hint.unwrap_or("");
     let observed = if hinted.is_empty() || hinted == "devin" {
         gobstopper_adapters::devin::session_observation(&roots.devin_home, session_id)
@@ -475,6 +485,15 @@ fn prompt_policy(
     // advisory's own tokens re-enter every prompt.
     let emit =
         over_trigger && treatment && !advisory_throttled(log_path, session_id, context_tokens);
+    // Hard ceiling: over `block_tokens` a supported provider hook blocks
+    // the prompt outright — the advisory ladder's last rung. Claude Code
+    // only (its UserPromptSubmit contract supports decision:block);
+    // treatment cohort only (blocking control would contaminate the
+    // experiment); every block is logged — a denied prompt is the
+    // signal, not noise.
+    let block_at = decision["block_tokens"].as_u64().unwrap_or(0);
+    let blocked =
+        provider == Provider::ClaudeCode && treatment && block_at > 0 && context_tokens >= block_at;
     // Closed-vocab telemetry: cohort rides in the strategy tag, emission
     // state in the outcome. Under-trigger prompts still log so cohort
     // denominators are complete. A zero context means the provider has
@@ -492,7 +511,13 @@ fn prompt_policy(
         } else {
             "none"
         },
-        if emit { "planned" } else { "skipped" },
+        if blocked {
+            "blocked"
+        } else if emit {
+            "planned"
+        } else {
+            "skipped"
+        },
         trigger,
         context_tokens,
         context_tokens,
@@ -506,6 +531,15 @@ fn prompt_policy(
     );
     if let Err(e) = append_event(log_path, &event) {
         eprintln!("gobstopper hook: telemetry write failed (non-fatal): {e}");
+    }
+    if blocked {
+        return Ok(Some(
+            json!({
+                "decision": "block",
+                "reason": format!("gobstopper: context is {context_tokens} tokens, over the {block_at}-token hard ceiling — run `/compact` to continue.")
+            })
+            .to_string(),
+        ));
     }
     if !emit {
         return Ok(None);
@@ -1235,6 +1269,139 @@ mod tests {
         let events = gobstopper_core::events::read_events(&log).unwrap();
         assert_eq!(events.last().unwrap().strategy, "prompt-policy:treatment");
         assert_eq!(events.last().unwrap().outcome, "planned");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Over-trigger Claude transcript at `projects/proj/<id>.jsonl`.
+    fn over_trigger_transcript(roots: &detect::Roots, id: &str, tokens: u64) {
+        write(
+            &roots
+                .claude_home
+                .join("projects")
+                .join("proj")
+                .join(format!("{id}.jsonl")),
+            &format!(
+                concat!(
+                    r#"{{"sessionId":"{}","uuid":"u1","type":"assistant","#,
+                    r#""message":{{"role":"assistant","usage":{{"input_tokens":{},"output_tokens":100}}}}}}"#,
+                    "\n"
+                ),
+                id, tokens
+            ),
+        );
+    }
+
+    #[test]
+    fn prompt_policy_skips_slash_commands() {
+        let dir = tmpdir("pp-slash");
+        let roots = test_roots(&dir);
+        let cfg = crate::config::Config::default();
+        over_trigger_transcript(&roots, "slashsess", 300_000);
+        let vault_root = dir.join("vault");
+        let log = dir.join("events.jsonl");
+        // `/compact` (including our own headless run's prompt) must not be
+        // advised, blocked, or even logged — it's provider UI control.
+        for prompt in ["/compact", "  /clear", "/compact focus on tests"] {
+            let out = handle_inner(
+                "prompt-policy:claude",
+                &format!(r#"{{"session_id":"slashsess","prompt":"{prompt}"}}"#),
+                &vault_root,
+                &log,
+                &roots,
+                &cfg,
+            )
+            .unwrap();
+            assert!(out.is_none(), "slash command {prompt:?} must be silent");
+        }
+        assert!(
+            gobstopper_core::events::read_events(&log)
+                .map(|e| e.is_empty())
+                .unwrap_or(true),
+            "slash commands must not emit decision events"
+        );
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prompt_policy_blocks_over_hard_ceiling() {
+        let dir = tmpdir("pp-block");
+        let roots = test_roots(&dir);
+        let mut cfg = crate::config::Config::default();
+        cfg.provider.insert(
+            "claude_code".into(),
+            crate::config::PolicyPatch {
+                block_tokens: Some(500_000),
+                ..Default::default()
+            },
+        );
+        over_trigger_transcript(&roots, "blocksess", 600_000);
+        let vault_root = dir.join("vault");
+        let log = dir.join("events.jsonl");
+        let out = handle_inner(
+            "prompt-policy:claude",
+            r#"{"session_id":"blocksess","prompt":"continue"}"#,
+            &vault_root,
+            &log,
+            &roots,
+            &cfg,
+        )
+        .unwrap()
+        .expect("over-ceiling session must block");
+        let doc: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(doc["decision"], "block");
+        assert!(doc["reason"].as_str().unwrap().contains("/compact"));
+        let events = gobstopper_core::events::read_events(&log).unwrap();
+        let last = events.last().expect("block event logged");
+        assert_eq!(last.outcome, "blocked");
+        assert_eq!(last.strategy, "prompt-policy:treatment");
+
+        // Under the ceiling but over trigger → advisory, not block.
+        over_trigger_transcript(&roots, "underceil", 300_000);
+        let out = handle_inner(
+            "prompt-policy:claude",
+            r#"{"session_id":"underceil","prompt":"continue"}"#,
+            &vault_root,
+            &log,
+            &roots,
+            &cfg,
+        )
+        .unwrap()
+        .expect("under-ceiling over-trigger session must advise");
+        let doc: Value = serde_json::from_str(&out).unwrap();
+        assert!(doc["hookSpecificOutput"]["additionalContext"].is_string());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prompt_policy_never_blocks_control_cohort() {
+        let dir = tmpdir("pp-block-control");
+        let roots = test_roots(&dir);
+        let mut cfg = crate::config::Config::default();
+        cfg.rollout.insert("claude_code".into(), 0);
+        cfg.provider.insert(
+            "claude_code".into(),
+            crate::config::PolicyPatch {
+                block_tokens: Some(500_000),
+                ..Default::default()
+            },
+        );
+        over_trigger_transcript(&roots, "ctrlsess", 900_000);
+        let vault_root = dir.join("vault");
+        let log = dir.join("events.jsonl");
+        let out = handle_inner(
+            "prompt-policy:claude",
+            r#"{"session_id":"ctrlsess","prompt":"continue"}"#,
+            &vault_root,
+            &log,
+            &roots,
+            &cfg,
+        )
+        .unwrap();
+        assert!(out.is_none(), "control cohort must never be blocked");
+        let events = gobstopper_core::events::read_events(&log).unwrap();
+        let last = events.last().expect("decision event logged");
+        assert_eq!(last.outcome, "skipped");
+        assert_eq!(last.strategy, "prompt-policy:control");
         fs::remove_dir_all(&dir).ok();
     }
 

@@ -78,6 +78,13 @@ pub struct PolicyConfig {
     /// [`crate::policy::adapt`].
     #[serde(default)]
     pub adaptive: bool,
+    /// Hard ceiling for the prompt-policy hook: at or above this many
+    /// context tokens a supported provider hook returns a blocking
+    /// decision instead of an advisory, forcing compaction before the
+    /// prompt proceeds. `0` disables blocking. Should be at or above
+    /// `trigger_tokens` so sessions always see an advisory first.
+    #[serde(default)]
+    pub block_tokens: u64,
 }
 
 const fn default_min_savings_tokens() -> u64 {
@@ -102,6 +109,7 @@ impl Default for PolicyConfig {
             min_savings_tokens: default_min_savings_tokens(),
             quota_pressure: QuotaPressure::Normal,
             adaptive: false,
+            block_tokens: 0,
         }
     }
 }

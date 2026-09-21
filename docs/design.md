@@ -159,6 +159,18 @@ Legacy `preset.command` remains available only with
   and rate-limit clocks persist per-provider to `watch-state-*.json`
   after each pass, so a daemon restart resumes rather than re-planning
   every session once.
+- Claude liveness is authoritative, not mtime-inferred: records in
+  `~/.claude/sessions/<pid>.json` map live pids to session ids, so a
+  session open-but-quiet in a TUI is still provider-owned and never
+  mutated. With `[provider.claude_code] auto_compact_closed`, a settled
+  over-trigger session with *no* live owner is instead compacted by the
+  provider itself — `claude --resume <id> -p /compact` — which runs
+  Claude's own summarization and fires the `PreCompact` hook where the
+  vault snapshot lands; in-place elision remains the fallback. The
+  prompt-policy hook adds a last-rung `block_tokens` ceiling (default 0
+  = off): at/above it, treatment sessions get `decision: "block"` until
+  `/compact` runs. Slash-command prompts are never advised or blocked —
+  they are provider UI control, including the headless `/compact` run.
 - Before publication, exact source bytes are stored as verified, deduplicated
   1 MiB chunks in the content-addressed vault.
 - Copy operations bind canonical source path, source hash, provider, and edits
