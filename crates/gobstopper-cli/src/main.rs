@@ -337,6 +337,9 @@ enum Cmd {
         /// Inspect only recently updated sessions (activity is an mtime heuristic).
         #[arg(long)]
         active_only: bool,
+        /// Restrict watch to one provider (e.g. `devin`); default watches all.
+        #[arg(long)]
+        provider: Option<String>,
         /// Run one discovery pass and exit, useful for supervised monitoring.
         #[arg(long)]
         once: bool,
@@ -2636,6 +2639,7 @@ fn stage_compaction(d: &Discovered, resolved: &config::Resolved) -> Option<Stage
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_watch(
     cli: &Cli,
     _cfg: &config::Config,
@@ -2643,11 +2647,21 @@ fn cmd_watch(
     dry_run: bool,
     double_buffer: bool,
     active_only: bool,
+    provider: Option<String>,
     once: bool,
 ) -> Result<()> {
     if interval == 0 {
         bail!("watch interval must be positive");
     }
+    let provider = provider
+        .as_deref()
+        .map(|p| match p {
+            "codex" => Ok(Provider::Codex),
+            "claude" | "claude_code" => Ok(Provider::ClaudeCode),
+            "devin" => Ok(Provider::Devin),
+            other => bail!("unknown provider '{other}'"),
+        })
+        .transpose()?;
     if double_buffer {
         bail!("in-place double-buffer swapping is retired; use copy-only watch without --double-buffer");
     }
@@ -2666,6 +2680,9 @@ fn cmd_watch(
             },
             &mut discovery_cache,
         ) {
+            if provider.is_some_and(|p| p != d.handle.provider) {
+                continue;
+            }
             if active_only && !d.handle.is_active() {
                 continue;
             }
@@ -2805,6 +2822,64 @@ fn cmd_watch(
                         eprintln!(
                             "deferred native compaction: session owner required; source unchanged"
                         );
+                        continue;
+                    }
+                    if d.handle.provider == Provider::Devin {
+                        // Devin has no fork artifact: the guarded in-place
+                        // store write is the only apply, and only when the
+                        // operator opted in (auto_apply_store) and the
+                        // session is idle.
+                        if !resolved.auto_apply_store {
+                            continue;
+                        }
+                        if d.handle.is_active() {
+                            eprintln!(
+                                "devin {} is live; /compact in-session",
+                                display_prefix(&d.handle.session_id, 12)
+                            );
+                            continue;
+                        }
+                        let r = copy::compact_devin_store(
+                            &d.handle,
+                            &source_sha256,
+                            &plan,
+                            &vault::default_root(),
+                            &roots(cli).devin_home,
+                        );
+                        match r {
+                            Ok(receipt) => {
+                                emit_event(
+                                    &d,
+                                    &plan,
+                                    action,
+                                    "applied",
+                                    trigger,
+                                    started.elapsed().as_millis() as u64,
+                                    None,
+                                );
+                                eprintln!(
+                                    "compacted devin {} in place (~{} bytes reclaimed; snapshot {})",
+                                    display_prefix(&d.handle.session_id, 12),
+                                    receipt.reclaimed_bytes,
+                                    receipt.snapshot_manifest_sha256.as_deref().unwrap_or("?"),
+                                );
+                            }
+                            Err(e) => {
+                                emit_event(
+                                    &d,
+                                    &plan,
+                                    action,
+                                    "failed",
+                                    trigger,
+                                    started.elapsed().as_millis() as u64,
+                                    Some("apply_failed"),
+                                );
+                                eprintln!(
+                                    "devin store compact {} failed: {e}",
+                                    d.handle.session_id
+                                );
+                            }
+                        }
                         continue;
                     }
                     let r = copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root())
@@ -3001,7 +3076,17 @@ fn cmd_policy_check(
         match provider {
             "devin" => {
                 let root = roots(cli).devin_home;
-                let Some((usage, locked)) = devin::session_observation(&root, session_id) else {
+                // "current" resolves the caller's own session: the
+                // provider-locked session bound to this working directory.
+                let session_id = if session_id == "current" {
+                    let cwd = std::env::current_dir()?;
+                    devin::current_session(&root, &cwd).ok_or_else(|| {
+                        anyhow::anyhow!("no single active devin session bound to {}", cwd.display())
+                    })?
+                } else {
+                    session_id.to_string()
+                };
+                let Some((usage, locked)) = devin::session_observation(&root, &session_id) else {
                     bail!("no devin session '{session_id}' in {}", root.display());
                 };
                 (usage.context_tokens, locked)
@@ -3315,6 +3400,7 @@ fn main() -> Result<()> {
             dry_run,
             double_buffer,
             active_only,
+            provider,
             once,
         } => cmd_watch(
             &cli,
@@ -3323,6 +3409,7 @@ fn main() -> Result<()> {
             *dry_run,
             *double_buffer,
             *active_only,
+            provider.clone(),
             *once,
         ),
         Cmd::PolicyCheck {
@@ -3512,6 +3599,7 @@ mod tests {
             command: Some(command.to_string()),
             trusted_legacy_command: true,
             plugin: None,
+            auto_apply_store: false,
         }
     }
 

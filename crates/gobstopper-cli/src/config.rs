@@ -35,6 +35,10 @@ pub struct PolicyPatch {
     pub command: Option<String>,
     pub trusted_legacy_command: Option<bool>,
     pub plugin: Option<PluginSelection>,
+    /// Devin only: let `watch` apply elision plans to `sessions.db`
+    /// in place for idle sessions (guarded store write). Default off —
+    /// watch still plans/delegates without it.
+    pub auto_apply_store: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -153,6 +157,8 @@ pub struct Resolved {
     pub command: Option<String>,
     pub trusted_legacy_command: bool,
     pub plugin: Option<PluginSelection>,
+    /// See `PolicyPatch::auto_apply_store`.
+    pub auto_apply_store: bool,
 }
 
 impl Config {
@@ -181,6 +187,7 @@ impl Config {
         let mut command = None;
         let mut plugin = None;
         let mut trusted_legacy_command = false;
+        let mut auto_apply_store = false;
         let preset_patch = preset
             .map(|name| {
                 self.presets
@@ -216,6 +223,9 @@ impl Config {
             if let Some(value) = patch.trusted_legacy_command {
                 trusted_legacy_command = value;
             }
+            if let Some(value) = patch.auto_apply_store {
+                auto_apply_store = value;
+            }
         }
         if let Some(flag) = strategy_flag {
             strategy = flag.to_string();
@@ -248,6 +258,7 @@ impl Config {
             command,
             trusted_legacy_command,
             plugin,
+            auto_apply_store,
         })
     }
 }

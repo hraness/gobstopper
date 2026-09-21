@@ -65,6 +65,18 @@ head are written back and Gobstopper-injected digest nodes are deleted. Undo
 refuses if foreign provider nodes were appended after the snapshot — restore
 never orphans provider state it did not create.
 
+`watch` can perform this write automatically for idle Devin sessions that
+cross the trigger, but only when the operator opts in:
+
+```toml
+[provider.devin]
+auto_apply_store = true
+```
+
+and only under a provider-scoped watch (`gobstopper watch --provider devin`)
+so Codex/Claude fork preparation is unaffected. Live sessions still defer to
+`/compact` regardless of the flag.
+
 ## Native compaction policy
 
 Devin CLI exposes `/context` and `/compact`. Evaluate the layered Gobstopper
@@ -83,6 +95,17 @@ store (fast, no full discovery scan — suitable for hooks):
 
 ```sh
 gobstopper policy-check --provider devin --session <session-id> --json
+```
+
+`--session current` resolves the active session bound to the caller's
+working directory: it intersects the store's `working_directory` with the
+flock-held `session_locks/*.lock` set and prefers the longest matching
+directory, then the most recently active. It refuses to guess when locked
+sessions are ambiguous — this is what the in-agent rule (below) and TUI
+hook rely on:
+
+```sh
+gobstopper policy-check --provider devin --session current --json
 ```
 
 An over-threshold response uses:
@@ -143,8 +166,11 @@ commands.
 
 **ACP caveat:** hooks fire in the interactive `devin` TUI; Devin's ACP
 server mode (`devin acp`, e.g. under Windsurf) does not run lifecycle hooks
-— verified empirically. For ACP sessions the equivalent lever is the MCP
-`policy_check` tool, which resolves the same store observation and policy.
+— verified empirically. For ACP sessions the equivalent levers are the MCP
+`policy_check` tool and a global-rules entry in
+`~/.config/devin/AGENTS.md` instructing the agent to run
+`gobstopper policy-check --provider devin --session current --json` before
+substantive turns and obey `provider_compact` by running `/compact`.
 
 The same `install-hooks` run installs the Claude Code `UserPromptSubmit`
 advisor (`gobstopper hook prompt-policy:claude`) into

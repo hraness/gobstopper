@@ -219,6 +219,52 @@ pub fn session_observation(root: &Path, session_id: &str) -> Option<(UsageSample
     ))
 }
 
+/// Resolve the caller's own session: a provider-locked session whose
+/// `working_directory` contains or is contained by `cwd` (longest match
+/// wins, then most recently active). When no locked session matches the
+/// directory, a single locked session is still a safe answer; ambiguity
+/// returns `None` rather than a guess.
+pub fn current_session(root: &Path, cwd: &Path) -> Option<String> {
+    let db = db_path(root);
+    let conn = open_readonly(&db).ok()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, working_directory, last_activity_at FROM sessions \
+             ORDER BY last_activity_at DESC",
+        )
+        .ok()?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, Option<String>>(1)?,
+                r.get::<_, Option<i64>>(2)?,
+            ))
+        })
+        .ok()?
+        .flatten()
+        .collect::<Vec<_>>();
+    let locked: Vec<(String, Option<String>, i64)> = rows
+        .into_iter()
+        .filter(|(id, _, _)| session_active(root, id))
+        .map(|(id, w, last)| (id, w, last.unwrap_or(0)))
+        .collect();
+    if locked.is_empty() {
+        return None;
+    }
+    locked
+        .iter()
+        .filter(|(_, w, _)| {
+            w.as_deref().is_some_and(|w| {
+                let w = Path::new(w);
+                cwd.starts_with(w) || w.starts_with(cwd)
+            })
+        })
+        .max_by_key(|(_, w, last)| (w.as_deref().map_or(0, str::len), *last))
+        .map(|(id, _, _)| id.clone())
+        .or_else(|| (locked.len() == 1).then(|| locked[0].0.clone()))
+}
+
 /// Provider-reported token accounting. Mirrors the Claude convention:
 /// `input + cache_read + cache_creation + output` on the latest live-chain
 /// assistant message approximates context occupancy; lifetime sums the
@@ -1446,6 +1492,52 @@ mod tests {
         held.lock_exclusive().unwrap();
         let (_, active) = session_observation(&fx.root, "sess-o").unwrap();
         assert!(active);
+    }
+
+    #[test]
+    fn current_session_prefers_cwd_match_and_requires_lock() {
+        use fs2::FileExt;
+        let fx = Fixture::new("current");
+        // Fixture sessions all live at /work/repo; sess-new is newer.
+        fx.add_session("sess-old", "old", 0, 1_790_006_000);
+        fx.add_session("sess-new", "new", 0, 1_790_006_900);
+        // No locks held: cwd match alone is not enough.
+        assert_eq!(current_session(&fx.root, Path::new("/work/repo/sub")), None);
+        let locks = fx.root.join("session_locks");
+        fs::create_dir_all(&locks).unwrap();
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(locks.join("sess-old.lock"))
+            .unwrap();
+        held.lock_exclusive().unwrap();
+        // Containment both ways resolves to the locked session.
+        assert_eq!(
+            current_session(&fx.root, Path::new("/work/repo/sub/dir")),
+            Some("sess-old".to_string())
+        );
+        // Unrelated cwd + exactly one locked session: that session wins.
+        assert_eq!(
+            current_session(&fx.root, Path::new("/elsewhere")),
+            Some("sess-old".to_string())
+        );
+        // Two locked sessions, ambiguous cwd: refuse to guess.
+        let held2 = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(locks.join("sess-new.lock"))
+            .unwrap();
+        held2.lock_exclusive().unwrap();
+        assert_eq!(current_session(&fx.root, Path::new("/elsewhere")), None);
+        // Cwd still disambiguates (newer wins among matches).
+        assert_eq!(
+            current_session(&fx.root, Path::new("/work/repo")),
+            Some("sess-new".to_string())
+        );
     }
 
     #[test]
