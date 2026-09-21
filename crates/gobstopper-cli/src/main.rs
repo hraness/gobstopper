@@ -3075,8 +3075,10 @@ fn cmd_watch(
                         0,
                         None,
                     );
+                    eprintln!(
+                        "deferred native compaction: session owner required; source unchanged"
+                    );
                 }
-                eprintln!("deferred native compaction: session owner required; source unchanged");
                 if let Some(fp) = &fp {
                     settled.insert(session_key.clone(), fp.clone());
                 }
@@ -3141,10 +3143,10 @@ fn cmd_watch(
                                 started.elapsed().as_millis() as u64,
                                 None,
                             );
+                            eprintln!(
+                                "deferred native compaction: session owner required; source unchanged"
+                            );
                         }
-                        eprintln!(
-                            "deferred native compaction: session owner required; source unchanged"
-                        );
                         // Unchanged content will plan to delegation again;
                         // re-evaluate only after the provider writes.
                         if let Some(fp) = &fp {
