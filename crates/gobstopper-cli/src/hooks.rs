@@ -43,14 +43,18 @@ use std::path::{Path, PathBuf};
 const OUR_HOOK: &str = "gobstopper hook";
 const CMD_PRECOMPACT: &str = "gobstopper hook precompact";
 const CMD_SESSION_START: &str = "gobstopper hook session-start";
+const CMD_PROMPT_POLICY_CLAUDE: &str = "gobstopper hook prompt-policy:claude";
+const CMD_PROMPT_POLICY_DEVIN: &str = "gobstopper hook prompt-policy:devin";
 
 /// A provider hook point gobstopper can install into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HookTarget {
     ClaudePreCompact,
     ClaudeSessionStart,
+    ClaudeUserPromptSubmit,
     CodexPreCompact,
     CodexSessionStart,
+    DevinUserPromptSubmit,
 }
 
 impl HookTarget {
@@ -59,8 +63,10 @@ impl HookTarget {
         &[
             HookTarget::ClaudePreCompact,
             HookTarget::ClaudeSessionStart,
+            HookTarget::ClaudeUserPromptSubmit,
             HookTarget::CodexPreCompact,
             HookTarget::CodexSessionStart,
+            HookTarget::DevinUserPromptSubmit,
         ]
     }
 
@@ -69,6 +75,9 @@ impl HookTarget {
         match self {
             HookTarget::ClaudePreCompact | HookTarget::CodexPreCompact => "PreCompact",
             HookTarget::ClaudeSessionStart | HookTarget::CodexSessionStart => "SessionStart",
+            HookTarget::ClaudeUserPromptSubmit | HookTarget::DevinUserPromptSubmit => {
+                "UserPromptSubmit"
+            }
         }
     }
 
@@ -80,6 +89,7 @@ impl HookTarget {
             HookTarget::ClaudeSessionStart => "compact",
             // Codex documents anchored regexes for source matching.
             HookTarget::CodexSessionStart => "^compact$",
+            HookTarget::ClaudeUserPromptSubmit | HookTarget::DevinUserPromptSubmit => "",
         }
     }
 
@@ -87,14 +97,29 @@ impl HookTarget {
         match self {
             HookTarget::ClaudePreCompact | HookTarget::CodexPreCompact => CMD_PRECOMPACT,
             HookTarget::ClaudeSessionStart | HookTarget::CodexSessionStart => CMD_SESSION_START,
+            HookTarget::ClaudeUserPromptSubmit => CMD_PROMPT_POLICY_CLAUDE,
+            HookTarget::DevinUserPromptSubmit => CMD_PROMPT_POLICY_DEVIN,
+        }
+    }
+
+    /// Hook-entry timeout in seconds, where the provider honors one.
+    fn timeout(&self) -> Option<u64> {
+        match self {
+            // Prompt-submit hooks run on every user message; bound them so
+            // a stalled check never delays a prompt.
+            HookTarget::ClaudeUserPromptSubmit | HookTarget::DevinUserPromptSubmit => Some(10),
+            _ => None,
         }
     }
 
     /// Human label used in install reports.
     fn label(&self) -> String {
         let provider = match self {
-            HookTarget::ClaudePreCompact | HookTarget::ClaudeSessionStart => "claude",
+            HookTarget::ClaudePreCompact
+            | HookTarget::ClaudeSessionStart
+            | HookTarget::ClaudeUserPromptSubmit => "claude",
             HookTarget::CodexPreCompact | HookTarget::CodexSessionStart => "codex",
+            HookTarget::DevinUserPromptSubmit => "devin",
         };
         format!("{provider}:{}", self.event_name())
     }
@@ -180,11 +205,39 @@ fn backup_then_write(path: &Path, text: &str, existed: bool) -> Result<()> {
     fs::rename(&tmp, path).with_context(|| format!("commit {}", path.display()))
 }
 
+/// The event map inside a settings document: Claude/Codex nest events
+/// under `"hooks"`, while Devin's `hooks.v1.json` maps event names at
+/// the top level (`wrapper = None`).
+fn event_map<'a>(
+    doc: &'a mut Value,
+    wrapper: Option<&str>,
+    path: &Path,
+) -> Result<&'a mut serde_json::Map<String, Value>> {
+    let obj = doc.as_object_mut().expect("read_settings returns object");
+    let map = match wrapper {
+        Some(key) => {
+            let nested = obj.entry(key.to_string()).or_insert_with(|| json!({}));
+            if !nested.is_object() {
+                bail!("{}: '{key}' must be an object", path.display());
+            }
+            nested.as_object_mut().unwrap()
+        }
+        None => obj,
+    };
+    Ok(map)
+}
+
 /// Merge gobstopper hook entries into a settings file — additively, so
 /// the user's other hooks are never removed or reordered. Backs the file
 /// up to `<file>.gobstopper-bak` and writes atomically (temp+rename).
 /// Idempotent: when every target is already present nothing is written.
-pub fn install(settings_path: &Path, targets: &[HookTarget]) -> Result<InstallReport> {
+/// `wrapper` is `"hooks"` for Claude/Codex settings and `None` for
+/// Devin's flat `hooks.v1.json`.
+pub fn install(
+    settings_path: &Path,
+    targets: &[HookTarget],
+    wrapper: Option<&str>,
+) -> Result<InstallReport> {
     let (mut doc, existed) = read_settings(settings_path)?;
     let mut report = InstallReport {
         path: settings_path.to_path_buf(),
@@ -192,18 +245,13 @@ pub fn install(settings_path: &Path, targets: &[HookTarget]) -> Result<InstallRe
         skipped: Vec::new(),
     };
     {
-        let obj = doc.as_object_mut().expect("read_settings returns object");
-        let hooks = obj.entry("hooks".to_string()).or_insert_with(|| json!({}));
-        if !hooks.is_object() {
-            bail!("{}: 'hooks' must be an object", settings_path.display());
-        }
-        let hooks = hooks.as_object_mut().unwrap();
+        let hooks = event_map(&mut doc, wrapper, settings_path)?;
         for target in targets {
             let event = target.event_name();
             let groups = hooks.entry(event.to_string()).or_insert_with(|| json!([]));
             if !groups.is_array() {
                 bail!(
-                    "{}: hooks.{event} must be an array of matcher groups",
+                    "{}: {event} must be an array of matcher groups",
                     settings_path.display()
                 );
             }
@@ -212,9 +260,13 @@ pub fn install(settings_path: &Path, targets: &[HookTarget]) -> Result<InstallRe
                 report.skipped.push(target.label());
                 continue;
             }
+            let mut entry = json!({"type": "command", "command": target.command()});
+            if let Some(secs) = target.timeout() {
+                entry["timeout"] = json!(secs);
+            }
             groups.push(json!({
                 "matcher": target.matcher(),
-                "hooks": [{"type": "command", "command": target.command()}],
+                "hooks": [entry],
             }));
             report.added.push(target.label());
         }
@@ -230,7 +282,7 @@ pub fn install(settings_path: &Path, targets: &[HookTarget]) -> Result<InstallRe
 /// Remove only entries whose command string contains `gobstopper hook`;
 /// emptied matcher groups and event arrays are dropped. `added` in the
 /// report lists the removed event labels.
-pub fn uninstall(settings_path: &Path) -> Result<InstallReport> {
+pub fn uninstall(settings_path: &Path, wrapper: Option<&str>) -> Result<InstallReport> {
     let (mut doc, existed) = read_settings(settings_path)?;
     let mut report = InstallReport {
         path: settings_path.to_path_buf(),
@@ -240,7 +292,7 @@ pub fn uninstall(settings_path: &Path) -> Result<InstallReport> {
     if !existed {
         return Ok(report);
     }
-    if let Some(hooks) = doc.get_mut("hooks").and_then(Value::as_object_mut) {
+    if let Ok(hooks) = event_map(&mut doc, wrapper, settings_path) {
         let events: Vec<String> = hooks.keys().cloned().collect();
         for event in events {
             let Some(groups) = hooks.get_mut(&event).and_then(Value::as_array_mut) else {
@@ -278,14 +330,18 @@ pub fn uninstall(settings_path: &Path) -> Result<InstallReport> {
 
 /// True when the file already contains our command entry for `target`.
 /// Missing or malformed files read as not-installed.
-pub fn is_installed(settings_path: &Path, target: &HookTarget) -> bool {
+pub fn is_installed(settings_path: &Path, target: &HookTarget, wrapper: Option<&str>) -> bool {
     let Ok(text) = fs::read_to_string(settings_path) else {
         return false;
     };
     let Ok(doc) = serde_json::from_str::<Value>(&text) else {
         return false;
     };
-    doc["hooks"][target.event_name()]
+    let events = match wrapper {
+        Some(key) => &doc[key],
+        None => &doc,
+    };
+    events[target.event_name()]
         .as_array()
         .map(|groups| event_has_command(groups, target.command()))
         .unwrap_or(false)
@@ -340,16 +396,83 @@ fn snapshot_and_log(
     }
 }
 
+/// `prompt-policy[:provider]`: a UserPromptSubmit advisory. Resolves the
+/// session's real context size from the provider's own store, runs the
+/// layered policy, and returns `additionalContext` recommending the
+/// provider's native control when over trigger. Advisory only — the hook
+/// never invokes a control itself.
+fn prompt_policy(
+    provider_hint: Option<&str>,
+    payload: &Value,
+    roots: &detect::Roots,
+    cfg: &crate::config::Config,
+) -> Result<Option<String>> {
+    let Some(session_id) = payload["session_id"].as_str() else {
+        return Ok(None);
+    };
+    let hinted = provider_hint.unwrap_or("");
+    let observed = if hinted.is_empty() || hinted == "devin" {
+        gobstopper_adapters::devin::session_observation(&roots.devin_home, session_id)
+            .map(|(usage, locked)| ("devin", usage.context_tokens, locked))
+    } else {
+        None
+    };
+    let observed = observed.or_else(|| {
+        if !hinted.is_empty() && hinted != "claude" {
+            return None;
+        }
+        detect::find(roots, session_id)
+            .into_iter()
+            .find(|d| d.handle.provider == Provider::ClaudeCode)
+            .map(|d| ("claude_code", d.usage.context_tokens, d.handle.is_active()))
+    });
+    let Some((provider, context_tokens, session_active)) = observed else {
+        return Ok(None);
+    };
+    let decision =
+        crate::policy_decision(cfg, provider, context_tokens, session_active, None, None)?;
+    if decision["action"].as_str() != Some("provider_compact") {
+        return Ok(None);
+    }
+    let trigger = decision["effective_trigger_tokens"].as_u64().unwrap_or(0);
+    let control = decision["control"].as_str().unwrap_or("/compact");
+    let context = format!(
+        "gobstopper: context is {context_tokens} tokens, above the {trigger}-token compaction trigger. Compact with `{control}` before continuing."
+    );
+    let out = json!({
+        "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": context,
+        }
+    });
+    Ok(Some(serde_json::to_string(&out)?))
+}
+
 fn handle_inner(
     event: &str,
     stdin_json: &str,
     vault_root: &Path,
     log_path: &Path,
+    roots: &detect::Roots,
+    cfg: &crate::config::Config,
 ) -> Result<Option<String>> {
     // Hooks must never break the provider: malformed stdin is a no-op.
     let Ok(payload) = serde_json::from_str::<Value>(stdin_json) else {
         return Ok(None);
     };
+    if let Some(hint) = event.strip_prefix("prompt-policy") {
+        let hint = hint.strip_prefix(':').unwrap_or(hint);
+        return prompt_policy(
+            if hint.is_empty() { None } else { Some(hint) },
+            &payload,
+            roots,
+            cfg,
+        )
+        .or_else(|e| {
+            eprintln!("gobstopper hook: prompt-policy failed (non-fatal): {e}");
+            Ok(None)
+        });
+    }
     match event {
         "precompact" => {
             snapshot_and_log(&payload, "pre-compact", "planned", vault_root, log_path);
@@ -393,13 +516,21 @@ fn handle_inner(
 /// Handle one hook invocation: read the provider's hook JSON from
 /// `stdin_json`, snapshot the transcript into the vault, append a
 /// compaction-event record, and return the JSON string to print on
-/// stdout (`Some`) or `None`. `event` is "precompact" | "session-start".
-pub fn handle(event: &str, stdin_json: &str) -> Result<Option<String>> {
+/// stdout (`Some`) or `None`. `event` is "precompact" | "session-start" |
+/// "prompt-policy[:provider]".
+pub fn handle(
+    event: &str,
+    stdin_json: &str,
+    roots: &detect::Roots,
+    cfg: &crate::config::Config,
+) -> Result<Option<String>> {
     handle_inner(
         event,
         stdin_json,
         &vault::default_root(),
         &default_log_path(),
+        roots,
+        cfg,
     )
 }
 
@@ -419,6 +550,14 @@ mod tests {
         ));
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    fn test_roots(dir: &Path) -> detect::Roots {
+        detect::Roots {
+            codex_home: dir.join("codex"),
+            claude_home: dir.join("claude"),
+            devin_home: dir.join("devin"),
+        }
     }
 
     fn write(path: &Path, text: &str) {
@@ -459,6 +598,7 @@ mod tests {
         let report = install(
             &settings,
             &[HookTarget::ClaudePreCompact, HookTarget::ClaudeSessionStart],
+            Some("hooks"),
         )
         .unwrap();
         assert_eq!(report.added.len(), 2);
@@ -484,10 +624,10 @@ mod tests {
         let dir = tmpdir("idem");
         let settings = dir.join("settings.json");
         let targets = [HookTarget::ClaudePreCompact, HookTarget::ClaudeSessionStart];
-        let first = install(&settings, &targets).unwrap();
+        let first = install(&settings, &targets, Some("hooks")).unwrap();
         assert_eq!(first.added.len(), 2);
         let text_after_first = fs::read_to_string(&settings).unwrap();
-        let second = install(&settings, &targets).unwrap();
+        let second = install(&settings, &targets, Some("hooks")).unwrap();
         assert!(second.added.is_empty());
         assert_eq!(second.skipped.len(), 2);
         assert_eq!(fs::read_to_string(&settings).unwrap(), text_after_first);
@@ -498,13 +638,13 @@ mod tests {
     fn install_creates_missing_file_and_backup() {
         let dir = tmpdir("create");
         let settings = dir.join("nested").join("settings.json");
-        install(&settings, &[HookTarget::ClaudePreCompact]).unwrap();
+        install(&settings, &[HookTarget::ClaudePreCompact], Some("hooks")).unwrap();
         let doc: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
         assert!(doc["hooks"]["PreCompact"].is_array());
 
         // Second install path: existing file gets a .gobstopper-bak.
         write(&settings, "{\n  \"hooks\": {}\n}\n");
-        install(&settings, &[HookTarget::ClaudePreCompact]).unwrap();
+        install(&settings, &[HookTarget::ClaudePreCompact], Some("hooks")).unwrap();
         let bak = settings.with_file_name("settings.json.gobstopper-bak");
         assert!(bak.is_file());
         fs::remove_dir_all(&dir).ok();
@@ -518,7 +658,7 @@ mod tests {
             &settings,
             r#"{"hooks":{"PreCompact":[{"matcher":"","hooks":[{"type":"command","command":"keep-me"},{"type":"command","command":"gobstopper hook precompact"}]}],"SessionStart":[{"matcher":"compact","hooks":[{"type":"command","command":"gobstopper hook session-start"}]}]}}"#,
         );
-        let report = uninstall(&settings).unwrap();
+        let report = uninstall(&settings, Some("hooks")).unwrap();
         assert_eq!(report.added.len(), 2);
         let doc: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
         let pre = doc["hooks"]["PreCompact"].as_array().unwrap();
@@ -530,9 +670,47 @@ mod tests {
     }
 
     #[test]
+    fn devin_flat_shape_install_and_uninstall() {
+        let dir = tmpdir("devin-flat");
+        let file = dir.join("hooks.v1.json");
+        // Devin's hooks file is a flat event map (no "hooks" wrapper) and
+        // may already carry user-owned entries for other events.
+        write(
+            &file,
+            r#"{"SessionStart":[{"hooks":[{"type":"command","command":"echo hi"}]}]}"#,
+        );
+        install(&file, &[HookTarget::DevinUserPromptSubmit], None).unwrap();
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        // Existing top-level event untouched.
+        assert!(doc.get("SessionStart").is_some());
+        let entries = doc["UserPromptSubmit"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["hooks"][0]["command"], CMD_PROMPT_POLICY_DEVIN);
+        assert_eq!(entries[0]["hooks"][0]["timeout"], 10);
+        // Idempotent.
+        install(&file, &[HookTarget::DevinUserPromptSubmit], None).unwrap();
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        assert_eq!(doc["UserPromptSubmit"].as_array().unwrap().len(), 1);
+        assert!(is_installed(
+            &file,
+            &HookTarget::DevinUserPromptSubmit,
+            None
+        ));
+        // Uninstall removes only our command; the file keeps other events.
+        uninstall(&file, None).unwrap();
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        assert!(doc["UserPromptSubmit"]
+            .as_array()
+            .map(|a| a.is_empty())
+            .unwrap_or(true));
+        assert!(doc.get("SessionStart").is_some());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn uninstall_missing_file_is_noop() {
         let dir = tmpdir("uninstall-missing");
-        let report = uninstall(&dir.join("nope.json")).unwrap();
+        let report = uninstall(&dir.join("nope.json"), Some("hooks")).unwrap();
         assert!(report.added.is_empty());
         fs::remove_dir_all(&dir).ok();
     }
@@ -541,10 +719,22 @@ mod tests {
     fn is_installed_checks() {
         let dir = tmpdir("installed");
         let settings = dir.join("settings.json");
-        assert!(!is_installed(&settings, &HookTarget::ClaudePreCompact));
-        install(&settings, &[HookTarget::ClaudePreCompact]).unwrap();
-        assert!(is_installed(&settings, &HookTarget::ClaudePreCompact));
-        assert!(!is_installed(&settings, &HookTarget::ClaudeSessionStart));
+        assert!(!is_installed(
+            &settings,
+            &HookTarget::ClaudePreCompact,
+            Some("hooks")
+        ));
+        install(&settings, &[HookTarget::ClaudePreCompact], Some("hooks")).unwrap();
+        assert!(is_installed(
+            &settings,
+            &HookTarget::ClaudePreCompact,
+            Some("hooks")
+        ));
+        assert!(!is_installed(
+            &settings,
+            &HookTarget::ClaudeSessionStart,
+            Some("hooks")
+        ));
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -555,6 +745,7 @@ mod tests {
         install(
             &hooks_file,
             &[HookTarget::CodexPreCompact, HookTarget::CodexSessionStart],
+            Some("hooks"),
         )
         .unwrap();
         let doc: Value = serde_json::from_str(&fs::read_to_string(&hooks_file).unwrap()).unwrap();
@@ -570,10 +761,17 @@ mod tests {
     #[test]
     fn handle_tolerates_garbage_stdin() {
         // Public handle(): garbage never reaches the filesystem.
+        let roots = test_roots(&tmpdir("garbage-roots"));
+        let cfg = crate::config::Config::default();
         for junk in ["", "not json{{{", "[]", "42", "null", "{}"] {
-            assert!(handle("precompact", junk).unwrap().is_none());
-            assert!(handle("session-start", junk).unwrap().is_none());
-            assert!(handle("bogus-event", junk).unwrap().is_none());
+            assert!(handle("precompact", junk, &roots, &cfg).unwrap().is_none());
+            assert!(handle("session-start", junk, &roots, &cfg)
+                .unwrap()
+                .is_none());
+            assert!(handle("bogus-event", junk, &roots, &cfg).unwrap().is_none());
+            assert!(handle("prompt-policy", junk, &roots, &cfg)
+                .unwrap()
+                .is_none());
         }
     }
 
@@ -583,11 +781,20 @@ mod tests {
         let transcript = claude_transcript(&dir);
         let vault_root = dir.join("vault");
         let log = dir.join("events.jsonl");
+        let cfg = crate::config::Config::default();
         let stdin = format!(
             r#"{{"session_id":"sess-1","transcript_path":"{}","hook_event_name":"PreCompact","trigger":"auto"}}"#,
             transcript.display()
         );
-        let out = handle_inner("precompact", &stdin, &vault_root, &log).unwrap();
+        let out = handle_inner(
+            "precompact",
+            &stdin,
+            &vault_root,
+            &log,
+            &test_roots(&dir),
+            &cfg,
+        )
+        .unwrap();
         assert!(out.is_none());
 
         // Vault snapshot recorded with the pre-compact strategy label.
@@ -613,8 +820,17 @@ mod tests {
         let dir = tmpdir("precompact-missing");
         let vault_root = dir.join("vault");
         let log = dir.join("events.jsonl");
+        let cfg = crate::config::Config::default();
         let stdin = r#"{"session_id":"sess-9","transcript_path":"/nonexistent/nope.jsonl","hook_event_name":"PreCompact","trigger":"manual"}"#;
-        let out = handle_inner("precompact", stdin, &vault_root, &log).unwrap();
+        let out = handle_inner(
+            "precompact",
+            stdin,
+            &vault_root,
+            &log,
+            &test_roots(&dir),
+            &cfg,
+        )
+        .unwrap();
         assert!(out.is_none());
         assert!(!vault_root.join("index.jsonl").exists());
         let events: Vec<Value> = fs::read_to_string(&log)
@@ -633,6 +849,7 @@ mod tests {
         let transcript = claude_transcript(&dir);
         let vault_root = dir.join("vault");
         let log = dir.join("events.jsonl");
+        let cfg = crate::config::Config::default();
         let path = transcript.display();
         // Pre-compact snapshot must exist before the post-compact SessionStart
         // hook can point the model at a safe undo copy.
@@ -640,17 +857,31 @@ mod tests {
             r#"{{"session_id":"sess-2","transcript_path":"{}","hook_event_name":"PreCompact"}}"#,
             path
         );
-        assert!(handle_inner("precompact", &pre, &vault_root, &log)
-            .unwrap()
-            .is_none());
+        assert!(handle_inner(
+            "precompact",
+            &pre,
+            &vault_root,
+            &log,
+            &test_roots(&dir),
+            &cfg
+        )
+        .unwrap()
+        .is_none());
 
         let stdin = format!(
             r#"{{"session_id":"sess-2","transcript_path":"{}","hook_event_name":"SessionStart","source":"compact"}}"#,
             path
         );
-        let out = handle_inner("session-start", &stdin, &vault_root, &log)
-            .unwrap()
-            .expect("compact source must emit additionalContext");
+        let out = handle_inner(
+            "session-start",
+            &stdin,
+            &vault_root,
+            &log,
+            &test_roots(&dir),
+            &cfg,
+        )
+        .unwrap()
+        .expect("compact source must emit additionalContext");
         let doc: Value = serde_json::from_str(&out).unwrap();
         let ctx = doc["hookSpecificOutput"]["additionalContext"]
             .as_str()
@@ -683,13 +914,21 @@ mod tests {
         let transcript = claude_transcript(&dir);
         let vault_root = dir.join("vault");
         let log = dir.join("events.jsonl");
+        let cfg = crate::config::Config::default();
         let stdin = format!(
             r#"{{"session_id":"sess-2","transcript_path":"{}","hook_event_name":"SessionStart","source":"compact"}}"#,
             transcript.display()
         );
-        let out = handle_inner("session-start", &stdin, &vault_root, &log)
-            .unwrap()
-            .expect("compact source must emit additionalContext");
+        let out = handle_inner(
+            "session-start",
+            &stdin,
+            &vault_root,
+            &log,
+            &test_roots(&dir),
+            &cfg,
+        )
+        .unwrap()
+        .expect("compact source must emit additionalContext");
         let doc: Value = serde_json::from_str(&out).unwrap();
         let ctx = doc["hookSpecificOutput"]["additionalContext"]
             .as_str()
@@ -702,16 +941,103 @@ mod tests {
     }
 
     #[test]
+    fn prompt_policy_claude_advises_only_over_trigger() {
+        let dir = tmpdir("pp-claude");
+        let roots = test_roots(&dir);
+        let cfg = crate::config::Config::default();
+        // Claude transcripts live at projects/<slug>/<session-id>.jsonl.
+        let transcript = roots
+            .claude_home
+            .join("projects")
+            .join("proj")
+            .join("abc123.jsonl");
+        write(
+            &transcript,
+            concat!(
+                r#"{"sessionId":"abc123","uuid":"u1","type":"user","message":{"role":"user","content":"hi"}}"#,
+                "\n",
+                r#"{"sessionId":"abc123","uuid":"u2","type":"assistant","message":{"role":"assistant","usage":{"input_tokens":300000,"output_tokens":100}}}"#,
+                "\n"
+            ),
+        );
+        let stdin = r#"{"session_id":"abc123","prompt":"continue"}"#;
+        let vault_root = dir.join("vault");
+        let log = dir.join("events.jsonl");
+        let out = handle_inner(
+            "prompt-policy:claude",
+            stdin,
+            &vault_root,
+            &log,
+            &roots,
+            &cfg,
+        )
+        .unwrap()
+        .expect("over-trigger session must advise");
+        let doc: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            doc["hookSpecificOutput"]["hookEventName"],
+            "UserPromptSubmit"
+        );
+        let ctx = doc["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap();
+        assert!(ctx.contains("/compact"), "got: {ctx}");
+
+        // Under the trigger (or unknown session) the hook stays silent.
+        let quiet = roots
+            .claude_home
+            .join("projects")
+            .join("proj")
+            .join("def456.jsonl");
+        write(
+            &quiet,
+            concat!(
+                r#"{"sessionId":"def456","uuid":"u1","type":"assistant","message":{"role":"assistant","usage":{"input_tokens":1000,"output_tokens":10}}}"#,
+                "\n"
+            ),
+        );
+        assert!(handle_inner(
+            "prompt-policy:claude",
+            r#"{"session_id":"def456","prompt":"hi"}"#,
+            &vault_root,
+            &log,
+            &roots,
+            &cfg,
+        )
+        .unwrap()
+        .is_none());
+        assert!(handle_inner(
+            "prompt-policy:claude",
+            r#"{"session_id":"nosuchsession","prompt":"hi"}"#,
+            &vault_root,
+            &log,
+            &roots,
+            &cfg,
+        )
+        .unwrap()
+        .is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn handle_session_start_other_sources_noop() {
         let dir = tmpdir("session-start-other");
         let vault_root = dir.join("vault");
         let log = dir.join("events.jsonl");
+        let cfg = crate::config::Config::default();
         for source in ["startup", "resume", "clear"] {
             let stdin =
                 format!(r#"{{"session_id":"s","transcript_path":"/x.jsonl","source":"{source}"}}"#);
-            assert!(handle_inner("session-start", &stdin, &vault_root, &log)
-                .unwrap()
-                .is_none());
+            assert!(handle_inner(
+                "session-start",
+                &stdin,
+                &vault_root,
+                &log,
+                &test_roots(&dir),
+                &cfg
+            )
+            .unwrap()
+            .is_none());
         }
         assert!(!log.exists());
         fs::remove_dir_all(&dir).ok();
@@ -728,7 +1054,7 @@ mod tests {
         let _ = writeln!(std::io::sink(), "{:?}", report.path);
         assert_eq!(report.added, ["a"]);
         assert!(report.skipped.is_empty());
-        assert_eq!(HookTarget::all().len(), 4);
+        assert_eq!(HookTarget::all().len(), 6);
         assert!(codex_hooks_supported());
     }
 }

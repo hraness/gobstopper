@@ -16,16 +16,18 @@
 //! read substrate; the byte identity of a session is the sha256 of its
 //! export.
 //!
-//! This adapter is read-only today: `detect`/`plan`/`verify`/`eval` see
-//! real Devin sessions, and `session_active` reports the provider's lock
-//! file so live sessions stay delegated to native `/compact`. Rewriting
-//! `chat_message` payloads inside a transaction is designed but is not
-//! wired to any command until the guarded write path lands.
+//! Reads are always available; writes (`apply_store`, `restore_store`)
+//! run only for idle sessions — the provider's `session_locks/<id>.lock`
+//! flock must be free, then a single `BEGIN IMMEDIATE` transaction does
+//! the work: re-export + sha identity check (no drift since planning),
+//! conditional payload updates keyed on the stored `chat_message` text,
+//! an in-tx `verify` pass, then commit. Live sessions stay delegated to
+//! native `/compact`.
 
 use gobstopper_core::estimate::estimate_tokens;
 use gobstopper_core::model::{ItemKind, SessionHandle, TranscriptItem, UsageSample};
 use gobstopper_core::{Provider, Transcript};
-use rusqlite::{Connection, OpenFlags};
+use rusqlite::{Connection, OpenFlags, TransactionBehavior};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -67,6 +69,18 @@ fn open_readonly(db: &Path) -> Result<Connection, AdapterError> {
         path: db.to_path_buf(),
         source: std::io::Error::other(e),
     })
+}
+
+fn open_readwrite(db: &Path) -> Result<Connection, AdapterError> {
+    let conn = Connection::open(db).map_err(|e| AdapterError::Io {
+        path: db.to_path_buf(),
+        source: std::io::Error::other(e),
+    })?;
+    // A writer that already holds the WAL write lock makes BEGIN
+    // IMMEDIATE wait briefly, then fail — never block a provider.
+    conn.busy_timeout(std::time::Duration::from_secs(5))
+        .map_err(rusqlite_io(db))?;
+    Ok(conn)
 }
 
 fn rusqlite_io(db: &Path) -> impl Fn(rusqlite::Error) -> AdapterError + '_ {
@@ -253,6 +267,16 @@ pub fn scan_usage(conn: &Connection, session_id: &str) -> UsageSample {
 /// file itself is never treated as the transcript.
 pub fn export_bytes(db: &Path, session_id: &str) -> Result<Vec<u8>, AdapterError> {
     let conn = open_readonly(db)?;
+    export_bytes_conn(&conn, db, session_id)
+}
+
+/// Export using an existing connection — used inside write transactions
+/// so the identity check and the mutation see the same snapshot.
+fn export_bytes_conn(
+    conn: &Connection,
+    db: &Path,
+    session_id: &str,
+) -> Result<Vec<u8>, AdapterError> {
     let session = conn
         .query_row(
             "SELECT id, working_directory, created_at, last_activity_at, main_chain_id \
@@ -411,6 +435,64 @@ fn elide_record(line: &str, stub_template: &str, stub_override: Option<&str>) ->
     )
 }
 
+const DIGEST_MARKER: &str = "[gobstopper state card]";
+
+fn digest_message(digest: &gobstopper_core::plan::DigestBlock) -> Value {
+    let mut text = String::from(DIGEST_MARKER);
+    text.push('\n');
+    if let Some(goal) = &digest.goal {
+        text.push_str(&format!("goal: {goal}\n"));
+    }
+    if let Some(summary) = &digest.summary {
+        text.push_str(&format!("summary: {summary}\n"));
+    }
+    for c in &digest.concepts {
+        text.push_str(&format!("concept: {c}\n"));
+    }
+    for f in &digest.files_touched {
+        text.push_str(&format!("file: {f}\n"));
+    }
+    for d in &digest.decisions {
+        text.push_str(&format!("decision: {d}\n"));
+    }
+    for e in &digest.errors {
+        text.push_str(&format!("error: {e}\n"));
+    }
+    for t in &digest.open_tasks {
+        text.push_str(&format!("todo: {t}\n"));
+    }
+    if let Some(work) = &digest.current_work {
+        text.push_str(&format!("current: {work}\n"));
+    }
+    if let Some(context) = &digest.context {
+        text.push_str(&format!("context: {context}\n"));
+    }
+    text.push_str(&format!(
+        "(covers {} earlier records)\n",
+        digest.covers_items
+    ));
+    serde_json::json!({
+        "role": "user",
+        "content": text,
+        "metadata": {"is_user_input": true},
+    })
+}
+
+/// Whether a stored `chat_message` is one of our injected digest nodes —
+/// used by `restore_store` to distinguish them from provider writes.
+fn is_digest_message(message: &Value) -> bool {
+    message.get("role").and_then(Value::as_str) == Some("user")
+        && message
+            .get("content")
+            .and_then(Value::as_str)
+            .is_some_and(|c| c.starts_with(DIGEST_MARKER))
+        && message
+            .get("metadata")
+            .and_then(|m| m.get("is_user_input"))
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+}
+
 fn apply_inner(
     original: &str,
     edits: &[gobstopper_core::plan::Edit],
@@ -458,44 +540,11 @@ fn apply_inner(
                         "devin export has no message nodes for digest attachment",
                     ));
                 };
-                let mut text = String::from("[gobstopper state card]\n");
-                if let Some(goal) = &digest.goal {
-                    text.push_str(&format!("goal: {goal}\n"));
-                }
-                if let Some(summary) = &digest.summary {
-                    text.push_str(&format!("summary: {summary}\n"));
-                }
-                for c in &digest.concepts {
-                    text.push_str(&format!("concept: {c}\n"));
-                }
-                for f in &digest.files_touched {
-                    text.push_str(&format!("file: {f}\n"));
-                }
-                for d in &digest.decisions {
-                    text.push_str(&format!("decision: {d}\n"));
-                }
-                for e in &digest.errors {
-                    text.push_str(&format!("error: {e}\n"));
-                }
-                for t in &digest.open_tasks {
-                    text.push_str(&format!("todo: {t}\n"));
-                }
-                if let Some(work) = &digest.current_work {
-                    text.push_str(&format!("current: {work}\n"));
-                }
-                text.push_str(&format!(
-                    "(covers {} earlier records)\n",
-                    digest.covers_items
-                ));
                 let record = serde_json::json!({
                     "type": "message_node",
                     "node_id": parent + 1,
                     "parent_node_id": parent,
-                    "chat_message": {
-                        "role": "user",
-                        "content": text,
-                        "metadata": {"is_user_input": true},
-                    },
+                    "chat_message": digest_message(digest),
                     "created_at": Value::Null,
                     "metadata": Value::Null,
                 });
@@ -505,6 +554,307 @@ fn apply_inner(
         }
     }
     Ok(raw)
+}
+
+#[derive(Debug)]
+pub struct StoreReport {
+    pub nodes_rewritten: u64,
+    pub digest_node_id: Option<i64>,
+    pub reclaimed_bytes: u64,
+    /// sha256 of the post-write canonical export — the receipt's identity
+    /// for the committed state.
+    pub export_sha256: String,
+    /// Provider-native resume command for the mutated session.
+    pub resume_hint: String,
+}
+
+/// One `(node_id, raw chat_message)` pair in `ORDER BY node_id` — the
+/// same order export lines use, so export `line_index` i maps to
+/// `nodes[i - 1]` (line 0 is `session_meta`).
+fn store_nodes(
+    conn: &Connection,
+    db: &Path,
+    session_id: &str,
+) -> Result<Vec<(i64, String)>, AdapterError> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT node_id, chat_message FROM message_nodes \
+             WHERE session_id = ?1 ORDER BY node_id",
+        )
+        .map_err(rusqlite_io(db))?;
+    let rows = stmt
+        .query_map([session_id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
+        })
+        .map_err(rusqlite_io(db))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(rusqlite_io(db))?);
+    }
+    Ok(out)
+}
+
+/// Rewrite elided `chat_message` payloads and inject digest nodes inside
+/// the session store, in one immediate transaction.
+///
+/// Safety order: refuse while the provider holds the session lock, then
+/// re-export inside the transaction and require the canonical sha to
+/// equal `source_sha256` (the bytes the plan was computed against), so
+/// any concurrent provider write between plan and apply aborts cleanly.
+/// Each elide is a conditional `UPDATE ... WHERE chat_message = <raw>` —
+/// zero rows means intra-transaction inconsistency and rolls back.
+/// A digest becomes a new `message_nodes` row whose `parent_node_id` is
+/// the old head, plus a conditional `main_chain_id` move; verification
+/// re-exports the candidate state and rejects any new finding before
+/// commit.
+pub fn apply_store(
+    root: &Path,
+    session_id: &str,
+    source_sha256: &str,
+    edits: &[gobstopper_core::plan::Edit],
+) -> Result<StoreReport, AdapterError> {
+    use gobstopper_core::plan::Edit;
+    if edits
+        .iter()
+        .any(|e| matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
+    {
+        return Err(AdapterError::UnsupportedProvider);
+    }
+    let db = db_path(root);
+    if session_active(root, session_id) {
+        return Err(AdapterError::InvalidEdit(
+            "session is live (provider holds its lock); compact with /compact in-session",
+        ));
+    }
+    let mut conn = open_readwrite(&db)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(rusqlite_io(&db))?;
+    let report = (|| -> Result<StoreReport, AdapterError> {
+        let before = export_bytes_conn(&tx, &db, session_id)?;
+        if crate::copy::sha256(&before) != source_sha256 {
+            return Err(AdapterError::ChangedDuringWrite { path: db.clone() });
+        }
+        let nodes = store_nodes(&tx, &db, session_id)?;
+        let mut reclaimed = 0u64;
+        let mut rewritten = 0u64;
+        let mut digest_node_id = None;
+        for edit in edits {
+            match edit {
+                Edit::Elide {
+                    line_indexes,
+                    stub_template,
+                    per_item_stubs,
+                } => {
+                    for &line_index in line_indexes {
+                        let Some((node_id, raw)) =
+                            line_index.checked_sub(1).and_then(|i| nodes.get(i))
+                        else {
+                            return Err(AdapterError::InvalidEdit(
+                                "elide target line is out of range for this session",
+                            ));
+                        };
+                        let Ok(mut message) = serde_json::from_str::<Value>(raw) else {
+                            continue;
+                        };
+                        let Some(content) = message.get_mut("content") else {
+                            continue;
+                        };
+                        let eligible = crate::payload::eligible_bytes(content);
+                        if eligible == 0 {
+                            continue;
+                        }
+                        let stub = per_item_stubs
+                            .get(&line_index)
+                            .cloned()
+                            .unwrap_or_else(|| stub_for(stub_template, eligible, "tool_result"));
+                        let shrunk = crate::payload::elide(content, stub);
+                        if shrunk == 0 {
+                            continue;
+                        }
+                        let candidate = serde_json::to_string(&message).map_err(|_| {
+                            AdapterError::InvalidEdit("rewritten message not serializable")
+                        })?;
+                        let changed = tx
+                            .execute(
+                                "UPDATE message_nodes SET chat_message = ?1 \
+                                 WHERE session_id = ?2 AND node_id = ?3 AND chat_message = ?4",
+                                rusqlite::params![candidate, session_id, node_id, raw],
+                            )
+                            .map_err(rusqlite_io(&db))?;
+                        if changed != 1 {
+                            return Err(AdapterError::ChangedDuringWrite { path: db.clone() });
+                        }
+                        reclaimed += shrunk;
+                        rewritten += 1;
+                    }
+                }
+                Edit::InjectDigest { digest } => {
+                    let head: Option<i64> = tx
+                        .query_row(
+                            "SELECT main_chain_id FROM sessions WHERE id = ?1",
+                            [session_id],
+                            |r| r.get(0),
+                        )
+                        .map_err(rusqlite_io(&db))?;
+                    let Some(head) = head else {
+                        return Err(AdapterError::InvalidEdit("session has no main chain head"));
+                    };
+                    let new_id: i64 = tx
+                        .query_row(
+                            "SELECT COALESCE(MAX(node_id), -1) + 1 FROM message_nodes \
+                             WHERE session_id = ?1",
+                            [session_id],
+                            |r| r.get(0),
+                        )
+                        .map_err(rusqlite_io(&db))?;
+                    let message = serde_json::to_string(&digest_message(digest)).map_err(|_| {
+                        AdapterError::InvalidEdit("digest message not serializable")
+                    })?;
+                    tx.execute(
+                        "INSERT INTO message_nodes (session_id, node_id, parent_node_id, \
+                         chat_message, created_at, metadata) VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
+                        rusqlite::params![session_id, new_id, head, message, now_secs() as i64],
+                    )
+                    .map_err(rusqlite_io(&db))?;
+                    let moved = tx
+                        .execute(
+                            "UPDATE sessions SET main_chain_id = ?1 \
+                             WHERE id = ?2 AND main_chain_id = ?3",
+                            rusqlite::params![new_id, session_id, head],
+                        )
+                        .map_err(rusqlite_io(&db))?;
+                    if moved != 1 {
+                        return Err(AdapterError::ChangedDuringWrite { path: db.clone() });
+                    }
+                    digest_node_id = Some(new_id);
+                }
+                Edit::ProviderCompact { .. } | Edit::CacheEdit { .. } => {}
+            }
+        }
+        let after = export_bytes_conn(&tx, &db, session_id)?;
+        let before_findings = crate::verify::verify(Provider::Devin, &before);
+        let after_findings = crate::verify::verify(Provider::Devin, &after);
+        if after_findings.iter().any(|f| !before_findings.contains(f)) {
+            return Err(AdapterError::InvalidEdit(
+                "rewrite introduces structural findings; rolled back",
+            ));
+        }
+        Ok(StoreReport {
+            nodes_rewritten: rewritten,
+            digest_node_id,
+            reclaimed_bytes: reclaimed,
+            export_sha256: crate::copy::sha256(&after),
+            resume_hint: format!("devin --resume {session_id}"),
+        })
+    })()?;
+    tx.commit().map_err(rusqlite_io(&db))?;
+    Ok(report)
+}
+
+/// Undo a store apply: restore the snapshot's `chat_message` payloads and
+/// `main_chain_id`, and delete injected digest nodes. Refuses when the
+/// session has any node the snapshot does not know and that is not one of
+/// ours — restoring would orphan a genuine provider write.
+pub fn restore_store(
+    root: &Path,
+    session_id: &str,
+    snapshot_bytes: &[u8],
+) -> Result<StoreReport, AdapterError> {
+    let db = db_path(root);
+    if session_active(root, session_id) {
+        return Err(AdapterError::InvalidEdit(
+            "session is live (provider holds its lock); restore after it closes",
+        ));
+    }
+    let (snapshot_head, snapshot_rows) = parse_export(snapshot_bytes)?;
+    let mut snapshot_msgs = std::collections::HashMap::new();
+    for row in &snapshot_rows {
+        snapshot_msgs.insert(row.node_id, row.message.clone());
+    }
+    let mut conn = open_readwrite(&db)?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(rusqlite_io(&db))?;
+    let report = (|| -> Result<StoreReport, AdapterError> {
+        let before = export_bytes_conn(&tx, &db, session_id)?;
+        let nodes = store_nodes(&tx, &db, session_id)?;
+        let mut injected = Vec::new();
+        for (node_id, raw) in &nodes {
+            match snapshot_msgs.get(node_id) {
+                Some(_) => {}
+                None => {
+                    let parsed: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+                    if is_digest_message(&parsed) {
+                        injected.push(*node_id);
+                    } else {
+                        // A foreign node written since the snapshot —
+                        // restoring would orphan provider state.
+                        return Err(AdapterError::ChangedDuringWrite { path: db.clone() });
+                    }
+                }
+            }
+        }
+        let mut rewritten = 0u64;
+        for (node_id, message) in &snapshot_msgs {
+            let text = serde_json::to_string(message)
+                .map_err(|_| AdapterError::InvalidEdit("snapshot message not serializable"))?;
+            let changed = tx
+                .execute(
+                    "UPDATE message_nodes SET chat_message = ?1 \
+                     WHERE session_id = ?2 AND node_id = ?3",
+                    rusqlite::params![text, session_id, node_id],
+                )
+                .map_err(rusqlite_io(&db))?;
+            if changed == 0 {
+                return Err(AdapterError::ChangedDuringWrite { path: db.clone() });
+            }
+            rewritten += 1;
+        }
+        for node_id in &injected {
+            tx.execute(
+                "DELETE FROM message_nodes WHERE session_id = ?1 AND node_id = ?2",
+                rusqlite::params![session_id, node_id],
+            )
+            .map_err(rusqlite_io(&db))?;
+        }
+        let current_head: Option<i64> = tx
+            .query_row(
+                "SELECT main_chain_id FROM sessions WHERE id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )
+            .map_err(rusqlite_io(&db))?;
+        if current_head != snapshot_head {
+            let moved = tx
+                .execute(
+                    "UPDATE sessions SET main_chain_id = ?1 \
+                     WHERE id = ?2 AND main_chain_id = ?3",
+                    rusqlite::params![snapshot_head, session_id, current_head],
+                )
+                .map_err(rusqlite_io(&db))?;
+            if moved != 1 {
+                return Err(AdapterError::ChangedDuringWrite { path: db.clone() });
+            }
+        }
+        let after = export_bytes_conn(&tx, &db, session_id)?;
+        let before_findings = crate::verify::verify(Provider::Devin, &before);
+        let after_findings = crate::verify::verify(Provider::Devin, &after);
+        if after_findings.iter().any(|f| !before_findings.contains(f)) {
+            return Err(AdapterError::InvalidEdit(
+                "restore introduces findings; rolled back",
+            ));
+        }
+        Ok(StoreReport {
+            nodes_rewritten: rewritten,
+            digest_node_id: None,
+            reclaimed_bytes: 0,
+            export_sha256: crate::copy::sha256(&after),
+            resume_hint: format!("devin --resume {session_id}"),
+        })
+    })()?;
+    tx.commit().map_err(rusqlite_io(&db))?;
+    Ok(report)
 }
 
 /// Assistant `tool_calls[].id` → call name/label, used to annotate the
@@ -1138,6 +1488,241 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    fn digest_block() -> gobstopper_core::plan::DigestBlock {
+        gobstopper_core::plan::DigestBlock {
+            goal: Some("ship it".into()),
+            summary: Some("elided the noisy middle".into()),
+            concepts: vec!["sqlite".into()],
+            files_touched: vec!["devin.rs".into()],
+            decisions: vec!["in-place tx".into()],
+            errors: vec![],
+            open_tasks: vec!["undo path".into()],
+            current_work: None,
+            context: None,
+            covers_items: 3,
+        }
+    }
+
+    fn node_payload(root: &Path, session: &str, node_id: i64) -> String {
+        let conn = Connection::open(db_path(root)).unwrap();
+        conn.query_row(
+            "SELECT chat_message FROM message_nodes WHERE session_id = ?1 AND node_id = ?2",
+            rusqlite::params![session, node_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn chain_head(root: &Path, session: &str) -> i64 {
+        let conn = Connection::open(db_path(root)).unwrap();
+        conn.query_row(
+            "SELECT main_chain_id FROM sessions WHERE id = ?1",
+            [session],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn apply_store_elides_and_injects_in_place() {
+        let fx = Fixture::new("apply-store");
+        fx.add_session("sess-w", "write", 3, 1_790_006_000);
+        fx.add_node(
+            "sess-w",
+            0,
+            None,
+            serde_json::json!({"role": "user", "content": "go"}),
+            None,
+        );
+        fx.add_node(
+            "sess-w",
+            1,
+            Some(0),
+            serde_json::json!({"role": "assistant", "tool_calls": [{"id": "c1", "name": "exec"}]}),
+            None,
+        );
+        fx.add_node(
+            "sess-w",
+            2,
+            Some(1),
+            serde_json::json!({"role": "tool", "tool_call_id": "c1", "content": "x".repeat(3000)}),
+            None,
+        );
+        fx.add_node("sess-w", 3, Some(2), assistant("done", None), None);
+
+        let before = export_bytes(&db_path(&fx.root), "sess-w").unwrap();
+        let sha = crate::copy::sha256(&before);
+        let edits = vec![
+            gobstopper_core::plan::Edit::Elide {
+                // export line 3 = node 2 (line 0 is session_meta).
+                line_indexes: vec![3],
+                stub_template: "[elided {bytes} bytes]".into(),
+                per_item_stubs: Default::default(),
+            },
+            gobstopper_core::plan::Edit::InjectDigest {
+                digest: digest_block(),
+            },
+        ];
+        let report = apply_store(&fx.root, "sess-w", &sha, &edits).unwrap();
+        assert_eq!(report.nodes_rewritten, 1);
+        assert_eq!(report.digest_node_id, Some(4));
+        assert!(report.reclaimed_bytes > 0);
+
+        let elided = node_payload(&fx.root, "sess-w", 2);
+        assert!(elided.contains("[elided 3000 bytes]"));
+        assert!(!elided.contains(&"x".repeat(3000)));
+        assert_eq!(chain_head(&fx.root, "sess-w"), 4);
+        let digest = node_payload(&fx.root, "sess-w", 4);
+        assert!(digest.contains("[gobstopper state card]"));
+        assert!(digest.contains("goal: ship it"));
+
+        // The committed export still verifies clean and round-trips.
+        let after = export_bytes(&db_path(&fx.root), "sess-w").unwrap();
+        assert!(crate::verify::verify(Provider::Devin, &after).is_empty());
+        let t = load(fx.handle("sess-w")).unwrap();
+        assert_eq!(t.items.len(), 5);
+    }
+
+    #[test]
+    fn apply_store_aborts_on_drift_without_writes() {
+        let fx = Fixture::new("apply-drift");
+        fx.add_session("sess-d", "drift", 1, 1_790_006_000);
+        fx.add_node(
+            "sess-d",
+            0,
+            None,
+            serde_json::json!({"role": "user", "content": "go"}),
+            None,
+        );
+        fx.add_node("sess-d", 1, Some(0), assistant("ok", None), None);
+        let before = export_bytes(&db_path(&fx.root), "sess-d").unwrap();
+        let sha = crate::copy::sha256(&before);
+        // Provider appended a node between plan and apply.
+        fx.add_node(
+            "sess-d",
+            2,
+            Some(1),
+            serde_json::json!({"role": "user", "content": "new"}),
+            None,
+        );
+        let edits = vec![gobstopper_core::plan::Edit::InjectDigest {
+            digest: digest_block(),
+        }];
+        let err = apply_store(&fx.root, "sess-d", &sha, &edits).unwrap_err();
+        assert!(matches!(err, AdapterError::ChangedDuringWrite { .. }));
+        assert_eq!(chain_head(&fx.root, "sess-d"), 1, "rolled back head move");
+        assert!(node_payload(&fx.root, "sess-d", 1).contains("ok"));
+    }
+
+    #[test]
+    fn apply_store_refuses_locked_session() {
+        use fs2::FileExt;
+        let fx = Fixture::new("apply-lock");
+        fx.add_session("sess-l2", "locked", 0, 1_790_006_000);
+        fx.add_node(
+            "sess-l2",
+            0,
+            None,
+            serde_json::json!({"role": "user", "content": "x"}),
+            None,
+        );
+        let locks = fx.root.join("session_locks");
+        fs::create_dir_all(&locks).unwrap();
+        let held = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .open(locks.join("sess-l2.lock"))
+            .unwrap();
+        held.lock_exclusive().unwrap();
+        let sha = crate::copy::sha256(&export_bytes(&db_path(&fx.root), "sess-l2").unwrap());
+        let err = apply_store(&fx.root, "sess-l2", &sha, &[]).unwrap_err();
+        assert!(matches!(err, AdapterError::InvalidEdit(_)));
+        drop(held);
+    }
+
+    #[test]
+    fn restore_store_undoes_apply() {
+        let fx = Fixture::new("restore");
+        fx.add_session("sess-r", "undo", 2, 1_790_006_000);
+        fx.add_node(
+            "sess-r",
+            0,
+            None,
+            serde_json::json!({"role": "user", "content": "go"}),
+            None,
+        );
+        fx.add_node(
+            "sess-r",
+            1,
+            Some(0),
+            serde_json::json!({"role": "assistant", "tool_calls": [{"id": "c1", "name": "exec"}]}),
+            None,
+        );
+        fx.add_node(
+            "sess-r",
+            2,
+            Some(1),
+            serde_json::json!({"role": "tool", "tool_call_id": "c1", "content": "y".repeat(4000)}),
+            None,
+        );
+        let snapshot = export_bytes(&db_path(&fx.root), "sess-r").unwrap();
+        let sha = crate::copy::sha256(&snapshot);
+        let edits = vec![
+            gobstopper_core::plan::Edit::Elide {
+                line_indexes: vec![3],
+                stub_template: "[gone {bytes}]".into(),
+                per_item_stubs: Default::default(),
+            },
+            gobstopper_core::plan::Edit::InjectDigest {
+                digest: digest_block(),
+            },
+        ];
+        apply_store(&fx.root, "sess-r", &sha, &edits).unwrap();
+        assert_eq!(chain_head(&fx.root, "sess-r"), 3);
+
+        let report = restore_store(&fx.root, "sess-r", &snapshot).unwrap();
+        assert_eq!(report.nodes_rewritten, 3);
+        assert_eq!(chain_head(&fx.root, "sess-r"), 2);
+        let restored = node_payload(&fx.root, "sess-r", 2);
+        assert!(restored.contains(&"y".repeat(4000)));
+        // Injected digest node is gone, not just orphaned.
+        let conn = Connection::open(db_path(&fx.root)).unwrap();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM message_nodes WHERE session_id = 'sess-r'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn restore_store_refuses_foreign_appends() {
+        let fx = Fixture::new("restore-drift");
+        fx.add_session("sess-rd", "drift", 0, 1_790_006_000);
+        fx.add_node(
+            "sess-rd",
+            0,
+            None,
+            serde_json::json!({"role": "user", "content": "go"}),
+            None,
+        );
+        let snapshot = export_bytes(&db_path(&fx.root), "sess-rd").unwrap();
+        // A provider write landed after the snapshot.
+        fx.add_node(
+            "sess-rd",
+            1,
+            Some(0),
+            serde_json::json!({"role": "user", "content": "real"}),
+            None,
+        );
+        let err = restore_store(&fx.root, "sess-rd", &snapshot).unwrap_err();
+        assert!(matches!(err, AdapterError::ChangedDuringWrite { .. }));
     }
 
     #[test]

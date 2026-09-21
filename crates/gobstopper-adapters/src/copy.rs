@@ -1,4 +1,4 @@
-use crate::{claude, codex, codex_compact, fork, transaction, vault, verify};
+use crate::{claude, codex, codex_compact, devin, fork, transaction, vault, verify};
 use anyhow::{bail, Context};
 use gobstopper_core::plan::DigestBlock;
 use gobstopper_core::{CompactionPlan, Edit, Provider, SessionHandle, Transcript};
@@ -62,19 +62,120 @@ fn verify_snapshot_reference(receipt: &CopyReceipt, root: &Path) -> anyhow::Resu
     Ok(())
 }
 
+/// Receipt for an in-place Devin session-store compaction: the vault
+/// snapshot of the canonical export is the recovery object, and
+/// `export_sha256` pins the committed post-write state.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DevinStoreReceipt {
+    pub schema_version: u32,
+    pub source_sha256: String,
+    pub export_sha256: String,
+    pub session_id: String,
+    pub nodes_rewritten: u64,
+    pub digest_node_id: Option<i64>,
+    pub reclaimed_bytes: u64,
+    pub snapshot_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_manifest_sha256: Option<String>,
+    /// Provider-native resume command for the mutated session.
+    #[serde(default)]
+    pub resume_hint: String,
+}
+
+/// In-place Devin compaction: snapshot the canonical export into the
+/// vault, then rewrite `message_nodes` payloads inside one SQLite
+/// transaction guarded by the provider lock probe, a source-identity
+/// check, and conditional writes. Live sessions are refused inside
+/// `devin::apply_store`.
+pub fn compact_devin_store(
+    handle: &SessionHandle,
+    source_sha256: &str,
+    plan: &CompactionPlan,
+    vault_root: &Path,
+    devin_root: &Path,
+) -> anyhow::Result<DevinStoreReceipt> {
+    if handle.provider != Provider::Devin {
+        bail!("compact_devin_store only applies to devin sessions");
+    }
+    let file_edits: Vec<Edit> = plan
+        .edits
+        .iter()
+        .filter(|e| !matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
+        .cloned()
+        .collect();
+    if file_edits.is_empty() {
+        bail!("plan contains no store edits");
+    }
+    let export =
+        devin::export_bytes(&handle.path, &handle.session_id).map_err(|e| anyhow::anyhow!(e))?;
+    if sha256(&export) != source_sha256 {
+        bail!("session changed since planning; re-plan before applying");
+    }
+    // Ops lock: one in-flight store apply per (session, source, edits).
+    let identity = sha256(&serde_json::to_vec(&(
+        handle.provider,
+        &handle.session_id,
+        source_sha256,
+        &plan.edits,
+        "devin-store",
+    ))?);
+    let operations = vault_root.join("operations");
+    transaction::private_dir(vault_root)?;
+    transaction::private_dir(&operations)?;
+    let lock_path = operations.join(format!("{identity}.lock"));
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let lock = options.open(&lock_path)?;
+    fs2::FileExt::try_lock_exclusive(&lock).context("devin store apply is already running")?;
+    let snapshot = vault::snapshot_data(
+        &export,
+        &handle.path,
+        handle.provider,
+        &handle.session_id,
+        Some(&plan.strategy),
+        vault_root,
+    )?;
+    if snapshot.source_sha256 != source_sha256 {
+        bail!("source changed before snapshot");
+    }
+    let report = devin::apply_store(devin_root, &handle.session_id, source_sha256, &file_edits)
+        .map_err(|e| anyhow::anyhow!(e))?;
+    let receipt = DevinStoreReceipt {
+        schema_version: 1,
+        source_sha256: source_sha256.into(),
+        export_sha256: report.export_sha256,
+        session_id: handle.session_id.clone(),
+        nodes_rewritten: report.nodes_rewritten,
+        digest_node_id: report.digest_node_id,
+        reclaimed_bytes: report.reclaimed_bytes,
+        snapshot_sha256: snapshot.source_sha256,
+        snapshot_manifest_sha256: Some(snapshot.sha256),
+        resume_hint: report.resume_hint.clone(),
+    };
+    transaction::publish_new(
+        &operations.join(format!("{identity}.json")),
+        &serde_json::to_vec(&receipt)?,
+    )?;
+    Ok(receipt)
+}
+
 pub fn compact(
     handle: &SessionHandle,
     source_sha256: &str,
     plan: &CompactionPlan,
     vault_root: &Path,
 ) -> anyhow::Result<CopyReceipt> {
-    // Devin sessions live inside a shared SQLite store: a file fork and a
-    // whole-file vault snapshot are both wrong for it. Bail before any
-    // read touches `handle.path`.
+    // Devin sessions live inside a shared SQLite store: a file fork is
+    // meaningless to the provider. In-place writes go through
+    // `compact_devin_store`; bail before any read touches `handle.path`.
     if handle.provider == Provider::Devin {
-        bail!(
-            "devin session-store writes are not implemented; compact live sessions with /compact in the Devin CLI"
-        );
+        bail!("devin sessions compact in place via the store path, not by fork");
     }
     if plan
         .edits
