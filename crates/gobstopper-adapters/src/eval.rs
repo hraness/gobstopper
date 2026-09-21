@@ -77,6 +77,9 @@ fn load(provider: Provider, src: &Path) -> anyhow::Result<Transcript> {
     let (session_id, cwd) = match provider {
         Provider::Codex => crate::codex::scan_meta(src),
         Provider::ClaudeCode => crate::claude::scan_meta(src),
+        // Eval sources are detached files; for Devin that means a
+        // canonical export (see `devin::export_bytes`).
+        Provider::Devin => crate::devin::scan_meta_export(src),
     };
     let age_secs = std::fs::metadata(src)
         .and_then(|m| m.modified())
@@ -98,6 +101,7 @@ fn load(provider: Provider, src: &Path) -> anyhow::Result<Transcript> {
     let transcript = match provider {
         Provider::Codex => crate::codex::load(handle),
         Provider::ClaudeCode => crate::claude::load(handle),
+        Provider::Devin => crate::devin::load(handle),
     }
     .with_context(|| format!("loading {}", src.display()))?;
     Ok(transcript)
@@ -107,6 +111,7 @@ fn apply(provider: Provider, path: &Path, edits: &[Edit]) -> Result<u64, crate::
     match provider {
         Provider::Codex => crate::codex::apply(path, edits),
         Provider::ClaudeCode => crate::claude::apply(path, edits),
+        Provider::Devin => crate::devin::apply(path, edits),
     }
 }
 
@@ -245,6 +250,7 @@ fn run_on_copy(
     let post_transcript = match provider {
         Provider::Codex => crate::codex::load_bytes(handle, &bytes),
         Provider::ClaudeCode => crate::claude::load_bytes(handle, &bytes),
+        Provider::Devin => crate::devin::load_bytes(handle, &bytes),
     }
     .context("loading rewritten live context for probe scoring")?;
     let post_text = live_context_text(&post_transcript, &String::from_utf8_lossy(&bytes));

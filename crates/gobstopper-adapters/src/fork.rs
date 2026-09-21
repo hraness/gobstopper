@@ -201,6 +201,11 @@ pub fn fork(
     src: &Path,
     new_session_id: Option<String>,
 ) -> anyhow::Result<ForkResult> {
+    // A Devin session is rows inside a shared database; a file fork is
+    // not a resumable artifact for it. Bail before reading `src`.
+    if provider == Provider::Devin {
+        bail!("devin sessions cannot be forked to transcript files");
+    }
     let src = src.canonicalize()?;
     let original = crate::transaction::read(&src)?;
     let new_id = match new_session_id {
@@ -231,6 +236,7 @@ pub fn fork(
             let old_id = crate::codex::scan_meta(&src).0;
             codex_fork_name(&src, old_id.as_deref(), &new_id)
         }
+        Provider::Devin => unreachable!("devin forks bail before naming"),
     };
     let target = dir.join(&name);
     // symlink_metadata (not exists) so a dangling symlink can't be
@@ -243,6 +249,7 @@ pub fn fork(
     let out = match provider {
         Provider::ClaudeCode => fork_claude(raw, &new_id),
         Provider::Codex => fork_codex(raw, &new_id),
+        Provider::Devin => unreachable!("devin forks bail before rewriting"),
     };
 
     // Temp file + rename in the same directory: a killed fork never
@@ -255,6 +262,7 @@ pub fn fork(
     let resume_hint = match provider {
         Provider::ClaudeCode => format!("claude --resume {new_id}"),
         Provider::Codex => format!("codex fork {new_id}"),
+        Provider::Devin => unreachable!("devin forks bail before resuming"),
     };
     Ok(ForkResult {
         path: target,
@@ -269,6 +277,9 @@ pub fn restore_copy(
     sha256: &str,
     root: &Path,
 ) -> anyhow::Result<ForkResult> {
+    if provider == Provider::Devin {
+        bail!("devin session-store restores are not implemented");
+    }
     let bytes = crate::vault::read_object(sha256, root)?;
     if crate::verify::verify(provider, &bytes)
         .iter()
@@ -283,6 +294,7 @@ pub fn restore_copy(
     let resume_hint = match provider {
         Provider::Codex => format!("codex resume {session_id}"),
         Provider::ClaudeCode => format!("claude --resume {session_id}"),
+        Provider::Devin => unreachable!("devin restores bail before resuming"),
     };
     Ok(ForkResult {
         path,
@@ -295,6 +307,9 @@ pub(crate) fn rewrite_identity(provider: Provider, raw: &str, id: &str) -> Strin
     match provider {
         Provider::Codex => fork_codex(raw, id),
         Provider::ClaudeCode => fork_claude(raw, id),
+        // Devin exports carry no file-level identity to rewrite; callers
+        // bail before reaching this for store-backed sessions.
+        Provider::Devin => raw.to_string(),
     }
 }
 
@@ -304,6 +319,7 @@ pub(crate) fn target_path(provider: Provider, source: &Path, id: &str) -> PathBu
         Provider::Codex => {
             codex_fork_name(source, crate::codex::scan_meta(source).0.as_deref(), id)
         }
+        Provider::Devin => format!("{id}.devin-export.jsonl"),
     };
     source.parent().unwrap_or_else(|| Path::new(".")).join(name)
 }

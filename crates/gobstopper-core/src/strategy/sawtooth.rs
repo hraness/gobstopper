@@ -27,6 +27,7 @@ impl Strategy for SawtoothStrategy {
         let control = match transcript.session.provider {
             Provider::Codex => "codex app-server: thread/compact/start",
             Provider::ClaudeCode => "claude: /compact (or --autocompact at launch)",
+            Provider::Devin => "devin: /compact",
         };
         Some(CompactionPlan {
             strategy: self.id().to_string(),

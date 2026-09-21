@@ -422,6 +422,7 @@ mod tests {
         Cli {
             codex_home: None,
             claude_home: None,
+            devin_home: None,
             codex_bin: None,
             command: crate::Cmd::Mcp {
                 allow_transcript_content: false,
