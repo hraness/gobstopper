@@ -132,18 +132,43 @@ Devin's `UserPromptSubmit` hook can advise compaction before each turn.
 }
 ```
 
-— into `~/.config/devin/hooks.v1.json` (Devin's flat event-map shape, no
-`"hooks"` wrapper). The handler resolves the session by ID directly against
-the store, runs the shared policy, and emits `hookSpecificOutput.
-additionalContext` recommending `/compact` when over trigger. It is advisory
-only and fails silently, so a broken hook never blocks a prompt.
-`gobstopper uninstall-hooks` removes only Gobstopper-owned commands.
+— into `~/.config/devin/config.json` under the `"hooks"` key (Devin's
+documented user-level location; the flat `hooks.v1.json` shape is project
+level, `.devin/hooks.v1.json`). The handler resolves the session by ID
+directly against the store, runs the shared policy, and emits
+`hookSpecificOutput.additionalContext` recommending `/compact` when over
+trigger. It is advisory only and fails silently, so a broken hook never
+blocks a prompt. `gobstopper uninstall-hooks` removes only Gobstopper-owned
+commands.
+
+**ACP caveat:** hooks fire in the interactive `devin` TUI; Devin's ACP
+server mode (`devin acp`, e.g. under Windsurf) does not run lifecycle hooks
+— verified empirically. For ACP sessions the equivalent lever is the MCP
+`policy_check` tool, which resolves the same store observation and policy.
 
 The same `install-hooks` run installs the Claude Code `UserPromptSubmit`
 advisor (`gobstopper hook prompt-policy:claude`) into
 `~/.claude/settings.json` alongside the existing `PreCompact` and
-`SessionStart` hooks — one policy engine, one installer, per-provider session
-resolution.
+`SessionStart` hooks — one policy engine, one installer, per-provider
+session resolution.
+
+## Rollout gating
+
+`[rollout]` in `~/.config/gobstopper/config.toml` gates the advisory per
+provider with deterministic session bucketing:
+
+```toml
+[rollout]
+devin = 50        # half of Devin sessions get the advisory (treatment)
+claude_code = 50  # the other half stays silent (control)
+```
+
+The bucket is `int(sha256(session_id)[:16], 16) % 100` — stable across
+prompts and machines. Every resolved decision is appended to the telemetry log as a
+`prompt-policy:treatment|control` event — numerator and denominator for an
+A/B readout both land in `events.jsonl`, and `gobstopper report` /
+`scripts/monitor.py --provider <name>` supply the per-session context
+trajectories to compare cohorts.
 
 ## Read-only MCP
 

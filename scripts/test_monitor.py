@@ -206,6 +206,30 @@ else:
         self.assertTrue(all(call["gobstopper_env"] == {"GOBSTOPPER_SCORER": "heuristic"} for call in calls))
         self.assertTrue(all(call["arguments"] in (["report", "--active-only"], ["watch", "--dry-run", "--active-only", "--once"]) for call in calls))
 
+    def test_context_samples_respect_allowlist_and_provider_opt_in(self):
+        value = report()
+        devin_row = json.loads(json.dumps(value["sessions"][0]))
+        devin_row["provider"] = "devin"
+        devin_row["gobstopper"]["sessionIdNative"] = "devin-session-1"
+        value["sessions"].append(devin_row)
+        self.report_file.write_text(json.dumps(value))
+
+        # Default: only allowlisted sessions; neither the unrelated codex
+        # row nor the devin row is sampled.
+        observation = self.sample()
+        sampled = {(r["provider"], r["session_id"]) for r in observation["context_samples"]}
+        self.assertEqual(sampled, {("codex", A)})
+
+        # Opted-in provider rows join the allowlist; unrelated codex stays out.
+        observation = monitor.observe(
+            self.binary, self.output, [A, B], providers=["devin"])
+        sampled = {(r["provider"], r["session_id"]) for r in observation["context_samples"]}
+        self.assertEqual(sampled, {("codex", A), ("devin", "devin-session-1")})
+
+        # An unknown provider name is rejected before any child runs.
+        with self.assertRaises(monitor.MonitorError):
+            monitor.observe(self.binary, self.output, [A], providers=["other"])
+
     def test_unavailable_fields_and_compaction_boundary_are_not_zero_savings(self):
         self.sample()
         value = report(context=0, native=None)
