@@ -100,8 +100,10 @@ fn now_secs() -> u64 {
 /// Every session in the store, newest activity first. `path` on each
 /// handle is the shared database; `session_id` selects the row set.
 /// `cwd` comes from `sessions.working_directory`; `age_secs` is derived
-/// from `last_activity_at` rather than file mtime.
-pub fn discover(root: &Path, max_age_secs: u64) -> Vec<Discovered> {
+/// from `last_activity_at` rather than file mtime. `context_only`
+/// bounds each session's usage read to its newest rows — callers that
+/// need `lifetime_*` counters (report/export) must pass false.
+pub fn discover(root: &Path, max_age_secs: u64, context_only: bool) -> Vec<Discovered> {
     let db = db_path(root);
     let Ok(conn) = open_readonly(&db) else {
         return Vec::new();
@@ -143,7 +145,11 @@ pub fn discover(root: &Path, max_age_secs: u64) -> Vec<Discovered> {
         if age > limit {
             continue;
         }
-        let usage = scan_usage(&conn, &session_id);
+        let usage = if context_only {
+            scan_context(&conn, &session_id)
+        } else {
+            scan_usage(&conn, &session_id)
+        };
         found.push(Discovered {
             handle: SessionHandle {
                 provider: Provider::Devin,
@@ -320,6 +326,54 @@ pub fn scan_usage(conn: &Connection, session_id: &str) -> UsageSample {
     if usage.context_tokens == 0 {
         usage.context_tokens = preceding.unwrap_or(0);
     }
+    usage
+}
+
+/// Context-only usage for watch discovery: scans just the newest rows
+/// so the latest assistant metrics (or the provider's
+/// `num_tokens_preceding`) approximate context occupancy. `chat_message`
+/// payloads overflow the row pages in this schema, so `scan_usage`'s
+/// full scan reads the whole store once per session; this tail read is
+/// bounded per session instead. Lifetime counters stay zero.
+fn scan_context(conn: &Connection, session_id: &str) -> UsageSample {
+    let mut stmt = match conn.prepare(
+        "SELECT m.chat_message, m.metadata FROM message_nodes m \
+         WHERE m.session_id = ?1 ORDER BY m.node_id DESC LIMIT 32",
+    ) {
+        Ok(stmt) => stmt,
+        Err(_) => return UsageSample::default(),
+    };
+    let mut rows = stmt
+        .query_map([session_id], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
+        })
+        .map(|it| it.flatten().collect::<Vec<_>>())
+        .unwrap_or_default();
+    // Rows arrive newest-first; absorb oldest→newest so "last wins"
+    // matches scan_usage ordering.
+    rows.reverse();
+    let mut usage = UsageSample::default();
+    let mut preceding: Option<u64> = None;
+    for (raw, meta) in &rows {
+        let Ok(msg) = serde_json::from_str::<Value>(raw) else {
+            continue;
+        };
+        if let Some(n) = meta
+            .as_deref()
+            .and_then(|m| serde_json::from_str::<Value>(m).ok())
+            .and_then(|m| m.get("num_tokens_preceding").and_then(Value::as_u64))
+        {
+            preceding = Some(n);
+        }
+        absorb_usage(&msg, &mut usage, true);
+    }
+    if usage.context_tokens == 0 {
+        usage.context_tokens = preceding.unwrap_or(0);
+    }
+    // absorb_usage summed tail rows into the lifetime counters — a
+    // partial window must not masquerade as lifetime totals.
+    usage.lifetime_input_tokens = 0;
+    usage.lifetime_cached_tokens = 0;
     usage
 }
 
@@ -1350,7 +1404,7 @@ mod tests {
             Some("{\"num_tokens_preceding\": 7280}"),
         );
 
-        let found = discover(&fx.root, 0);
+        let found = discover(&fx.root, 0, false);
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].handle.session_id, "sess-a");
         assert_eq!(found[0].handle.provider, Provider::Devin);
@@ -1369,6 +1423,51 @@ mod tests {
         // Linkage preserved: every non-root node names its parent's id.
         assert_eq!(t.items[2].uuid.as_deref(), Some("a1"));
         assert_eq!(t.items[2].parent_uuid.as_deref(), Some("u1"));
+    }
+
+    #[test]
+    fn context_only_scan_matches_tail_context_without_lifetime() {
+        let fx = Fixture::new("tailscan");
+        fx.add_session("sess-t", "tail", 40, 1_790_006_000);
+        // 40 filler user nodes push the first assistant message outside
+        // the 32-row tail window; only the tail assistant's metrics may
+        // contribute context.
+        fx.add_node(
+            "sess-t",
+            0,
+            None,
+            assistant(
+                "early",
+                Some(serde_json::json!({"input_tokens": 111, "output_tokens": 1})),
+            ),
+            None,
+        );
+        for i in 1..39 {
+            fx.add_node(
+                "sess-t",
+                i,
+                Some(i - 1),
+                serde_json::json!({"message_id": format!("u{i}"), "role": "user", "content": "q"}),
+                None,
+            );
+        }
+        fx.add_node(
+            "sess-t",
+            39,
+            Some(38),
+            assistant(
+                "latest",
+                Some(serde_json::json!({"input_tokens": 2000, "output_tokens": 100, "cache_read_tokens": 3000})),
+            ),
+            Some("{\"num_tokens_preceding\": 5100}"),
+        );
+
+        let full = discover(&fx.root, 0, false);
+        let tail = discover(&fx.root, 0, true);
+        assert_eq!(tail[0].usage.context_tokens, full[0].usage.context_tokens);
+        assert_eq!(tail[0].usage.context_tokens, 2000 + 3000 + 100);
+        assert_eq!(full[0].usage.lifetime_input_tokens, 111 + 2000 + 3000);
+        assert_eq!(tail[0].usage.lifetime_input_tokens, 0);
     }
 
     #[test]
@@ -1836,7 +1935,7 @@ mod tests {
     #[test]
     fn missing_database_yields_empty() {
         let root = tmpdir("empty");
-        assert!(discover(&root, 0).is_empty());
+        assert!(discover(&root, 0, false).is_empty());
         assert!(find(&root, "x").is_empty());
         assert!(export_bytes(&db_path(&root), "x").is_err());
     }
