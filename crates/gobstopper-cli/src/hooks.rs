@@ -469,7 +469,12 @@ fn prompt_policy(
     let over_trigger = decision["action"].as_str() == Some("provider_compact");
     let trigger = decision["effective_trigger_tokens"].as_u64().unwrap_or(0);
     let treatment = rollout_cohort(cfg, provider.as_str(), session_id).unwrap_or(true);
-    let emit = over_trigger && treatment;
+    // Repeat throttle: an over-trigger session that keeps prompting
+    // without compacting re-shows the advisory only after its context
+    // grew meaningfully or enough wall time passed — otherwise the
+    // advisory's own tokens re-enter every prompt.
+    let emit =
+        over_trigger && treatment && !advisory_throttled(log_path, session_id, context_tokens);
     // Closed-vocab telemetry: cohort rides in the strategy tag, emission
     // state in the outcome. Under-trigger prompts still log so cohort
     // denominators are complete. A zero context means the provider has
@@ -516,6 +521,55 @@ fn prompt_policy(
         }
     });
     Ok(Some(serde_json::to_string(&out)?))
+}
+
+/// True when this session's last *shown* advisory is too recent and too
+/// unchanged to repeat: scans the log tail for the most recent
+/// `prompt-policy:*` `planned` event and suppresses while both
+/// `now - last_ts < RESHOW_SECS` and `ctx - last_ctx < GROWTH_DELTA`.
+/// Hooks run per prompt, so this reads only the last 256 KiB of the log.
+fn advisory_throttled(log_path: &Path, session_id: &str, context_tokens: u64) -> bool {
+    const TAIL_BYTES: u64 = 256 * 1024;
+    const GROWTH_DELTA: u64 = 25_000;
+    const RESHOW_SECS: u64 = 1_200;
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = match std::fs::File::open(log_path) {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    let len = file.metadata().map(|m| m.len()).unwrap_or(0);
+    if file
+        .seek(SeekFrom::Start(len.saturating_sub(TAIL_BYTES)))
+        .is_err()
+    {
+        return false;
+    }
+    let mut buf = String::new();
+    if file.read_to_string(&mut buf).is_err() {
+        return false;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    for line in buf.lines().rev() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        let shown = v["session_id"].as_str() == Some(session_id)
+            && v["strategy"]
+                .as_str()
+                .is_some_and(|s| s.starts_with("prompt-policy"))
+            && v["outcome"].as_str() == Some("planned");
+        if !shown {
+            continue;
+        }
+        let last_ts = v["ts"].as_u64().unwrap_or(0);
+        let last_ctx = v["context_tokens_before"].as_u64().unwrap_or(0);
+        return now.saturating_sub(last_ts) < RESHOW_SECS
+            && context_tokens.saturating_sub(last_ctx) < GROWTH_DELTA;
+    }
+    false
 }
 
 fn handle_inner(
@@ -1206,6 +1260,48 @@ mod tests {
         assert_eq!(arms, [Some(true), Some(false)].into_iter().collect());
         // Another provider without an entry stays ungated.
         assert_eq!(rollout_cohort(&cfg, "codex", "sess-x"), None);
+    }
+
+    #[test]
+    fn advisory_throttle_suppresses_repeat_until_growth_or_age() {
+        let dir = tmpdir("advisory-throttle");
+        let log = dir.join("events.jsonl");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let mut shown = CompactionEvent::new(
+            Provider::ClaudeCode,
+            "sess-throttle",
+            "prompt-policy:treatment",
+            "provider_compact",
+            "planned",
+            250_000,
+            300_000,
+            300_000,
+            0,
+            0,
+            None,
+        );
+        shown.ts = now - 60;
+        append_event(&log, &shown).unwrap();
+        // Recent, unchanged context → throttled.
+        assert!(advisory_throttled(&log, "sess-throttle", 300_000));
+        // Context grew past the delta → advisory re-arms.
+        assert!(!advisory_throttled(&log, "sess-throttle", 325_000));
+        // Other sessions are unaffected; no log → never throttled.
+        assert!(!advisory_throttled(&log, "other-session", 300_000));
+        assert!(!advisory_throttled(
+            &dir.join("missing.jsonl"),
+            "sess-throttle",
+            300_000
+        ));
+        // Most recent shown advisory is older than RESHOW_SECS → re-arms.
+        let mut aged = shown.clone();
+        aged.ts = now - 1_300;
+        append_event(&log, &aged).unwrap();
+        assert!(!advisory_throttled(&log, "sess-throttle", 300_000));
+        fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

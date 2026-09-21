@@ -329,8 +329,9 @@ pub fn cohort_summary(cfg: &crate::config::Config, events: &[CompactionEvent]) -
         /// prompt-policy decision suppressed by the rollout gate while
         /// the session was over trigger — the withheld numerator.
         advisories_suppressed: u64,
-        /// prompt-policy decision under trigger (or unresolved context):
-        /// no advisory would have fired anyway.
+        /// prompt-policy decision with no advisory emitted: under
+        /// trigger, unresolved context, or a repeat suppressed by the
+        /// re-show throttle.
         silent_decisions: u64,
         /// `watch-apply:control` — an in-place apply withheld by cohort.
         watch_suppressed: u64,
