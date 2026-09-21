@@ -2822,8 +2822,11 @@ fn cmd_watch(
             // without touching anything. Emit that outcome directly —
             // a churning live session otherwise re-parses its whole
             // transcript every pass because each provider append changes
-            // the fingerprint. Custom commands and plugins still load.
-            if d.handle.is_active()
+            // the fingerprint. Custom commands and plugins still load,
+            // and dry-run keeps the full path so its preview shows the
+            // real evaluated plan.
+            if !dry_run
+                && d.handle.is_active()
                 && resolved.strategy == "auto"
                 && resolved.command.is_none()
                 && resolved.plugin.is_none()
@@ -2842,15 +2845,6 @@ fn cmd_watch(
                     context_tokens_before: ctx,
                     context_tokens_after: ctx,
                 };
-                if dry_run {
-                    eprintln!(
-                        "[dry-run] {} {}: {}",
-                        d.handle.provider.as_str(),
-                        d.handle.cwd.as_deref().unwrap_or(&d.handle.path).display(),
-                        delegated.rationale
-                    );
-                    continue;
-                }
                 last_fire.insert(session_key.clone(), std::time::Instant::now());
                 emit_event(
                     &d,
