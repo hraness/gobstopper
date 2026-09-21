@@ -472,7 +472,9 @@ fn prompt_policy(
     let emit = over_trigger && treatment;
     // Closed-vocab telemetry: cohort rides in the strategy tag, emission
     // state in the outcome. Under-trigger prompts still log so cohort
-    // denominators are complete.
+    // denominators are complete. A zero context means the provider has
+    // not reported usage yet — tag it so readouts can exclude
+    // non-decisions from the denominator.
     let event = CompactionEvent::new(
         provider,
         session_id,
@@ -491,7 +493,11 @@ fn prompt_policy(
         context_tokens,
         0,
         0,
-        None,
+        if context_tokens == 0 {
+            Some("unresolved_context".to_string())
+        } else {
+            None
+        },
     );
     if let Err(e) = append_event(log_path, &event) {
         eprintln!("gobstopper hook: telemetry write failed (non-fatal): {e}");
@@ -1081,6 +1087,44 @@ mod tests {
         )
         .unwrap()
         .is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prompt_policy_marks_unresolved_context() {
+        let dir = tmpdir("pp-unresolved");
+        let roots = test_roots(&dir);
+        let cfg = crate::config::Config::default();
+        // Session resolves but carries no usage records → ctx 0, which is
+        // not a real under-trigger decision and must be distinguishable.
+        let transcript = roots
+            .claude_home
+            .join("projects")
+            .join("proj")
+            .join("unresolved.jsonl");
+        write(
+            &transcript,
+            concat!(
+                r#"{"sessionId":"unresolved","uuid":"u1","type":"user","message":{"role":"user","content":"hi"}}"#,
+                "\n"
+            ),
+        );
+        let vault_root = dir.join("vault");
+        let log = dir.join("events.jsonl");
+        let out = handle_inner(
+            "prompt-policy:claude",
+            r#"{"session_id":"unresolved","prompt":"hi"}"#,
+            &vault_root,
+            &log,
+            &roots,
+            &cfg,
+        )
+        .unwrap();
+        assert!(out.is_none(), "unresolved context must not advise");
+        let events = gobstopper_core::events::read_events(&log).unwrap();
+        let last = events.last().expect("decision event logged");
+        assert_eq!(last.outcome, "skipped");
+        assert_eq!(last.error_code.as_deref(), Some("unresolved_context"));
         fs::remove_dir_all(&dir).ok();
     }
 

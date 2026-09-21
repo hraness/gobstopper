@@ -45,8 +45,9 @@ pub struct CompactionEvent {
     pub items_covered: u64,
     /// Wall time of the evaluate+apply pass.
     pub duration_ms: u64,
-    /// Closed error code on failure (e.g. "io", "provider_rejected") —
-    /// never a freeform message.
+    /// Closed error/decision code on failure or qualified outcomes
+    /// (e.g. "io", "provider_rejected", "unresolved_context") — never a
+    /// freeform message.
     pub error_code: Option<String>,
 }
 
@@ -118,7 +119,10 @@ fn valid_event(event: &CompactionEvent) -> bool {
         && event.error_code.as_deref().is_none_or(|code| {
             matches!(
                 code,
-                "io" | "provider_rejected" | "apply_failed" | "verification_failed"
+                "io" | "provider_rejected"
+                    | "apply_failed"
+                    | "verification_failed"
+                    | "unresolved_context"
             )
         })
         && event.est_reclaimed_tokens

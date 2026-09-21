@@ -2817,6 +2817,58 @@ fn cmd_watch(
                 }
                 let _ = std::fs::remove_file(&s.path); // stale or dry-run
             }
+            // Live fast path: `auto` unconditionally delegates active
+            // sessions to the provider, and the delegation arm skips
+            // without touching anything. Emit that outcome directly —
+            // a churning live session otherwise re-parses its whole
+            // transcript every pass because each provider append changes
+            // the fingerprint. Custom commands and plugins still load.
+            if d.handle.is_active()
+                && resolved.strategy == "auto"
+                && resolved.command.is_none()
+                && resolved.plugin.is_none()
+            {
+                let delegated = CompactionPlan {
+                    strategy: resolved.strategy.clone(),
+                    rationale: "auto (live session): delegated to provider".to_string(),
+                    edits: vec![Edit::ProviderCompact {
+                        control: match d.handle.provider {
+                            Provider::Codex => "codex app-server: thread/compact/start",
+                            Provider::ClaudeCode => "claude: /compact (or --autocompact at launch)",
+                            Provider::Devin => "devin: /compact",
+                        }
+                        .to_string(),
+                    }],
+                    context_tokens_before: ctx,
+                    context_tokens_after: ctx,
+                };
+                if dry_run {
+                    eprintln!(
+                        "[dry-run] {} {}: {}",
+                        d.handle.provider.as_str(),
+                        display_prefix(&d.handle.session_id, 12),
+                        delegated.rationale
+                    );
+                    continue;
+                }
+                last_fire.insert(session_key.clone(), std::time::Instant::now());
+                emit_event(
+                    &d,
+                    &delegated,
+                    "provider_compact",
+                    "skipped",
+                    trigger,
+                    0,
+                    None,
+                );
+                eprintln!(
+                    "deferred native compaction: session owner required; source unchanged"
+                );
+                if let Some(fp) = &fp {
+                    settled.insert(session_key.clone(), fp.clone());
+                }
+                continue;
+            }
             let (transcript, source_sha256) = match copy::load_bound(d.handle.clone()) {
                 Ok(t) => t,
                 Err(e) => {
