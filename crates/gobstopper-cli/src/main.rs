@@ -1362,8 +1362,8 @@ fn cmd_undo(
         )
         .map_err(|e| anyhow::anyhow!(e))?;
         println!(
-            "restored {} payloads in place; resume: devin --resume {}",
-            report.nodes_rewritten, d.handle.session_id
+            "restored {} payloads in place; resume: {}",
+            report.nodes_rewritten, report.resume_hint
         );
         return Ok(());
     }
@@ -2430,7 +2430,7 @@ fn cmd_apply(
             if let Some(sha) = &receipt.snapshot_manifest_sha256 {
                 println!("recovery snapshot: {sha}");
             }
-            println!("resume the session: devin --resume {}", receipt.session_id);
+            println!("resume the session: {}", receipt.resume_hint);
             receipt.reclaimed_bytes
         });
         match file_result {

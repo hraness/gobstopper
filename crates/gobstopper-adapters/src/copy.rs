@@ -78,6 +78,9 @@ pub struct DevinStoreReceipt {
     pub snapshot_sha256: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_manifest_sha256: Option<String>,
+    /// Provider-native resume command for the mutated session.
+    #[serde(default)]
+    pub resume_hint: String,
 }
 
 /// In-place Devin compaction: snapshot the canonical export into the
@@ -153,6 +156,7 @@ pub fn compact_devin_store(
         reclaimed_bytes: report.reclaimed_bytes,
         snapshot_sha256: snapshot.source_sha256,
         snapshot_manifest_sha256: Some(snapshot.sha256),
+        resume_hint: report.resume_hint.clone(),
     };
     transaction::publish_new(
         &operations.join(format!("{identity}.json")),

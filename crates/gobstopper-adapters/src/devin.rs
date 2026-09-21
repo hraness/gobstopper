@@ -564,6 +564,8 @@ pub struct StoreReport {
     /// sha256 of the post-write canonical export — the receipt's identity
     /// for the committed state.
     pub export_sha256: String,
+    /// Provider-native resume command for the mutated session.
+    pub resume_hint: String,
 }
 
 /// One `(node_id, raw chat_message)` pair in `ORDER BY node_id` — the
@@ -743,6 +745,7 @@ pub fn apply_store(
             digest_node_id,
             reclaimed_bytes: reclaimed,
             export_sha256: crate::copy::sha256(&after),
+            resume_hint: format!("devin --resume {session_id}"),
         })
     })()?;
     tx.commit().map_err(rusqlite_io(&db))?;
@@ -847,6 +850,7 @@ pub fn restore_store(
             digest_node_id: None,
             reclaimed_bytes: 0,
             export_sha256: crate::copy::sha256(&after),
+            resume_hint: format!("devin --resume {session_id}"),
         })
     })()?;
     tx.commit().map_err(rusqlite_io(&db))?;
