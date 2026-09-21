@@ -39,6 +39,10 @@ pub struct PolicyPatch {
     /// in place for idle sessions (guarded store write). Default off —
     /// watch still plans/delegates without it.
     pub auto_apply_store: Option<bool>,
+    /// Claude Code only: let `watch` rewrite an idle session's JSONL
+    /// transcript in place instead of preparing a detached fork.
+    /// Default off — without it watch prepares fork copies.
+    pub auto_apply_inplace: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -159,6 +163,8 @@ pub struct Resolved {
     pub plugin: Option<PluginSelection>,
     /// See `PolicyPatch::auto_apply_store`.
     pub auto_apply_store: bool,
+    /// See `PolicyPatch::auto_apply_inplace`.
+    pub auto_apply_inplace: bool,
 }
 
 impl Config {
@@ -188,6 +194,7 @@ impl Config {
         let mut plugin = None;
         let mut trusted_legacy_command = false;
         let mut auto_apply_store = false;
+        let mut auto_apply_inplace = false;
         let preset_patch = preset
             .map(|name| {
                 self.presets
@@ -226,6 +233,9 @@ impl Config {
             if let Some(value) = patch.auto_apply_store {
                 auto_apply_store = value;
             }
+            if let Some(value) = patch.auto_apply_inplace {
+                auto_apply_inplace = value;
+            }
         }
         if let Some(flag) = strategy_flag {
             strategy = flag.to_string();
@@ -259,6 +269,7 @@ impl Config {
             trusted_legacy_command,
             plugin,
             auto_apply_store,
+            auto_apply_inplace,
         })
     }
 }

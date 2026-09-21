@@ -77,6 +77,10 @@ and only under a provider-scoped watch (`gobstopper watch --provider devin`)
 so Codex/Claude fork preparation is unaffected. Live sessions still defer to
 `/compact` regardless of the flag.
 
+Long-running sessions can exceed the default 512 MiB transcript bound —
+raise it with `GOBSTOPPER_MAX_TRANSCRIPT_BYTES` (bytes) in the watch
+environment when needed; oversized sessions are skipped, never truncated.
+
 ## Native compaction policy
 
 Devin CLI exposes `/context` and `/compact`. Evaluate the layered Gobstopper
@@ -96,6 +100,10 @@ store (fast, no full discovery scan — suitable for hooks):
 ```sh
 gobstopper policy-check --provider devin --session <session-id> --json
 ```
+
+The session argument accepts an exact id, an id prefix, or a title
+substring — the same resolution `detect`/`plan` use, so
+`--session scarlet-gemini` works as well as a raw store id.
 
 `--session current` resolves the active session bound to the caller's
 working directory: it intersects the store's `working_directory` with the

@@ -131,7 +131,7 @@ fn read_index(root: &Path) -> anyhow::Result<Vec<VaultEntry>> {
                     .strategy
                     .as_ref()
                     .is_none_or(|value| value.len() <= 128)
-                && entry.bytes <= crate::transaction::MAX_TRANSCRIPT_BYTES
+                && entry.bytes <= crate::transaction::max_transcript_bytes()
                 && entry.record_count <= gobstopper_core::validation::MAX_ITEMS as u64
             {
                 entries.push(entry);
@@ -332,7 +332,8 @@ fn reconstruct_manifest(manifest_bytes: &[u8], root: &Path) -> anyhow::Result<Ve
             .get("chunks")
             .and_then(serde_json::Value::as_array)
             .context("missing chunks in vault manifest")?;
-        let max_chunks = (crate::transaction::MAX_TRANSCRIPT_BYTES as usize).div_ceil(CHUNK_BYTES);
+        let max_chunks =
+            (crate::transaction::max_transcript_bytes() as usize).div_ceil(CHUNK_BYTES);
         if chunks.len() > max_chunks {
             bail!("vault manifest exceeds chunk limit");
         }
@@ -340,7 +341,7 @@ fn reconstruct_manifest(manifest_bytes: &[u8], root: &Path) -> anyhow::Result<Ve
             .get("bytes")
             .and_then(serde_json::Value::as_u64)
             .context("missing byte count in vault manifest")?;
-        if expected_bytes > crate::transaction::MAX_TRANSCRIPT_BYTES {
+        if expected_bytes > crate::transaction::max_transcript_bytes() {
             bail!("vault manifest exceeds byte limit");
         }
         let mut out = Vec::with_capacity(expected_bytes as usize);
@@ -416,7 +417,7 @@ fn reconstruct_manifest(manifest_bytes: &[u8], root: &Path) -> anyhow::Result<Ve
             .len()
             .checked_add(record.len())
             .and_then(|size| size.checked_add(newline))
-            .filter(|size| *size as u64 <= crate::transaction::MAX_TRANSCRIPT_BYTES)
+            .filter(|size| *size as u64 <= crate::transaction::max_transcript_bytes())
             .context("reconstructed transcript exceeds byte limit")?;
         out.reserve(next - out.len());
         out.extend_from_slice(&record);

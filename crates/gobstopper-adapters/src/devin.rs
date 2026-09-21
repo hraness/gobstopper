@@ -1053,7 +1053,7 @@ fn user_prompt_summary(message: &Value) -> Option<String> {
 }
 
 pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, AdapterError> {
-    if bytes.len() as u64 > crate::transaction::MAX_TRANSCRIPT_BYTES {
+    if bytes.len() as u64 > crate::transaction::max_transcript_bytes() {
         return Err(AdapterError::InvalidEdit("transcript exceeds byte limit"));
     }
     let (main_chain_id, rows) = parse_export(bytes)?;

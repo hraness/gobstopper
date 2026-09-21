@@ -141,8 +141,13 @@ Legacy `preset.command` remains available only with
 
 ## Failure and safety posture
 
-- Standalone `apply`, `watch`, and `undo` are copy-only; retired in-place and
-  no-backup flags fail visibly.
+- Standalone `apply` and `undo` are copy-only by default; retired in-place
+  and no-backup CLI flags fail visibly. Provider-scoped exceptions are
+  opt-in: `[provider.devin] auto_apply_store` lets `watch --provider devin`
+  run the guarded SQLite write on idle sessions, and
+  `[provider.claude_code] auto_apply_inplace` lets `watch --provider
+  claude_code` rewrite an idle transcript in place (Claude opens the file
+  per write, so the swap cannot orphan provider appends).
 - Before publication, exact source bytes are stored as verified, deduplicated
   1 MiB chunks in the content-addressed vault.
 - Copy operations bind canonical source path, source hash, provider, and edits
@@ -151,7 +156,8 @@ Legacy `preset.command` remains available only with
 - Candidate writes use same-directory private temporary files, compare the
   source again before atomic publication, preserve restrictive permissions,
   sync data/directories, and reject newly introduced verification findings.
-- Files are capped at 128 MiB and 100,000 records; plugin inputs, outputs,
+- Files are capped at 512 MiB (override via `GOBSTOPPER_MAX_TRANSCRIPT_BYTES`,
+  a byte count) and 100,000 records; plugin inputs, outputs,
   manifests, bundles, deadlines, and discovery counts are independently
   bounded.
 - Watch mode rate-limits per session (`min_interval_secs`), and plans below

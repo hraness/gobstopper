@@ -126,7 +126,7 @@ fn validate_inspection(inspection: &Inspection, request: &Request) -> anyhow::Re
                 .is_some_and(|digest| !hash(digest))
             || item.elidable_parts > 1_000_000
             || item.elidable_bytes.is_some_and(|bytes| {
-                bytes <= 256 || bytes > crate::transaction::MAX_TRANSCRIPT_BYTES
+                bytes <= 256 || bytes > crate::transaction::max_transcript_bytes()
             })
             || item.elidable_bytes.is_some() && (item.est_tokens == 0 || item.elidable_parts == 0)
         {

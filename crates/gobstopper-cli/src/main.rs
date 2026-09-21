@@ -2882,6 +2882,75 @@ fn cmd_watch(
                         }
                         continue;
                     }
+                    if d.handle.provider == Provider::ClaudeCode && resolved.auto_apply_inplace {
+                        // In-place JSONL rewrite for idle sessions: the
+                        // provider opens the transcript per write (no
+                        // persistent handle), so the rename swap cannot
+                        // orphan appends, and transaction::apply rechecks
+                        // bytes before replacing. Snapshot first.
+                        if d.handle.is_active() {
+                            continue;
+                        }
+                        let file_edits: Vec<Edit> = plan
+                            .edits
+                            .iter()
+                            .filter(|e| {
+                                !matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. })
+                            })
+                            .cloned()
+                            .collect();
+                        if file_edits.is_empty() {
+                            continue;
+                        }
+                        let snap = vault::snapshot(
+                            &d.handle.path,
+                            d.handle.provider,
+                            &d.handle.session_id,
+                            Some(&resolved.strategy),
+                            &vault::default_root(),
+                        );
+                        let r = snap.and_then(|entry| {
+                            let file_plan = CompactionPlan {
+                                edits: file_edits,
+                                ..plan.clone()
+                            };
+                            apply_edits(&d, &file_plan).map(|reclaimed| (entry, reclaimed))
+                        });
+                        match r {
+                            Ok((entry, reclaimed)) => {
+                                emit_event(
+                                    &d,
+                                    &plan,
+                                    action,
+                                    "applied",
+                                    trigger,
+                                    started.elapsed().as_millis() as u64,
+                                    None,
+                                );
+                                eprintln!(
+                                    "compacted claude transcript {} in place (~{reclaimed} bytes; snapshot {})",
+                                    d.handle.path.display(),
+                                    entry.sha256,
+                                );
+                            }
+                            Err(e) => {
+                                emit_event(
+                                    &d,
+                                    &plan,
+                                    action,
+                                    "failed",
+                                    trigger,
+                                    started.elapsed().as_millis() as u64,
+                                    Some("apply_failed"),
+                                );
+                                eprintln!(
+                                    "claude in-place compact {} failed: {e}",
+                                    d.handle.path.display()
+                                );
+                            }
+                        }
+                        continue;
+                    }
                     let r = copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root())
                         .map(|receipt| {
                             eprintln!("prepared copy {}", receipt.path.display());
@@ -3084,7 +3153,16 @@ fn cmd_policy_check(
                         anyhow::anyhow!("no single active devin session bound to {}", cwd.display())
                     })?
                 } else {
-                    session_id.to_string()
+                    // Accept a session-id prefix or title substring, same
+                    // as `find`: prefer an exact id, else the most
+                    // recently active match.
+                    let matches = devin::find(&root, session_id);
+                    matches
+                        .iter()
+                        .find(|d| d.handle.session_id == session_id)
+                        .or_else(|| matches.first())
+                        .map(|d| d.handle.session_id.clone())
+                        .unwrap_or_else(|| session_id.to_string())
                 };
                 let Some((usage, locked)) = devin::session_observation(&root, &session_id) else {
                     bail!("no devin session '{session_id}' in {}", root.display());
@@ -3600,6 +3678,7 @@ mod tests {
             trusted_legacy_command: true,
             plugin: None,
             auto_apply_store: false,
+            auto_apply_inplace: false,
         }
     }
 
