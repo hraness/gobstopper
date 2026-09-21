@@ -28,6 +28,10 @@ pub struct PolicyPatch {
     /// Minimum seconds between in-place mutations of one session
     /// (watch store/in-place applies). Default 1800.
     pub apply_hold_secs: Option<u64>,
+    /// Hard ceiling for the prompt-policy hook: at or above this many
+    /// context tokens a supported provider hook returns a blocking
+    /// decision instead of an advisory. `0` (default) disables blocking.
+    pub block_tokens: Option<u64>,
     pub min_savings_tokens: Option<u64>,
     /// Provider quota pressure: `low` compacts later, `high` earlier.
     pub quota_pressure: Option<QuotaPressure>,
@@ -46,6 +50,11 @@ pub struct PolicyPatch {
     /// transcript in place instead of preparing a detached fork.
     /// Default off — without it watch prepares fork copies.
     pub auto_apply_inplace: Option<bool>,
+    /// Claude Code only: let `watch` ask the provider to compact a
+    /// *closed* session natively (`claude --resume <id> -p /compact`)
+    /// before falling back to in-place elision. Only sessions with no
+    /// live owner pid are eligible. Default off.
+    pub auto_compact_closed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -74,6 +83,9 @@ impl PolicyPatch {
         }
         if let Some(v) = self.apply_hold_secs {
             policy.apply_hold_secs = v;
+        }
+        if let Some(v) = self.block_tokens {
+            policy.block_tokens = v;
         }
         if let Some(v) = self.min_savings_tokens {
             policy.min_savings_tokens = v;
@@ -139,8 +151,9 @@ pub fn validate_policy(policy: &PolicyConfig) -> anyhow::Result<()> {
         || policy.min_interval_secs > 86_400
         || policy.apply_hold_secs > 86_400
         || policy.min_savings_tokens > 10_000_000
+        || policy.block_tokens > 10_000_000
     {
-        anyhow::bail!("invalid policy bounds: require floor < trigger <= 10000000, min_savings_tokens <= 10000000, keep_recent_tool_outputs <= 100000, and min_interval_secs/apply_hold_secs <= 86400");
+        anyhow::bail!("invalid policy bounds: require floor < trigger <= 10000000, min_savings_tokens <= 10000000, block_tokens <= 10000000, keep_recent_tool_outputs <= 100000, and min_interval_secs/apply_hold_secs <= 86400");
     }
     Ok(())
 }
@@ -172,6 +185,8 @@ pub struct Resolved {
     pub auto_apply_store: bool,
     /// See `PolicyPatch::auto_apply_inplace`.
     pub auto_apply_inplace: bool,
+    /// See `PolicyPatch::auto_compact_closed`.
+    pub auto_compact_closed: bool,
 }
 
 impl Config {
@@ -202,6 +217,7 @@ impl Config {
         let mut trusted_legacy_command = false;
         let mut auto_apply_store = false;
         let mut auto_apply_inplace = false;
+        let mut auto_compact_closed = false;
         let preset_patch = preset
             .map(|name| {
                 self.presets
@@ -243,6 +259,9 @@ impl Config {
             if let Some(value) = patch.auto_apply_inplace {
                 auto_apply_inplace = value;
             }
+            if let Some(value) = patch.auto_compact_closed {
+                auto_compact_closed = value;
+            }
         }
         if let Some(flag) = strategy_flag {
             strategy = flag.to_string();
@@ -277,6 +296,7 @@ impl Config {
             plugin,
             auto_apply_store,
             auto_apply_inplace,
+            auto_compact_closed,
         })
     }
 }
@@ -373,5 +393,30 @@ mod tests {
             let cfg = parse(&format!("[policy]\nkeep_score_threshold = {value}")).unwrap();
             assert!(cfg.resolve(Provider::Codex, "s", None, None).is_err());
         }
+    }
+
+    #[test]
+    fn block_ceiling_and_closed_compact_default_off_and_layer() {
+        let resolved = Config::default()
+            .resolve(Provider::ClaudeCode, "s", None, None)
+            .unwrap();
+        assert_eq!(resolved.policy.block_tokens, 0);
+        assert!(!resolved.auto_compact_closed);
+        let cfg = parse(
+            "[provider.claude_code]\nblock_tokens = 500000\nauto_compact_closed = true\n[sessions.s]\nblock_tokens = 700000",
+        )
+        .unwrap();
+        let resolved = cfg.resolve(Provider::ClaudeCode, "s", None, None).unwrap();
+        assert_eq!(resolved.policy.block_tokens, 700_000);
+        assert!(resolved.auto_compact_closed);
+        // Other providers don't inherit the claude_code section.
+        assert!(
+            !cfg.resolve(Provider::Devin, "s", None, None)
+                .unwrap()
+                .auto_compact_closed
+        );
+        // Out-of-range ceilings are rejected at resolution.
+        let cfg = parse("[policy]\nblock_tokens = 10000001").unwrap();
+        assert!(cfg.resolve(Provider::ClaudeCode, "s", None, None).is_err());
     }
 }

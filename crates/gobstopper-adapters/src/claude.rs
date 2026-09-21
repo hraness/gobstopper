@@ -745,3 +745,243 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
 pub fn provider() -> Provider {
     Provider::ClaudeCode
 }
+
+/// Claude Code writes `~/.claude/sessions/<pid>.json` for each running
+/// process — `{pid, sessionId, status}` where status is `busy`/`idle`.
+/// That is authoritative liveness: a session open-but-quiet in a TUI is
+/// still owned, while its transcript file may sit untouched for minutes
+/// (file mtime alone misreads that as idle and was the source of the
+/// ChangedDuringWrite apply races).
+///
+/// Returns session_id → status for every session claimed by a *live*
+/// pid; stale records from dead processes are ignored.
+pub fn live_sessions(claude_home: &Path) -> std::collections::HashMap<String, String> {
+    let mut live = std::collections::HashMap::new();
+    let Ok(entries) = fs::read_dir(claude_home.join("sessions")) else {
+        return live;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(text) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(v) = serde_json::from_str::<Value>(&text) else {
+            continue;
+        };
+        let (Some(pid), Some(session_id)) = (
+            v.get("pid").and_then(Value::as_u64),
+            v.get("sessionId").and_then(Value::as_str),
+        ) else {
+            continue;
+        };
+        if pid_alive(pid as i32) {
+            live.insert(
+                session_id.to_string(),
+                v.get("status")
+                    .and_then(Value::as_str)
+                    .unwrap_or("")
+                    .to_string(),
+            );
+        }
+    }
+    live
+}
+
+#[cfg(unix)]
+fn pid_alive(pid: i32) -> bool {
+    std::process::Command::new("/bin/kill")
+        .args(["-0", "--", &pid.to_string()])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn pid_alive(_pid: i32) -> bool {
+    // Without a POSIX liveness probe, assume claimed: skipping a live
+    // session is safe, mutating one is not.
+    true
+}
+
+/// Ask Claude Code to compact a closed session natively:
+/// `claude --resume <id> -p /compact` loads the transcript, runs the
+/// provider's own summarization turn, and writes a `compact_boundary` +
+/// continuation back to the session file — including firing the
+/// provider's `PreCompact`/`SessionStart` hooks (which is where
+/// gobstopper's pre-compact snapshot lands).
+///
+/// Safe only when no live process claims the session: resuming a
+/// session open in a TUI would fork it. Callers must check
+/// `live_sessions` first. Bounded wait; the child is killed on timeout.
+pub fn headless_compact(
+    claude_bin: &Path,
+    session_id: &str,
+    timeout_secs: u64,
+) -> Result<(), AdapterError> {
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let io_err = |kind, msg: String| AdapterError::Io {
+        path: claude_bin.to_path_buf(),
+        source: std::io::Error::new(kind, msg),
+    };
+    // Session ids are provider UUIDs; reject anything that could read as
+    // a flag to the claude CLI.
+    if session_id.is_empty()
+        || session_id.starts_with('-')
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err(io_err(
+            std::io::ErrorKind::InvalidInput,
+            format!("refusing unusual session id for --resume: {session_id:?}"),
+        ));
+    }
+    let mut child = Command::new(claude_bin)
+        .args(["--resume", session_id, "-p", "/compact"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| io_err(e.kind(), format!("spawn claude --resume -p /compact: {e}")))?;
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) if status.success() => return Ok(()),
+            Ok(Some(status)) => {
+                return Err(io_err(
+                    std::io::ErrorKind::Other,
+                    format!("claude --resume -p /compact exited {status}"),
+                ))
+            }
+            Ok(None) if Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(io_err(
+                    std::io::ErrorKind::TimedOut,
+                    "claude --resume -p /compact timed out".to_string(),
+                ));
+            }
+            Ok(None) => std::thread::sleep(Duration::from_millis(250)),
+            Err(e) => {
+                return Err(AdapterError::Io {
+                    path: claude_bin.to_path_buf(),
+                    source: e,
+                })
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use super::*;
+
+    fn tmpdir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gobstopper-claude-test-{}-{}-{tag}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write(path: &Path, text: &str) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(path, text).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn live_sessions_reports_only_live_pids() {
+        let home = tmpdir("live");
+        let sessions = home.join("sessions");
+        let me = std::process::id();
+        // A live pid (this test process) claims a session.
+        write(
+            &sessions.join(format!("{me}.json")),
+            &format!(r#"{{"pid":{me},"sessionId":"live-sess","status":"idle","cwd":"/tmp"}}"#),
+        );
+        // A dead pid claims another — macOS pids stay under 100000, so
+        // this is safely unowned.
+        write(
+            &sessions.join("99999999.json"),
+            r#"{"pid":99999999,"sessionId":"dead-sess","status":"busy","cwd":"/tmp"}"#,
+        );
+        // Malformed and non-json records are ignored.
+        write(&sessions.join("junk.json"), "not json");
+        write(&sessions.join("notes.txt"), "{}");
+        let live = live_sessions(&home);
+        assert_eq!(live.get("live-sess").map(String::as_str), Some("idle"));
+        assert!(!live.contains_key("dead-sess"));
+        assert_eq!(live.len(), 1);
+        // Missing sessions dir → empty map, not an error.
+        let empty = tmpdir("empty");
+        assert!(live_sessions(&empty).is_empty());
+        fs::remove_dir_all(&home).ok();
+        fs::remove_dir_all(&empty).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn headless_compact_runs_resume_compact_and_checks_exit() {
+        let dir = tmpdir("compact");
+        let bin = dir.join("claude");
+        let argv_out = dir.join("argv.txt");
+        write(
+            &bin,
+            &format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexit 0\n",
+                argv_out.display()
+            ),
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        headless_compact(&bin, "sess-abc_123", 30).unwrap();
+        let argv = fs::read_to_string(&argv_out).unwrap();
+        assert_eq!(argv, "--resume\nsess-abc_123\n-p\n/compact\n");
+
+        // Non-zero exit surfaces as an error.
+        write(&bin, "#!/bin/sh\nexit 3\n");
+        assert!(headless_compact(&bin, "sess-abc_123", 30).is_err());
+
+        // Unusual session ids are refused before spawn.
+        write(&bin, "#!/bin/sh\nexit 0\n");
+        assert!(headless_compact(&bin, "--dangerous", 30).is_err());
+        assert!(headless_compact(&bin, "has space", 30).is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn headless_compact_kills_on_timeout() {
+        let dir = tmpdir("timeout");
+        let bin = dir.join("claude");
+        write(&bin, "#!/bin/sh\nsleep 60\n");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let start = std::time::Instant::now();
+        let err = headless_compact(&bin, "sess-abc", 1).unwrap_err();
+        assert!(start.elapsed() < std::time::Duration::from_secs(30));
+        assert!(err.to_string().contains("timed out"), "got: {err}");
+        fs::remove_dir_all(&dir).ok();
+    }
+}
