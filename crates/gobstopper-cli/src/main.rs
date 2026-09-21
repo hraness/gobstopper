@@ -2908,6 +2908,8 @@ fn cmd_watch(
                 detect::default_max_age_secs()
             },
             &mut discovery_cache,
+            provider,
+            true,
         );
         // Cheapest sessions first: a multi-minute apply on one giant
         // session would otherwise delay every session behind it.

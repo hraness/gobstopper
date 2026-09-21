@@ -118,7 +118,13 @@ fn handle_for(
 /// Find all sessions under the configured roots, newest first.
 /// `max_age_secs` bounds reported age; `0` reports everything.
 pub fn discover(roots: &Roots, max_age_secs: u64) -> Vec<Discovered> {
-    discover_cached(roots, max_age_secs, &mut DiscoveryCache::default())
+    discover_cached(
+        roots,
+        max_age_secs,
+        &mut DiscoveryCache::default(),
+        None,
+        false,
+    )
 }
 
 #[derive(Default)]
@@ -183,10 +189,18 @@ impl DiscoveryCache {
     }
 }
 
+/// `provider` scopes the scan to one provider so `watch --provider
+/// claude_code` never opens the Devin store (and vice versa). When
+/// `context_only` is set, providers may return a `context_tokens`-only
+/// `UsageSample` — lifetime counters can be left zero. Watch passes
+/// true: it consumes only context occupancy, and the full usage scan on
+/// the shared Devin store reads every message payload.
 pub fn discover_cached(
     roots: &Roots,
     max_age_secs: u64,
     cache: &mut DiscoveryCache,
+    provider: Option<Provider>,
+    context_only: bool,
 ) -> Vec<Discovered> {
     let limit = if max_age_secs == 0 {
         u64::MAX
@@ -195,31 +209,37 @@ pub fn discover_cached(
     };
     let mut found = Vec::new();
 
-    let mut codex_files = Vec::new();
-    collect_jsonl(&roots.codex_home.join("sessions"), &mut codex_files, 4);
-    for path in codex_files {
-        let age = age_secs(&path);
-        if age > limit {
-            continue;
+    if provider.is_none_or(|p| p == Provider::Codex) {
+        let mut codex_files = Vec::new();
+        collect_jsonl(&roots.codex_home.join("sessions"), &mut codex_files, 4);
+        for path in codex_files {
+            let age = age_secs(&path);
+            if age > limit {
+                continue;
+            }
+            let (meta, usage) = cache.inspect(Provider::Codex, &path);
+            let handle = handle_for(Provider::Codex, path, meta, age);
+            found.push(Discovered { usage, handle });
         }
-        let (meta, usage) = cache.inspect(Provider::Codex, &path);
-        let handle = handle_for(Provider::Codex, path, meta, age);
-        found.push(Discovered { usage, handle });
     }
 
-    let mut claude_files = Vec::new();
-    collect_jsonl(&roots.claude_home.join("projects"), &mut claude_files, 3);
-    for path in claude_files {
-        let age = age_secs(&path);
-        if age > limit {
-            continue;
+    if provider.is_none_or(|p| p == Provider::ClaudeCode) {
+        let mut claude_files = Vec::new();
+        collect_jsonl(&roots.claude_home.join("projects"), &mut claude_files, 3);
+        for path in claude_files {
+            let age = age_secs(&path);
+            if age > limit {
+                continue;
+            }
+            let (meta, usage) = cache.inspect(Provider::ClaudeCode, &path);
+            let handle = handle_for(Provider::ClaudeCode, path, meta, age);
+            found.push(Discovered { usage, handle });
         }
-        let (meta, usage) = cache.inspect(Provider::ClaudeCode, &path);
-        let handle = handle_for(Provider::ClaudeCode, path, meta, age);
-        found.push(Discovered { usage, handle });
     }
 
-    found.extend(devin::discover(&roots.devin_home, limit));
+    if provider.is_none_or(|p| p == Provider::Devin) {
+        found.extend(devin::discover(&roots.devin_home, limit, context_only));
+    }
 
     found.sort_by_key(|d| d.handle.age_secs);
     found
