@@ -15,7 +15,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use gobstopper_adapters::detect::{self, Discovered, Roots};
 use gobstopper_adapters::{
-    codex, copy, eval, fork, plugins, recovery, vault, verify, AdapterError,
+    codex, copy, devin, eval, fork, plugins, recovery, vault, verify, AdapterError,
 };
 use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
 use gobstopper_core::plan::{CompactionPlan, Edit};
@@ -189,7 +189,7 @@ enum Cmd {
     /// Invoked by provider hook configs, not by users.
     #[command(hide = true)]
     Hook {
-        /// "precompact" | "session-start"
+        /// "precompact" | "session-start" | "prompt-policy[:devin|:claude]"
         event: String,
     },
     /// Emit a session-observations-v1 report (aicharts schema) joining
@@ -1290,15 +1290,30 @@ fn cmd_undo(
     }
     let d = find_session(cli, cfg, session)?;
     let root = vault::default_root();
+    // Devin snapshots share the store path; the session id disambiguates.
+    let canonical = d
+        .handle
+        .path
+        .canonicalize()
+        .unwrap_or_else(|_| d.handle.path.clone());
+    let matches_session = |e: &vault::VaultEntry| {
+        (e.path == d.handle.path || e.path == canonical)
+            && (d.handle.provider != Provider::Devin || e.session_id == d.handle.session_id)
+    };
     let entry = match sha {
         Some(prefix) => vault::list(&root)?
             .into_iter()
-            .filter(|e| e.path == d.handle.path)
+            .filter(|e| matches_session(e))
             .find(|e| e.sha256.starts_with(prefix))
             .ok_or_else(|| {
                 anyhow::anyhow!("no vault snapshot matching '{prefix}' for this session")
             })?,
-        None => vault::latest_pre_compaction(&d.handle.path, &root)?
+        None => vault::list(&root)?
+            .into_iter()
+            .find(|e| {
+                matches_session(e)
+                    && !matches!(e.strategy.as_deref(), Some("post-compact" | "pre-undo"))
+            })
             .ok_or_else(|| anyhow::anyhow!("no vault snapshot for {}", d.handle.path.display()))?,
     };
     println!(
@@ -1324,6 +1339,33 @@ fn cmd_undo(
             println!("aborted");
             return Ok(());
         }
+    }
+    if d.handle.provider == Provider::Devin {
+        // In-place restore: the snapshot object is the session's canonical
+        // export; the store gets its payloads and chain head back, and any
+        // digest nodes we injected are removed.
+        let current = devin::export_bytes(&d.handle.path, &d.handle.session_id)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        vault::snapshot_data(
+            &current,
+            &d.handle.path,
+            d.handle.provider,
+            &d.handle.session_id,
+            Some("pre-undo"),
+            &root,
+        )?;
+        let snapshot_bytes = vault::read_object(&entry.sha256, &root)?;
+        let report = devin::restore_store(
+            &roots(cli).devin_home,
+            &d.handle.session_id,
+            &snapshot_bytes,
+        )
+        .map_err(|e| anyhow::anyhow!(e))?;
+        println!(
+            "restored {} payloads in place; resume: devin --resume {}",
+            report.nodes_rewritten, d.handle.session_id
+        );
+        return Ok(());
     }
     // Snapshot the current (post-compaction) state too, so undo is undoable.
     if d.handle.path.is_file() {
@@ -1672,16 +1714,47 @@ fn cmd_snapshot(cli: &Cli, cfg: &config::Config, session: &str, label: Option<&s
     Ok(())
 }
 
+/// Devin's hook config lives in the *config* dir, not the data dir:
+/// `$DEVIN_CONFIG_DIR/hooks.v1.json`, else `$XDG_CONFIG_HOME/devin/
+/// hooks.v1.json`, else `~/.config/devin/hooks.v1.json`.
+fn devin_config_home() -> PathBuf {
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default();
+    std::env::var_os("DEVIN_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(|p| PathBuf::from(p).join("devin")))
+        .unwrap_or_else(|| home.join(".config").join("devin"))
+}
+
 fn cmd_install_hooks(uninstall: bool, roots: &Roots) -> Result<()> {
     let claude_settings = roots.claude_home.join("settings.json");
     let claude_targets = [
         hooks::HookTarget::ClaudePreCompact,
         hooks::HookTarget::ClaudeSessionStart,
+        hooks::HookTarget::ClaudeUserPromptSubmit,
     ];
     let report = if uninstall {
-        hooks::uninstall(&claude_settings)?
+        hooks::uninstall(&claude_settings, Some("hooks"))?
     } else {
-        hooks::install(&claude_settings, &claude_targets)?
+        hooks::install(&claude_settings, &claude_targets, Some("hooks"))?
+    };
+    println!(
+        "{}: +{} -{}",
+        report.path.display(),
+        report.added.len(),
+        report.skipped.len()
+    );
+    for a in &report.added {
+        println!("  {} {a}", if uninstall { "removed" } else { "added" });
+    }
+    // Devin's hooks.v1.json is a flat event map (no "hooks" wrapper).
+    let devin_hooks = devin_config_home().join("hooks.v1.json");
+    let devin_targets = [hooks::HookTarget::DevinUserPromptSubmit];
+    let report = if uninstall {
+        hooks::uninstall(&devin_hooks, None)?
+    } else {
+        hooks::install(&devin_hooks, &devin_targets, None)?
     };
     println!(
         "{}: +{} -{}",
@@ -1701,9 +1774,9 @@ fn cmd_install_hooks(uninstall: bool, roots: &Roots) -> Result<()> {
             hooks::HookTarget::CodexSessionStart,
         ];
         let report = if uninstall {
-            hooks::uninstall(&codex_hooks)?
+            hooks::uninstall(&codex_hooks, Some("hooks"))?
         } else {
-            hooks::install(&codex_hooks, &codex_targets)?
+            hooks::install(&codex_hooks, &codex_targets, Some("hooks"))?
         };
         println!(
             "{}: +{} -{}",
@@ -1723,10 +1796,10 @@ fn cmd_install_hooks(uninstall: bool, roots: &Roots) -> Result<()> {
     Ok(())
 }
 
-fn cmd_hook(event: &str) -> Result<()> {
+fn cmd_hook(cli: &Cli, cfg: &config::Config, event: &str) -> Result<()> {
     let mut buf = String::new();
     std::io::stdin().read_to_string(&mut buf)?;
-    if let Some(out) = hooks::handle(event, &buf)? {
+    if let Some(out) = hooks::handle(event, &buf, &roots(cli), cfg)? {
         println!("{out}");
     }
     Ok(())
@@ -2238,7 +2311,19 @@ fn cmd_apply(
             "cache_edits is a Claude API control; apply it through Claude Code, not by rewriting the transcript file"
         );
     }
+    let file_edits: Vec<Edit> = plan
+        .edits
+        .iter()
+        .filter(|e| !matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
+        .cloned()
+        .collect();
     if d.handle.is_active() {
+        // Devin has no fork artifact: a live session must use /compact.
+        if d.handle.provider == Provider::Devin && !file_edits.is_empty() {
+            bail!(
+                "devin session is live (provider holds its lock); compact with /compact in-session"
+            );
+        }
         println!("session appears live; only a separate fork will be prepared; the source remains unchanged");
     }
     if !yes {
@@ -2251,12 +2336,6 @@ fn cmd_apply(
             return Ok(());
         }
     }
-    let file_edits: Vec<Edit> = plan
-        .edits
-        .iter()
-        .filter(|e| !matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
-        .cloned()
-        .collect();
     let started = std::time::Instant::now();
     // Telemetry records the trigger the decision actually used — the
     // adaptive-adjusted one when the policy opts in.
@@ -2313,6 +2392,59 @@ fn cmd_apply(
                     "reclaimed ~{} file bytes in the prepared fork",
                     receipt.reclaimed_bytes
                 );
+            }
+            Err(e) => {
+                emit_event(
+                    &d,
+                    &plan,
+                    "transcript_compact",
+                    "failed",
+                    trigger,
+                    started.elapsed().as_millis() as u64,
+                    Some("apply_failed"),
+                );
+                return Err(e);
+            }
+        }
+    } else if d.handle.provider == Provider::Devin && !file_edits.is_empty() {
+        // In-place store path: snapshot the canonical export, then one
+        // guarded SQLite transaction rewrites payloads. A detached fork
+        // file is not a resumable Devin artifact, so this provider gets
+        // no copy path at all.
+        let file_result: anyhow::Result<u64> = copy::compact_devin_store(
+            &d.handle,
+            &source_sha256,
+            &plan,
+            &vault::default_root(),
+            &roots(cli).devin_home,
+        )
+        .map(|receipt| {
+            println!(
+                "rewrote {} payloads in place{}",
+                receipt.nodes_rewritten,
+                receipt
+                    .digest_node_id
+                    .map(|id| format!("; digest node {id}"))
+                    .unwrap_or_default()
+            );
+            if let Some(sha) = &receipt.snapshot_manifest_sha256 {
+                println!("recovery snapshot: {sha}");
+            }
+            println!("resume the session: devin --resume {}", receipt.session_id);
+            receipt.reclaimed_bytes
+        });
+        match file_result {
+            Ok(reclaimed) => {
+                emit_event(
+                    &d,
+                    &plan,
+                    "transcript_compact",
+                    "planned",
+                    trigger,
+                    started.elapsed().as_millis() as u64,
+                    None,
+                );
+                println!("reclaimed ~{reclaimed} bytes in the session store");
             }
             Err(e) => {
                 emit_event(
@@ -2864,16 +2996,25 @@ fn cmd_policy_check(
     // `--session` reads the provider's own store so hook scripts and
     // wrappers don't have to measure context themselves.
     let (context_tokens, session_active) = if let Some(session_id) = session {
-        if provider != "devin" {
-            bail!("--session store lookup is implemented for provider=devin only");
+        match provider {
+            "devin" => {
+                let root = roots(cli).devin_home;
+                let Some((usage, locked)) = devin::session_observation(&root, session_id) else {
+                    bail!("no devin session '{session_id}' in {}", root.display());
+                };
+                (usage.context_tokens, locked)
+            }
+            "claude" | "claude_code" => {
+                let Some(d) = detect::find(&roots(cli), session_id)
+                    .into_iter()
+                    .find(|d| d.handle.provider == Provider::ClaudeCode)
+                else {
+                    bail!("no claude session '{session_id}'");
+                };
+                (d.usage.context_tokens, d.handle.is_active())
+            }
+            other => bail!("--session lookup is not supported for provider '{other}'"),
         }
-        let root = roots(cli).devin_home;
-        let Some((usage, locked)) =
-            gobstopper_adapters::devin::session_observation(&root, session_id)
-        else {
-            bail!("no devin session '{session_id}' in {}", root.display());
-        };
-        (usage.context_tokens, locked)
     } else {
         (context_tokens.unwrap_or(0), session_active)
     };
@@ -3097,7 +3238,7 @@ fn main() -> Result<()> {
         } => cmd_cache_edits(&cli, &cfg, session, *trigger, *floor, *plan),
         Cmd::InstallHooks => cmd_install_hooks(false, &roots(&cli)),
         Cmd::UninstallHooks => cmd_install_hooks(true, &roots(&cli)),
-        Cmd::Hook { event } => cmd_hook(event),
+        Cmd::Hook { event } => cmd_hook(&cli, &cfg, event),
         Cmd::Report {
             strict,
             active_only,

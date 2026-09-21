@@ -1,9 +1,11 @@
 # Devin integration
 
 Gobstopper integrates with Devin through its local session store and documented
-control-plane surfaces. It reads Devin's private session database for
-inspection and planning; it never writes to it, and it never injects input into
-another process.
+control-plane surfaces. It reads Devin's session database for inspection and
+planning, and it can rewrite payload bytes in place for **idle** sessions
+through a locked, transactional write path. Live sessions remain
+provider-owned: Gobstopper delegates to Devin's `/compact` and never injects
+input into another process.
 
 ## Session discovery
 
@@ -37,12 +39,31 @@ The export is what `verify` checks (chain linkage, tool-call pairing) and what
 unrelated sessions, so the canonical per-session bytes are the unit of record.
 
 For an **active** session, `plan` returns `provider_compact` with control
-`devin: /compact`. For an **idle** session, custom strategies (`auto`,
-`middle`, …) produce elision plans against the exported form. Applying those
-edits to `sessions.db` is not yet implemented — `apply`/`compact`/`fork` refuse
-store-backed mutation until a locked, transactional, WAL-aware write path with
-snapshot and verification exists. Detached export files can be processed and
-evaluated directly.
+`devin: /compact`; `apply` refuses file surgery while the provider holds the
+session lock. For an **idle** session, custom strategies (`auto`, `middle`, …)
+produce elision plans, and `apply` performs the guarded store write below.
+`compact`/`fork` still refuse store-backed sessions: a detached copy is not a
+resumable Devin artifact. Detached export files can be processed and evaluated
+directly.
+
+## Guarded store mutation
+
+`gobstopper apply <session-id>` on an idle Devin session rewrites the session
+in place:
+
+1. The canonical per-session export is snapshot into the vault (the shared
+   database file is never the snapshot unit — unrelated sessions live in it).
+2. The session lock is acquired; a locked session aborts before any write.
+3. One SQLite transaction updates elided `chat_message` payloads with
+   conditional identity checks, inserts a Gobstopper digest node on the main
+   chain, and moves `sessions.main_chain_id` to it.
+4. The post-write canonical export is re-derived and verified (chain linkage,
+   tool-call pairing) before commit is considered final.
+
+`gobstopper undo` restores the snapshot: original message payloads and chain
+head are written back and Gobstopper-injected digest nodes are deleted. Undo
+refuses if foreign provider nodes were appended after the snapshot — restore
+never orphans provider state it did not create.
 
 ## Native compaction policy
 
@@ -92,18 +113,7 @@ but Devin controls the actual post-compaction result.
 ## Prompt hook
 
 Devin's `UserPromptSubmit` hook can advise compaction before each turn.
-`scripts/devin-prompt-policy.py` reads the hook payload, calls
-`policy-check --provider devin --session <id>`, and emits `additionalContext`
-recommending `/compact` when over trigger. It is advisory only and fails
-silently, so a broken hook never blocks a prompt.
-
-Install:
-
-```sh
-install -m 0755 scripts/devin-prompt-policy.py ~/.config/gobstopper/
-```
-
-`~/.config/devin/hooks.v1.json`:
+`gobstopper install-hooks` registers a native callback —
 
 ```json
 {
@@ -113,7 +123,7 @@ install -m 0755 scripts/devin-prompt-policy.py ~/.config/gobstopper/
       "hooks": [
         {
           "type": "command",
-          "command": "python3 ~/.config/gobstopper/devin-prompt-policy.py",
+          "command": "gobstopper hook prompt-policy:devin",
           "timeout": 10
         }
       ]
@@ -121,6 +131,19 @@ install -m 0755 scripts/devin-prompt-policy.py ~/.config/gobstopper/
   ]
 }
 ```
+
+— into `~/.config/devin/hooks.v1.json` (Devin's flat event-map shape, no
+`"hooks"` wrapper). The handler resolves the session by ID directly against
+the store, runs the shared policy, and emits `hookSpecificOutput.
+additionalContext` recommending `/compact` when over trigger. It is advisory
+only and fails silently, so a broken hook never blocks a prompt.
+`gobstopper uninstall-hooks` removes only Gobstopper-owned commands.
+
+The same `install-hooks` run installs the Claude Code `UserPromptSubmit`
+advisor (`gobstopper hook prompt-policy:claude`) into
+`~/.claude/settings.json` alongside the existing `PreCompact` and
+`SessionStart` hooks — one policy engine, one installer, per-provider session
+resolution.
 
 ## Read-only MCP
 

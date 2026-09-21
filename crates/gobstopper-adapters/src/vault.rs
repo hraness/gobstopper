@@ -195,6 +195,22 @@ pub fn snapshot(
 ) -> anyhow::Result<VaultEntry> {
     let path = path.canonicalize()?;
     let data = crate::transaction::read(&path)?;
+    snapshot_data(&data, &path, provider, session_id, strategy, root)
+}
+
+/// Snapshot caller-supplied bytes under `path`'s identity — for providers
+/// whose unit of record is not the file on disk (Devin's session export
+/// rather than the shared `sessions.db`).
+pub fn snapshot_data(
+    data: &[u8],
+    path: &Path,
+    provider: Provider,
+    session_id: &str,
+    strategy: Option<&str>,
+    root: &Path,
+) -> anyhow::Result<VaultEntry> {
+    let data = data.to_vec();
+    let path = path.to_path_buf();
     let source_sha256 = sha256_hex(&data);
     let trailing_newline = data.last() == Some(&b'\n');
     let record_count = if data.is_empty() {
@@ -257,7 +273,7 @@ pub fn snapshot(
     let entry = VaultEntry {
         ts: now_secs(),
         sha256: manifest_sha,
-        path: path.to_path_buf(),
+        path,
         session_id: session_id.to_string(),
         provider,
         bytes: data.len() as u64,
