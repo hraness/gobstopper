@@ -1748,13 +1748,15 @@ fn cmd_install_hooks(uninstall: bool, roots: &Roots) -> Result<()> {
     for a in &report.added {
         println!("  {} {a}", if uninstall { "removed" } else { "added" });
     }
-    // Devin's hooks.v1.json is a flat event map (no "hooks" wrapper).
-    let devin_hooks = devin_config_home().join("hooks.v1.json");
+    // Devin's user-level hooks live in config.json under a "hooks" key —
+    // the same nested shape as Claude's settings.json. (Flat
+    // hooks.v1.json is only a *project*-level file: .devin/hooks.v1.json.)
+    let devin_config = devin_config_home().join("config.json");
     let devin_targets = [hooks::HookTarget::DevinUserPromptSubmit];
     let report = if uninstall {
-        hooks::uninstall(&devin_hooks, None)?
+        hooks::uninstall(&devin_config, Some("hooks"))?
     } else {
-        hooks::install(&devin_hooks, &devin_targets, None)?
+        hooks::install(&devin_config, &devin_targets, Some("hooks"))?
     };
     println!(
         "{}: +{} -{}",

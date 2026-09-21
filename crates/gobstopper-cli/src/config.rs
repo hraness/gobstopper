@@ -80,6 +80,12 @@ pub struct Config {
     pub provider: BTreeMap<String, PolicyPatch>,
     pub presets: BTreeMap<String, PolicyPatch>,
     pub sessions: BTreeMap<String, PolicyPatch>,
+    /// Rollout gates for the prompt-policy advisory, keyed by provider id
+    /// (`codex`, `claude_code`, `devin`) with a 0-100 percentage. Sessions
+    /// are bucketed deterministically by id: `devin = 50` shows the
+    /// compaction advisory to a stable half of Devin sessions; the other
+    /// half is the control cohort. Absent or 100 = always advise.
+    pub rollout: BTreeMap<String, u8>,
 }
 
 pub fn config_path() -> PathBuf {
@@ -127,12 +133,15 @@ pub fn validate_policy(policy: &PolicyConfig) -> anyhow::Result<()> {
 pub fn parse(text: &str) -> anyhow::Result<Config> {
     let config: Config = toml::from_str(text)
         .map_err(|_| anyhow::anyhow!("invalid configuration syntax, field or type"))?;
-    if config
-        .provider
-        .keys()
-        .any(|p| !matches!(p.as_str(), "codex" | "claude_code" | "devin"))
-    {
-        anyhow::bail!("unknown provider configuration key; expected codex, claude_code, or devin");
+    for key in config.provider.keys().chain(config.rollout.keys()) {
+        if !matches!(key.as_str(), "codex" | "claude_code" | "devin") {
+            anyhow::bail!(
+                "unknown provider configuration key; expected codex, claude_code, or devin"
+            );
+        }
+    }
+    if config.rollout.values().any(|pct| *pct > 100) {
+        anyhow::bail!("rollout percentages must be between 0 and 100");
     }
     Ok(config)
 }
@@ -252,6 +261,15 @@ mod tests {
         assert!(parse("[policy\ntrigger_tokens = 1").is_err());
         assert!(parse("[policy]\ntriger_tokens = 1").is_err());
         assert!(parse("[provider.claude]\ntrigger_tokens = 100000").is_err());
+    }
+
+    #[test]
+    fn rollout_percentages_are_validated() {
+        let cfg = parse("[rollout]\ndevin = 50\nclaude_code = 0").unwrap();
+        assert_eq!(cfg.rollout["devin"], 50);
+        assert_eq!(cfg.rollout["claude_code"], 0);
+        assert!(parse("[rollout]\ndevin = 101").is_err());
+        assert!(parse("[rollout]\nunknown = 50").is_err());
     }
 
     #[test]

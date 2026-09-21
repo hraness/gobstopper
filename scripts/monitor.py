@@ -260,6 +260,38 @@ def session_rows(report, sessions, previous):
     return rows
 
 
+def context_samples(report, sessions, providers):
+    """Context rows for allowlisted sessions plus every active session of
+    an opted-in provider — the trajectory substrate for cohort analysis.
+    Identifiers and counts only; the allowlist stays the privacy boundary."""
+    wanted = set(sessions)
+    providers = set(providers)
+    samples = []
+    for row in report.get("sessions", []):
+        if not isinstance(row, dict):
+            continue
+        gobstopper = row.get("gobstopper")
+        if not isinstance(gobstopper, dict):
+            continue
+        session = gobstopper.get("sessionIdNative")
+        provider = row.get("provider")
+        if (not isinstance(session, str) or not SESSION_ID.fullmatch(session)
+                or provider not in ("codex", "claude_code", "devin")
+                or (session not in wanted and provider not in providers)):
+            continue
+        samples.append({
+            "provider": provider,
+            "session_id": session,
+            # A zero is emitted while provider usage is unknown; it is not
+            # a measured drop to zero, so record it as absent.
+            "context_tokens": number(gobstopper.get("contextTokens")) or None,
+            "lifetime_input_tokens": number(gobstopper.get("lifetimeInputTokens")),
+        })
+        if len(samples) >= 256:
+            break
+    return samples
+
+
 def save_observation(directory, observation):
     line = (json.dumps(observation, separators=(",", ":"), sort_keys=True) + "\n").encode()
     if len(line) > 1024 * 1024:
@@ -301,9 +333,11 @@ def save_observation(directory, observation):
             pass
 
 
-def observe(binary, output_dir, sessions):
+def observe(binary, output_dir, sessions, providers=()):
     if not sessions or len(sessions) > 128 or any(not SESSION_ID.fullmatch(s) for s in sessions):
         raise MonitorError("invalid_sessions")
+    if len(providers) > 8 or any(p not in ("codex", "claude_code", "devin") for p in providers):
+        raise MonitorError("invalid_providers")
     sessions = list(dict.fromkeys(sessions))
     executable, digest = binary_hash(binary)
     directory = open_directory(output_dir)
@@ -374,6 +408,7 @@ def observe(binary, output_dir, sessions):
             "report": report_status,
             "watch": watch_status,
             "sessions": session_rows(report, sessions, previous),
+            "context_samples": context_samples(report, sessions, providers),
         }
         save_observation(directory, observation)
         return observation
@@ -388,10 +423,12 @@ def main():
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--session", required=True, action="append")
+    parser.add_argument("--provider", action="append", default=[],
+                        help="also observe every active session of this provider")
     args = parser.parse_args()
     handlers = {kind: signal.signal(kind, interrupt) for kind in (signal.SIGTERM, signal.SIGINT)}
     try:
-        observation = observe(args.binary, args.output_dir, args.session)
+        observation = observe(args.binary, args.output_dir, args.session, args.provider)
         error = observation["report"]["error"] or observation["watch"]["error"]
     except MonitorInterrupted:
         error = "interrupted"

@@ -401,11 +401,18 @@ fn snapshot_and_log(
 /// layered policy, and returns `additionalContext` recommending the
 /// provider's native control when over trigger. Advisory only — the hook
 /// never invokes a control itself.
+///
+/// `[rollout]` in config.toml gates the advisory per provider: sessions
+/// are bucketed deterministically by id, so `devin = 50` advises a stable
+/// half of sessions (treatment) and silences the rest (control). Every
+/// resolved decision is logged as a `prompt-policy:<cohort>` telemetry
+/// event so the experiment has both numerator and denominator data.
 fn prompt_policy(
     provider_hint: Option<&str>,
     payload: &Value,
     roots: &detect::Roots,
     cfg: &crate::config::Config,
+    log_path: &Path,
 ) -> Result<Option<String>> {
     let Some(session_id) = payload["session_id"].as_str() else {
         return Ok(None);
@@ -413,7 +420,7 @@ fn prompt_policy(
     let hinted = provider_hint.unwrap_or("");
     let observed = if hinted.is_empty() || hinted == "devin" {
         gobstopper_adapters::devin::session_observation(&roots.devin_home, session_id)
-            .map(|(usage, locked)| ("devin", usage.context_tokens, locked))
+            .map(|(usage, locked)| (Provider::Devin, usage.context_tokens, locked))
     } else {
         None
     };
@@ -424,17 +431,68 @@ fn prompt_policy(
         detect::find(roots, session_id)
             .into_iter()
             .find(|d| d.handle.provider == Provider::ClaudeCode)
-            .map(|d| ("claude_code", d.usage.context_tokens, d.handle.is_active()))
+            .map(|d| {
+                (
+                    Provider::ClaudeCode,
+                    d.usage.context_tokens,
+                    d.handle.is_active(),
+                )
+            })
     });
     let Some((provider, context_tokens, session_active)) = observed else {
         return Ok(None);
     };
-    let decision =
-        crate::policy_decision(cfg, provider, context_tokens, session_active, None, None)?;
-    if decision["action"].as_str() != Some("provider_compact") {
+    let decision = crate::policy_decision(
+        cfg,
+        provider.as_str(),
+        context_tokens,
+        session_active,
+        None,
+        None,
+    )?;
+    let over_trigger = decision["action"].as_str() == Some("provider_compact");
+    let trigger = decision["effective_trigger_tokens"].as_u64().unwrap_or(0);
+    // Deterministic per-session bucket 0-99 from the session id: cohorts
+    // are stable across prompts and identical on every machine.
+    let pct = cfg
+        .rollout
+        .get(provider.as_str())
+        .copied()
+        .unwrap_or(100)
+        .min(100);
+    let digest = gobstopper_adapters::copy::sha256(session_id.as_bytes());
+    let bucket = u64::from_str_radix(digest.get(..16).unwrap_or("0"), 16).unwrap_or(0) % 100;
+    let treatment = bucket < u64::from(pct);
+    let emit = over_trigger && treatment;
+    // Closed-vocab telemetry: cohort rides in the strategy tag, emission
+    // state in the outcome. Under-trigger prompts still log so cohort
+    // denominators are complete.
+    let event = CompactionEvent::new(
+        provider,
+        session_id,
+        format!(
+            "prompt-policy:{}",
+            if treatment { "treatment" } else { "control" }
+        ),
+        if over_trigger {
+            "provider_compact"
+        } else {
+            "none"
+        },
+        if emit { "planned" } else { "skipped" },
+        trigger,
+        context_tokens,
+        context_tokens,
+        0,
+        0,
+        None,
+    );
+    if let Err(e) = append_event(log_path, &event) {
+        eprintln!("gobstopper hook: telemetry write failed (non-fatal): {e}");
+    }
+    if !emit {
         return Ok(None);
     }
-    let trigger = decision["effective_trigger_tokens"].as_u64().unwrap_or(0);
     let control = decision["control"].as_str().unwrap_or("/compact");
     let context = format!(
         "gobstopper: context is {context_tokens} tokens, above the {trigger}-token compaction trigger. Compact with `{control}` before continuing."
@@ -467,6 +525,7 @@ fn handle_inner(
             &payload,
             roots,
             cfg,
+            log_path,
         )
         .or_else(|e| {
             eprintln!("gobstopper hook: prompt-policy failed (non-fatal): {e}");
@@ -1016,6 +1075,62 @@ mod tests {
         )
         .unwrap()
         .is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prompt_policy_rollout_control_suppresses_but_logs() {
+        let dir = tmpdir("pp-rollout");
+        let roots = test_roots(&dir);
+        let mut cfg = crate::config::Config::default();
+        cfg.rollout.insert("claude_code".into(), 0);
+        let transcript = roots
+            .claude_home
+            .join("projects")
+            .join("proj")
+            .join("rollout1.jsonl");
+        write(
+            &transcript,
+            concat!(
+                r#"{"sessionId":"rollout1","uuid":"u1","type":"assistant","message":{"role":"assistant","usage":{"input_tokens":300000,"output_tokens":100}}}"#,
+                "\n"
+            ),
+        );
+        let vault_root = dir.join("vault");
+        let log = dir.join("events.jsonl");
+        // Control cohort (0%): silent even though the session is over trigger.
+        let out = handle_inner(
+            "prompt-policy:claude",
+            r#"{"session_id":"rollout1","prompt":"hi"}"#,
+            &vault_root,
+            &log,
+            &roots,
+            &cfg,
+        )
+        .unwrap();
+        assert!(out.is_none(), "control cohort must not be advised");
+        // …but the decision was logged with the control tag.
+        let events = gobstopper_core::events::read_events(&log).unwrap();
+        let last = events.last().expect("decision event logged");
+        assert_eq!(last.strategy, "prompt-policy:control");
+        assert_eq!(last.action, "provider_compact");
+        assert_eq!(last.outcome, "skipped");
+        assert_eq!(last.session_id, "rollout1");
+        // 100% restores the advisory.
+        cfg.rollout.insert("claude_code".into(), 100);
+        let out = handle_inner(
+            "prompt-policy:claude",
+            r#"{"session_id":"rollout1","prompt":"hi"}"#,
+            &vault_root,
+            &log,
+            &roots,
+            &cfg,
+        )
+        .unwrap();
+        assert!(out.is_some(), "treatment cohort must be advised");
+        let events = gobstopper_core::events::read_events(&log).unwrap();
+        assert_eq!(events.last().unwrap().strategy, "prompt-policy:treatment");
+        assert_eq!(events.last().unwrap().outcome, "planned");
         fs::remove_dir_all(&dir).ok();
     }
 
