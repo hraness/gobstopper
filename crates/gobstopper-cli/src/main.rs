@@ -22,7 +22,7 @@ use gobstopper_core::plan::{CompactionPlan, Edit};
 use gobstopper_core::strategy::{self, HeuristicScorer, QuotaPressure, ScoredStrategy};
 use gobstopper_core::Provider;
 use std::io::{BufRead as _, IsTerminal as _, Read as _, Write as _};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 #[derive(Parser)]
@@ -2834,8 +2834,8 @@ fn cmd_watch(
                         }
                         if d.handle.is_active() {
                             eprintln!(
-                                "devin {} is live; /compact in-session",
-                                display_prefix(&d.handle.session_id, 12)
+                                "devin session in {} is live; /compact in-session",
+                                d.handle.cwd.as_deref().unwrap_or(Path::new("?")).display()
                             );
                             continue;
                         }
@@ -2858,8 +2858,8 @@ fn cmd_watch(
                                     None,
                                 );
                                 eprintln!(
-                                    "compacted devin {} in place (~{} bytes reclaimed; snapshot {})",
-                                    display_prefix(&d.handle.session_id, 12),
+                                    "compacted devin session in {} in place (~{} bytes reclaimed; snapshot {})",
+                                    d.handle.cwd.as_deref().unwrap_or(Path::new("?")).display(),
                                     receipt.reclaimed_bytes,
                                     receipt.snapshot_manifest_sha256.as_deref().unwrap_or("?"),
                                 );
@@ -2875,8 +2875,8 @@ fn cmd_watch(
                                     Some("apply_failed"),
                                 );
                                 eprintln!(
-                                    "devin store compact {} failed: {e}",
-                                    d.handle.session_id
+                                    "devin store compact in {} failed: {e}",
+                                    d.handle.cwd.as_deref().unwrap_or(Path::new("?")).display()
                                 );
                             }
                         }
