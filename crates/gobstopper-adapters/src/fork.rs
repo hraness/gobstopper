@@ -450,7 +450,7 @@ mod tests {
         let dir = TestDir::new();
         let src = dir.0.join("large.jsonl");
         let file = fs::File::create(&src).unwrap();
-        file.set_len(crate::transaction::MAX_TRANSCRIPT_BYTES + 1)
+        file.set_len(crate::transaction::max_transcript_bytes() + 1)
             .unwrap();
         assert!(fork(Provider::ClaudeCode, &src, Some("bounded".into())).is_err());
         assert!(!dir.0.join("bounded.jsonl").exists());

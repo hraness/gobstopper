@@ -182,7 +182,7 @@ pub fn load(handle: SessionHandle) -> Result<Transcript, AdapterError> {
 }
 
 pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, AdapterError> {
-    if bytes.len() as u64 > crate::transaction::MAX_TRANSCRIPT_BYTES {
+    if bytes.len() as u64 > crate::transaction::max_transcript_bytes() {
         return Err(AdapterError::InvalidEdit("transcript exceeds byte limit"));
     }
     let file = std::io::Cursor::new(bytes);

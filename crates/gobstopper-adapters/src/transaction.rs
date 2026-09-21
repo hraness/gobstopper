@@ -5,8 +5,23 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-pub const MAX_TRANSCRIPT_BYTES: u64 = 128 * 1024 * 1024;
+pub const DEFAULT_MAX_TRANSCRIPT_BYTES: u64 = 512 * 1024 * 1024;
 static NEXT: AtomicU64 = AtomicU64::new(0);
+
+/// Upper bound on transcript bytes loaded or rewritten. Guards memory
+/// use on pathological inputs; store-backed providers (Devin) export
+/// proportionally large canonical forms, so operators can raise it with
+/// `GOBSTOPPER_MAX_TRANSCRIPT_BYTES` (a byte count, minimum 1 KiB).
+pub fn max_transcript_bytes() -> u64 {
+    static CACHED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *CACHED.get_or_init(|| {
+        std::env::var("GOBSTOPPER_MAX_TRANSCRIPT_BYTES")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| *v >= 1024)
+            .unwrap_or(DEFAULT_MAX_TRANSCRIPT_BYTES)
+    })
+}
 
 pub(crate) fn io(path: &Path, source: std::io::Error) -> AdapterError {
     AdapterError::Io {
@@ -17,17 +32,17 @@ pub(crate) fn io(path: &Path, source: std::io::Error) -> AdapterError {
 
 pub fn read(path: &Path) -> Result<Vec<u8>, AdapterError> {
     let meta = fs::symlink_metadata(path).map_err(|e| io(path, e))?;
-    if !meta.is_file() || meta.len() > MAX_TRANSCRIPT_BYTES {
+    if !meta.is_file() || meta.len() > max_transcript_bytes() {
         return Err(AdapterError::InvalidEdit(
             "source must be a bounded regular file",
         ));
     }
     let file = File::open(path).map_err(|e| io(path, e))?;
     let mut bytes = Vec::new();
-    file.take(MAX_TRANSCRIPT_BYTES + 1)
+    file.take(max_transcript_bytes() + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| io(path, e))?;
-    if bytes.len() as u64 > MAX_TRANSCRIPT_BYTES {
+    if bytes.len() as u64 > max_transcript_bytes() {
         return Err(AdapterError::InvalidEdit("transcript exceeds byte limit"));
     }
     Ok(bytes)
@@ -164,7 +179,7 @@ where
     let text = std::str::from_utf8(&original)
         .map_err(|_| AdapterError::InvalidEdit("transcript is not UTF-8"))?;
     let candidate = mutate(text)?.into_bytes();
-    if candidate.len() as u64 > MAX_TRANSCRIPT_BYTES {
+    if candidate.len() as u64 > max_transcript_bytes() {
         return Err(AdapterError::InvalidEdit(
             "candidate exceeds transcript byte limit",
         ));
