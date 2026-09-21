@@ -90,11 +90,12 @@ test("the header keeps a named home link and exact-artwork foil fallback", () =>
       .on('header a[aria-label="Gobstopper home"] .hraness-foil-mark img', {
         element(element) {
           fallbackImages.push(element.getAttribute("src") ?? "");
-          expect(element.getAttribute("alt")).toBe("");
+          expect(element.hasAttribute("alt")).toBe(true);
+          expect(element.getAttribute("alt") ?? "").toBe("");
         },
       })
       .on('header a[aria-label="Gobstopper home"] .hraness-foil-mark__paint', {
-        element(element) { masks.push(element.getAttribute("style") ?? ""); },
+        element(element) { masks.push((element.getAttribute("style") ?? "").replaceAll("&quot;", '"')); },
       })
       .transform(html);
     expect(homeLinks).toEqual(["/"]);
