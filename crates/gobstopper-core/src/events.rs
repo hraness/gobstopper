@@ -131,6 +131,31 @@ fn valid_event(event: &CompactionEvent) -> bool {
                 .saturating_sub(event.context_tokens_after)
 }
 
+/// Live-log size cap before rotation. Post-dedupe growth is roughly
+/// 150KiB/day, so the live file spans about two months per generation.
+const ROTATE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Path of the previous generation (`events.jsonl` → `events.1.jsonl`),
+/// matching the monitor's `observations.1.jsonl` convention.
+fn rotated_path(log_path: &Path) -> PathBuf {
+    log_path.with_extension("1.jsonl")
+}
+
+/// Single-generation rotation: an oversize live log becomes
+/// `events.1.jsonl`, dropping any older generation. Best-effort — a
+/// failed rotation must never lose the event being appended.
+fn rotate_if_oversize(log_path: &Path) {
+    let Ok(meta) = std::fs::metadata(log_path) else {
+        return;
+    };
+    if meta.len() <= ROTATE_BYTES {
+        return;
+    }
+    let rotated = rotated_path(log_path);
+    let _ = std::fs::remove_file(&rotated);
+    let _ = std::fs::rename(log_path, rotated);
+}
+
 /// Append one event as a JSONL line, creating parent dirs as needed.
 pub fn append_event(log_path: &Path, event: &CompactionEvent) -> std::io::Result<()> {
     if !valid_event(event) {
@@ -142,6 +167,7 @@ pub fn append_event(log_path: &Path, event: &CompactionEvent) -> std::io::Result
     if let Some(parent) = log_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
+    rotate_if_oversize(log_path);
     let mut line = serde_json::to_string(event)
         .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
     line.push('\n');
@@ -163,26 +189,36 @@ pub fn default_log_path() -> PathBuf {
     base.join("gobstopper").join("events.jsonl")
 }
 
-/// Read every event in the log. Blank and unparseable lines are skipped
-/// so one torn write does not lose the whole history.
+/// Read every event in the log, oldest generation first so a rotation
+/// boundary does not silently truncate history. Blank and unparseable
+/// lines are skipped so one torn write does not lose the rest.
 pub fn read_events(log_path: &Path) -> std::io::Result<Vec<CompactionEvent>> {
     const MAX_LOG_BYTES: u64 = 128 * 1024 * 1024;
     const MAX_LINE_BYTES: usize = 16 * 1024;
-    let file = std::fs::File::open(log_path)?;
-    if file.metadata()?.len() > MAX_LOG_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "compaction event log exceeds byte limit",
-        ));
-    }
     let mut events = Vec::new();
-    for line in std::io::BufReader::new(file).lines() {
-        let line = line?;
-        if line.trim().is_empty() || line.len() > MAX_LINE_BYTES {
-            continue;
+    let rotated = rotated_path(log_path);
+    for path in [rotated.as_path(), log_path] {
+        let file = match std::fs::File::open(path) {
+            Ok(file) => file,
+            // The previous generation is optional; the live log keeps
+            // the original missing-file error contract.
+            Err(e) if path == log_path => return Err(e),
+            Err(_) => continue,
+        };
+        if file.metadata().map(|m| m.len()).unwrap_or(0) > MAX_LOG_BYTES {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "compaction event log exceeds byte limit",
+            ));
         }
-        if let Some(event) = serde_json::from_str(&line).ok().filter(valid_event) {
-            events.push(event);
+        for line in std::io::BufReader::new(file).lines() {
+            let line = line?;
+            if line.trim().is_empty() || line.len() > MAX_LINE_BYTES {
+                continue;
+            }
+            if let Some(event) = serde_json::from_str(&line).ok().filter(valid_event) {
+                events.push(event);
+            }
         }
     }
     Ok(events)
@@ -307,6 +343,78 @@ mod tests {
         assert_eq!(events[0].session_id, "a");
         assert_eq!(events[1].session_id, "b");
         assert_eq!(events[1].outcome, "skipped");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn oversize_log_rotates_and_read_events_stitches_generations() {
+        let unique = format!(
+            "gobstopper-rotate-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        );
+        let dir = std::env::temp_dir().join(unique);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("events.jsonl");
+
+        let old = CompactionEvent::new(
+            Provider::Codex,
+            "old-gen",
+            "elide",
+            "transcript_compact",
+            "applied",
+            1_000,
+            1_200,
+            300,
+            4,
+            10,
+            None,
+        );
+        append_event(&log, &old).unwrap();
+        // Pad past the 8MiB cap so the next append must rotate.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
+        f.write_all(vec![b'x'; (ROTATE_BYTES + 1) as usize].as_slice())
+            .unwrap();
+        drop(f);
+
+        let new = CompactionEvent::new(
+            Provider::Codex,
+            "new-gen",
+            "elide",
+            "transcript_compact",
+            "applied",
+            1_000,
+            1_200,
+            300,
+            4,
+            10,
+            None,
+        );
+        append_event(&log, &new).unwrap();
+
+        let rotated = dir.join("events.1.jsonl");
+        assert!(rotated.exists());
+        assert!(std::fs::metadata(&rotated).unwrap().len() > ROTATE_BYTES);
+
+        let events = read_events(&log).unwrap();
+        // The padding is one giant unparseable line — skipped — so only
+        // the two real events survive, oldest generation first.
+        assert_eq!(
+            events
+                .iter()
+                .map(|e| e.session_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["old-gen", "new-gen"]
+        );
+
+        // Under-cap logs never rotate.
+        let small = dir.join("small.jsonl");
+        append_event(&small, &new).unwrap();
+        assert!(!dir.join("small.1.jsonl").exists());
 
         std::fs::remove_dir_all(&dir).ok();
     }
