@@ -6,7 +6,8 @@ use crate::plan::{CompactionPlan, Edit};
 /// Cache-aware: compact by eliding the *latest* stale tool outputs before
 /// the protected tail, then inject a state-card digest. Eliding a suffix
 /// (rather than the oldest prefix) keeps the earliest conversation records
-/// byte-identical, which preserves the provider's prompt-cache prefix.
+/// byte-identical. This protects an eligible content prefix; actual provider
+/// cache reuse depends on the full request and must be measured separately.
 ///
 /// The digest uses the same bounded, field-oriented shape as the
 /// `compacted` strategy; on Codex it can be lowered to a provider-native
@@ -39,7 +40,7 @@ impl Strategy for CacheAwareStrategy {
 
         // Elide from the newest candidate backward until we are at or below
         // the floor. This leaves the conversation prefix untouched for as
-        // long as possible, preserving prompt-cache hits on the next resume.
+        // long as possible. This does not guarantee a provider cache hit.
         let priority: Vec<_> = candidates.iter().rev().copied().collect();
         let (chosen, digest, context_tokens_after) =
             choose_with_digest(transcript, policy.floor_tokens, &priority)?;
@@ -54,7 +55,7 @@ impl Strategy for CacheAwareStrategy {
         Some(CompactionPlan {
             strategy: self.id().to_string(),
             rationale: format!(
-                "context {before} tokens exceeds trigger {}; eliding {} latest stale outputs before tail to keep {} prefix records in cache",
+                "context {before} tokens exceeds trigger {}; eliding {} latest stale outputs before tail while preserving {} prefix records",
                 policy.trigger_tokens,
                 chosen.len(),
                 prefix_items

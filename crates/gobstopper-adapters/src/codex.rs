@@ -578,6 +578,47 @@ pub fn apply(path: &Path, edits: &[Edit]) -> Result<u64, AdapterError> {
     })
 }
 
+/// Validate and transform a caller-owned snapshot entirely in memory. This
+/// does not adopt the result in any provider runtime or modify source bytes.
+pub fn transform_bytes(
+    handle: SessionHandle,
+    bytes: &[u8],
+    policy: &gobstopper_core::PolicyConfig,
+    edits: &[Edit],
+) -> Result<Vec<u8>, AdapterError> {
+    if edits
+        .iter()
+        .any(|edit| matches!(edit, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
+    {
+        return Err(AdapterError::InvalidEdit(
+            "memory transforms reject provider controls",
+        ));
+    }
+    let transcript = load_bytes(handle, bytes)?;
+    gobstopper_core::validation::validate_edits(&transcript, policy, edits)
+        .map_err(AdapterError::InvalidEdit)?;
+    let original = std::str::from_utf8(bytes)
+        .map_err(|_| AdapterError::InvalidEdit("transcript is not UTF-8"))?;
+    let before = crate::verify::verify(Provider::Codex, bytes);
+    if before
+        .iter()
+        .any(|f| f.severity == crate::verify::Severity::Error)
+    {
+        return Err(AdapterError::InvalidEdit("source has structural errors"));
+    }
+    let result = apply_inner(original, edits)?.into_bytes();
+    if result.len() as u64 > crate::transaction::MAX_TRANSCRIPT_BYTES
+        || crate::verify::verify(Provider::Codex, &result)
+            .iter()
+            .any(|finding| !before.contains(finding))
+    {
+        return Err(AdapterError::InvalidEdit(
+            "candidate violates structural bounds",
+        ));
+    }
+    Ok(result)
+}
+
 fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
     let mut raw = original.to_string();
     for edit in edits {
