@@ -191,8 +191,12 @@ level, `.devin/hooks.v1.json`). The handler resolves the session by ID
 directly against the store, runs the shared policy, and emits
 `hookSpecificOutput.additionalContext` recommending `/compact` when over
 trigger. It is advisory only and fails silently, so a broken hook never
-blocks a prompt. `gobstopper uninstall-hooks` removes only Gobstopper-owned
-commands.
+blocks a prompt. A repeat throttle keeps the advisory from re-entering
+every prompt of a session that stays over trigger: after one is shown,
+the next advisory waits until the session's context grew by ≥25k tokens
+or ≥20 minutes passed (checked against the telemetry log tail, so it
+costs a bounded read per prompt, not a state file).
+`gobstopper uninstall-hooks` removes only Gobstopper-owned commands.
 
 **ACP caveat:** hooks fire in the interactive `devin` TUI; Devin's ACP
 server mode (`devin acp`, e.g. under Windsurf) does not run lifecycle hooks
