@@ -30,6 +30,7 @@
 
 #![allow(dead_code)]
 
+use crate::config;
 use anyhow::{bail, Context, Result};
 use gobstopper_adapters::{detect, vault};
 use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
@@ -396,6 +397,21 @@ fn snapshot_and_log(
     }
 }
 
+/// Deterministic rollout cohort for a provider+session: `Some(true)`
+/// treatment, `Some(false)` control, `None` when the provider has no
+/// `[rollout]` entry (ungated). Bucket = sha256(session_id)[:16] % 100 —
+/// stable across prompts and machines.
+pub(crate) fn rollout_cohort(
+    cfg: &config::Config,
+    provider: &str,
+    session_id: &str,
+) -> Option<bool> {
+    let pct = cfg.rollout.get(provider).copied()?.min(100);
+    let digest = gobstopper_adapters::copy::sha256(session_id.as_bytes());
+    let bucket = u64::from_str_radix(digest.get(..16).unwrap_or("0"), 16).unwrap_or(0) % 100;
+    Some(bucket < u64::from(pct))
+}
+
 /// `prompt-policy[:provider]`: a UserPromptSubmit advisory. Resolves the
 /// session's real context size from the provider's own store, runs the
 /// layered policy, and returns `additionalContext` recommending the
@@ -452,17 +468,7 @@ fn prompt_policy(
     )?;
     let over_trigger = decision["action"].as_str() == Some("provider_compact");
     let trigger = decision["effective_trigger_tokens"].as_u64().unwrap_or(0);
-    // Deterministic per-session bucket 0-99 from the session id: cohorts
-    // are stable across prompts and identical on every machine.
-    let pct = cfg
-        .rollout
-        .get(provider.as_str())
-        .copied()
-        .unwrap_or(100)
-        .min(100);
-    let digest = gobstopper_adapters::copy::sha256(session_id.as_bytes());
-    let bucket = u64::from_str_radix(digest.get(..16).unwrap_or("0"), 16).unwrap_or(0) % 100;
-    let treatment = bucket < u64::from(pct);
+    let treatment = rollout_cohort(cfg, provider.as_str(), session_id).unwrap_or(true);
     let emit = over_trigger && treatment;
     // Closed-vocab telemetry: cohort rides in the strategy tag, emission
     // state in the outcome. Under-trigger prompts still log so cohort
@@ -1132,6 +1138,30 @@ mod tests {
         assert_eq!(events.last().unwrap().strategy, "prompt-policy:treatment");
         assert_eq!(events.last().unwrap().outcome, "planned");
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn rollout_cohort_is_deterministic_and_ungated_when_absent() {
+        let mut cfg = crate::config::Config::default();
+        // No rollout entry: ungated.
+        assert_eq!(rollout_cohort(&cfg, "devin", "sess-x"), None);
+        // 0% → every bucket is control; 100% → every bucket is treatment.
+        cfg.rollout.insert("devin".into(), 0);
+        assert_eq!(rollout_cohort(&cfg, "devin", "sess-x"), Some(false));
+        cfg.rollout.insert("devin".into(), 100);
+        assert_eq!(rollout_cohort(&cfg, "devin", "sess-x"), Some(true));
+        // Stable for a fixed session id across calls and provider views.
+        cfg.rollout.insert("devin".into(), 50);
+        let a = rollout_cohort(&cfg, "devin", "stable-session");
+        let b = rollout_cohort(&cfg, "devin", "stable-session");
+        assert_eq!(a, b);
+        // Bucketing splits ids: over many ids a 50% gate must see both arms.
+        let arms: std::collections::BTreeSet<_> = (0..64)
+            .map(|i| rollout_cohort(&cfg, "devin", &format!("sess-{i}")))
+            .collect();
+        assert_eq!(arms, [Some(true), Some(false)].into_iter().collect());
+        // Another provider without an entry stays ungated.
+        assert_eq!(rollout_cohort(&cfg, "codex", "sess-x"), None);
     }
 
     #[test]

@@ -2572,6 +2572,27 @@ fn cmd_apply(
     Ok(())
 }
 
+/// Cheap per-session decision version for watch suppression caching:
+/// file length+mtime for JSONL providers, chain head+node count for
+/// Devin's shared store, plus the live/idle bit the planner keys on. An
+/// unchanged fingerprint means the plan outcome is deterministic-repeat:
+/// no provider append, no Gobstopper write, no live→idle transition.
+fn session_fingerprint(d: &Discovered) -> Option<String> {
+    let content = if d.handle.provider == Provider::Devin {
+        devin::chain_fingerprint(&d.handle.path, &d.handle.session_id)?
+    } else {
+        let m = std::fs::metadata(&d.handle.path).ok()?;
+        let mtime = m
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        format!("{}:{mtime}", m.len())
+    };
+    Some(format!("{content}:{}", d.handle.is_active()))
+}
+
 /// Content hash of a file, for the staged-swap unchanged check.
 fn sha256_file(path: &std::path::Path) -> Option<String> {
     use sha2::{Digest, Sha256};
@@ -2667,6 +2688,16 @@ fn cmd_watch(
     }
     let mut last_fire: std::collections::HashMap<String, std::time::Instant> =
         std::collections::HashMap::new();
+    // Terminal-decision suppression: session_key -> fingerprint recorded
+    // when a session was applied, failed, or judged unplannable. Skips
+    // the expensive load until the provider actually appends — Devin
+    // store metrics go stale post-apply, so context alone re-triggers
+    // every pass otherwise.
+    let mut settled: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    // Claude two-pass settle: only rewrite in place when the transcript
+    // fingerprint was identical on consecutive passes.
+    let mut settle_pass: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
     let mut staged: std::collections::HashMap<String, Staged> = std::collections::HashMap::new();
     let mut discovery_cache = detect::DiscoveryCache::default();
     loop {
@@ -2698,6 +2729,18 @@ fn cmd_watch(
             else {
                 continue;
             };
+            // Suppression: a session whose content fingerprint matches its
+            // last terminal decision is byte-identical — skip the load.
+            // This check precedes the context fallback load so suppressed
+            // sessions cost one metadata/SQL read, not a transcript parse.
+            if settled.len() >= 4096 {
+                settled.clear();
+                settle_pass.clear();
+            }
+            let fp = session_fingerprint(&d);
+            if fp.is_some() && settled.get(&session_key) == fp.as_ref() {
+                continue;
+            }
             let trigger = if resolved.policy.adaptive {
                 gobstopper_core::adapt(
                     &resolved.policy,
@@ -2771,6 +2814,9 @@ fn cmd_watch(
             let (transcript, source_sha256) = match copy::load_bound(d.handle.clone()) {
                 Ok(t) => t,
                 Err(e) => {
+                    if let Some(fp) = fp {
+                        settled.insert(session_key.clone(), fp);
+                    }
                     eprintln!("load {} failed: {e}", d.handle.session_id);
                     continue;
                 }
@@ -2822,6 +2868,11 @@ fn cmd_watch(
                         eprintln!(
                             "deferred native compaction: session owner required; source unchanged"
                         );
+                        // Unchanged content will plan to delegation again;
+                        // re-evaluate only after the provider writes.
+                        if let Some(fp) = &fp {
+                            settled.insert(session_key.clone(), fp.clone());
+                        }
                         continue;
                     }
                     if d.handle.provider == Provider::Devin {
@@ -2837,6 +2888,31 @@ fn cmd_watch(
                                 "devin session in {} is live; /compact in-session",
                                 d.handle.cwd.as_deref().unwrap_or(Path::new("?")).display()
                             );
+                            continue;
+                        }
+                        // Rollout gate: control-cohort sessions log one
+                        // decision per content version and skip, so cohort
+                        // comparison attributes savings to automation.
+                        if hooks::rollout_cohort(
+                            &cfg,
+                            d.handle.provider.as_str(),
+                            &d.handle.session_id,
+                        ) == Some(false)
+                        {
+                            let mut tagged = plan.clone();
+                            tagged.strategy = "watch-apply:control".to_string();
+                            emit_event(
+                                &d,
+                                &tagged,
+                                action,
+                                "skipped",
+                                trigger,
+                                started.elapsed().as_millis() as u64,
+                                None,
+                            );
+                            if let Some(fp) = &fp {
+                                settled.insert(session_key.clone(), fp.clone());
+                            }
                             continue;
                         }
                         let r = copy::compact_devin_store(
@@ -2863,6 +2939,13 @@ fn cmd_watch(
                                     receipt.reclaimed_bytes,
                                     receipt.snapshot_manifest_sha256.as_deref().unwrap_or("?"),
                                 );
+                                // Post-write fingerprint: our own write
+                                // moved the chain, so store the new value
+                                // and stay suppressed until the provider
+                                // appends again.
+                                if let Some(nfp) = session_fingerprint(&d) {
+                                    settled.insert(session_key.clone(), nfp);
+                                }
                             }
                             Err(e) => {
                                 emit_event(
@@ -2878,6 +2961,9 @@ fn cmd_watch(
                                     "devin store compact in {} failed: {e}",
                                     d.handle.cwd.as_deref().unwrap_or(Path::new("?")).display()
                                 );
+                                if let Some(fp) = &fp {
+                                    settled.insert(session_key.clone(), fp.clone());
+                                }
                             }
                         }
                         continue;
@@ -2890,6 +2976,46 @@ fn cmd_watch(
                         // bytes before replacing. Snapshot first.
                         if d.handle.is_active() {
                             continue;
+                        }
+                        // Rollout gate: same cohort contract as Devin —
+                        // control sessions log and skip, one decision per
+                        // content version.
+                        if hooks::rollout_cohort(
+                            &cfg,
+                            d.handle.provider.as_str(),
+                            &d.handle.session_id,
+                        ) == Some(false)
+                        {
+                            let mut tagged = plan.clone();
+                            tagged.strategy = "watch-apply:control".to_string();
+                            emit_event(
+                                &d,
+                                &tagged,
+                                action,
+                                "skipped",
+                                trigger,
+                                started.elapsed().as_millis() as u64,
+                                None,
+                            );
+                            if let Some(fp) = &fp {
+                                settled.insert(session_key.clone(), fp.clone());
+                            }
+                            continue;
+                        }
+                        // Two-pass settle: mtime alone leaks sessions whose
+                        // provider appended between discovery and apply
+                        // (ChangedDuringWrite would abort anyway, but the
+                        // churn is wasted). Require an unchanged
+                        // fingerprint across consecutive passes.
+                        match &fp {
+                            Some(fp) if settle_pass.get(&session_key) == Some(fp) => {
+                                settle_pass.remove(&session_key);
+                            }
+                            Some(fp) => {
+                                settle_pass.insert(session_key.clone(), fp.clone());
+                                continue;
+                            }
+                            None => continue,
                         }
                         let file_edits: Vec<Edit> = plan
                             .edits
@@ -2932,6 +3058,9 @@ fn cmd_watch(
                                     d.handle.path.display(),
                                     entry.sha256,
                                 );
+                                if let Some(nfp) = session_fingerprint(&d) {
+                                    settled.insert(session_key.clone(), nfp);
+                                }
                             }
                             Err(e) => {
                                 emit_event(
@@ -2947,6 +3076,9 @@ fn cmd_watch(
                                     "claude in-place compact {} failed: {e}",
                                     d.handle.path.display()
                                 );
+                                if let Some(fp) = &fp {
+                                    settled.insert(session_key.clone(), fp.clone());
+                                }
                             }
                         }
                         continue;
@@ -2971,6 +3103,11 @@ fn cmd_watch(
                                 None,
                             );
                             eprintln!("prepared compacted fork for {}", d.handle.session_id);
+                            // The fork does not touch the source; until the
+                            // source changes there is nothing new to prepare.
+                            if let Some(fp) = &fp {
+                                settled.insert(session_key.clone(), fp.clone());
+                            }
                         }
                         Err(e) => {
                             emit_event(
@@ -2983,11 +3120,23 @@ fn cmd_watch(
                                 Some("apply_failed"),
                             );
                             eprintln!("compact {} failed: {e}", d.handle.session_id);
+                            if let Some(fp) = &fp {
+                                settled.insert(session_key.clone(), fp.clone());
+                            }
                         }
                     }
                 }
-                Ok(None) => {}
-                Err(e) => eprintln!("plan {} failed: {e}", d.handle.session_id),
+                Ok(None) => {
+                    if let Some(fp) = &fp {
+                        settled.insert(session_key.clone(), fp.clone());
+                    }
+                }
+                Err(e) => {
+                    if let Some(fp) = &fp {
+                        settled.insert(session_key.clone(), fp.clone());
+                    }
+                    eprintln!("plan {} failed: {e}", d.handle.session_id);
+                }
             }
         }
         if once {
@@ -3803,5 +3952,44 @@ mod tests {
             0
         )
         .is_err());
+    }
+
+    #[test]
+    fn session_fingerprint_tracks_len_and_mtime() {
+        let dir = tempdir("fp");
+        let path = dir.join("t.jsonl");
+        fs::write(&path, "line1\n").unwrap();
+        let d = Discovered {
+            handle: gobstopper_core::SessionHandle {
+                provider: Provider::ClaudeCode,
+                session_id: "s".into(),
+                path: path.clone(),
+                cwd: None,
+                age_secs: 10,
+            },
+            usage: gobstopper_core::UsageSample::default(),
+        };
+        let fp1 = session_fingerprint(&d).unwrap();
+        // Unchanged file: identical fingerprint.
+        assert_eq!(fp1, session_fingerprint(&d).unwrap());
+        // Append changes length.
+        fs::write(&path, "line1\nline2\n").unwrap();
+        let fp2 = session_fingerprint(&d).unwrap();
+        assert_ne!(fp1, fp2);
+        // Same length but a fresh write moves mtime.
+        let later = std::time::SystemTime::now() + std::time::Duration::from_secs(5);
+        filetime_set(&path, later);
+        let fp3 = session_fingerprint(&d).unwrap();
+        assert_ne!(fp2, fp3);
+        // Missing file → None (never suppresses).
+        fs::remove_file(&path).unwrap();
+        assert!(session_fingerprint(&d).is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Touch a file's mtime without changing its length.
+    fn filetime_set(path: &std::path::Path, t: std::time::SystemTime) {
+        let file = fs::File::options().write(true).open(path).unwrap();
+        file.set_modified(t).unwrap();
     }
 }

@@ -203,6 +203,22 @@ pub fn find(root: &Path, query: &str) -> Vec<Discovered> {
         .collect()
 }
 
+/// O(1) content version for watch suppression caching: main-chain head
+/// plus node count. Any provider append or Gobstopper store write moves
+/// it, so an unchanged fingerprint means the session is byte-identical.
+pub fn chain_fingerprint(db: &Path, session_id: &str) -> Option<String> {
+    let conn = open_readonly(db).ok()?;
+    conn.query_row(
+        "SELECT main_chain_id, \
+         (SELECT COUNT(*) FROM message_nodes WHERE session_id = ?1) \
+         FROM sessions WHERE id = ?1",
+        [session_id],
+        |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)),
+    )
+    .ok()
+    .map(|(head, count)| format!("{head}:{count}"))
+}
+
 /// One-shot observation for policy surfaces: the session's token
 /// accounting plus whether the provider currently holds its lock.
 /// `None` when the store or the session row is absent.
@@ -1840,5 +1856,33 @@ mod tests {
         // Head 99 doesn't exist: no live chain, so nothing counts.
         assert_eq!(t.items.len(), 1);
         assert_eq!(t.items[0].est_tokens, 0);
+    }
+
+    #[test]
+    fn chain_fingerprint_tracks_head_and_node_count() {
+        let fx = Fixture::new("fp");
+        fx.add_session("s1", "fp", 1, 1_790_006_000);
+        fx.add_node("s1", 1, None, assistant("a", None), None);
+        let db = db_path(&fx.root);
+
+        let fp1 = chain_fingerprint(&db, "s1").unwrap();
+        // Unchanged store: identical fingerprint.
+        assert_eq!(fp1, chain_fingerprint(&db, "s1").unwrap());
+
+        // Provider append: node count moves.
+        fx.add_node("s1", 2, Some(1), assistant("b", None), None);
+        let fp2 = chain_fingerprint(&db, "s1").unwrap();
+        assert_ne!(fp1, fp2);
+
+        // Head move alone (a compaction wrote no nodes): still moves.
+        let conn = Connection::open(&db).unwrap();
+        conn.execute("UPDATE sessions SET main_chain_id = 2 WHERE id = 's1'", [])
+            .unwrap();
+        drop(conn);
+        let fp3 = chain_fingerprint(&db, "s1").unwrap();
+        assert_ne!(fp2, fp3);
+
+        assert!(chain_fingerprint(&db, "absent").is_none());
+        assert!(chain_fingerprint(&fx.root.join("no.db"), "s1").is_none());
     }
 }
