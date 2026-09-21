@@ -3433,24 +3433,28 @@ fn cmd_watch(
         }
         // Persist suppression/clocks each pass: a restart then resumes
         // from the same terminal decisions instead of re-planning all
-        // sessions once. Small file, written atomically.
-        let save_secs = now_secs();
-        save_watch_state(
-            &state_path,
-            &WatchState {
-                settled: settled.clone(),
-                settle_pass: settle_pass.clone(),
-                last_fire: last_fire
-                    .iter()
-                    .map(|(k, t)| (k.clone(), instant_to_epoch(*t, save_secs)))
-                    .collect(),
-                last_apply: last_apply
-                    .iter()
-                    .map(|(k, t)| (k.clone(), instant_to_epoch(*t, save_secs)))
-                    .collect(),
-                delegated_ctx: delegated_ctx.clone(),
-            },
-        );
+        // sessions once. Small file, written atomically. Dry-run passes
+        // (e.g. monitor's --once probes) observe only — never mutate
+        // persisted state.
+        if !dry_run {
+            let save_secs = now_secs();
+            save_watch_state(
+                &state_path,
+                &WatchState {
+                    settled: settled.clone(),
+                    settle_pass: settle_pass.clone(),
+                    last_fire: last_fire
+                        .iter()
+                        .map(|(k, t)| (k.clone(), instant_to_epoch(*t, save_secs)))
+                        .collect(),
+                    last_apply: last_apply
+                        .iter()
+                        .map(|(k, t)| (k.clone(), instant_to_epoch(*t, save_secs)))
+                        .collect(),
+                    delegated_ctx: delegated_ctx.clone(),
+                },
+            );
+        }
         if once {
             return Ok(());
         }
