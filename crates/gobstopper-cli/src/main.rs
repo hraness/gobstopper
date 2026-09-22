@@ -3199,30 +3199,45 @@ fn cmd_watch(
                                 context_tokens_after: if after > 0 { after } else { ctx },
                             };
                             last_fire.insert(session_key.clone(), std::time::Instant::now());
+                            // The provider reports `completed` even when its
+                            // compactor found nothing to do — context then
+                            // reads unchanged. Record that as a verified
+                            // no-op, not an apply, so reclaimed-token stats
+                            // and `provider-compacted` log lines stay honest.
+                            let noop = after > 0 && after >= ctx;
                             emit_event(
                                 &d,
                                 &done,
                                 "provider_compact",
-                                "applied",
+                                if noop { "skipped" } else { "applied" },
                                 trigger,
                                 started.elapsed().as_millis() as u64,
-                                if after == 0 {
+                                if noop {
+                                    Some("provider_noop")
+                                } else if after == 0 {
                                     Some("unresolved_context")
                                 } else {
                                     None
                                 },
                             );
-                            eprintln!(
-                                "provider-compacted closed devin session {} via acp /compact",
-                                d.handle.session_id
-                            );
+                            if noop {
+                                eprintln!(
+                                    "acp /compact for {} completed but context is unchanged (provider no-op)",
+                                    d.handle.session_id
+                                );
+                            } else {
+                                eprintln!(
+                                    "provider-compacted closed devin session {} via acp /compact",
+                                    d.handle.session_id
+                                );
+                                if last_apply.len() >= 4096 {
+                                    last_apply.clear();
+                                }
+                                last_apply.insert(session_key.clone(), started);
+                            }
                             if let Some(nfp) = session_fingerprint(&d) {
                                 settled.insert(session_key.clone(), nfp);
                             }
-                            if last_apply.len() >= 4096 {
-                                last_apply.clear();
-                            }
-                            last_apply.insert(session_key.clone(), started);
                             continue;
                         }
                         Err(e) => {

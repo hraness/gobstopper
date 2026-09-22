@@ -248,8 +248,14 @@ compaction, so `acp_compact` holds the session until a terminal status
 arrives. `session/load`'s result `_meta` carries `isLocked` /
 `lockHolderPid` — the authoritative ownership claim (ACP clients hold
 sessions without flock), and an owned session aborts before `/compact`.
-A compaction that started but never confirmed is left untouched rather
-than falling back to store mutation.
+The lock is process-exclusive: `session/load` on a session another
+client holds fails outright with `-32015 "already open in another
+process (PID …)"`, so a second client cannot reach a live session even
+before `/compact` is considered. A compaction that started but never
+confirmed is left untouched rather than falling back to store mutation.
+`completed` is also possible when the provider's compactor finds nothing
+to do — watch post-checks `context_tokens` and records a `skipped` /
+`provider_noop` event rather than a false `applied`.
 
 The same `install-hooks` run installs the Claude Code `UserPromptSubmit`
 advisor (`gobstopper hook prompt-policy:claude`) into
