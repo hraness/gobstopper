@@ -271,7 +271,10 @@ fn classify_candidate(text: &str) -> Option<KnowledgeKind> {
     }
 }
 
-pub fn prepare_manifest(handle: SessionHandle, bytes: &[u8], output: &Path) -> Result<usize> {
+/// Build a heuristic retention manifest in memory — the score-only half of
+/// `prepare_manifest`, for callers (e.g. the watch loop) that score
+/// realized pairs without persisting the manifest.
+pub fn build_manifest(handle: SessionHandle, bytes: &[u8]) -> Result<Manifest> {
     // Manifest prep is score-only too — a >64 MiB before-state still yields
     // a valid manifest; only the replay arm would refuse it downstream.
     let transcript = parse_with_limit(handle, bytes, MAX_AUDIT_BYTES, "512 MiB")?;
@@ -313,14 +316,18 @@ pub fn prepare_manifest(handle: SessionHandle, bytes: &[u8], output: &Path) -> R
         !checks.is_empty(),
         "no heuristic retention candidates; supply reviewed annotations"
     );
-    let count = checks.len();
-    let manifest = Manifest {
+    Ok(Manifest {
         schema: "gobstopper-retention-v1".to_string(),
         source_sha256: copy::sha256(bytes),
         label_source: "heuristic".to_string(),
         checks,
         growth: Vec::new(),
-    };
+    })
+}
+
+pub fn prepare_manifest(handle: SessionHandle, bytes: &[u8], output: &Path) -> Result<usize> {
+    let manifest = build_manifest(handle, bytes)?;
+    let count = manifest.checks.len();
     let data = serde_json::to_vec_pretty(&manifest)?;
     transaction::publish_new(output, &data)?;
     Ok(count)

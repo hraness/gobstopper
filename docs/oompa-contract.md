@@ -60,3 +60,11 @@ Every compaction decision or outcome appends one JSONL record
 Consumers: aicharts (occupancy-over-time + savings dashboards; resolves
 the cumulative-counter-regression ambiguity), oompa (timeline evidence).
 Numeric only — no transcript content, no freeform error text.
+
+Compaction paths that vault a before/after pair (Devin `acp /compact`,
+in-place applies) also attach additive evidence fields when present:
+`snapshot_before_sha256`/`snapshot_after_sha256` (vault object ids) and
+`retention_total`/`retention_retained`/`retention_lexical` — a score-only
+realized audit bound to the exact before-bytes, same measurement the
+offline `retention-audit.py` driver reports. Absent means unmeasured,
+never failure.

@@ -480,6 +480,11 @@ mod tests {
             items_covered: 10,
             duration_ms: 5,
             error_code: None,
+            snapshot_before_sha256: None,
+            snapshot_after_sha256: None,
+            retention_total: None,
+            retention_retained: None,
+            retention_lexical: None,
         }
     }
 
