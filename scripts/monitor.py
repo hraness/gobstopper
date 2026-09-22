@@ -250,6 +250,9 @@ def session_rows(report, sessions, previous):
             "lifetime_input_tokens": number(current.get("lifetimeInputTokens")),
             "lifetime_cached_tokens": number(current.get("lifetimeCachedTokens")),
             "last_activity_ms": number(current.get("lastActivityMs")),
+            "closed_session_compact": (current.get("closedSessionCompact")
+                                       if current.get("closedSessionCompact") in
+                                       ("available", "unavailable:sub-agent") else None),
             "context_drop_tokens": (max(0, old_context - context) if comparable
                                     and old_context is not None and context is not None else None),
             "native_hook_applied": native,

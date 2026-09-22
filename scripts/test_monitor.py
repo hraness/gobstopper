@@ -38,6 +38,7 @@ def report(context=100000, native=2):
                 "lifetimeInputTokens": 500000,
                 "lifetimeCachedTokens": 400000,
                 "lastActivityMs": 1790000000000,
+                "closedSessionCompact": "available",
                 "compactions": {"applied": 10, "nativeHookApplied": native},
             },
         } for session in (A, UNRELATED)],
@@ -241,6 +242,19 @@ else:
         del value["sessions"][0]["gobstopper"]["compactions"]["nativeHookApplied"]
         self.report_file.write_text(json.dumps(value))
         self.assertIsNone(self.sample()["sessions"][0]["native_hook_applied"])
+
+    def test_closed_session_compact_passthrough(self):
+        row = self.sample()["sessions"][0]
+        self.assertEqual(row["closed_session_compact"], "available")
+        value = report()
+        value["sessions"][0]["gobstopper"]["closedSessionCompact"] = "unavailable:sub-agent"
+        self.report_file.write_text(json.dumps(value))
+        row = self.sample()["sessions"][0]
+        self.assertEqual(row["closed_session_compact"], "unavailable:sub-agent")
+        # Unrecognized values stay absent, never pass through raw.
+        value["sessions"][0]["gobstopper"]["closedSessionCompact"] = "unexpected"
+        self.report_file.write_text(json.dumps(value))
+        self.assertIsNone(self.sample()["sessions"][0]["closed_session_compact"])
 
     def test_retention_summary_counts_allowlisted_events_and_flags_lossy(self):
         log = self.root / "events.jsonl"

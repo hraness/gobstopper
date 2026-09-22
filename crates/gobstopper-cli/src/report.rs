@@ -280,6 +280,17 @@ pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Valu
         } else {
             Value::from(handle.session_id.as_str())
         };
+        // Whether a closed session can take the provider-native compaction
+        // path under `auto_compact_closed`. Codex multi-agent v2 sub-agent
+        // threads reject `thread/resume` outright — only the parent can
+        // compact them — so they are reported as unavailable rather than
+        // discovered as failures at apply time.
+        let closed_session_compact = match handle.provider {
+            Provider::Codex if gobstopper_adapters::codex::is_subagent_thread(&handle.path) => {
+                "unavailable:sub-agent"
+            }
+            _ => "available",
+        };
 
         out.push(json!({
             "provider": handle.provider.as_str(),
@@ -296,6 +307,7 @@ pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Valu
                 "lifetimeCachedTokens": d.usage.lifetime_cached_tokens,
                 "modelContextWindow": d.usage.model_context_window,
                 "lastActivityMs": last_activity_ms,
+                "closedSessionCompact": closed_session_compact,
                 "compactions": {
                     "applied": applied,
                     "nativeHookApplied": agg.map(|a| a.native_hook_applied).unwrap_or(0),
@@ -434,6 +446,7 @@ pub fn cohort_summary(cfg: &crate::config::Config, events: &[CompactionEvent]) -
 mod tests {
     use super::*;
     use gobstopper_core::{SessionHandle, UsageSample};
+    use std::fs;
     use std::path::PathBuf;
 
     const UUID_A: &str = "3f6b1a2c-9d4e-4f5a-8b6c-7d8e9f0a1b2c";
@@ -643,6 +656,7 @@ mod tests {
 
         let g = &s["gobstopper"];
         assert_eq!(g["sessionIdNative"], UUID_A);
+        assert_eq!(g["closedSessionCompact"], "available");
         assert_eq!(g["contextTokens"], 42_000);
         assert_eq!(g["lifetimeInputTokens"], 100_000);
         assert_eq!(g["lifetimeCachedTokens"], 30_000);
@@ -680,6 +694,26 @@ mod tests {
         assert_eq!(counts["applied"], 2);
         assert_eq!(counts["nativeHookApplied"], 1);
         assert_eq!(counts["estReclaimedTokens"], 100);
+    }
+
+    #[test]
+    fn closed_session_compact_marks_subagent_threads_unavailable() {
+        let dir = std::env::temp_dir().join(format!("gob-report-{}", std::process::id()));
+        let _ = fs::create_dir_all(&dir);
+        let path = dir.join("rollout-sub.jsonl");
+        fs::write(
+            &path,
+            "{\"type\":\"session_meta\",\"payload\":{\"source\":{\"subagent\":{\"thread_spawn\":{\"parent_thread_id\":\"p\"}}}}}\n",
+        )
+        .unwrap();
+        let mut d = discovered(Provider::Codex, UUID_A, 0);
+        d.handle.path = path.clone();
+        let report = build_report(&[d], &[]);
+        assert_eq!(
+            report["sessions"][0]["gobstopper"]["closedSessionCompact"],
+            "unavailable:sub-agent"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]
