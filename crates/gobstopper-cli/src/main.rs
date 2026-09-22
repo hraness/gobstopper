@@ -15,7 +15,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use gobstopper_adapters::detect::{self, Discovered, Roots};
 use gobstopper_adapters::{
-    codex, copy, devin, eval, fork, plugins, recovery, vault, verify, AdapterError,
+    codex, copy, devin, eval, fork, plugins, recovery, study, vault, verify, AdapterError,
 };
 use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
 use gobstopper_core::plan::{CompactionPlan, Edit};
@@ -972,9 +972,10 @@ fn snapshot_before_edit(d: &Discovered, strategy: &str) -> Result<vault::VaultEn
     Ok(entry)
 }
 
-/// Emit a numeric compaction telemetry record (v1 schema). Telemetry is
-/// best-effort: a logging failure must never fail a compaction.
-fn emit_event(
+/// Build a numeric compaction telemetry record (v1 schema). Callers that
+/// attach optional evidence fields (snapshot refs, realized retention)
+/// build first, mutate, then append themselves.
+fn build_event(
     d: &Discovered,
     plan: &CompactionPlan,
     action: &str,
@@ -982,8 +983,8 @@ fn emit_event(
     trigger_tokens: u64,
     duration_ms: u64,
     error_code: Option<&str>,
-) {
-    let ev = CompactionEvent::new(
+) -> CompactionEvent {
+    CompactionEvent::new(
         d.handle.provider,
         &d.handle.session_id,
         &plan.strategy,
@@ -1003,10 +1004,50 @@ fn emit_event(
             .sum(),
         duration_ms,
         error_code.map(|s| s.to_string()),
+    )
+}
+
+/// Emit a numeric compaction telemetry record (v1 schema). Telemetry is
+/// best-effort: a logging failure must never fail a compaction.
+fn emit_event(
+    d: &Discovered,
+    plan: &CompactionPlan,
+    action: &str,
+    outcome: &str,
+    trigger_tokens: u64,
+    duration_ms: u64,
+    error_code: Option<&str>,
+) {
+    let ev = build_event(
+        d,
+        plan,
+        action,
+        outcome,
+        trigger_tokens,
+        duration_ms,
+        error_code,
     );
     if let Err(e) = append_event(&default_log_path(), &ev) {
         eprintln!("telemetry write failed (non-fatal): {e}");
     }
+}
+
+/// Score-only realized audit between two vault objects: heuristic checks
+/// bind to the before-bytes and are scored against the after-bytes.
+/// Returns (total, literal, lexical). Best-effort — `None` means
+/// unmeasured, never a compaction failure.
+fn realized_retention(
+    d: &Discovered,
+    before_sha: &str,
+    after_sha: &str,
+) -> Option<(u64, u64, u64)> {
+    let root = vault::default_root();
+    let before = vault::read_object(before_sha, &root).ok()?;
+    let after = vault::read_object(after_sha, &root).ok()?;
+    let manifest = study::build_manifest(d.handle.clone(), &before).ok()?;
+    let report = study::audit(d.handle.clone(), &before, manifest, String::new(), &after).ok()?;
+    let r = &report.rows.first()?.retention;
+    Some((r.total as u64, r.retained as u64, r.lexical_retained as u64))
 }
 
 fn apply_edits(d: &Discovered, plan: &CompactionPlan) -> Result<u64> {
@@ -3249,6 +3290,21 @@ fn cmd_watch(
                     != Some(false)
             {
                 if let Some(bin) = &devin_bin {
+                    // Provider-delegated compaction still mutates the
+                    // session — preserve the exact before-state first, same
+                    // guarantee as the transcript-apply path. A failed
+                    // snapshot aborts this pass rather than compacting with
+                    // no recovery point.
+                    let pre_snapshot = match snapshot_before_edit(&d, "pre-compact") {
+                        Ok(entry) => entry,
+                        Err(e) => {
+                            eprintln!(
+                                "acp /compact for {} skipped: pre-compact snapshot failed ({e})",
+                                d.handle.session_id
+                            );
+                            continue;
+                        }
+                    };
                     let started = std::time::Instant::now();
                     let cwd = d
                         .handle
@@ -3295,7 +3351,26 @@ fn cmd_watch(
                             // no-op, not an apply, so reclaimed-token stats
                             // and `provider-compacted` log lines stay honest.
                             let noop = after > 0 && after >= ctx;
-                            emit_event(
+                            // Land the after-state in the vault so every
+                            // delegated compaction produces a scorable
+                            // before/after pair, then attach realized
+                            // retention to the event. Best-effort: a missing
+                            // post snapshot or failed score never fails the
+                            // compaction that already applied.
+                            let post_sha = if noop {
+                                None
+                            } else {
+                                vault::snapshot(
+                                    &d.handle.path,
+                                    Provider::Devin,
+                                    &d.handle.session_id,
+                                    Some("post-compact"),
+                                    &vault::default_root(),
+                                )
+                                .map(|e| e.sha256)
+                                .ok()
+                            };
+                            let mut ev = build_event(
                                 &d,
                                 &done,
                                 "provider_compact",
@@ -3310,6 +3385,20 @@ fn cmd_watch(
                                     None
                                 },
                             );
+                            ev.snapshot_before_sha256 = Some(pre_snapshot.sha256.clone());
+                            ev.snapshot_after_sha256 = post_sha.clone();
+                            if let Some(post) = &post_sha {
+                                if let Some((total, retained, lexical)) =
+                                    realized_retention(&d, &pre_snapshot.sha256, post)
+                                {
+                                    ev.retention_total = Some(total);
+                                    ev.retention_retained = Some(retained);
+                                    ev.retention_lexical = Some(lexical);
+                                }
+                            }
+                            if let Err(e) = append_event(&default_log_path(), &ev) {
+                                eprintln!("telemetry write failed (non-fatal): {e}");
+                            }
                             if noop {
                                 eprintln!(
                                     "acp /compact for {} completed but context is unchanged (provider no-op)",
@@ -3338,7 +3427,7 @@ fn cmd_watch(
                                 context_tokens_before: ctx,
                                 context_tokens_after: ctx,
                             };
-                            emit_event(
+                            let mut ev = build_event(
                                 &d,
                                 &failed,
                                 "provider_compact",
@@ -3347,6 +3436,10 @@ fn cmd_watch(
                                 started.elapsed().as_millis() as u64,
                                 Some("provider_rejected"),
                             );
+                            ev.snapshot_before_sha256 = Some(pre_snapshot.sha256.clone());
+                            if let Err(e) = append_event(&default_log_path(), &ev) {
+                                eprintln!("telemetry write failed (non-fatal): {e}");
+                            }
                             // A compaction the provider started but never
                             // confirmed is still potentially writing —
                             // store elision underneath it could race its
@@ -3496,7 +3589,17 @@ fn cmd_watch(
                         );
                         match r {
                             Ok(receipt) => {
-                                emit_event(
+                                let before_sha = receipt.snapshot_manifest_sha256.clone();
+                                let post_sha = vault::snapshot(
+                                    &d.handle.path,
+                                    d.handle.provider,
+                                    &d.handle.session_id,
+                                    Some("post-compact"),
+                                    &vault::default_root(),
+                                )
+                                .map(|e| e.sha256)
+                                .ok();
+                                let mut ev = build_event(
                                     &d,
                                     &plan,
                                     action,
@@ -3505,6 +3608,20 @@ fn cmd_watch(
                                     started.elapsed().as_millis() as u64,
                                     None,
                                 );
+                                ev.snapshot_before_sha256 = before_sha.clone();
+                                ev.snapshot_after_sha256 = post_sha.clone();
+                                if let (Some(before), Some(post)) = (&before_sha, &post_sha) {
+                                    if let Some((total, retained, lexical)) =
+                                        realized_retention(&d, before, post)
+                                    {
+                                        ev.retention_total = Some(total);
+                                        ev.retention_retained = Some(retained);
+                                        ev.retention_lexical = Some(lexical);
+                                    }
+                                }
+                                if let Err(e) = append_event(&default_log_path(), &ev) {
+                                    eprintln!("telemetry write failed (non-fatal): {e}");
+                                }
                                 eprintln!(
                                     "compacted devin session in {} in place (~{} bytes reclaimed; snapshot {})",
                                     d.handle.cwd.as_deref().unwrap_or(Path::new("?")).display(),
@@ -3719,7 +3836,20 @@ fn cmd_watch(
                         });
                         match r {
                             Ok((entry, reclaimed)) => {
-                                emit_event(
+                                // Post-apply snapshot + realized retention —
+                                // every in-place compaction emits a scorable
+                                // before/after pair on its event. Best-effort:
+                                // evidence gaps never fail a completed apply.
+                                let post_sha = vault::snapshot(
+                                    &d.handle.path,
+                                    d.handle.provider,
+                                    &d.handle.session_id,
+                                    Some("post-compact"),
+                                    &vault::default_root(),
+                                )
+                                .map(|e| e.sha256)
+                                .ok();
+                                let mut ev = build_event(
                                     &d,
                                     &plan,
                                     action,
@@ -3728,6 +3858,20 @@ fn cmd_watch(
                                     started.elapsed().as_millis() as u64,
                                     None,
                                 );
+                                ev.snapshot_before_sha256 = Some(entry.sha256.clone());
+                                ev.snapshot_after_sha256 = post_sha.clone();
+                                if let Some(post) = &post_sha {
+                                    if let Some((total, retained, lexical)) =
+                                        realized_retention(&d, &entry.sha256, post)
+                                    {
+                                        ev.retention_total = Some(total);
+                                        ev.retention_retained = Some(retained);
+                                        ev.retention_lexical = Some(lexical);
+                                    }
+                                }
+                                if let Err(e) = append_event(&default_log_path(), &ev) {
+                                    eprintln!("telemetry write failed (non-fatal): {e}");
+                                }
                                 eprintln!(
                                     "compacted claude transcript {} in place (~{reclaimed} bytes; snapshot {})",
                                     d.handle.path.display(),

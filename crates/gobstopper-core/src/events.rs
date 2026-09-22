@@ -49,6 +49,23 @@ pub struct CompactionEvent {
     /// (e.g. "io", "provider_rejected", "unresolved_context") — never a
     /// freeform message.
     pub error_code: Option<String>,
+    /// Vault object holding the exact pre-compaction bytes, when the
+    /// compaction path preserved them. Hash identifier only — never
+    /// content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_before_sha256: Option<String>,
+    /// Vault object holding the post-compaction bytes, when recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_after_sha256: Option<String>,
+    /// Realized retention: heuristic checks bound to the before-state,
+    /// scored against the after-state. `total`/`retained` (literal)/
+    /// `lexical` (≥75% token coverage). Absent when unmeasured.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_total: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_retained: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub retention_lexical: Option<u64>,
 }
 
 impl CompactionEvent {
@@ -90,6 +107,11 @@ impl CompactionEvent {
             items_covered,
             duration_ms,
             error_code,
+            snapshot_before_sha256: None,
+            snapshot_after_sha256: None,
+            retention_total: None,
+            retention_retained: None,
+            retention_lexical: None,
         }
     }
 }
@@ -285,6 +307,67 @@ mod tests {
         assert_eq!(back.provider, Provider::ClaudeCode);
         // Saturating: after > before yields zero reclaimed, not underflow.
         assert_eq!(back.est_reclaimed_tokens, 0);
+    }
+
+    #[test]
+    fn evidence_fields_are_additive_and_backward_compatible() {
+        let mut event = CompactionEvent::new(
+            Provider::Devin,
+            "sess-9",
+            "auto",
+            "provider_compact",
+            "applied",
+            250_000,
+            300_000,
+            150_000,
+            0,
+            120,
+            None,
+        );
+        // Absent fields serialize nothing — old consumers see v1 shape.
+        let bare = serde_json::to_string(&event).unwrap();
+        assert!(!bare.contains("retention_total"));
+        assert!(!bare.contains("snapshot_before_sha256"));
+
+        event.snapshot_before_sha256 = Some("ab".repeat(32));
+        event.snapshot_after_sha256 = Some("cd".repeat(32));
+        event.retention_total = Some(32);
+        event.retention_retained = Some(13);
+        event.retention_lexical = Some(27);
+        let json = serde_json::to_string(&event).unwrap();
+        let back: CompactionEvent = serde_json::from_str(&json).unwrap();
+        assert!(valid_event(&back));
+        assert_eq!(back.retention_lexical, Some(27));
+        assert_eq!(back.snapshot_before_sha256.as_deref().unwrap().len(), 64);
+
+        // Pre-field records (the shipped v1 lines) still deserialize.
+        let legacy = CompactionEvent::new(
+            Provider::Codex,
+            "s",
+            "elide",
+            "transcript_compact",
+            "applied",
+            1_000,
+            1_200,
+            300,
+            0,
+            5,
+            None,
+        );
+        let mut legacy_json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&legacy).unwrap()).unwrap();
+        for key in [
+            "snapshot_before_sha256",
+            "snapshot_after_sha256",
+            "retention_total",
+            "retention_retained",
+            "retention_lexical",
+        ] {
+            legacy_json.as_object_mut().unwrap().remove(key);
+        }
+        let back: CompactionEvent = serde_json::from_value(legacy_json).unwrap();
+        assert!(valid_event(&back));
+        assert_eq!(back.retention_total, None);
     }
 
     #[test]
