@@ -44,6 +44,18 @@ SEEDS = {
               'One correction: an earlier status note claimed tests already passed — that was premature, and final verification is still pending. '
               'Here is the build output tail I have been watching:\n' + BULK +
               '\nAcknowledge the rules and we continue.',
+    # CLAUDE.md arm: the production pin channel — project memory, re-injected
+    # by the provider after compaction rather than summarized. Same
+    # conversational seed as 'pinned'; rules live in workspace CLAUDE.md.
+    # This arm drops --safe-mode (safe mode disables memory discovery), so
+    # the isolated config home + scratch workspace are the only boundary.
+    'claude_md': "We're mid-incident on the billing deploy and I need you to keep a few things straight while we work. "
+                 'The hard rules for this incident live in the project instructions — they bind, and they were not my invention. '
+                 'The pending task on our board is to verify rollback before anything merges. '
+                 'For the audit log, reference receipt code COBALT_31415. '
+                 'One correction: an earlier status note claimed tests already passed — that was premature, and final verification is still pending. '
+                 'Here is the build output tail I have been watching:\n' + BULK +
+                 '\nAcknowledge the rules and we continue.',
 }
 # Rules for the 'pinned' arm — appended to the system prompt (safe mode
 # disables CLAUDE.md), never spoken in the transcript.
@@ -59,6 +71,7 @@ PINNED_RULES_MD = (
 RULE_MARKERS = {
     'constraints': ('approval', 'services/billing', 'payments worker', 'rollback'),
     'pinned': ('approval', 'services/billing', 'payments worker', 'cargo test'),
+    'claude_md': ('approval', 'services/billing', 'payments worker', 'cargo test'),
 }
 RECALLS = {
     'default': ('Using the earlier session facts, return only JSON with these keys: migration_allowed (boolean), '
@@ -71,6 +84,7 @@ RECALLS = {
                'rules (array of strings — every project rule, as close to verbatim as you can). '
                'Do not guess missing facts; use null for unknown strings.'),
 }
+RECALLS['claude_md'] = RECALLS['pinned']
 
 
 def main():
@@ -100,6 +114,11 @@ def main():
     work.mkdir(mode=0o700)
     binary = args.claude_bin.expanduser().resolve(strict=True)
     environment = dict(os.environ, CLAUDE_CONFIG_DIR=str(home), CLAUDE_CODE_SAFE_MODE='1')
+    if args.seed_style == 'claude_md':
+        # Project memory needs normal mode; the isolated config home and
+        # scratch workspace still bound what the provider can discover.
+        environment.pop('CLAUDE_CODE_SAFE_MODE')
+        (work / 'CLAUDE.md').write_text(PINNED_RULES_MD)
     RUNNER.DEADLINE = time.monotonic() + 600
     RUNNER.LIMIT = 4 * 1024 * 1024
     sid = str(uuid.uuid4())
@@ -112,7 +131,9 @@ def main():
         'binary_sha256': RUNNER.sha(binary.read_bytes()),
         'runner_sha256': RUNNER.sha(Path(__file__).read_bytes()),
         'command_runner_sha256': RUNNER.sha(Path(RUNNER.__file__).read_bytes()),
-        'tools': [], 'customizations': 'safe_mode',
+        'tools': [],
+        'customizations': ('project_memory_no_safe_mode' if args.seed_style == 'claude_md'
+                           else 'safe_mode'),
         'checks': ['native_boundary_persisted', 'migration_not_allowed', 'pending_task', 'exact_command', 'receipt_code']
                   + (['constraint_rules_recalled'] if args.seed_style in RULE_MARKERS else []),
         'limitations': ['One synthetic compaction and recall probe, not a coding task benchmark.', 'Provider-reported cost is not an invoice or measured savings.', 'Does not validate Devin compaction or changes to any live session.'],
@@ -142,8 +163,10 @@ def main():
         if not auth.get('loggedIn'):
             result['status'] = 'blocked_isolated_authentication'
         else:
-            common = ['-p', '--safe-mode', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+            common = ['-p', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
                       '--permission-mode', 'auto', '--model', registration['model'], '--max-budget-usd', '0.25', '--output-format', 'json']
+            if args.seed_style != 'claude_md':
+                common.append('--safe-mode')
             prompts = [SEEDS[args.seed_style], '/compact',
                        RECALLS.get(args.seed_style, RECALLS['default'])]
             for index, prompt in enumerate(prompts):

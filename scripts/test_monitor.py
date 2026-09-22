@@ -242,6 +242,38 @@ else:
         self.report_file.write_text(json.dumps(value))
         self.assertIsNone(self.sample()["sessions"][0]["native_hook_applied"])
 
+    def test_retention_summary_counts_allowlisted_events_and_flags_lossy(self):
+        log = self.root / "events.jsonl"
+        events = [
+            # measured, allowlisted, healthy
+            {"session_id": A, "retention_total": 10, "retention_retained": 6,
+             "retention_lexical": 8, "outcome": "applied"},
+            # measured, allowlisted, lossy (lexical < half of checks)
+            {"session_id": B, "retention_total": 20, "retention_retained": 1,
+             "retention_lexical": 4},
+            # unmeasured event — skipped
+            {"session_id": A, "outcome": "applied"},
+            # measured but not allowlisted — skipped
+            {"session_id": UNRELATED, "retention_total": 5,
+             "retention_retained": 5, "retention_lexical": 5},
+            # malformed + out-of-range — skipped
+            {"session_id": A, "retention_total": "big"},
+            {"session_id": A, "retention_total": 10**9},
+            "not json",
+        ]
+        log.write_text("".join(json.dumps(e) + "\n" if not isinstance(e, str)
+                              else e + "\n" for e in events))
+        out = monitor.retention_summary(log, {A, B})
+        self.assertEqual(out["measured"], 2)
+        self.assertEqual(out["checks"], 30)
+        self.assertEqual(out["literal"], 7)
+        self.assertEqual(out["lexical"], 12)
+        self.assertEqual(out["lossy_sessions"], [B])
+        # Missing log and oversize log both read as empty, never error.
+        self.assertEqual(monitor.retention_summary(log.with_name("nope"), {A}),
+                         {"measured": 0, "checks": 0, "literal": 0,
+                          "lexical": 0, "lossy_sessions": []})
+
     def test_counter_reset_is_unknown_delta(self):
         self.sample()
         self.report_file.write_text(json.dumps(report(native=1)))

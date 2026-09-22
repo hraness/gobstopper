@@ -247,6 +247,10 @@ enum Cmd {
         /// control) instead of the raw event tail.
         #[arg(long)]
         cohort: bool,
+        /// Realized-retention view: only events carrying measured
+        /// retention, plus a per-provider rollup.
+        #[arg(long)]
+        retention: bool,
         /// Only events from the last N seconds/minutes/hours/days
         /// (e.g. `3600`, `30m`, `6h`, `2d`).
         #[arg(long)]
@@ -1035,17 +1039,18 @@ fn emit_event(
 /// Score-only realized audit between two vault objects: heuristic checks
 /// bind to the before-bytes and are scored against the after-bytes.
 /// Returns (total, literal, lexical). Best-effort — `None` means
-/// unmeasured, never a compaction failure.
-fn realized_retention(
-    d: &Discovered,
+/// unmeasured, never a compaction failure. `pub(crate)` so hooks can
+/// attach the same measurement to hook-fired compaction events.
+pub(crate) fn realized_retention(
+    handle: &SessionHandle,
     before_sha: &str,
     after_sha: &str,
 ) -> Option<(u64, u64, u64)> {
     let root = vault::default_root();
     let before = vault::read_object(before_sha, &root).ok()?;
     let after = vault::read_object(after_sha, &root).ok()?;
-    let manifest = study::build_manifest(d.handle.clone(), &before).ok()?;
-    let report = study::audit(d.handle.clone(), &before, manifest, String::new(), &after).ok()?;
+    let manifest = study::build_manifest(handle.clone(), &before).ok()?;
+    let report = study::audit(handle.clone(), &before, manifest, String::new(), &after).ok()?;
     let r = &report.rows.first()?.retention;
     Some((r.total as u64, r.retained as u64, r.lexical_retained as u64))
 }
@@ -1987,6 +1992,7 @@ fn cmd_events(
     session: Option<&str>,
     tail: usize,
     cohort: bool,
+    retention: bool,
     since: Option<&str>,
     json: bool,
 ) -> Result<()> {
@@ -2051,6 +2057,9 @@ fn cmd_events(
         }
         return Ok(());
     }
+    if retention {
+        return print_retention(&events, tail, json);
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&events)?);
         return Ok(());
@@ -2073,6 +2082,82 @@ fn cmd_events(
             e.outcome,
             e.context_tokens_before,
             e.context_tokens_after,
+        );
+    }
+    Ok(())
+}
+
+/// `events --retention`: per-event realized retention plus a
+/// per-provider rollup. Read-only over the local event log.
+fn print_retention(events: &[CompactionEvent], tail: usize, json: bool) -> Result<()> {
+    let measured: Vec<&CompactionEvent> = events
+        .iter()
+        .filter(|e| e.retention_total.is_some())
+        .collect();
+    let mut by_provider: std::collections::BTreeMap<&str, [u64; 4]> =
+        std::collections::BTreeMap::new();
+    for e in &measured {
+        let agg = by_provider.entry(e.provider.as_str()).or_default();
+        agg[0] += 1;
+        agg[1] += e.retention_retained.unwrap_or(0);
+        agg[2] += e.retention_lexical.unwrap_or(0);
+        agg[3] += e.retention_total.unwrap_or(0);
+    }
+    if json {
+        let providers: serde_json::Map<String, serde_json::Value> = by_provider
+            .iter()
+            .map(|(name, a)| {
+                (
+                    name.to_string(),
+                    serde_json::json!({
+                        "measured_events": a[0],
+                        "retained": a[1],
+                        "lexical_retained": a[2],
+                        "checks": a[3],
+                    }),
+                )
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "measured_events": measured.len(),
+                "events": measured,
+                "by_provider": providers,
+            }))?
+        );
+        return Ok(());
+    }
+    println!("{} events carry realized retention", measured.len());
+    let mut providers: Vec<_> = by_provider.iter().collect();
+    providers.sort_by(|a, b| a.0.cmp(b.0));
+    for (name, a) in providers {
+        println!(
+            "  {name:<12} {} measured — literal {}/{} lexical {}/{}",
+            a[0], a[1], a[3], a[2], a[3]
+        );
+    }
+    for e in measured.iter().rev().take(tail).rev() {
+        let total = e.retention_total.unwrap_or(0);
+        let retained = e.retention_retained.unwrap_or(0);
+        let lexical = e.retention_lexical.unwrap_or(0);
+        // Flag events whose summary dropped below half the bound checks —
+        // a lossy compaction worth reviewing, not a failure.
+        let flag = if total > 0 && lexical * 2 < total {
+            " LOSSY"
+        } else {
+            ""
+        };
+        println!(
+            "  {} {:<12} {:<18} literal {}/{} lexical {}/{} {}",
+            e.ts,
+            e.provider.as_str(),
+            e.session_id,
+            retained,
+            total,
+            lexical,
+            total,
+            flag
         );
     }
     Ok(())
@@ -2753,7 +2838,19 @@ fn cmd_apply(
             &roots(cli).codex_home,
         ) {
             Ok(()) => {
-                emit_event(
+                // `codex_compact` returns after the provider-side turn
+                // completes, so the fork's post state is final — vault it
+                // and score realized retention on the event.
+                let post_sha = vault::snapshot(
+                    &d.handle.path,
+                    d.handle.provider,
+                    &d.handle.session_id,
+                    Some("post-compact"),
+                    &vault::default_root(),
+                )
+                .map(|e| e.sha256)
+                .ok();
+                let mut ev = build_event(
                     &d,
                     &plan,
                     "provider_compact",
@@ -2762,6 +2859,20 @@ fn cmd_apply(
                     started.elapsed().as_millis() as u64,
                     None,
                 );
+                ev.snapshot_before_sha256 = Some(snapshot.sha256.clone());
+                ev.snapshot_after_sha256 = post_sha.clone();
+                if let Some(post) = &post_sha {
+                    if let Some((total, retained, lexical)) =
+                        realized_retention(&d.handle, &snapshot.sha256, post)
+                    {
+                        ev.retention_total = Some(total);
+                        ev.retention_retained = Some(retained);
+                        ev.retention_lexical = Some(lexical);
+                    }
+                }
+                if let Err(e) = append_event(&default_log_path(), &ev) {
+                    eprintln!("telemetry write failed (non-fatal): {e}");
+                }
                 println!("provider compaction requested");
             }
             Err(e) => {
@@ -3389,7 +3500,7 @@ fn cmd_watch(
                             ev.snapshot_after_sha256 = post_sha.clone();
                             if let Some(post) = &post_sha {
                                 if let Some((total, retained, lexical)) =
-                                    realized_retention(&d, &pre_snapshot.sha256, post)
+                                    realized_retention(&d.handle, &pre_snapshot.sha256, post)
                                 {
                                     ev.retention_total = Some(total);
                                     ev.retention_retained = Some(retained);
@@ -3612,7 +3723,7 @@ fn cmd_watch(
                                 ev.snapshot_after_sha256 = post_sha.clone();
                                 if let (Some(before), Some(post)) = (&before_sha, &post_sha) {
                                     if let Some((total, retained, lexical)) =
-                                        realized_retention(&d, before, post)
+                                        realized_retention(&d.handle, before, post)
                                     {
                                         ev.retention_total = Some(total);
                                         ev.retention_retained = Some(retained);
@@ -3724,6 +3835,20 @@ fn cmd_watch(
                         // PreCompact hook that snapshots into the vault.
                         if resolved.auto_compact_closed {
                             if let Some(bin) = &claude_bin {
+                                // Same invariant as every other mutating
+                                // path: preserve the before-state before the
+                                // provider rewrites it; a failed snapshot
+                                // aborts this pass.
+                                let pre_snapshot = match snapshot_before_edit(&d, "pre-compact") {
+                                    Ok(entry) => entry,
+                                    Err(e) => {
+                                        eprintln!(
+                                            "headless claude /compact for {} skipped: pre-compact snapshot failed ({e})",
+                                            d.handle.session_id
+                                        );
+                                        continue;
+                                    }
+                                };
                                 match gobstopper_adapters::claude::headless_compact(
                                     bin,
                                     &d.handle.session_id,
@@ -3747,7 +3872,16 @@ fn cmd_watch(
                                         } else {
                                             done.context_tokens_before
                                         };
-                                        emit_event(
+                                        let post_sha = vault::snapshot(
+                                            &d.handle.path,
+                                            d.handle.provider,
+                                            &d.handle.session_id,
+                                            Some("post-compact"),
+                                            &vault::default_root(),
+                                        )
+                                        .map(|e| e.sha256)
+                                        .ok();
+                                        let mut ev = build_event(
                                             &d,
                                             &done,
                                             "provider_compact",
@@ -3760,6 +3894,25 @@ fn cmd_watch(
                                                 None
                                             },
                                         );
+                                        ev.snapshot_before_sha256 =
+                                            Some(pre_snapshot.sha256.clone());
+                                        ev.snapshot_after_sha256 = post_sha.clone();
+                                        if let Some(post) = &post_sha {
+                                            if let Some((total, retained, lexical)) =
+                                                realized_retention(
+                                                    &d.handle,
+                                                    &pre_snapshot.sha256,
+                                                    post,
+                                                )
+                                            {
+                                                ev.retention_total = Some(total);
+                                                ev.retention_retained = Some(retained);
+                                                ev.retention_lexical = Some(lexical);
+                                            }
+                                        }
+                                        if let Err(e) = append_event(&default_log_path(), &ev) {
+                                            eprintln!("telemetry write failed (non-fatal): {e}");
+                                        }
                                         eprintln!(
                                             "provider-compacted closed claude session {} via /compact",
                                             d.handle.path.display()
@@ -3862,7 +4015,7 @@ fn cmd_watch(
                                 ev.snapshot_after_sha256 = post_sha.clone();
                                 if let Some(post) = &post_sha {
                                     if let Some((total, retained, lexical)) =
-                                        realized_retention(&d, &entry.sha256, post)
+                                        realized_retention(&d.handle, &entry.sha256, post)
                                     {
                                         ev.retention_total = Some(total);
                                         ev.retention_retained = Some(retained);
@@ -4480,6 +4633,7 @@ fn main() -> Result<()> {
             session,
             tail,
             cohort,
+            retention,
             since,
             json,
         } => cmd_events(
@@ -4487,6 +4641,7 @@ fn main() -> Result<()> {
             session.as_deref(),
             *tail,
             *cohort,
+            *retention,
             since.as_deref(),
             *json,
         ),
