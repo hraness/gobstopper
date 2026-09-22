@@ -3185,12 +3185,24 @@ fn cmd_watch(
                         resolved.acp_timeout_secs,
                     ) {
                         Ok(()) => {
-                            let after = gobstopper_adapters::devin::session_observation(
-                                &roots(cli).devin_home,
-                                &d.handle.session_id,
-                            )
-                            .map(|(usage, _)| usage.context_tokens)
-                            .unwrap_or(0);
+                            // The provider's store write can lag the
+                            // `completed` status — caring-suit read an
+                            // unchanged context right after completion and
+                            // the summary chain landed moments later. Poll
+                            // briefly before declaring a provider no-op.
+                            let mut after = 0u64;
+                            for _ in 0..6 {
+                                after = gobstopper_adapters::devin::session_observation(
+                                    &roots(cli).devin_home,
+                                    &d.handle.session_id,
+                                )
+                                .map(|(usage, _)| usage.context_tokens)
+                                .unwrap_or(0);
+                                if after > 0 && after < ctx {
+                                    break;
+                                }
+                                std::thread::sleep(std::time::Duration::from_secs(15));
+                            }
                             let done = CompactionPlan {
                                 strategy: resolved.strategy.clone(),
                                 rationale: "auto (closed devin): acp /compact".to_string(),
