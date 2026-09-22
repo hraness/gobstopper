@@ -568,7 +568,9 @@ fn eval_spec_bytes(
             .find(|e| e.sha256 == sha)
             .with_context(|| format!("no vault entry for {sha}"))?;
         let bytes = vault::read_object(&entry.sha256, &root)?;
-        let bytes = if entry.provider == Provider::Devin {
+        // Devin vault objects are the session's canonical export already;
+        // only a hypothetical raw store image needs materializing first.
+        let bytes = if entry.provider == Provider::Devin && bytes.starts_with(b"SQLite format 3") {
             let temp = std::env::temp_dir().join(format!("gobstopper-audit-{sha}.db"));
             std::fs::write(&temp, &bytes).with_context(|| format!("write {}", temp.display()))?;
             let exported = devin::export_bytes(&temp, &entry.session_id);

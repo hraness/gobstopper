@@ -4,6 +4,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import re
 import time
 
 SPEC = importlib.util.spec_from_file_location('study_runner', Path(__file__).with_name('compaction-study.py'))
@@ -23,6 +24,9 @@ SKIP_PREFIXES = ('/tmp/', '/var/', '/private/tmp/', '/private/var/')
 MARKER = {
     'claude_code': b'compact_boundary',
     'codex': b'"type":"compacted"',
+    # Devin /compact lands a summary node with metadata.summarized_from set
+    # to the node it summarizes (int); unrelated nodes carry null.
+    'devin': re.compile(rb'"summarized_from":\d'),
 }
 MAX_TRANSIT_BYTES = 512 * 1024 * 1024  # mirrors transaction::max_transcript_bytes
 MAX_PAIRS_PER_SESSION = 3
@@ -73,7 +77,9 @@ def index_visible(entry):
 
 def signature(provider, data):
     marker = MARKER.get(provider)
-    return data.count(marker) if marker is not None else None
+    if marker is None:
+        return None
+    return len(marker.findall(data)) if hasattr(marker, 'findall') else data.count(marker)
 
 
 def pairs(entries, read, skipped):
