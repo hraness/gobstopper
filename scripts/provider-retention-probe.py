@@ -34,16 +34,42 @@ SEEDS = {
                    'One correction: an earlier status note claimed tests already passed — that was premature, and final verification is still pending. '
                    'Here is the build output tail I have been watching:\n' + BULK +
                    '\nRepeat the rules back to me before we continue.',
+    # Pinned-channel arm: rules live only in the appended system prompt —
+    # the provider's own pinned-context mechanism, re-sent verbatim every
+    # turn rather than summarized. The seed keeps the conversational facts.
+    'pinned': "We're mid-incident on the billing deploy and I need you to keep a few things straight while we work. "
+              'The hard rules for this incident live in the system context — they bind, and they were not my invention. '
+              'The pending task on our board is to verify rollback before anything merges. '
+              'For the audit log, reference receipt code COBALT_31415. '
+              'One correction: an earlier status note claimed tests already passed — that was premature, and final verification is still pending. '
+              'Here is the build output tail I have been watching:\n' + BULK +
+              '\nAcknowledge the rules and we continue.',
 }
-# Distinctive substring per extra rule in the 'constraints' seed — presence
-# in the recalled rules array scores that rule as lexically retained.
-RULE_MARKERS = ('approval', 'services/billing', 'payments worker', 'rollback')
+# Rules for the 'pinned' arm — appended to the system prompt (safe mode
+# disables CLAUDE.md), never spoken in the transcript.
+PINNED_RULES_MD = (
+    '# Incident rules\n'
+    '- Never allow a production migration without my approval — approval has NOT been granted.\n'
+    '- Stay inside services/billing/ only; do not touch anything outside that tree.\n'
+    '- The payments worker is holding an in-flight settlement batch — do not restart it.\n'
+    '- Run the exact command `cargo test --workspace --locked` before anything merges.\n'
+)
+# Distinctive substring per extra rule — presence in the recalled rules
+# array scores that rule as lexically retained.
+RULE_MARKERS = {
+    'constraints': ('approval', 'services/billing', 'payments worker', 'rollback'),
+    'pinned': ('approval', 'services/billing', 'payments worker', 'cargo test'),
+}
 RECALLS = {
     'default': ('Using the earlier session facts, return only JSON with these keys: migration_allowed (boolean), '
                 'pending_task (string), test_command (string), receipt_code (string). Do not guess missing facts; use null for unknown strings.'),
     'constraints': ('Using the earlier session facts, return only JSON with these keys: migration_allowed (boolean), '
                     'pending_task (string), test_command (string), receipt_code (string), rules (array of strings — '
                     'every rule I gave you, as close to verbatim as you can). Do not guess missing facts; use null for unknown strings.'),
+    'pinned': ('Using the earlier session facts and the project rules, return only JSON with these keys: '
+               'migration_allowed (boolean), pending_task (string), test_command (string), receipt_code (string), '
+               'rules (array of strings — every project rule, as close to verbatim as you can). '
+               'Do not guess missing facts; use null for unknown strings.'),
 }
 
 
@@ -88,7 +114,7 @@ def main():
         'command_runner_sha256': RUNNER.sha(Path(RUNNER.__file__).read_bytes()),
         'tools': [], 'customizations': 'safe_mode',
         'checks': ['native_boundary_persisted', 'migration_not_allowed', 'pending_task', 'exact_command', 'receipt_code']
-                  + (['constraint_rules_recalled'] if args.seed_style == 'constraints' else []),
+                  + (['constraint_rules_recalled'] if args.seed_style in RULE_MARKERS else []),
         'limitations': ['One synthetic compaction and recall probe, not a coding task benchmark.', 'Provider-reported cost is not an invoice or measured savings.', 'Does not validate Devin compaction or changes to any live session.'],
     }
     RUNNER.save(root / 'registration.json', registration)
@@ -122,7 +148,10 @@ def main():
                        RECALLS.get(args.seed_style, RECALLS['default'])]
             for index, prompt in enumerate(prompts):
                 result['provider_commands'] += 1
-                response = invoke([*common, '--session-id' if index == 0 else '--resume', sid], f'step-{index}', prompt)
+                argv = [*common, '--session-id' if index == 0 else '--resume', sid]
+                if args.seed_style == 'pinned':
+                    argv += ['--append-system-prompt', PINNED_RULES_MD]
+                response = invoke(argv, f'step-{index}', prompt)
                 if response.get('session_id') != sid:
                     raise RuntimeError('provider_session_identity_mismatch')
                 result['reported_cost_usd'] += response.get('total_cost_usd', 0.0)
@@ -155,10 +184,10 @@ def main():
                         'verify rollback' in str(answer.get('pending_task')),
                         'cargo test --workspace --locked' in str(answer.get('test_command')),
                         answer.get('receipt_code') == 'COBALT_31415'])
-                    if args.seed_style == 'constraints':
+                    if args.seed_style in RULE_MARKERS:
                         recalled = ' '.join(str(r) for r in answer.get('rules') or []).lower()
                         result['constraint_rules_recalled'] = sum(
-                            marker in recalled for marker in RULE_MARKERS)
+                            marker in recalled for marker in RULE_MARKERS[args.seed_style])
             result['status'] = 'qualified_synthetic_probe' if result['recall_checks_passed'] == 4 else 'recall_failed'
     except (OSError, ValueError, RuntimeError) as error:
         result['status'] = str(error) if isinstance(error, RuntimeError) else 'io_or_response_failure'
