@@ -843,13 +843,32 @@ pub fn headless_compact(
             format!("refusing unusual session id for --resume: {session_id:?}"),
         ));
     }
-    let mut child = Command::new(claude_bin)
-        .args(["--resume", session_id, "-p", "/compact"])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .map_err(|e| io_err(e.kind(), format!("spawn claude --resume -p /compact: {e}")))?;
+    // ETXTBSY can surface briefly when the binary was just (re)installed
+    // or written by a test; retry the spawn a few times before failing.
+    let mut child = {
+        let mut attempt = 0u32;
+        loop {
+            match Command::new(claude_bin)
+                .args(["--resume", session_id, "-p", "/compact"])
+                .stdin(Stdio::null())
+                .stdout(Stdio::null())
+                .stderr(Stdio::null())
+                .spawn()
+            {
+                Ok(c) => break c,
+                Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 5 => {
+                    attempt += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
+                }
+                Err(e) => {
+                    return Err(io_err(
+                        e.kind(),
+                        format!("spawn claude --resume -p /compact: {e}"),
+                    ))
+                }
+            }
+        }
+    };
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {
         match child.try_wait() {
