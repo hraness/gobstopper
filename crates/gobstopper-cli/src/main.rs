@@ -3127,6 +3127,109 @@ fn cmd_watch(
                 }
                 continue;
             }
+            // Provider-native Devin compaction needs nothing from our
+            // planner — the provider summarizes the session itself. For
+            // an idle treatment session with `auto_compact_closed`, try
+            // `devin acp` `session/load` + `/compact` before paying the
+            // export+evaluate cost; on failure the normal store-apply
+            // path below is the fallback. Live sessions defer above.
+            if d.handle.provider == Provider::Devin
+                && resolved.auto_compact_closed
+                && !d.handle.is_active()
+                && hooks::rollout_cohort(&cfg, d.handle.provider.as_str(), &d.handle.session_id)
+                    != Some(false)
+            {
+                if let Some(bin) = &devin_bin {
+                    let started = std::time::Instant::now();
+                    let cwd = d
+                        .handle
+                        .cwd
+                        .clone()
+                        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+                        .unwrap_or_else(|| PathBuf::from("/"));
+                    match gobstopper_adapters::devin::acp_compact(
+                        bin,
+                        &d.handle.session_id,
+                        &cwd,
+                        600,
+                    ) {
+                        Ok(()) => {
+                            let after = gobstopper_adapters::devin::session_observation(
+                                &roots(cli).devin_home,
+                                &d.handle.session_id,
+                            )
+                            .map(|(usage, _)| usage.context_tokens)
+                            .unwrap_or(0);
+                            let done = CompactionPlan {
+                                strategy: resolved.strategy.clone(),
+                                rationale: "auto (closed devin): acp /compact".to_string(),
+                                edits: vec![],
+                                context_tokens_before: ctx,
+                                context_tokens_after: if after > 0 { after } else { ctx },
+                            };
+                            last_fire.insert(session_key.clone(), std::time::Instant::now());
+                            emit_event(
+                                &d,
+                                &done,
+                                "provider_compact",
+                                "applied",
+                                trigger,
+                                started.elapsed().as_millis() as u64,
+                                if after == 0 {
+                                    Some("unresolved_context")
+                                } else {
+                                    None
+                                },
+                            );
+                            eprintln!(
+                                "provider-compacted closed devin session {} via acp /compact",
+                                d.handle.session_id
+                            );
+                            if let Some(nfp) = session_fingerprint(&d) {
+                                settled.insert(session_key.clone(), nfp);
+                            }
+                            if last_apply.len() >= 4096 {
+                                last_apply.clear();
+                            }
+                            last_apply.insert(session_key.clone(), started);
+                            continue;
+                        }
+                        Err(e) => {
+                            let failed = CompactionPlan {
+                                strategy: resolved.strategy.clone(),
+                                rationale: "auto (closed devin): acp /compact".to_string(),
+                                edits: vec![],
+                                context_tokens_before: ctx,
+                                context_tokens_after: ctx,
+                            };
+                            emit_event(
+                                &d,
+                                &failed,
+                                "provider_compact",
+                                "failed",
+                                trigger,
+                                started.elapsed().as_millis() as u64,
+                                Some("provider_rejected"),
+                            );
+                            eprintln!(
+                                "acp devin /compact for {} failed ({e}){}",
+                                d.handle.session_id,
+                                if resolved.auto_apply_store {
+                                    "; falling back to store elision"
+                                } else {
+                                    ""
+                                },
+                            );
+                            if !resolved.auto_apply_store {
+                                if let Some(fp) = &fp {
+                                    settled.insert(session_key.clone(), fp.clone());
+                                }
+                                continue;
+                            }
+                        }
+                    }
+                }
+            }
             let (transcript, source_sha256) = match copy::load_bound(d.handle.clone()) {
                 Ok(t) => t,
                 Err(e) => {
@@ -3236,98 +3339,6 @@ fn cmd_watch(
                                 settled.insert(session_key.clone(), fp.clone());
                             }
                             continue;
-                        }
-                        // Provider-native first when enabled: ACP
-                        // `session/load` + `/compact` runs the provider's
-                        // own file_compactor — deeper than deterministic
-                        // elision — on the idle session. On failure the
-                        // store apply remains the fallback.
-                        if resolved.auto_compact_closed {
-                            if let Some(bin) = &devin_bin {
-                                let cwd = d
-                                    .handle
-                                    .cwd
-                                    .clone()
-                                    .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-                                    .unwrap_or_else(|| PathBuf::from("/"));
-                                match gobstopper_adapters::devin::acp_compact(
-                                    bin,
-                                    &d.handle.session_id,
-                                    &cwd,
-                                    600,
-                                ) {
-                                    Ok(()) => {
-                                        let after =
-                                            gobstopper_adapters::devin::session_observation(
-                                                &roots(cli).devin_home,
-                                                &d.handle.session_id,
-                                            )
-                                            .map(|(usage, _)| usage.context_tokens)
-                                            .unwrap_or(0);
-                                        let mut done = plan.clone();
-                                        // The provider compacted — the
-                                        // plan's elision edits were not
-                                        // applied, so report items = 0.
-                                        done.edits.clear();
-                                        done.context_tokens_after = if after > 0 {
-                                            after
-                                        } else {
-                                            done.context_tokens_before
-                                        };
-                                        emit_event(
-                                            &d,
-                                            &done,
-                                            "provider_compact",
-                                            "applied",
-                                            trigger,
-                                            started.elapsed().as_millis() as u64,
-                                            if after == 0 {
-                                                Some("unresolved_context")
-                                            } else {
-                                                None
-                                            },
-                                        );
-                                        eprintln!(
-                                            "provider-compacted closed devin session {} via acp /compact",
-                                            d.handle.session_id
-                                        );
-                                        if let Some(nfp) = session_fingerprint(&d) {
-                                            settled.insert(session_key.clone(), nfp);
-                                        }
-                                        if last_apply.len() >= 4096 {
-                                            last_apply.clear();
-                                        }
-                                        last_apply.insert(session_key.clone(), started);
-                                        continue;
-                                    }
-                                    Err(e) => {
-                                        eprintln!(
-                                            "acp devin /compact for {} failed ({e}){}",
-                                            d.handle.session_id,
-                                            if resolved.auto_apply_store {
-                                                "; falling back to store elision"
-                                            } else {
-                                                ""
-                                            },
-                                        );
-                                        emit_event(
-                                            &d,
-                                            &plan,
-                                            "provider_compact",
-                                            "failed",
-                                            trigger,
-                                            started.elapsed().as_millis() as u64,
-                                            Some("provider_rejected"),
-                                        );
-                                        if !resolved.auto_apply_store {
-                                            if let Some(fp) = &fp {
-                                                settled.insert(session_key.clone(), fp.clone());
-                                            }
-                                            continue;
-                                        }
-                                    }
-                                }
-                            }
                         }
                         if !resolved.auto_apply_store {
                             continue;
