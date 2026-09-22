@@ -145,6 +145,9 @@ fn valid_event(event: &CompactionEvent) -> bool {
                     | "apply_failed"
                     | "verification_failed"
                     | "unresolved_context"
+                    | "spawn_failed"
+                    | "parent_thread"
+                    | "provider_noop"
             )
         })
         && event.est_reclaimed_tokens
