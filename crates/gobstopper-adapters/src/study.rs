@@ -272,7 +272,9 @@ fn classify_candidate(text: &str) -> Option<KnowledgeKind> {
 }
 
 pub fn prepare_manifest(handle: SessionHandle, bytes: &[u8], output: &Path) -> Result<usize> {
-    let transcript = parse(handle, bytes)?;
+    // Manifest prep is score-only too — a >64 MiB before-state still yields
+    // a valid manifest; only the replay arm would refuse it downstream.
+    let transcript = parse_with_limit(handle, bytes, MAX_AUDIT_BYTES, "512 MiB")?;
     let mut texts = slots(&transcript, bytes)?;
     let elidable: HashSet<_> = transcript
         .items
@@ -429,11 +431,21 @@ fn codex_item(item: &Value, pointer: &str, record: usize, out: &mut Vec<Slot>) {
     }
 }
 
-fn parse(mut handle: SessionHandle, bytes: &[u8]) -> Result<Transcript> {
-    ensure!(
-        bytes.len() <= MAX_SOURCE_BYTES,
-        "study source exceeds 64 MiB"
-    );
+/// Score-only audits never replay, so they can score sources up to the
+/// vault's own transit bound instead of the replay cap.
+const MAX_AUDIT_BYTES: usize = 512 * 1024 * 1024;
+
+fn parse(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript> {
+    parse_with_limit(handle, bytes, MAX_SOURCE_BYTES, "64 MiB")
+}
+
+fn parse_with_limit(
+    mut handle: SessionHandle,
+    bytes: &[u8],
+    max_bytes: usize,
+    label: &str,
+) -> Result<Transcript> {
+    ensure!(bytes.len() <= max_bytes, "study source exceeds {label}");
     ensure!(
         bytes.split(|b| *b == b'\n').count() <= gobstopper_core::validation::MAX_ITEMS + 1,
         "study source exceeds record limit"
@@ -786,10 +798,10 @@ pub fn audit(
     after_bytes: &[u8],
 ) -> Result<StudyReport> {
     let provider = handle.provider;
-    let before = parse(handle.clone(), before_bytes)?;
+    let before = parse_with_limit(handle.clone(), before_bytes, MAX_AUDIT_BYTES, "512 MiB")?;
     let checks = bind(&manifest, &before, before_bytes)?;
     let source_findings = verify::verify(provider, before_bytes);
-    let after = parse(handle, after_bytes)?;
+    let after = parse_with_limit(handle, after_bytes, MAX_AUDIT_BYTES, "512 MiB")?;
     let findings = verify::verify(provider, after_bytes);
     let retention = score(&checks, &slots(&after, after_bytes)?);
     Ok(StudyReport {
