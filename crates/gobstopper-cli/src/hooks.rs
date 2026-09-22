@@ -433,14 +433,22 @@ fn prompt_policy(
     let Some(session_id) = payload["session_id"].as_str() else {
         return Ok(None);
     };
-    // Slash commands are provider UI control, not prompts — and our own
-    // headless `claude --resume -p /compact` runs this hook with
-    // prompt="/compact". Advising or blocking on one would either inject
-    // noise into a compaction or block the compaction itself.
-    if payload["prompt"]
-        .as_str()
-        .is_some_and(|p| p.trim_start().starts_with('/'))
-    {
+    // Provider control traffic, not human prompts: slash commands (our
+    // own headless `claude --resume -p /compact` runs this hook with
+    // prompt="/compact") and the XML wrappers providers use for system
+    // injections — task notifications, reminders, command output.
+    // Advising one injects noise into control flow; blocking one eats a
+    // message the agent needs (a blocked task-notification hides a
+    // finished background task) while doing nothing to push the human
+    // toward `/compact` — their next real prompt still gets the ceiling.
+    if payload["prompt"].as_str().is_some_and(|p| {
+        let p = p.trim_start();
+        p.starts_with('/')
+            || p.starts_with("<task-notification")
+            || p.starts_with("<system-reminder")
+            || p.starts_with("<command-")
+            || p.starts_with("<local-command")
+    }) {
         return Ok(None);
     }
     let hinted = provider_hint.unwrap_or("");
@@ -545,8 +553,11 @@ fn prompt_policy(
         return Ok(None);
     }
     let control = decision["control"].as_str().unwrap_or("/compact");
+    // Addressed to the model: `/compact` is host-level in every provider,
+    // so the instruction is to escalate to the operator — telling the
+    // model to compact itself dead-ends ("can't self-invoke /compact").
     let context = format!(
-        "gobstopper: context is {context_tokens} tokens, above the {trigger}-token compaction trigger. Compact with `{control}` before continuing."
+        "gobstopper: context is {context_tokens} tokens, above the {trigger}-token compaction trigger. `{control}` is a host-level command you cannot invoke — surface this to your operator and recommend they run it before continuing."
     );
     let out = json!({
         "hookSpecificOutput": {
@@ -1299,9 +1310,18 @@ mod tests {
         over_trigger_transcript(&roots, "slashsess", 300_000);
         let vault_root = dir.join("vault");
         let log = dir.join("events.jsonl");
-        // `/compact` (including our own headless run's prompt) must not be
-        // advised, blocked, or even logged — it's provider UI control.
-        for prompt in ["/compact", "  /clear", "/compact focus on tests"] {
+        // `/compact` (including our own headless run's prompt) and
+        // provider system wrappers must not be advised, blocked, or even
+        // logged — they're control traffic, not human prompts.
+        for prompt in [
+            "/compact",
+            "  /clear",
+            "/compact focus on tests",
+            "<task-notification><status>completed</status></task-notification>",
+            "<system-reminder>watch your step</system-reminder>",
+            "<command-message>compact</command-message>",
+            "<local-command-stdout>done</local-command-stdout>",
+        ] {
             let out = handle_inner(
                 "prompt-policy:claude",
                 &format!(r#"{{"session_id":"slashsess","prompt":"{prompt}"}}"#),
@@ -1311,7 +1331,7 @@ mod tests {
                 &cfg,
             )
             .unwrap();
-            assert!(out.is_none(), "slash command {prompt:?} must be silent");
+            assert!(out.is_none(), "control prompt {prompt:?} must be silent");
         }
         assert!(
             gobstopper_core::events::read_events(&log)
