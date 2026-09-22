@@ -414,6 +414,30 @@ pub fn parent_thread(path: &Path) -> Option<String> {
     None
 }
 
+/// True when the session was spawned as a multi-agent v2 sub-agent.
+/// The app-server rejects `thread/resume` on these ("resume the parent
+/// first"), so provider-native compaction must target the parent instead.
+/// Plain `forked_from_id` threads resume fine and are not flagged here.
+pub fn is_subagent_thread(path: &Path) -> bool {
+    let Ok(file) = fs::File::open(path) else {
+        return false;
+    };
+    for line in BufReader::new(file).lines().take(64) {
+        let Ok(line) = line else { break };
+        let Ok(record) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if record.get("type").and_then(Value::as_str) != Some("session_meta") {
+            continue;
+        }
+        return record["payload"]
+            .get("source")
+            .and_then(|s| s.get("subagent"))
+            .is_some();
+    }
+    false
+}
+
 /// Read session identity from the head of the file.
 pub fn scan_meta(path: &Path) -> (Option<String>, Option<PathBuf>) {
     let Ok(file) = fs::File::open(path) else {
@@ -663,6 +687,33 @@ mod usage_tests {
 
     fn token_count(info: Value) -> Value {
         json!({"type": "event_msg", "payload": {"type": "token_count", "info": info}})
+    }
+
+    #[test]
+    fn is_subagent_thread_flags_only_subagent_source() {
+        let write = |payload: Value| {
+            let path = Scratch(std::env::temp_dir().join(format!(
+                "gob-codex-sub-{}-{}.jsonl",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            )));
+            fs::write(
+                &path.0,
+                json!({"type": "session_meta", "payload": payload}).to_string() + "\n",
+            )
+            .unwrap();
+            path
+        };
+        // Multi-agent spawn marker → sub-agent (resume rejected).
+        assert!(is_subagent_thread(
+            &write(json!({"source": {"subagent": {"thread_spawn": {"parent_thread_id": "p"}}}})).0
+        ));
+        // Plain fork → resumable, not a sub-agent.
+        assert!(!is_subagent_thread(
+            &write(json!({"forked_from_id": "p", "source": "vscode"})).0
+        ));
+        // Root thread.
+        assert!(!is_subagent_thread(&write(json!({"source": "vscode"})).0));
     }
 
     #[test]

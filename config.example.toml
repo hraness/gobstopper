@@ -14,6 +14,10 @@ min_savings_tokens = 4_096     # reject plans that reclaim less
 # Per-provider overrides
 [provider.codex]
 # trigger_tokens = 200_000
+# auto_compact_closed = true    # watch runs `thread/compact` on idle
+                               # over-trigger threads via `codex app-server`
+                               # (provider's own compactor). Sub-agent
+                               # threads can't be resumed and are skipped.
 
 [provider.claude_code]
 # trigger_tokens = 180_000
