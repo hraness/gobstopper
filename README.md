@@ -1,9 +1,9 @@
 <!-- hraness:gobstopper-landing:start -->
 # gobstopper
 
-Automatic context compaction for coding-agent sessions — built-in Codex
-and Claude Code adapters, native policy integration for Devin, and a bounded
-provider/strategy plugin protocol.
+Automatic context compaction for coding-agent sessions — built-in Codex,
+Claude Code, and Devin adapters with provider-native compaction for closed
+sessions, and a bounded provider/strategy plugin protocol.
 
 gobstopper is a cross-provider context compactor with exact, content-addressed
 recovery snapshots, resumable Claude Code and Codex transcript forks, and a
@@ -704,8 +704,9 @@ adapters are covered by unit, regression, property, and live-resume evidence.
 
 Direct provider controls still belong to the live session owner. Synthetic
 Codex `compacted` records, external model scoring, and semantic editor plugins
-remain explicitly experimental or trusted extension paths. Devin support is a
-native numeric policy/MCP handoff to `/compact`, not direct transcript surgery.
+remain explicitly experimental or trusted extension paths. Devin support covers
+detection, numeric policy/MCP handoff, closed-session `acp` compaction, and
+vault-exported session snapshots — never direct transcript surgery.
 See [docs/design.md](docs/design.md), [docs/roadmap.md](docs/roadmap.md),
 [docs/plugin-protocol.md](docs/plugin-protocol.md), and
 [docs/devin.md](docs/devin.md) for the boundaries.

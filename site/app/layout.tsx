@@ -108,7 +108,7 @@ const structuredData = {
       operatingSystem: "macOS, Linux",
       sameAs: GITHUB_URL,
       featureList: [
-        "Codex and Claude Code transcript detection",
+        "Codex, Claude Code, and Devin session detection",
         "Policy-driven context compaction",
         "Vault snapshots and undo",
         "Provider-native and file-fork strategies",
