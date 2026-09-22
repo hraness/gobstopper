@@ -139,6 +139,23 @@ class StudyRunnerTests(unittest.TestCase):
         many = [entry(ts, 'auto' if ts % 2 else 'post-compact') for ts in range(1, 13)]
         self.assertEqual(len(AUDIT.pairs(many, read, skipped)), AUDIT.MAX_PAIRS_PER_SESSION)
 
+    def test_rollup_aggregates_ok_rows_only(self):
+        rt = {'total': 10, 'retained': 5, 'lexical_retained': 7,
+              'same_origin_retained': 5, 'source_bound_retained': 2}
+        rows = [
+            {'provider': 'codex', 'status': 'ok', 'retention': dict(rt)},
+            {'provider': 'codex', 'status': 'ok', 'retention': dict(rt)},
+            {'provider': 'devin', 'status': 'ok', 'retention': dict(rt)},
+            {'provider': 'codex', 'status': 'failed'},
+            {'provider': 'codex', 'status': 'skipped:store_unreadable'},
+        ]
+        out = AUDIT.rollup(rows)
+        self.assertEqual(set(out), {'codex', 'devin'})
+        self.assertEqual(out['codex'], {'pairs': 2, 'checks': 20, 'retained': 10,
+                                        'lexical_retained': 14, 'same_origin_retained': 10,
+                                        'source_bound_retained': 4})
+        self.assertEqual(out['devin']['pairs'], 1)
+
     def test_seed_styles_carry_identical_facts(self):
         for style, seed in PROBE.SEEDS.items():
             facts = ('verify rollback', 'COBALT_31415', 'pending')

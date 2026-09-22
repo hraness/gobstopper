@@ -187,3 +187,31 @@ Legacy `preset.command` remains available only with
   `min_savings_tokens` are treated as no-ops.
 - Live provider processes remain owned by their runtime or oompa. Gobstopper
   offers native-control proposals but never becomes a competing writer.
+
+## Measured findings (realized audit, offline)
+
+Evidence from `scripts/retention-audit.py` over vault snapshot pairs plus
+`scripts/provider-retention-probe.py` synthetic runs. Retention = text
+presence in live records, not semantic equivalence.
+
+- Three provider compaction shapes: Codex rewrites history verbatim
+  (`replacement_history`), Claude writes a `compact_boundary` plus paraphrased
+  summary, Devin appends an additive `summarized_from` summary node that
+  shortcuts the live chain.
+- Literal vs lexical: Claude summary pairs score ~0-10% literal but ~25-50%
+  lexical (>=75% of a check's content tokens in one slot). Codex tracks
+  lit~lex (~60-95%). Devin sits between (~5-50% literal, ~60-90% lexical).
+- Constraint-class content is the worst-retained kind in Claude summaries
+  (per-kind lexical counts), behind procedures and facts.
+- Authority loss, not content loss: in constraint-heavy synthetic probes the
+  summary preserved rules verbatim but the model then treated them as
+  "adversarially-supplied" and refused recall (3 seed framings). Through the
+  pinned channel (`--append-system-prompt`) the same rules were echoed
+  verbatim, enforced (`migration_allowed: false`), and answered normally.
+- Design implication: provenance is the fragile dimension. Digest-style
+  compaction carries text but strips provenance (`source_bound` drops to
+  plain-masking levels in `eval-study`); pinned items should stay in original
+  provider records/roles rather than move onto a summary card.
+- Pairing note: hook labels do not bracket the boundary write; pairing keys
+  on byte-level mutation markers (`compact_boundary`, `"type":"compacted"`,
+  `"summarized_from":[0-9]`).
