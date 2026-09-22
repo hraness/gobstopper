@@ -190,6 +190,7 @@ fn audit_scores_realized_after_and_vault_specs() {
     assert_eq!(report["rows"][0]["arm"], "realized_after");
     assert_eq!(report["rows"][0]["status"], "realized");
     assert_eq!(report["rows"][0]["retention"]["retained"], 0);
+    assert_eq!(report["rows"][0]["retention"]["lexical_retained"], 0);
     // Snapshot the unchanged source into an isolated vault, then audit
     // against `vault:<sha256>`: every check stays source-bound.
     let snap = Command::new(env!("CARGO_BIN_EXE_gobstopper"))
@@ -220,6 +221,7 @@ fn audit_scores_realized_after_and_vault_specs() {
     );
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["rows"][0]["retention"]["source_bound_retained"], 1);
+    assert_eq!(report["rows"][0]["retention"]["lexical_retained"], 1);
     assert!(fixture.source.exists());
 }
 
