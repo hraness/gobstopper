@@ -60,23 +60,6 @@ pub fn is_store_path(path: &Path) -> bool {
     path.file_name().is_some_and(|n| n == "sessions.db")
 }
 
-/// Read a committed image of the shared store via SQLite's online backup
-/// API. A raw file read of a WAL-mode database can tear mid-checkpoint —
-/// observed in the vault as snapshots that fail to open — and a torn
-/// image is useless for both audit and restore. Backup is a read from
-/// the caller's side; a busy store surfaces as an error rather than a
-/// silently inconsistent copy.
-pub fn snapshot_store_bytes(db: &Path) -> Result<Vec<u8>, AdapterError> {
-    let src = open_readonly(db)?;
-    let temp = crate::transaction::Temporary::new(&std::env::temp_dir(), b"")?;
-    src.backup(rusqlite::MAIN_DB, &temp.path, None)
-        .map_err(|e| AdapterError::Io {
-            path: db.to_path_buf(),
-            source: std::io::Error::other(e),
-        })?;
-    crate::transaction::read(&temp.path)
-}
-
 fn open_readonly(db: &Path) -> Result<Connection, AdapterError> {
     Connection::open_with_flags(
         db,
@@ -400,7 +383,13 @@ fn scan_context(conn: &Connection, session_id: &str) -> UsageSample {
 /// file itself is never treated as the transcript.
 pub fn export_bytes(db: &Path, session_id: &str) -> Result<Vec<u8>, AdapterError> {
     let conn = open_readonly(db)?;
-    export_bytes_conn(&conn, db, session_id)
+    // Pin one WAL snapshot across both queries — otherwise a commit between
+    // the meta read and the node scan can tear the exported view.
+    conn.execute_batch("BEGIN DEFERRED")
+        .map_err(rusqlite_io(db))?;
+    let out = export_bytes_conn(&conn, db, session_id);
+    let _ = conn.execute_batch("ROLLBACK");
+    out
 }
 
 /// Export using an existing connection — used inside write transactions
@@ -2195,14 +2184,22 @@ mod tests {
     }
 
     #[test]
-    fn vault_snapshot_of_store_returns_consistent_db_image() {
+    fn vault_snapshot_of_store_holds_the_session_export() {
         let fx = Fixture::new("snap-store");
         fx.add_session("sess-s", "snap", 0, 1_790_006_000);
+        fx.add_session("sess-other", "snap", 0, 1_790_006_000);
         fx.add_node(
             "sess-s",
             0,
             None,
             serde_json::json!({"role": "user", "content": "safe"}),
+            None,
+        );
+        fx.add_node(
+            "sess-other",
+            0,
+            None,
+            serde_json::json!({"role": "user", "content": "someone else"}),
             None,
         );
         let vault_root = fx.root.join("vault");
@@ -2215,19 +2212,22 @@ mod tests {
         )
         .unwrap();
         let bytes = crate::vault::read_object(&entry.sha256, &vault_root).unwrap();
-        let image = fx.root.join("image.db");
-        fs::write(&image, &bytes).unwrap();
-        // The image opens as sqlite — a torn raw copy would fail here —
-        // and the session is intact inside it.
-        let conn = Connection::open(&image).unwrap();
-        let nodes: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM message_nodes WHERE session_id = 'sess-s'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(nodes, 1);
+        // The object is the session's canonical export — the same bytes
+        // restore_store consumes — not a raw copy of the shared store.
+        let text = String::from_utf8(bytes).unwrap();
+        let lines: Vec<&str> = text.lines().collect();
+        assert!(lines[0].contains("\"session_meta\""));
+        assert!(lines[0].contains("sess-s"));
+        assert_eq!(lines.len(), 2);
+        assert!(lines[1].contains("safe"));
+        assert!(!text.contains("someone else"));
+        // …and it parses as a transcript.
+        let mut handle = fx.handle("sess-s");
+        handle.path = fx.root.join("snapshot.jsonl");
+        assert!(!load_bytes(handle, text.as_bytes())
+            .unwrap()
+            .items
+            .is_empty());
     }
 
     #[test]

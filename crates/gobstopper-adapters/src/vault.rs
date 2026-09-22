@@ -194,13 +194,16 @@ pub fn snapshot(
     root: &Path,
 ) -> anyhow::Result<VaultEntry> {
     let path = path.canonicalize()?;
-    // A live provider store is WAL-mode sqlite: a raw file read can tear
-    // mid-checkpoint, so take SQLite's consistent backup image instead.
-    let data = if provider == Provider::Devin && crate::devin::is_store_path(&path) {
-        crate::devin::snapshot_store_bytes(&path)?
-    } else {
-        crate::transaction::read(&path)?
-    };
+    // Devin's unit of record is the session, not the shared WAL store: a
+    // raw store copy tears mid-checkpoint and doesn't scale (the store is
+    // shared and unbounded), while `restore_store` expects the canonical
+    // export. Snapshot the session's export, exported under one read
+    // transaction so the image is consistent.
+    if provider == Provider::Devin && crate::devin::is_store_path(&path) {
+        let data = crate::devin::export_bytes(&path, session_id)?;
+        return snapshot_data(&data, &path, provider, session_id, strategy, root);
+    }
+    let data = crate::transaction::read(&path)?;
     snapshot_data(&data, &path, provider, session_id, strategy, root)
 }
 

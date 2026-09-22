@@ -241,7 +241,8 @@ middle tier: a check counts when ≥75% of its normalized content tokens
 (lowercase alphanumeric, ≥4 chars, stopwords removed) appear together in one
 live slot — useful when a provider summary rephrases rather than repeats, but
 it is token coverage, not semantic equivalence. `by_kind` holds `[total,
-source-bound retained]`; the elidable subset is reported separately. Dead
+source-bound retained, lexical retained]`; the elidable subset is reported
+separately. Dead
 branches and metadata cannot satisfy a check. Pre-existing source verification
 errors and newly introduced errors are counted separately. Counts are not
 semantic or behavioral scores. Estimated context uses adapter item estimates, not stale provider usage records
