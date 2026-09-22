@@ -220,11 +220,22 @@ kill on a giant session still records the event.
 
 **ACP caveat:** hooks fire in the interactive `devin` TUI; Devin's ACP
 server mode (`devin acp`, e.g. under Windsurf) does not run lifecycle hooks
-— verified empirically. For ACP sessions the equivalent levers are the MCP
-`policy_check` tool and a global-rules entry in
+— verified empirically. For ACP sessions the equivalent advisory levers are
+the MCP `policy_check` tool and a global-rules entry in
 `~/.config/devin/AGENTS.md` instructing the agent to run
 `gobstopper policy-check --provider devin --session current --json` before
 substantive turns and obey `provider_compact` by running `/compact`.
+
+The ACP bridge *does* interpret `session/prompt` text matching an
+advertised command — so `watch` can drive provider-native compaction on
+**idle** sessions: `devin acp` → `session/load` → `session/prompt
+"/compact"` runs the provider's own `file_compactor` (verified: a summary
+node lands on the main chain; print-mode `-p "/compact"` is a silent
+no-op). Enabled per provider with `auto_compact_closed = true`; when the
+flock check says the session is idle and the rollout cohort is treatment,
+watch tries the ACP compact first and falls back to `auto_apply_store`
+elision on failure. Live (locked) sessions are never touched — the context
+is provider-owned.
 
 The same `install-hooks` run installs the Claude Code `UserPromptSubmit`
 advisor (`gobstopper hook prompt-policy:claude`) into

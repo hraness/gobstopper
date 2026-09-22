@@ -448,6 +448,138 @@ fn export_bytes_conn(
     Ok(out)
 }
 
+/// Provider-native compaction for an *idle* Devin session, driven over
+/// the ACP stdio bridge: `devin acp` → `initialize` → `session/load` →
+/// `session/prompt "/compact"`. The bridge interprets the text as the
+/// advertised `/compact` command and runs the provider's own compactor
+/// (a `file_compactor` summary node lands on the main chain). Print-mode
+/// `-p "/compact"` is a silent no-op by contrast — verified empirically.
+///
+/// The caller must already have proved the session's flock is free;
+/// `session/load` on a live-owned session would fork the context the
+/// TUI holds. The requests are pipelined (the bridge processes them in
+/// order); a `session/load` failure surfaces as the `session/prompt`
+/// error. The ACP server outlives the prompt reply, so the child is
+/// always killed on return.
+pub fn acp_compact(
+    devin_bin: &Path,
+    session_id: &str,
+    cwd: &Path,
+    timeout_secs: u64,
+) -> Result<(), AdapterError> {
+    use std::io::{BufRead, BufReader, Write};
+    use std::process::{Command, Stdio};
+    use std::time::{Duration, Instant};
+    let io_err = |kind, msg: String| AdapterError::Io {
+        path: devin_bin.to_path_buf(),
+        source: std::io::Error::new(kind, msg),
+    };
+    // Session ids are provider slugs/UUIDs; they only flow into JSON
+    // params here, but keep the same charset guard as the Claude path.
+    if session_id.is_empty()
+        || session_id.len() > 128
+        || !session_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        return Err(io_err(
+            std::io::ErrorKind::InvalidInput,
+            format!("refusing unusual session id for acp session/load: {session_id:?}"),
+        ));
+    }
+    let mut child = Command::new(devin_bin)
+        .arg("acp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|e| io_err(e.kind(), format!("spawn devin acp: {e}")))?;
+    let kill = |child: &mut std::process::Child| {
+        let _ = child.kill();
+        let _ = child.wait();
+    };
+    // Keep stdin open for the whole wait — the bridge may treat EOF as
+    // shutdown before it finishes the pipelined requests.
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| io_err(std::io::ErrorKind::Other, "devin acp stdin missing".into()))?;
+    let requests = [
+        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false}}}}),
+        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":session_id,"cwd":cwd,"mcpServers":[]}}),
+        serde_json::json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session_id,"prompt":[{"type":"text","text":"/compact"}]}}),
+    ];
+    for req in &requests {
+        if let Err(e) = writeln!(stdin, "{req}").and_then(|()| stdin.flush()) {
+            kill(&mut child);
+            return Err(io_err(e.kind(), format!("devin acp request write: {e}")));
+        }
+    }
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| io_err(std::io::ErrorKind::Other, "devin acp stdout missing".into()))?;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in BufReader::new(stdout).lines() {
+            match line {
+                Ok(line) => {
+                    if tx.send(line).is_err() {
+                        return;
+                    }
+                }
+                _ => return,
+            }
+        }
+    });
+    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    loop {
+        let now = Instant::now();
+        if now >= deadline {
+            kill(&mut child);
+            return Err(io_err(
+                std::io::ErrorKind::TimedOut,
+                "devin acp /compact timed out".into(),
+            ));
+        }
+        match rx.recv_timeout(deadline - now) {
+            Ok(line) => {
+                let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                    continue;
+                };
+                if v.get("id") != Some(&serde_json::json!(3)) {
+                    continue;
+                }
+                kill(&mut child);
+                return if let Some(err) = v.get("error") {
+                    Err(io_err(
+                        std::io::ErrorKind::Other,
+                        format!("devin acp /compact rejected: {err}"),
+                    ))
+                } else {
+                    Ok(())
+                };
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                kill(&mut child);
+                return Err(io_err(
+                    std::io::ErrorKind::TimedOut,
+                    "devin acp /compact timed out".into(),
+                ));
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                // The bridge died before answering id=3 — without the
+                // explicit reply we cannot prove the compact ran.
+                kill(&mut child);
+                return Err(io_err(
+                    std::io::ErrorKind::Other,
+                    "devin acp exited before the /compact reply".into(),
+                ));
+            }
+        }
+    }
+}
+
 /// Session id and working directory from an export file's first record.
 /// Used when a detached export is passed to `plan`/`verify` by path.
 pub fn scan_meta_export(path: &Path) -> (Option<String>, Option<PathBuf>) {
@@ -1983,5 +2115,64 @@ mod tests {
 
         assert!(chain_fingerprint(&db, "absent").is_none());
         assert!(chain_fingerprint(&fx.root.join("no.db"), "s1").is_none());
+    }
+
+    #[cfg(unix)]
+    fn fake_devin(dir: &Path, script: &str) -> PathBuf {
+        let bin = dir.join("devin");
+        fs::write(&bin, script).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&bin, fs::Permissions::from_mode(0o755)).unwrap();
+        bin
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acp_compact_loads_session_and_sends_compact() {
+        let dir = tmpdir("acp-ok");
+        let reqs = dir.join("requests.txt");
+        let bin = fake_devin(
+            &dir,
+            &format!(
+                "#!/bin/sh\nhead -n 3 > '{}'\nprintf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}'\nprintf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{}}}}'\nprintf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{{\"stopReason\":\"end_turn\"}}}}'\nsleep 5\n",
+                reqs.display()
+            ),
+        );
+        acp_compact(&bin, "sess-abc_123", Path::new("/tmp"), 30).unwrap();
+        let sent = fs::read_to_string(&reqs).unwrap();
+        assert!(sent.contains("\"method\":\"session/load\""), "got: {sent}");
+        assert!(
+            sent.contains("\"sessionId\":\"sess-abc_123\""),
+            "got: {sent}"
+        );
+        assert!(sent.contains("/compact"), "got: {sent}");
+
+        // A JSON-RPC error on the prompt id surfaces as an error.
+        let bin = fake_devin(
+            &dir,
+            "#!/bin/sh\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-1,\"message\":\"nope\"}}'\nsleep 5\n",
+        );
+        assert!(acp_compact(&bin, "sess-abc_123", Path::new("/tmp"), 30).is_err());
+
+        // Unusual session ids are refused before spawn.
+        assert!(acp_compact(&bin, "has space", Path::new("/tmp"), 30).is_err());
+        assert!(acp_compact(&bin, "", Path::new("/tmp"), 30).is_err());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acp_compact_times_out_and_handles_bridge_death() {
+        let dir = tmpdir("acp-timeout");
+        let bin = fake_devin(&dir, "#!/bin/sh\nsleep 60\n");
+        let start = std::time::Instant::now();
+        let err = acp_compact(&bin, "sess-abc", Path::new("/tmp"), 1).unwrap_err();
+        assert!(start.elapsed() < std::time::Duration::from_secs(30));
+        assert!(err.to_string().contains("timed out"), "got: {err}");
+
+        // Bridge exits without answering id=3 — cannot prove the compact ran.
+        let bin = fake_devin(&dir, "#!/bin/sh\nexit 0\n");
+        assert!(acp_compact(&bin, "sess-abc", Path::new("/tmp"), 30).is_err());
+        fs::remove_dir_all(&dir).ok();
     }
 }

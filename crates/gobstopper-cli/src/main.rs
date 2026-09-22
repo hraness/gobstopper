@@ -2843,6 +2843,22 @@ fn claude_bin() -> Option<PathBuf> {
     candidates.into_iter().find(|c| c.is_file())
 }
 
+/// Locate the `devin` executable for ACP `session/load` + `/compact`.
+/// Same minimal-PATH problem as `claude_bin` under LaunchAgents.
+fn devin_bin() -> Option<PathBuf> {
+    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).map(|d| d.join("devin")).collect())
+        .unwrap_or_default();
+    if let Some(home) = std::env::var_os("HOME") {
+        let home = PathBuf::from(home);
+        candidates.push(home.join(".local/bin/devin"));
+        candidates.push(home.join(".local/share/devin/cli/_versions/current/bin/devin"));
+    }
+    candidates.push(PathBuf::from("/opt/homebrew/bin/devin"));
+    candidates.push(PathBuf::from("/usr/local/bin/devin"));
+    candidates.into_iter().find(|c| c.is_file())
+}
+
 fn load_watch_state(path: &Path) -> WatchState {
     let Ok(text) = std::fs::read_to_string(path) else {
         return WatchState::default();
@@ -2924,6 +2940,7 @@ fn cmd_watch(
     let mut discovery_cache = detect::DiscoveryCache::default();
     // Resolved once: the claude binary path doesn't change mid-watch.
     let claude_bin = claude_bin();
+    let devin_bin = devin_bin();
     loop {
         let cfg = config::load()?;
         let mut found: Vec<Discovered> = detect::discover_cached(
@@ -3181,11 +3198,11 @@ fn cmd_watch(
                         continue;
                     }
                     if d.handle.provider == Provider::Devin {
-                        // Devin has no fork artifact: the guarded in-place
-                        // store write is the only apply, and only when the
-                        // operator opted in (auto_apply_store) and the
-                        // session is idle.
-                        if !resolved.auto_apply_store {
+                        // Devin idle-session levers: provider-native
+                        // `devin acp` /compact (auto_compact_closed) and/or
+                        // the guarded in-place store write
+                        // (auto_apply_store).
+                        if !resolved.auto_apply_store && !resolved.auto_compact_closed {
                             continue;
                         }
                         if d.handle.is_active() {
@@ -3218,6 +3235,101 @@ fn cmd_watch(
                             if let Some(fp) = &fp {
                                 settled.insert(session_key.clone(), fp.clone());
                             }
+                            continue;
+                        }
+                        // Provider-native first when enabled: ACP
+                        // `session/load` + `/compact` runs the provider's
+                        // own file_compactor — deeper than deterministic
+                        // elision — on the idle session. On failure the
+                        // store apply remains the fallback.
+                        if resolved.auto_compact_closed {
+                            if let Some(bin) = &devin_bin {
+                                let cwd = d
+                                    .handle
+                                    .cwd
+                                    .clone()
+                                    .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+                                    .unwrap_or_else(|| PathBuf::from("/"));
+                                match gobstopper_adapters::devin::acp_compact(
+                                    bin,
+                                    &d.handle.session_id,
+                                    &cwd,
+                                    600,
+                                ) {
+                                    Ok(()) => {
+                                        let after =
+                                            gobstopper_adapters::devin::session_observation(
+                                                &roots(cli).devin_home,
+                                                &d.handle.session_id,
+                                            )
+                                            .map(|(usage, _)| usage.context_tokens)
+                                            .unwrap_or(0);
+                                        let mut done = plan.clone();
+                                        // The provider compacted — the
+                                        // plan's elision edits were not
+                                        // applied, so report items = 0.
+                                        done.edits.clear();
+                                        done.context_tokens_after = if after > 0 {
+                                            after
+                                        } else {
+                                            done.context_tokens_before
+                                        };
+                                        emit_event(
+                                            &d,
+                                            &done,
+                                            "provider_compact",
+                                            "applied",
+                                            trigger,
+                                            started.elapsed().as_millis() as u64,
+                                            if after == 0 {
+                                                Some("unresolved_context")
+                                            } else {
+                                                None
+                                            },
+                                        );
+                                        eprintln!(
+                                            "provider-compacted closed devin session {} via acp /compact",
+                                            d.handle.session_id
+                                        );
+                                        if let Some(nfp) = session_fingerprint(&d) {
+                                            settled.insert(session_key.clone(), nfp);
+                                        }
+                                        if last_apply.len() >= 4096 {
+                                            last_apply.clear();
+                                        }
+                                        last_apply.insert(session_key.clone(), started);
+                                        continue;
+                                    }
+                                    Err(e) => {
+                                        eprintln!(
+                                            "acp devin /compact for {} failed ({e}){}",
+                                            d.handle.session_id,
+                                            if resolved.auto_apply_store {
+                                                "; falling back to store elision"
+                                            } else {
+                                                ""
+                                            },
+                                        );
+                                        emit_event(
+                                            &d,
+                                            &plan,
+                                            "provider_compact",
+                                            "failed",
+                                            trigger,
+                                            started.elapsed().as_millis() as u64,
+                                            Some("provider_rejected"),
+                                        );
+                                        if !resolved.auto_apply_store {
+                                            if let Some(fp) = &fp {
+                                                settled.insert(session_key.clone(), fp.clone());
+                                            }
+                                            continue;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if !resolved.auto_apply_store {
                             continue;
                         }
                         let r = copy::compact_devin_store(

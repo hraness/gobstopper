@@ -27,6 +27,11 @@ min_savings_tokens = 4_096     # reject plans that reclaim less
 [provider.devin]
 # Native policy only: over-threshold decisions return `/compact`.
 # trigger_tokens = 200_000
+# auto_compact_closed = true    # watch runs `devin acp` session/load +
+                               # /compact on idle over-trigger sessions
+                               # first (provider's own file_compactor)
+# auto_apply_store = true       # guarded in-place sessions.db elision as
+                               # the fallback when acp compact fails
 
 # Per-session overrides, keyed by session id
 # [sessions."01a08d7c-77fd-7690-9413-e8219b379151"]
