@@ -141,6 +141,23 @@ def classify(stderr_tail):
     return 'failed'
 
 
+def rollup(results):
+    by_provider = {}
+    for row in results:
+        if row.get('status') != 'ok':
+            continue
+        agg = by_provider.setdefault(row['provider'], {
+            'pairs': 0, 'checks': 0, 'retained': 0, 'lexical_retained': 0,
+            'same_origin_retained': 0, 'source_bound_retained': 0})
+        rt = row['retention']
+        agg['pairs'] += 1
+        for key in ('retained', 'lexical_retained', 'same_origin_retained',
+                    'source_bound_retained'):
+            agg[key] += rt[key]
+        agg['checks'] += rt['total']
+    return by_provider
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Realized retention audit over vault snapshot pairs; no provider calls, no writes outside --output.')
@@ -226,7 +243,7 @@ def main():
             row['detail'] = str(error)[:200]
         results.append(row)
     RUNNER.save(root / 'results.json', {'registration': registration, 'pairs': results,
-                                      'skipped': skipped})
+                                      'skipped': skipped, 'by_provider': rollup(results)})
     ok = sum(r.get('status') == 'ok' for r in results)
     print(json.dumps({'pairs': len(results), 'ok': ok,
                       'skipped_or_failed': len(results) - ok + len(skipped),
