@@ -133,6 +133,64 @@ fn unreadable_telemetry_does_not_become_a_zero_count_report() {
 }
 
 #[test]
+fn codex_native_compact_runs_before_plan_evaluation() {
+    let f = Fixture::new();
+    // `min_savings_tokens` far above any projection means `evaluate`
+    // would return `None` for this session — the closed-session native
+    // arm must still run on trigger+idle alone, before the planner.
+    fs::write(
+        f.0.join("config/gobstopper/config.toml"),
+        concat!(
+            "[policy]\n",
+            "trigger_tokens=1000\nfloor_tokens=100\nmin_savings_tokens=999999\nmin_interval_secs=0\n",
+            "[provider.codex]\nauto_compact_closed=true\n",
+        ),
+    )
+    .unwrap();
+    // Idle (the file stopped churning 10 minutes ago).
+    let source = f.0.join("codex/sessions/rollout-fixture.jsonl");
+    fs::File::open(&source)
+        .unwrap()
+        .set_times(
+            fs::FileTimes::new()
+                .set_modified(std::time::SystemTime::now() - std::time::Duration::from_secs(600)),
+        )
+        .unwrap();
+    // The codex binary is absent in the fixture environment: the spawn
+    // failure is transient infra, so the arm emits `failed` and must not
+    // durably settle the session.
+    let original = fs::read(&source).unwrap();
+    let run = || {
+        f.command(&["watch", "--once"])
+            .env("GOBSTOPPER_CODEX_BIN", "/nonexistent/codex")
+            .output()
+            .unwrap()
+    };
+    let output = run();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let log = fs::read_to_string(f.0.join("data/gobstopper/events.jsonl")).unwrap();
+    let events: Vec<serde_json::Value> = log
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["action"], "provider_compact");
+    assert_eq!(events[0]["outcome"], "failed");
+    assert_eq!(events[0]["error_code"], "spawn_failed");
+    assert_eq!(fs::read(&source).unwrap(), original);
+    // min_interval_secs=0: a transient failure rate-limits but never
+    // settles, so the next pass retries rather than suppressing forever.
+    let second = run();
+    assert!(second.status.success());
+    let log = fs::read_to_string(f.0.join("data/gobstopper/events.jsonl")).unwrap();
+    assert_eq!(log.lines().count(), 2);
+}
+
+#[test]
 fn dry_run_once_does_not_write_events_or_forks() {
     let f = Fixture::new();
     let cold = f.0.join("codex/sessions/rollout-cold.jsonl");

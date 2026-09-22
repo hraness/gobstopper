@@ -3035,8 +3035,11 @@ struct WatchState {
 /// waits for the async `_cognition.ai/compaction` terminal status — v3
 /// recorded "applied" on the prompt ack alone, before compaction ran.
 /// v5: acp_timeout_secs (default 1800) — session/load timeouts recorded
-/// under the 600s budget may succeed now.
-const WATCH_STATE_GENERATION: u32 = 5;
+/// under the 600s budget may succeed now. v6: codex closed-session
+/// `thread/compact` added — pre-v6 codex suppressions may encode "no
+/// closed-session lever" verdicts, and v6 codex failures distinguish
+/// permanent rejections (settle) from transient infra errors (retry).
+const WATCH_STATE_GENERATION: u32 = 6;
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -3582,6 +3585,189 @@ fn cmd_watch(
                     }
                 }
             }
+            // Provider-native Codex compaction also needs nothing from
+            // our planner — same shape as the Devin arm above. Running
+            // it before load+evaluate matters doubly here: a `None`
+            // plan would otherwise settle an over-trigger session the
+            // native lever can compact, and codex rollouts are large
+            // enough that re-parsing one every pass is real cost.
+            if !dry_run && d.handle.provider == Provider::Codex && resolved.auto_compact_closed {
+                if d.handle.is_active() {
+                    continue;
+                }
+                // Sub-agent threads cannot be resumed by the app-server
+                // ("resume the parent first") — skip rather than log
+                // provider_rejected every pass. Plain forks resume fine
+                // and stay eligible.
+                if gobstopper_adapters::codex::is_subagent_thread(&d.handle.path) {
+                    let tagged = CompactionPlan {
+                        strategy: "watch-apply:sub-agent".to_string(),
+                        rationale: "auto (closed codex): sub-agent thread".to_string(),
+                        edits: vec![],
+                        context_tokens_before: ctx,
+                        context_tokens_after: ctx,
+                    };
+                    emit_event(
+                        &d,
+                        &tagged,
+                        "provider_compact",
+                        "skipped",
+                        trigger,
+                        0,
+                        Some("parent_thread"),
+                    );
+                    if let Some(fp) = &fp {
+                        settled.insert(session_key.clone(), fp.clone());
+                    }
+                    continue;
+                }
+                if hooks::rollout_cohort(&cfg, d.handle.provider.as_str(), &d.handle.session_id)
+                    == Some(false)
+                {
+                    let tagged = CompactionPlan {
+                        strategy: "watch-apply:control".to_string(),
+                        rationale: "auto (closed codex): rollout control".to_string(),
+                        edits: vec![],
+                        context_tokens_before: ctx,
+                        context_tokens_after: ctx,
+                    };
+                    emit_event(&d, &tagged, "provider_compact", "skipped", trigger, 0, None);
+                    if let Some(fp) = &fp {
+                        settled.insert(session_key.clone(), fp.clone());
+                    }
+                    continue;
+                }
+                let pre_snapshot = match snapshot_before_edit(&d, "pre-compact") {
+                    Ok(entry) => entry,
+                    Err(e) => {
+                        eprintln!(
+                            "codex thread/compact for {} skipped: pre-compact snapshot failed ({e})",
+                            d.handle.session_id
+                        );
+                        continue;
+                    }
+                };
+                let started = std::time::Instant::now();
+                match codex_compact(
+                    &resolve_codex_bin(cli.codex_bin.as_deref()),
+                    &d.handle.session_id,
+                    Some(&roots(cli).codex_home),
+                    600_000,
+                ) {
+                    Ok(()) => {
+                        let after =
+                            gobstopper_adapters::codex::scan_usage(&d.handle.path).context_tokens;
+                        let done = CompactionPlan {
+                            strategy: resolved.strategy.clone(),
+                            rationale: "auto (closed codex): thread/compact".to_string(),
+                            edits: vec![],
+                            context_tokens_before: ctx,
+                            context_tokens_after: if after > 0 { after } else { ctx },
+                        };
+                        let post_sha = vault::snapshot(
+                            &d.handle.path,
+                            d.handle.provider,
+                            &d.handle.session_id,
+                            Some("post-compact"),
+                            &vault::default_root(),
+                        )
+                        .map(|e| e.sha256)
+                        .ok();
+                        let mut ev = build_event(
+                            &d,
+                            &done,
+                            "provider_compact",
+                            "applied",
+                            trigger,
+                            started.elapsed().as_millis() as u64,
+                            if after == 0 {
+                                Some("unresolved_context")
+                            } else {
+                                None
+                            },
+                        );
+                        ev.snapshot_before_sha256 = Some(pre_snapshot.sha256.clone());
+                        ev.snapshot_after_sha256 = post_sha.clone();
+                        if let Some(post) = &post_sha {
+                            if let Some((total, retained, lexical)) =
+                                realized_retention(&d.handle, &pre_snapshot.sha256, post)
+                            {
+                                ev.retention_total = Some(total);
+                                ev.retention_retained = Some(retained);
+                                ev.retention_lexical = Some(lexical);
+                            }
+                        }
+                        if let Err(e) = append_event(&default_log_path(), &ev) {
+                            eprintln!("telemetry write failed (non-fatal): {e}");
+                        }
+                        eprintln!(
+                            "provider-compacted closed codex session {} via thread/compact",
+                            d.handle.session_id
+                        );
+                        if let Some(nfp) = session_fingerprint(&d) {
+                            settled.insert(session_key.clone(), nfp);
+                        }
+                        if last_apply.len() >= 4096 {
+                            last_apply.clear();
+                        }
+                        last_apply.insert(session_key.clone(), started);
+                    }
+                    Err(e) => {
+                        let failed = CompactionPlan {
+                            strategy: resolved.strategy.clone(),
+                            rationale: "auto (closed codex): thread/compact".to_string(),
+                            edits: vec![],
+                            context_tokens_before: ctx,
+                            context_tokens_after: ctx,
+                        };
+                        // Distinguish infra spawn failures from provider
+                        // rejections — a missing binary is not the
+                        // provider refusing the compact.
+                        let msg = e.to_string();
+                        let mut ev = build_event(
+                            &d,
+                            &failed,
+                            "provider_compact",
+                            "failed",
+                            trigger,
+                            started.elapsed().as_millis() as u64,
+                            Some(if msg.contains("spawning") {
+                                "spawn_failed"
+                            } else {
+                                "provider_rejected"
+                            }),
+                        );
+                        ev.snapshot_before_sha256 = Some(pre_snapshot.sha256.clone());
+                        if let Err(e2) = append_event(&default_log_path(), &ev) {
+                            eprintln!("telemetry write failed (non-fatal): {e2}");
+                        }
+                        eprintln!(
+                            "codex thread/compact for {} failed: {e}",
+                            d.handle.session_id
+                        );
+                        // Permanent rejections and possibly in-flight
+                        // turns settle: retrying cannot help, and a turn
+                        // that does land rewrites the file (new
+                        // fingerprint) anyway. Transient infra failures —
+                        // spawn, stream close, response timeout — only
+                        // rate-limit via last_fire; the next pass retries.
+                        let permanent = msg.contains("cannot resume")
+                            || msg.contains("not found")
+                            || msg.contains("outcome unknown")
+                            || msg.contains("usage limit")
+                            || msg.contains("turn failed")
+                            || msg.contains("turn interrupted");
+                        if permanent {
+                            if let Some(fp) = &fp {
+                                settled.insert(session_key.clone(), fp.clone());
+                            }
+                        } else {
+                            last_fire.insert(session_key.clone(), std::time::Instant::now());
+                        }
+                    }
+                }
+                continue;
+            }
             let (transcript, source_sha256) = match copy::load_bound(d.handle.clone()) {
                 Ok(t) => t,
                 Err(e) => {
@@ -3768,160 +3954,6 @@ fn cmd_watch(
                                 eprintln!(
                                     "devin store compact in {} failed: {e}",
                                     d.handle.cwd.as_deref().unwrap_or(Path::new("?")).display()
-                                );
-                                if let Some(fp) = &fp {
-                                    settled.insert(session_key.clone(), fp.clone());
-                                }
-                            }
-                        }
-                        continue;
-                    }
-                    if d.handle.provider == Provider::Codex && resolved.auto_compact_closed {
-                        // Provider-native `thread/compact` on the idle
-                        // thread — same contract as devin acp: snapshot
-                        // first, provider owns the write, post snapshot +
-                        // retention on the event.
-                        if d.handle.is_active() {
-                            continue;
-                        }
-                        // Sub-agent threads cannot be resumed by the
-                        // app-server ("resume the parent first") — skip
-                        // rather than log provider_rejected every pass.
-                        // Plain forks resume fine and stay eligible.
-                        if gobstopper_adapters::codex::is_subagent_thread(&d.handle.path) {
-                            let mut tagged = plan.clone();
-                            tagged.strategy = "watch-apply:sub-agent".to_string();
-                            emit_event(
-                                &d,
-                                &tagged,
-                                action,
-                                "skipped",
-                                trigger,
-                                started.elapsed().as_millis() as u64,
-                                Some("parent_thread"),
-                            );
-                            if let Some(fp) = &fp {
-                                settled.insert(session_key.clone(), fp.clone());
-                            }
-                            continue;
-                        }
-                        if hooks::rollout_cohort(
-                            &cfg,
-                            d.handle.provider.as_str(),
-                            &d.handle.session_id,
-                        ) == Some(false)
-                        {
-                            let mut tagged = plan.clone();
-                            tagged.strategy = "watch-apply:control".to_string();
-                            emit_event(
-                                &d,
-                                &tagged,
-                                action,
-                                "skipped",
-                                trigger,
-                                started.elapsed().as_millis() as u64,
-                                None,
-                            );
-                            if let Some(fp) = &fp {
-                                settled.insert(session_key.clone(), fp.clone());
-                            }
-                            continue;
-                        }
-                        let pre_snapshot = match snapshot_before_edit(&d, "pre-compact") {
-                            Ok(entry) => entry,
-                            Err(e) => {
-                                eprintln!(
-                                    "codex thread/compact for {} skipped: pre-compact snapshot failed ({e})",
-                                    d.handle.session_id
-                                );
-                                continue;
-                            }
-                        };
-                        let started = std::time::Instant::now();
-                        match codex_compact(
-                            &resolve_codex_bin(cli.codex_bin.as_deref()),
-                            &d.handle.session_id,
-                            Some(&roots(cli).codex_home),
-                            600_000,
-                        ) {
-                            Ok(()) => {
-                                let after = gobstopper_adapters::codex::scan_usage(&d.handle.path)
-                                    .context_tokens;
-                                let mut done = plan.clone();
-                                done.edits.clear();
-                                done.context_tokens_after = if after > 0 { after } else { ctx };
-                                let post_sha = vault::snapshot(
-                                    &d.handle.path,
-                                    d.handle.provider,
-                                    &d.handle.session_id,
-                                    Some("post-compact"),
-                                    &vault::default_root(),
-                                )
-                                .map(|e| e.sha256)
-                                .ok();
-                                let mut ev = build_event(
-                                    &d,
-                                    &done,
-                                    "provider_compact",
-                                    "applied",
-                                    trigger,
-                                    started.elapsed().as_millis() as u64,
-                                    if after == 0 {
-                                        Some("unresolved_context")
-                                    } else {
-                                        None
-                                    },
-                                );
-                                ev.snapshot_before_sha256 = Some(pre_snapshot.sha256.clone());
-                                ev.snapshot_after_sha256 = post_sha.clone();
-                                if let Some(post) = &post_sha {
-                                    if let Some((total, retained, lexical)) =
-                                        realized_retention(&d.handle, &pre_snapshot.sha256, post)
-                                    {
-                                        ev.retention_total = Some(total);
-                                        ev.retention_retained = Some(retained);
-                                        ev.retention_lexical = Some(lexical);
-                                    }
-                                }
-                                if let Err(e) = append_event(&default_log_path(), &ev) {
-                                    eprintln!("telemetry write failed (non-fatal): {e}");
-                                }
-                                eprintln!(
-                                    "provider-compacted closed codex session {} via thread/compact",
-                                    d.handle.session_id
-                                );
-                                if let Some(nfp) = session_fingerprint(&d) {
-                                    settled.insert(session_key.clone(), nfp);
-                                }
-                                if last_apply.len() >= 4096 {
-                                    last_apply.clear();
-                                }
-                                last_apply.insert(session_key.clone(), started);
-                            }
-                            Err(e) => {
-                                let failed = CompactionPlan {
-                                    strategy: resolved.strategy.clone(),
-                                    rationale: "auto (closed codex): thread/compact".to_string(),
-                                    edits: vec![],
-                                    context_tokens_before: ctx,
-                                    context_tokens_after: ctx,
-                                };
-                                let mut ev = build_event(
-                                    &d,
-                                    &failed,
-                                    "provider_compact",
-                                    "failed",
-                                    trigger,
-                                    started.elapsed().as_millis() as u64,
-                                    Some("provider_rejected"),
-                                );
-                                ev.snapshot_before_sha256 = Some(pre_snapshot.sha256.clone());
-                                if let Err(e2) = append_event(&default_log_path(), &ev) {
-                                    eprintln!("telemetry write failed (non-fatal): {e2}");
-                                }
-                                eprintln!(
-                                    "codex thread/compact for {} failed: {e}",
-                                    d.handle.session_id
                                 );
                                 if let Some(fp) = &fp {
                                     settled.insert(session_key.clone(), fp.clone());
