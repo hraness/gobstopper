@@ -27,7 +27,7 @@ const repository = "https://github.com/hraness/gobstopper";
 
 const heading = "Compact, resume, and audit every agent session.";
 const summary =
-  "gobstopper is the first cross-provider context compactor that preserves a content-addressed archive of every conversation state, resumes compacted sessions on both Claude Code and Codex, and proves the savings on real API calls.";
+  "gobstopper is the first cross-provider context compactor that preserves a content-addressed archive of every conversation state, drives provider-native compaction for Claude Code, Codex, and Devin sessions, and scores what each compaction actually kept.";
 const footnote =
   `Free and MIT licensed. Rust 1.85 or newer, local transcripts, no account.${releaseVersion === undefined ? " First Gobstopper release in preparation — install from source today." : ` Current verified release v${releaseVersion}.`}`;
 
@@ -35,7 +35,7 @@ const primitives = [
   {
     icon: "session-detection",
     label: "Session detection",
-    summary: "Scans Codex and Claude Code transcript stores for live and idle sessions, reading each provider's own token-usage records — real context size where available, with a fallback estimate otherwise.",
+    summary: "Scans Codex, Claude Code, and Devin session stores for live and idle sessions, reading each provider's own token-usage records — real context size where available, with a fallback estimate otherwise.",
   },
   {
     icon: "edit-ir",
@@ -60,7 +60,7 @@ const primitives = [
   {
     icon: "telemetry-eval",
     label: "Telemetry and eval",
-    summary: "Every mutation emits a compaction event for dashboards. gobstopper eval runs all strategies on temp copies and scores structural retention; it is a regression signal, not a live cost measurement.",
+    summary: "Every mutation emits a compaction event carrying vault snapshot references and realized retention scores for dashboards — `gobstopper events --retention` rolls them up per provider. gobstopper eval runs all strategies on temp copies and scores structural retention; it is a regression signal, not a live cost measurement.",
   },
 ] as const;
 
@@ -86,7 +86,7 @@ const questions = [
   },
   {
     question: "Does it edit my live session?",
-    answer: "Standalone `apply` or `watch` produces a separate, validated transcript copy and leaves the source unchanged. For a session the provider is actively serving, Gobstopper delegates to provider-native compaction — Codex thread/compact/start over the app-server protocol, Claude /compact through stream-json. Local rewrites only touch idle transcripts, and always with a vault snapshot first.",
+    answer: "Standalone `apply` or `watch` produces a separate, validated transcript copy and leaves the source unchanged. For a session the provider is actively serving, Gobstopper delegates to provider-native compaction — Codex thread/compact/start over the app-server protocol, Claude /compact through stream-json, Devin /compact over ACP. Local rewrites only touch idle transcripts, and always with a vault snapshot first.",
   },
   {
     question: "What if a compaction loses something important?",
@@ -94,7 +94,7 @@ const questions = [
   },
   {
     question: "Which agents does it support?",
-    answer: "Codex and Claude Code today, over their real transcript formats. The edit IR is provider-neutral, so another JSONL-transcript agent needs only a small adapter.",
+    answer: "Codex, Claude Code, and Devin today, over their real session formats. Devin stays provider-owned — detection, policy, and native compaction, never transcript surgery. The edit IR is provider-neutral, so another JSONL-transcript agent needs only a small adapter.",
   },
   {
     question: "Can I run my own compaction logic?",
@@ -267,7 +267,7 @@ gobstopper watch`}</code></pre>
               </>
             )}
             <p className="install-note">
-              Needs Rust 1.85 or newer. Reads Codex and Claude Code transcripts locally;
+              Needs Rust 1.85 or newer. Reads Codex, Claude Code, and Devin session data locally;
               nothing leaves the machine.{" "}
               <a href="/docs#install">Read the full reference</a>.
             </p>

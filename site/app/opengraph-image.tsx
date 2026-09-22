@@ -19,7 +19,7 @@ function GobstopperMark() {
 
 export default function OpengraphImage() {
   return createSocialImageResponse({
-    description: "Automatic context compaction for Codex and Claude Code sessions.",
+    description: "Automatic context compaction for Codex, Claude Code, and Devin sessions.",
     domain: "gobstopper.sh",
     eyebrow: "Gobstopper",
     mark: <GobstopperMark />,
