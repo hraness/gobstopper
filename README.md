@@ -206,12 +206,15 @@ to `events.jsonl` in the `gobstopper/compaction-events-v1` schema.
 
 ### Typed-retention experiments (opt-in)
 
-`eval-study` compares observation masking with source-bound typed masking on
-private temporary copies. It does not change `auto`, call a model, emit live
-compaction telemetry, or modify the provider session. Constraints, procedures,
-and open tasks are pinned in their original records and roles; retrieved text
-never becomes a higher-authority instruction. A requested floor may remain
-unreachable rather than dropping a pinned item.
+`eval-study` replays three arms on private temporary copies — plain
+observation masking; typed masking (constraints, procedures, and open tasks
+stay pinned in their original records and roles; retrieved text never becomes
+a higher-authority instruction); and `typed_digest` (pinned records are elided
+but their spans are carried verbatim on an injected state card — the same
+provenance downgrade a summary imposes, measured explicitly). It does not
+change `auto`, call a model, emit live compaction telemetry, or modify the
+provider session. A requested floor may remain unreachable rather than
+dropping a pinned item.
 
 ```sh
 gobstopper eval-study /private/source.jsonl --prepare-manifest /private/checks.json
@@ -238,8 +241,19 @@ retained]`; the elidable subset is reported separately. Dead branches and
 metadata cannot satisfy a check. Pre-existing source verification errors and
 newly introduced errors are counted separately. Counts are not semantic or
 behavioral scores. Estimated context uses adapter item estimates, not stale provider usage records
-or billing. Both arms use the same policy, including minimum savings and the
+or billing. All arms use the same policy, including minimum savings and the
 protected recent tool-output tail.
+
+`--against AFTER` switches to a score-only realized audit: the manifest binds
+to the session's before-state and retention is scored against independent
+after-bytes — no replay, no mutation. Either spec may be a `vault:<sha256>`
+snapshot reference (Devin store snapshots are exported to the transcript
+dialect first). `scripts/retention-audit.py` scans the vault for consecutive
+snapshots whose provider compaction-marker count increased (Claude
+`compact_boundary`, Codex `"type":"compacted"` — hook bracket labels alone can
+miss the actual write), pairs surgery-labeled snapshots with the next
+snapshot, and runs the audit over each pair: realized, per-kind retention of
+compactions that already happened — including provider-native ones.
 
 Without new work, replay is explicitly `static_stress`; unchanged passes do not
 count as applied compactions. For Codex/Claude fixtures, optional `growth`

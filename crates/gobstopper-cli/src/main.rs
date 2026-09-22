@@ -20,7 +20,7 @@ use gobstopper_adapters::{
 use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
 use gobstopper_core::plan::{CompactionPlan, Edit};
 use gobstopper_core::strategy::{self, HeuristicScorer, QuotaPressure, ScoredStrategy};
-use gobstopper_core::Provider;
+use gobstopper_core::{Provider, SessionHandle};
 use std::io::{BufRead as _, IsTerminal as _, Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -175,6 +175,12 @@ enum Cmd {
         trigger: Option<u64>,
         #[arg(long)]
         floor: Option<u64>,
+        #[arg(
+            long,
+            conflicts_with = "prepare_manifest",
+            help = "Score-only realized audit: bind the manifest to SESSION, then score retention against AFTER (path or vault:<sha256>); rounds/trigger/floor are unused"
+        )]
+        against: Option<String>,
         #[arg(long)]
         json: bool,
     },
@@ -545,6 +551,50 @@ fn find_session(cli: &Cli, cfg: &config::Config, query: &str) -> Result<Discover
         1 => Ok(matches.into_iter().next().unwrap()),
         n => bail!("'{query}' matches {n} sessions; use a longer prefix or a path"),
     }
+}
+
+/// Resolve an eval-study byte source: a session id/transcript path, or
+/// `vault:<sha256>` for a snapshot object (Devin store snapshots are
+/// materialized and exported to the transcript dialect first).
+fn eval_spec_bytes(
+    cli: &Cli,
+    cfg: &config::Config,
+    spec: &str,
+) -> Result<(SessionHandle, Vec<u8>)> {
+    if let Some(sha) = spec.strip_prefix("vault:") {
+        let root = vault::default_root();
+        let entry = vault::list(&root)?
+            .into_iter()
+            .find(|e| e.sha256 == sha)
+            .with_context(|| format!("no vault entry for {sha}"))?;
+        let bytes = vault::read_object(&entry.sha256, &root)?;
+        let bytes = if entry.provider == Provider::Devin {
+            let temp = std::env::temp_dir().join(format!("gobstopper-audit-{sha}.db"));
+            std::fs::write(&temp, &bytes).with_context(|| format!("write {}", temp.display()))?;
+            let exported = devin::export_bytes(&temp, &entry.session_id);
+            let _ = std::fs::remove_file(&temp);
+            exported?
+        } else {
+            bytes
+        };
+        return Ok((
+            SessionHandle {
+                provider: entry.provider,
+                session_id: entry.session_id.clone(),
+                path: entry.path.clone(),
+                cwd: None,
+                age_secs: u64::MAX,
+            },
+            bytes,
+        ));
+    }
+    let d = find_session(cli, cfg, spec)?;
+    let bytes = if d.handle.provider == Provider::Devin && devin::is_store_path(&d.handle.path) {
+        devin::export_bytes(&d.handle.path, &d.handle.session_id)?
+    } else {
+        gobstopper_adapters::transaction::read(&d.handle.path)?
+    };
+    Ok((d.handle, bytes))
 }
 
 /// Recent applied compactions for one session as
@@ -4213,26 +4263,12 @@ fn main() -> Result<()> {
             rounds,
             trigger,
             floor,
+            against,
             json,
         } => {
-            let d = find_session(&cli, &cfg, session)?;
-            let mut policy = cfg
-                .resolve(d.handle.provider, &d.handle.session_id, None, None)?
-                .policy;
-            if let Some(value) = trigger {
-                policy.trigger_tokens = *value;
-            }
-            if let Some(value) = floor {
-                policy.floor_tokens = *value;
-            }
-            let bytes =
-                if d.handle.provider == Provider::Devin && devin::is_store_path(&d.handle.path) {
-                    devin::export_bytes(&d.handle.path, &d.handle.session_id)?
-                } else {
-                    gobstopper_adapters::transaction::read(&d.handle.path)?
-                };
+            let (handle, bytes) = eval_spec_bytes(&cli, &cfg, session)?;
             if let Some(path) = prepare_manifest {
-                let count = gobstopper_adapters::study::prepare_manifest(d.handle, &bytes, path)?;
+                let count = gobstopper_adapters::study::prepare_manifest(handle, &bytes, path)?;
                 println!(
                     "{}",
                     serde_json::json!({"checks":count,"label_source":"heuristic","study_run":false})
@@ -4242,14 +4278,32 @@ fn main() -> Result<()> {
             let (manifest, digest) = gobstopper_adapters::study::read_manifest(
                 manifest.as_deref().context("manifest is required")?,
             )?;
-            let report = gobstopper_adapters::study::evaluate(
-                d.handle,
-                &bytes,
-                manifest,
-                digest,
-                &policy,
-                usize::from(*rounds),
-            )?;
+            let report = if let Some(after_spec) = against {
+                let (after_handle, after_bytes) = eval_spec_bytes(&cli, &cfg, after_spec)?;
+                anyhow::ensure!(
+                    after_handle.provider == handle.provider,
+                    "--against provider mismatch"
+                );
+                gobstopper_adapters::study::audit(handle, &bytes, manifest, digest, &after_bytes)?
+            } else {
+                let mut policy = cfg
+                    .resolve(handle.provider, &handle.session_id, None, None)?
+                    .policy;
+                if let Some(value) = trigger {
+                    policy.trigger_tokens = *value;
+                }
+                if let Some(value) = floor {
+                    policy.floor_tokens = *value;
+                }
+                gobstopper_adapters::study::evaluate(
+                    handle,
+                    &bytes,
+                    manifest,
+                    digest,
+                    &policy,
+                    usize::from(*rounds),
+                )?
+            };
             if *json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
             } else {
