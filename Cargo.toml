@@ -21,7 +21,7 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 toml = "0.8"
 sha2 = "0.10"
-rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [profile.release]
 lto = "thin"

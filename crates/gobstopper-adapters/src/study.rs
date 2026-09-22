@@ -175,7 +175,9 @@ pub struct RetentionScore {
     pub elidable_total: usize,
     pub elidable_retained: usize,
     pub missing_ids: Vec<String>,
-    pub by_kind: BTreeMap<KnowledgeKind, [usize; 2]>,
+    /// Per-kind `[total, source_bound, lexical]` — the middle tier shows
+    /// which fact classes a paraphrasing summary still covers.
+    pub by_kind: BTreeMap<KnowledgeKind, [usize; 3]>,
 }
 
 #[derive(Debug, Serialize)]
@@ -546,6 +548,7 @@ fn score(checks: &[BoundCheck], texts: &[Slot]) -> RetentionScore {
         let count = score.by_kind.entry(check.kind).or_default();
         count[0] += 1;
         count[1] += usize::from(source_bound);
+        count[2] += usize::from(lexical);
         if !source_bound {
             score.missing_ids.push(check.id.clone());
         }
@@ -1001,6 +1004,7 @@ mod tests {
         );
         assert_eq!(result.retained, 0);
         assert_eq!(result.lexical_retained, 1);
+        assert_eq!(result.by_kind[&KnowledgeKind::Constraint], [3, 0, 1]);
         // Three content tokens, only two covered — under the 75% bar.
         let checks = vec![check("thin", "never deploy production")];
         let result = score(&checks, &[slot("never deploy staging quietly")]);
