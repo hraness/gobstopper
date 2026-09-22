@@ -105,7 +105,12 @@ def main():
                         raw = response.get('result', '').strip()
                         if raw.startswith('```'):
                             raw = '\n'.join(raw.splitlines()[1:-1])
-                        answer = json.loads(raw)
+                        try:
+                            answer = json.loads(raw)
+                        except ValueError:
+                            answer = None
+                    result['recall_answer_json'] = isinstance(answer, dict)
+                    answer = answer or {}
                     checks = [answer.get('migration_allowed') is False,
                               answer.get('pending_task') == 'verify rollback',
                               answer.get('test_command') == 'cargo test --workspace --locked',
