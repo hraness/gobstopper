@@ -995,7 +995,9 @@ mod tests {
         ];
         let result = score(
             &checks,
-            &[slot("production deploy requires rollback verification first")],
+            &[slot(
+                "production deploy requires rollback verification first",
+            )],
         );
         assert_eq!(result.retained, 0);
         assert_eq!(result.lexical_retained, 1);
@@ -1005,13 +1007,22 @@ mod tests {
         assert_eq!(result.lexical_retained, 0);
         // A span with no content tokens can never satisfy the tier.
         let checks = vec![check("empty", "the a an")];
-        let result = score(&checks, &[slot("never deploy production rollback verification")]);
-        assert_eq!(result.lexical_retained, 0);
-        // Coverage must sit in ONE slot — tokens split across slots don't sum.
-        let checks = vec![check("para", "deploy production after rollback verification")];
         let result = score(
             &checks,
-            &[slot("deploy production pending"), slot("rollback verification waited")],
+            &[slot("never deploy production rollback verification")],
+        );
+        assert_eq!(result.lexical_retained, 0);
+        // Coverage must sit in ONE slot — tokens split across slots don't sum.
+        let checks = vec![check(
+            "para",
+            "deploy production after rollback verification",
+        )];
+        let result = score(
+            &checks,
+            &[
+                slot("deploy production pending"),
+                slot("rollback verification waited"),
+            ],
         );
         assert_eq!(result.lexical_retained, 0);
     }
