@@ -199,14 +199,24 @@ Devin's `UserPromptSubmit` hook can advise compaction before each turn.
 documented user-level location; the flat `hooks.v1.json` shape is project
 level, `.devin/hooks.v1.json`). The handler resolves the session by ID
 directly against the store, runs the shared policy, and emits
-`hookSpecificOutput.additionalContext` recommending `/compact` when over
-trigger. It is advisory only and fails silently, so a broken hook never
+`hookSpecificOutput.additionalContext` telling the model that `/compact`
+is host-level and to surface a compaction recommendation to its operator
+when over trigger. It is advisory only and fails silently, so a broken hook never
 blocks a prompt. A repeat throttle keeps the advisory from re-entering
 every prompt of a session that stays over trigger: after one is shown,
 the next advisory waits until the session's context grew by ≥25k tokens
 or ≥20 minutes passed (checked against the telemetry log tail, so it
 costs a bounded read per prompt, not a state file).
 `gobstopper uninstall-hooks` removes only Gobstopper-owned commands.
+
+The same install registers `PostCompaction` (`gobstopper hook
+postcompact`, timeout 60): Devin's hook enum has no `PreCompact` event,
+so the handler runs after the provider's own compaction — it appends a
+`native/provider_compact/applied` telemetry record and snapshots the
+session's canonical export into the vault for provenance (a read-only
+export on the provider-held store; WAL readers don't contend with the
+session lock). Telemetry lands before the snapshot attempt so a timeout
+kill on a giant session still records the event.
 
 **ACP caveat:** hooks fire in the interactive `devin` TUI; Devin's ACP
 server mode (`devin acp`, e.g. under Windsurf) does not run lifecycle hooks

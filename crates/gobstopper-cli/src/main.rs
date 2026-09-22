@@ -1763,7 +1763,10 @@ fn cmd_install_hooks(uninstall: bool, roots: &Roots) -> Result<()> {
     // the same nested shape as Claude's settings.json. (Flat
     // hooks.v1.json is only a *project*-level file: .devin/hooks.v1.json.)
     let devin_config = devin_config_home().join("config.json");
-    let devin_targets = [hooks::HookTarget::DevinUserPromptSubmit];
+    let devin_targets = [
+        hooks::HookTarget::DevinUserPromptSubmit,
+        hooks::HookTarget::DevinPostCompaction,
+    ];
     let report = if uninstall {
         hooks::uninstall(&devin_config, Some("hooks"))?
     } else {

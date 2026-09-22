@@ -46,6 +46,7 @@ const CMD_PRECOMPACT: &str = "gobstopper hook precompact";
 const CMD_SESSION_START: &str = "gobstopper hook session-start";
 const CMD_PROMPT_POLICY_CLAUDE: &str = "gobstopper hook prompt-policy:claude";
 const CMD_PROMPT_POLICY_DEVIN: &str = "gobstopper hook prompt-policy:devin";
+const CMD_POSTCOMPACT: &str = "gobstopper hook postcompact";
 
 /// A provider hook point gobstopper can install into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,6 +57,7 @@ pub enum HookTarget {
     CodexPreCompact,
     CodexSessionStart,
     DevinUserPromptSubmit,
+    DevinPostCompaction,
 }
 
 impl HookTarget {
@@ -68,6 +70,7 @@ impl HookTarget {
             HookTarget::CodexPreCompact,
             HookTarget::CodexSessionStart,
             HookTarget::DevinUserPromptSubmit,
+            HookTarget::DevinPostCompaction,
         ]
     }
 
@@ -79,6 +82,7 @@ impl HookTarget {
             HookTarget::ClaudeUserPromptSubmit | HookTarget::DevinUserPromptSubmit => {
                 "UserPromptSubmit"
             }
+            HookTarget::DevinPostCompaction => "PostCompaction",
         }
     }
 
@@ -90,7 +94,9 @@ impl HookTarget {
             HookTarget::ClaudeSessionStart => "compact",
             // Codex documents anchored regexes for source matching.
             HookTarget::CodexSessionStart => "^compact$",
-            HookTarget::ClaudeUserPromptSubmit | HookTarget::DevinUserPromptSubmit => "",
+            HookTarget::ClaudeUserPromptSubmit
+            | HookTarget::DevinUserPromptSubmit
+            | HookTarget::DevinPostCompaction => "",
         }
     }
 
@@ -100,6 +106,7 @@ impl HookTarget {
             HookTarget::ClaudeSessionStart | HookTarget::CodexSessionStart => CMD_SESSION_START,
             HookTarget::ClaudeUserPromptSubmit => CMD_PROMPT_POLICY_CLAUDE,
             HookTarget::DevinUserPromptSubmit => CMD_PROMPT_POLICY_DEVIN,
+            HookTarget::DevinPostCompaction => CMD_POSTCOMPACT,
         }
     }
 
@@ -109,6 +116,9 @@ impl HookTarget {
             // Prompt-submit hooks run on every user message; bound them so
             // a stalled check never delays a prompt.
             HookTarget::ClaudeUserPromptSubmit | HookTarget::DevinUserPromptSubmit => Some(10),
+            // Post-compact export can take seconds on large sessions;
+            // bound it so a stalled snapshot never wedges the provider.
+            HookTarget::DevinPostCompaction => Some(60),
             _ => None,
         }
     }
@@ -120,7 +130,7 @@ impl HookTarget {
             | HookTarget::ClaudeSessionStart
             | HookTarget::ClaudeUserPromptSubmit => "claude",
             HookTarget::CodexPreCompact | HookTarget::CodexSessionStart => "codex",
-            HookTarget::DevinUserPromptSubmit => "devin",
+            HookTarget::DevinUserPromptSubmit | HookTarget::DevinPostCompaction => "devin",
         };
         format!("{provider}:{}", self.event_name())
     }
@@ -397,6 +407,58 @@ fn snapshot_and_log(
     }
 }
 
+/// Devin `PostCompaction`: the provider already rewrote the session, so
+/// emit the `applied` record first (telemetry survives a later timeout
+/// kill), then snapshot the canonical post-compact export for
+/// provenance. Devin's hook enum has no PreCompact event, so pre-compact
+/// bytes are only preserved when `watch` mutates a session itself.
+fn postcompact_devin(payload: &Value, roots: &detect::Roots, vault_root: &Path, log_path: &Path) {
+    let session_id = payload["session_id"].as_str().unwrap_or("unknown");
+    // Well-formed payload carrying neither a session id nor a summary is
+    // not a real hook call — don't write junk telemetry.
+    if payload.get("session_id").is_none() && payload.get("summary").is_none() {
+        return;
+    }
+    let event = CompactionEvent::new(
+        Provider::Devin,
+        session_id,
+        "native",
+        "provider_compact",
+        "applied",
+        0, // provider doesn't report a trigger threshold on the hook wire
+        0, // context before/after unknown until the provider reports them
+        0,
+        0,
+        0,
+        None,
+    );
+    if let Err(e) = append_event(log_path, &event) {
+        eprintln!("gobstopper hook: telemetry write failed (non-fatal): {e}");
+    }
+    if session_id == "unknown" {
+        return;
+    }
+    // Read-only export on the provider-held store is safe — SQLite WAL
+    // readers don't contend with the session's lock (same path
+    // `session_observation` takes on live sessions).
+    let db = gobstopper_adapters::devin::db_path(&roots.devin_home);
+    match gobstopper_adapters::devin::export_bytes(&db, session_id) {
+        Ok(bytes) => {
+            if let Err(e) = vault::snapshot_data(
+                &bytes,
+                &db,
+                Provider::Devin,
+                session_id,
+                Some("post-compact"),
+                vault_root,
+            ) {
+                eprintln!("gobstopper hook: vault snapshot failed (non-fatal): {e}");
+            }
+        }
+        Err(e) => eprintln!("gobstopper hook: devin export failed (non-fatal): {e}"),
+    }
+}
+
 /// Deterministic rollout cohort for a provider+session: `Some(true)`
 /// treatment, `Some(false)` control, `None` when the provider has no
 /// `[rollout]` entry (ungated). Bucket = sha256(session_id)[:16] % 100 —
@@ -648,6 +710,10 @@ fn handle_inner(
             snapshot_and_log(&payload, "pre-compact", "planned", vault_root, log_path);
             Ok(None)
         }
+        "postcompact" => {
+            postcompact_devin(&payload, roots, vault_root, log_path);
+            Ok(None)
+        }
         "session-start" => {
             // Only the post-compaction source matters; startup/resume/
             // clear carry no compaction lifecycle signal for us.
@@ -687,7 +753,7 @@ fn handle_inner(
 /// `stdin_json`, snapshot the transcript into the vault, append a
 /// compaction-event record, and return the JSON string to print on
 /// stdout (`Some`) or `None`. `event` is "precompact" | "session-start" |
-/// "prompt-policy[:provider]".
+/// "postcompact" | "prompt-policy[:provider]".
 pub fn handle(
     event: &str,
     stdin_json: &str,
@@ -1111,6 +1177,85 @@ mod tests {
     }
 
     #[test]
+    fn handle_postcompact_logs_event_without_store() {
+        let dir = tmpdir("postcompact-nodb");
+        let vault_root = dir.join("vault");
+        let log = dir.join("events.jsonl");
+        let cfg = crate::config::Config::default();
+        // Session id present but no sessions.db under devin_home — the
+        // event still lands; the export failure is non-fatal.
+        let stdin = r#"{"session_id":"devin-sess-1","summary":"compacted"}"#;
+        let out = handle_inner(
+            "postcompact",
+            stdin,
+            &vault_root,
+            &log,
+            &test_roots(&dir),
+            &cfg,
+        )
+        .unwrap();
+        assert!(out.is_none());
+        let events: Vec<Value> = fs::read_to_string(&log)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["provider"], "devin");
+        assert_eq!(events[0]["session_id"], "devin-sess-1");
+        assert_eq!(events[0]["strategy"], "native");
+        assert_eq!(events[0]["action"], "provider_compact");
+        assert_eq!(events[0]["outcome"], "applied");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn handle_postcompact_empty_payload_is_noop() {
+        let dir = tmpdir("postcompact-empty");
+        let vault_root = dir.join("vault");
+        let log = dir.join("events.jsonl");
+        let cfg = crate::config::Config::default();
+        let out = handle_inner(
+            "postcompact",
+            r#"{"hook_event_name":"PostCompaction"}"#,
+            &vault_root,
+            &log,
+            &test_roots(&dir),
+            &cfg,
+        )
+        .unwrap();
+        assert!(out.is_none());
+        assert!(!log.exists());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn devin_install_includes_postcompaction() {
+        let dir = tmpdir("devin-postcompact-install");
+        let file = dir.join("config.json");
+        install(
+            &file,
+            &[
+                HookTarget::DevinUserPromptSubmit,
+                HookTarget::DevinPostCompaction,
+            ],
+            Some("hooks"),
+        )
+        .unwrap();
+        let doc: Value = serde_json::from_str(&fs::read_to_string(&file).unwrap()).unwrap();
+        let entries = doc["hooks"]["PostCompaction"].as_array().unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0]["hooks"][0]["command"], CMD_POSTCOMPACT);
+        assert_eq!(entries[0]["hooks"][0]["timeout"], 60);
+        assert!(is_installed(
+            &file,
+            &HookTarget::DevinPostCompaction,
+            Some("hooks")
+        ));
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
     fn prompt_policy_claude_advises_only_over_trigger() {
         let dir = tmpdir("pp-claude");
         let roots = test_roots(&dir);
@@ -1526,7 +1671,7 @@ mod tests {
         let _ = writeln!(std::io::sink(), "{:?}", report.path);
         assert_eq!(report.added, ["a"]);
         assert!(report.skipped.is_empty());
-        assert_eq!(HookTarget::all().len(), 6);
+        assert_eq!(HookTarget::all().len(), 7);
         assert!(codex_hooks_supported());
     }
 }
