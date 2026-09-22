@@ -2800,7 +2800,9 @@ struct WatchState {
 /// so earlier provider_rejected verdicts are stale too. v4: acp_compact
 /// waits for the async `_cognition.ai/compaction` terminal status — v3
 /// recorded "applied" on the prompt ack alone, before compaction ran.
-const WATCH_STATE_GENERATION: u32 = 4;
+/// v5: acp_timeout_secs (default 1800) — session/load timeouts recorded
+/// under the 600s budget may succeed now.
+const WATCH_STATE_GENERATION: u32 = 5;
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
