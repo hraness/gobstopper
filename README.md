@@ -592,6 +592,13 @@ inside `replacement_history`. Synthetic records are experimental, pair-aware,
 transactional, and available only behind `--experimental-compacted`; ordinary
 `apply` uses the portable forked digest representation.
 
+With `[provider.codex] auto_compact_closed`, `watch` drives
+`thread/compact/start` itself on idle over-trigger threads via
+`codex app-server` (pre/post vault snapshots + realized retention on the
+event, same as the devin acp path). Multi-agent v2 sub-agent threads cannot
+be resumed by the app-server and are skipped (`watch-apply:sub-agent`
+events); plain forks resume normally.
+
 ## Layout
 
 - `crates/gobstopper-core` — normalized transcript model, the `Edit` IR,
