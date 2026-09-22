@@ -33,6 +33,7 @@ jobs:
       - run: cargo test --workspace --all-targets --all-features --locked
       - run: cargo test --workspace --doc --all-features --locked
       - run: python3 -m unittest discover -s scripts -p test_monitor.py -v
+      - run: python3 -m unittest discover -s scripts/early_compaction -p 'test_*.py' -v
 
   msrv:
     name: MSRV 1.85.0

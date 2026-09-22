@@ -96,8 +96,8 @@ const fn default_apply_hold_secs() -> u64 {
 }
 
 impl Default for PolicyConfig {
-    /// Research-backed default: fire well below the provider's own
-    /// threshold (~60% of a ~400k effective window, ~25% of a 1M window).
+    /// Planning defaults, not a demonstrated cost-optimal policy. Runtime owners
+    /// must qualify thresholds against their model, workload and cache behavior.
     fn default() -> Self {
         Self {
             trigger_tokens: 250_000,

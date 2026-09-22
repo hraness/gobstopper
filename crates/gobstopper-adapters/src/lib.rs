@@ -8,6 +8,7 @@
 pub mod claude;
 pub mod codex;
 pub mod codex_compact;
+pub mod codex_history;
 pub mod copy;
 pub mod detect;
 pub mod devin;

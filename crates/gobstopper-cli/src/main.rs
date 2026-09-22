@@ -3,6 +3,7 @@
 mod apple;
 mod apple_digest;
 mod apple_scorer;
+mod codex_owner;
 mod config;
 mod hooks;
 mod jev;
@@ -51,6 +52,9 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Run a new, explicitly owned Codex session with experimental early compaction.
+    /// Commands and responses use JSON lines; existing Desktop threads are not attached.
+    CodexSession(OwnerArgs),
     /// List detected sessions with context occupancy.
     Detect {
         /// Include sessions of any age (default: last 7 days).
@@ -404,6 +408,119 @@ enum Cmd {
         #[command(subcommand)]
         command: PluginCmd,
     },
+}
+
+#[derive(clap::Args)]
+struct OwnerArgs {
+    /// Acknowledge this experimental owner-controlled continuation interface.
+    #[arg(long)]
+    experimental: bool,
+    /// New private directory for controller state, recovery snapshots and numeric receipts.
+    #[arg(long)]
+    state_dir: PathBuf,
+    /// Working directory for the new Codex session.
+    #[arg(long, default_value = ".")]
+    cwd: PathBuf,
+    /// Pin the same model for every continuation generation.
+    #[arg(long)]
+    model: String,
+    /// Pin the same reasoning effort for every continuation generation.
+    #[arg(long)]
+    effort: String,
+    /// Off leaves native timing unchanged; custom adopts Gobstopper output in a new thread.
+    #[arg(long, value_enum, default_value = "off")]
+    mode: OwnerMode,
+    /// Explicitly allow workspace writes; the default session sandbox is read-only.
+    #[arg(long)]
+    workspace_write: bool,
+    #[arg(long, default_value_t = 250_000)]
+    trigger: u64,
+    #[arg(long, default_value_t = 40_000)]
+    floor: u64,
+    #[arg(long, default_value_t = 8)]
+    keep_recent_outputs: usize,
+    #[arg(long, default_value_t = 4_096)]
+    min_savings_tokens: u64,
+    /// Preserve at least this estimated prefix budget verbatim when preparing custom history.
+    #[arg(long, default_value_t = 16_384)]
+    min_prefix_tokens: u64,
+    #[arg(long, default_value_t = 300)]
+    min_interval_secs: u64,
+    #[arg(long, default_value_t = 3)]
+    min_interval_turns: u64,
+    #[arg(long, default_value_t = 8_192)]
+    min_growth_tokens: u64,
+    /// Bounded wait for each provider operation; unknown outcomes are never replayed.
+    #[arg(long, default_value_t = 180)]
+    timeout_secs: u64,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum OwnerMode {
+    Off,
+    Native,
+    Custom,
+}
+
+fn cmd_codex_session(cli: &Cli, args: &OwnerArgs) -> Result<()> {
+    if !args.experimental {
+        bail!("codex-session requires --experimental; it creates new owned sessions and does not attach to Desktop threads");
+    }
+    let cwd = std::fs::canonicalize(&args.cwd).context("resolve session working directory")?;
+    let state_dir = std::path::absolute(&args.state_dir)?;
+    let codex_home = std::fs::canonicalize(roots(cli).codex_home)
+        .context("Codex home must already exist and be authenticated")?;
+    let requested_bin = resolve_codex_bin(cli.codex_bin.as_deref());
+    let codex_bin = resolve_owner_executable(&requested_bin)?;
+    codex_owner::run(codex_owner::Config {
+        state_dir,
+        codex_home,
+        codex_bin,
+        cwd,
+        model: args.model.clone(),
+        effort: args.effort.clone(),
+        mode: match args.mode {
+            OwnerMode::Off => codex_owner::Mode::Off,
+            OwnerMode::Native => codex_owner::Mode::Native,
+            OwnerMode::Custom => codex_owner::Mode::Custom,
+        },
+        workspace_write: args.workspace_write,
+        policy: strategy::PolicyConfig {
+            trigger_tokens: args.trigger,
+            floor_tokens: args.floor,
+            keep_recent_tool_outputs: args.keep_recent_outputs,
+            min_savings_tokens: args.min_savings_tokens,
+            min_interval_secs: args.min_interval_secs,
+            ..Default::default()
+        },
+        min_prefix_tokens: args.min_prefix_tokens,
+        min_interval_turns: args.min_interval_turns,
+        min_growth_tokens: args.min_growth_tokens,
+        timeout_secs: args.timeout_secs,
+    })
+}
+
+fn resolve_owner_executable(requested: &std::path::Path) -> Result<PathBuf> {
+    if requested.components().count() > 1 || requested.is_absolute() {
+        return std::fs::canonicalize(requested).context("resolve Codex executable");
+    }
+    if let Some(paths) = std::env::var_os("PATH") {
+        for dir in std::env::split_paths(&paths) {
+            let candidate = dir.join(requested);
+            if candidate.is_file() {
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if candidate.metadata()?.permissions().mode() & 0o111 == 0 {
+                        continue;
+                    }
+                }
+                return std::fs::canonicalize(candidate)
+                    .context("resolve Codex executable on PATH");
+            }
+        }
+    }
+    bail!("Codex executable was not found; provide --codex-bin with its absolute path")
 }
 
 #[derive(Subcommand)]
@@ -4078,6 +4195,7 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     let cfg = config::load()?;
     match &cli.command {
+        Cmd::CodexSession(args) => cmd_codex_session(&cli, args),
         Cmd::Plugin { command } => cmd_plugin(command),
         Cmd::Detect { all, json } => cmd_detect(&cli, *all, *json),
         Cmd::Plan {
@@ -4315,6 +4433,43 @@ fn _assert_error_surface(e: AdapterError) -> anyhow::Error {
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn owned_codex_requires_explicit_experimental_admission_and_defaults_off() {
+        let cli = Cli::try_parse_from([
+            "gobstopper",
+            "codex-session",
+            "--state-dir",
+            "/abs/new-state",
+            "--model",
+            "test-model",
+            "--effort",
+            "high",
+        ])
+        .unwrap();
+        let Cmd::CodexSession(args) = &cli.command else {
+            panic!("wrong command")
+        };
+        assert!(matches!(args.mode, OwnerMode::Off));
+        assert!(!args.workspace_write);
+        // Rejection precedes path resolution, state creation or provider startup.
+        assert!(cmd_codex_session(&cli, args)
+            .unwrap_err()
+            .to_string()
+            .contains("--experimental"));
+    }
+
+    #[test]
+    fn owned_codex_requires_explicit_model_and_effort() {
+        assert!(Cli::try_parse_from([
+            "gobstopper",
+            "codex-session",
+            "--experimental",
+            "--state-dir",
+            "/abs/new-state"
+        ])
+        .is_err());
+    }
 
     #[test]
     fn display_prefix_preserves_utf8_and_existing_byte_budgets() {

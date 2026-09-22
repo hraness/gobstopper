@@ -1,9 +1,11 @@
 # oompa integration contract
 
 What oompa implements to drive gobstopper policy on live managed
-sessions, and what gobstopper provides in return. The seam is numeric:
-oompa never parses provider transcripts and gobstopper never owns
-provider processes.
+sessions, and what gobstopper provides in return. This seam is numeric:
+oompa owns its provider processes and Gobstopper returns policy decisions.
+`policy-check` does not dispatch compaction itself. The separate experimental
+[`codex-session`](early-compaction.md) controller owns only the new sessions it
+creates; it cannot take over an Oompa-owned session.
 
 ## Policy input → `gobstopper policy-check`
 

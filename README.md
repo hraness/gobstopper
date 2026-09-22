@@ -452,11 +452,28 @@ gobstopper policy-check --provider codex --context-tokens 300000 \
 # {"action":"provider_compact","control":"thread/compact/start", ...}
 ```
 
-oompa then invokes `thread/compact/start` on its own app-server
-connection, or launches Claude sessions with `--autocompact <tokens>`.
+The session-owning integrator must invoke `thread/compact/start` on its own
+app-server connection, or launch Claude sessions with `--autocompact <tokens>`.
+`policy-check` returns a decision; it does not dispatch that provider operation.
 Deeper transcript surgery stays gobstopper-side and publishes verified forks
 for explicit resume. It never creates a second writer for an oompa-managed
 session.
+
+## Experimental early compaction for owned Codex sessions
+
+`gobstopper codex-session --experimental` creates a new session and evaluates
+early-compaction policy between completed turns. `--mode native` requests early
+native compaction; `--mode custom` snapshots and transforms the retained history,
+then continues in a new provider thread. The default is `--mode off`.
+This interface does not attach to existing Desktop tasks, and lifecycle hooks
+alone do not trigger custom early compaction. It pins Codex CLI 0.155.0 and keeps
+the provider's approval policy; interactive approval handling is not yet supported.
+It is available from the current source; the previously published v0.2.1 release
+artifacts do not include this command.
+
+See the [owned-session contract and synthetic qualification protocol](docs/early-compaction.md).
+Context reduction and preserved prefixes are projections, not proof of token or
+cache savings. The trial measures all response usage and task correctness.
 
 ## How providers compact today
 
