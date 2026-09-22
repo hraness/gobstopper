@@ -2774,6 +2774,13 @@ fn stage_compaction(d: &Discovered, resolved: &config::Resolved) -> Option<Stage
 /// day are dropped rather than trusted across unknown downtime.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct WatchState {
+    /// Decision-vocabulary version. `settled` records *why* a session was
+    /// suppressed only implicitly — entries written under an older lever
+    /// set (e.g. before Devin ACP compact existed) would suppress the new
+    /// path forever. Bump on any change that adds or alters a terminal
+    /// decision; on load, stale-generation suppressions are dropped.
+    #[serde(default)]
+    generation: u32,
     #[serde(default)]
     settled: std::collections::HashMap<String, String>,
     #[serde(default)]
@@ -2785,6 +2792,15 @@ struct WatchState {
     #[serde(default)]
     delegated_ctx: std::collections::HashMap<String, u64>,
 }
+
+/// Current decision vocabulary. v1: initial watch state. v2: Devin ACP
+/// provider-native compact added — pre-v2 suppressions may encode "no
+/// lever existed" verdicts that are no longer true. v3: ACP requests
+/// serialize (pipelined prompts raced session/load into "not found"),
+/// so earlier provider_rejected verdicts are stale too. v4: acp_compact
+/// waits for the async `_cognition.ai/compaction` terminal status — v3
+/// recorded "applied" on the prompt ack alone, before compaction ran.
+const WATCH_STATE_GENERATION: u32 = 4;
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -2920,10 +2936,22 @@ fn cmd_watch(
     // the expensive load until the provider actually appends — Devin
     // store metrics go stale post-apply, so context alone re-triggers
     // every pass otherwise.
-    let mut settled = persisted.settled;
-    // Claude two-pass settle: only rewrite in place when the transcript
-    // fingerprint was identical on consecutive passes.
-    let mut settle_pass = persisted.settle_pass;
+    // Stale-generation suppressions encode verdicts from an older lever
+    // set (e.g. "unplannable" recorded before the Devin ACP compact path
+    // existed). Drop them once; sessions re-enter and re-decide under the
+    // current vocabulary. Clocks and delegation dedup stay — they are
+    // rate-limit state, not terminal decisions.
+    let mut settled = if persisted.generation >= WATCH_STATE_GENERATION {
+        persisted.settled
+    } else {
+        std::collections::HashMap::new()
+    };
+    let mut settle_pass = if persisted.generation >= WATCH_STATE_GENERATION {
+        persisted.settle_pass
+    } else {
+        std::collections::HashMap::new()
+    };
+    // (settle_pass is loaded above with the same generation gate.)
     // Apply hold-down: session_key -> Instant of the last successful
     // in-place mutation. A session that re-appends and re-triggers
     // within `apply_hold_secs` is churning; hold it out so one bouncy
@@ -3133,7 +3161,8 @@ fn cmd_watch(
             // `devin acp` `session/load` + `/compact` before paying the
             // export+evaluate cost; on failure the normal store-apply
             // path below is the fallback. Live sessions defer above.
-            if d.handle.provider == Provider::Devin
+            if !dry_run
+                && d.handle.provider == Provider::Devin
                 && resolved.auto_compact_closed
                 && !d.handle.is_active()
                 && hooks::rollout_cohort(&cfg, d.handle.provider.as_str(), &d.handle.session_id)
@@ -3211,16 +3240,24 @@ fn cmd_watch(
                                 started.elapsed().as_millis() as u64,
                                 Some("provider_rejected"),
                             );
+                            // A compaction the provider started but never
+                            // confirmed is still potentially writing —
+                            // store elision underneath it could race its
+                            // chain update. Only an outright rejection
+                            // falls back.
+                            let in_flight = e.to_string().contains("acp_compaction_in_flight");
                             eprintln!(
                                 "acp devin /compact for {} failed ({e}){}",
                                 d.handle.session_id,
-                                if resolved.auto_apply_store {
+                                if in_flight {
+                                    "; leaving session untouched (compaction may still be running)"
+                                } else if resolved.auto_apply_store {
                                     "; falling back to store elision"
                                 } else {
                                     ""
                                 },
                             );
-                            if !resolved.auto_apply_store {
+                            if in_flight || !resolved.auto_apply_store {
                                 if let Some(fp) = &fp {
                                     settled.insert(session_key.clone(), fp.clone());
                                 }
@@ -3693,6 +3730,7 @@ fn cmd_watch(
             save_watch_state(
                 &state_path,
                 &WatchState {
+                    generation: WATCH_STATE_GENERATION,
                     settled: settled.clone(),
                     settle_pass: settle_pass.clone(),
                     last_fire: last_fire

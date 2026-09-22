@@ -504,17 +504,6 @@ pub fn acp_compact(
         .stdin
         .take()
         .ok_or_else(|| io_err(std::io::ErrorKind::Other, "devin acp stdin missing".into()))?;
-    let requests = [
-        serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false}}}}),
-        serde_json::json!({"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":session_id,"cwd":cwd,"mcpServers":[]}}),
-        serde_json::json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session_id,"prompt":[{"type":"text","text":"/compact"}]}}),
-    ];
-    for req in &requests {
-        if let Err(e) = writeln!(stdin, "{req}").and_then(|()| stdin.flush()) {
-            kill(&mut child);
-            return Err(io_err(e.kind(), format!("devin acp request write: {e}")));
-        }
-    }
     let stdout = child
         .stdout
         .take()
@@ -533,13 +522,112 @@ pub fn acp_compact(
         }
     });
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
+    // Strictly sequential: `session/load` must complete before
+    // `session/prompt` or the prompt reaches an unloaded session
+    // ("Session not found"), and the bridge only binds the session
+    // registry after `initialize` resolves.
+    let requests = [
+        (
+            1,
+            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false}}}}),
+            "initialize",
+        ),
+        (
+            2,
+            serde_json::json!({"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":session_id,"cwd":cwd,"mcpServers":[]}}),
+            "session/load",
+        ),
+        (
+            3,
+            serde_json::json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session_id,"prompt":[{"type":"text","text":"/compact"}]}}),
+            "/compact",
+        ),
+    ];
+    for (id, req, label) in &requests {
+        if let Err(e) = writeln!(stdin, "{req}").and_then(|()| stdin.flush()) {
+            kill(&mut child);
+            return Err(io_err(e.kind(), format!("devin acp request write: {e}")));
+        }
+        loop {
+            let now = Instant::now();
+            if now >= deadline {
+                kill(&mut child);
+                return Err(io_err(
+                    std::io::ErrorKind::TimedOut,
+                    format!("devin acp {label} timed out"),
+                ));
+            }
+            match rx.recv_timeout(deadline - now) {
+                Ok(line) => {
+                    let Ok(v) = serde_json::from_str::<Value>(&line) else {
+                        continue;
+                    };
+                    if v.get("id") != Some(&serde_json::json!(id)) {
+                        continue;
+                    }
+                    if let Some(err) = v.get("error") {
+                        kill(&mut child);
+                        return Err(io_err(
+                            std::io::ErrorKind::Other,
+                            format!("devin acp {label} rejected: {err}"),
+                        ));
+                    }
+                    // The load reply carries the authoritative ownership
+                    // claim: another client holding the session means our
+                    // prompt would land in their live session. Abort
+                    // before /compact — flock/age heuristics cannot see
+                    // ACP-held sessions.
+                    if *id == 2
+                        && v.pointer("/result/_meta/cognition.ai~1isLocked")
+                            .and_then(Value::as_bool)
+                            .unwrap_or(false)
+                    {
+                        kill(&mut child);
+                        return Err(io_err(
+                            std::io::ErrorKind::Other,
+                            "devin acp session held by another client".into(),
+                        ));
+                    }
+                    break;
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    kill(&mut child);
+                    return Err(io_err(
+                        std::io::ErrorKind::TimedOut,
+                        format!("devin acp {label} timed out"),
+                    ));
+                }
+                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                    // The bridge died before answering — without the
+                    // explicit reply we cannot prove the step ran.
+                    kill(&mut child);
+                    return Err(io_err(
+                        std::io::ErrorKind::Other,
+                        format!("devin acp exited before the {label} reply"),
+                    ));
+                }
+            }
+        }
+    }
+    // The prompt reply is only an ack: the bridge then emits
+    // `_cognition.ai/compaction` status notifications while the provider
+    // summarizes asynchronously. Dropping the connection here aborts the
+    // in-flight compaction, so hold the session until a terminal status
+    // (or the "Context compacted" display message) arrives.
+    let mut saw_started = false;
     loop {
         let now = Instant::now();
         if now >= deadline {
             kill(&mut child);
             return Err(io_err(
                 std::io::ErrorKind::TimedOut,
-                "devin acp /compact timed out".into(),
+                if saw_started {
+                    // The provider may still be writing — callers must not
+                    // fall back to store mutation on this session.
+                    "acp_compaction_in_flight: started but never completed".to_string()
+                } else {
+                    "devin acp produced no compaction event after /compact ack".to_string()
+                },
             ));
         }
         match rx.recv_timeout(deadline - now) {
@@ -547,33 +635,57 @@ pub fn acp_compact(
                 let Ok(v) = serde_json::from_str::<Value>(&line) else {
                     continue;
                 };
-                if v.get("id") != Some(&serde_json::json!(3)) {
-                    continue;
+                if v.get("method").and_then(Value::as_str) == Some("_cognition.ai/compaction") {
+                    match v
+                        .pointer("/params/status")
+                        .and_then(Value::as_str)
+                        .unwrap_or("")
+                    {
+                        "started" => saw_started = true,
+                        "compacted" | "completed" | "done" => {
+                            kill(&mut child);
+                            return Ok(());
+                        }
+                        s if s.contains("fail") || s.contains("error") || s.contains("cancel") => {
+                            kill(&mut child);
+                            return Err(io_err(
+                                std::io::ErrorKind::Other,
+                                format!("devin acp compaction {s}"),
+                            ));
+                        }
+                        _ => {}
+                    }
                 }
-                kill(&mut child);
-                return if let Some(err) = v.get("error") {
-                    Err(io_err(
-                        std::io::ErrorKind::Other,
-                        format!("devin acp /compact rejected: {err}"),
-                    ))
-                } else {
-                    Ok(())
-                };
+                // Belt-and-suspenders: the provider also broadcasts a
+                // display message when the summary lands.
+                if v.pointer("/params/update/content/text")
+                    .and_then(Value::as_str)
+                    .is_some_and(|t| t.contains("Context compacted"))
+                {
+                    kill(&mut child);
+                    return Ok(());
+                }
             }
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
                 kill(&mut child);
                 return Err(io_err(
                     std::io::ErrorKind::TimedOut,
-                    "devin acp /compact timed out".into(),
+                    if saw_started {
+                        "acp_compaction_in_flight: started but never completed".to_string()
+                    } else {
+                        "devin acp produced no compaction event after /compact ack".to_string()
+                    },
                 ));
             }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                // The bridge died before answering id=3 — without the
-                // explicit reply we cannot prove the compact ran.
                 kill(&mut child);
                 return Err(io_err(
                     std::io::ErrorKind::Other,
-                    "devin acp exited before the /compact reply".into(),
+                    if saw_started {
+                        "acp_compaction_in_flight: bridge died mid-compaction".to_string()
+                    } else {
+                        "devin acp exited before compaction completed".to_string()
+                    },
                 ));
             }
         }
@@ -2134,7 +2246,7 @@ mod tests {
         let bin = fake_devin(
             &dir,
             &format!(
-                "#!/bin/sh\nhead -n 3 > '{}'\nprintf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}'\nprintf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{}}}}'\nprintf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{{\"stopReason\":\"end_turn\"}}}}'\nsleep 5\n",
+                "#!/bin/sh\nwhile IFS= read -r line; do\n  printf '%s\\n' \"$line\" >> '{}'\n  case \"$line\" in\n    *'\"id\":1'*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}' ;;\n    *'\"id\":2'*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{}}}}' ;;\n    *'\"id\":3'*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{{\"stopReason\":\"end_turn\"}}}}'\n      printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"method\":\"_cognition.ai/compaction\",\"params\":{{\"status\":\"started\",\"sessionId\":\"sess-abc_123\"}}}}'\n      printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"method\":\"_cognition.ai/compaction\",\"params\":{{\"status\":\"compacted\",\"sessionId\":\"sess-abc_123\"}}}}' ;;\n  esac\ndone\n",
                 reqs.display()
             ),
         );
@@ -2150,7 +2262,7 @@ mod tests {
         // A JSON-RPC error on the prompt id surfaces as an error.
         let bin = fake_devin(
             &dir,
-            "#!/bin/sh\nprintf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-1,\"message\":\"nope\"}}'\nsleep 5\n",
+            "#!/bin/sh\nwhile IFS= read -r line; do\n  case \"$line\" in\n    *'\"id\":3'*) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":3,\"error\":{\"code\":-1,\"message\":\"nope\"}}' ;;\n    *) printf '%s\\n' '{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{}}' | sed \"s/\\\"id\\\":1/\\\"id\\\":$(printf '%s' \"$line\" | grep -o '\\\"id\\\":[0-9]*' | grep -o '[0-9]*')/\" ;;\n  esac\ndone\n",
         );
         assert!(acp_compact(&bin, "sess-abc_123", Path::new("/tmp"), 30).is_err());
 
