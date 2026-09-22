@@ -55,6 +55,11 @@ pub struct PolicyPatch {
     /// before falling back to in-place elision. Only sessions with no
     /// live owner pid are eligible. Default off.
     pub auto_compact_closed: Option<bool>,
+    /// Devin only: deadline in seconds for one `devin acp` compact
+    /// (initialize + session/load replay + /compact + async status).
+    /// `session/load` streams the whole node history — ~25k nodes can
+    /// exceed 10 minutes — so the default is generous. Default 1800.
+    pub acp_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -187,6 +192,8 @@ pub struct Resolved {
     pub auto_apply_inplace: bool,
     /// See `PolicyPatch::auto_compact_closed`.
     pub auto_compact_closed: bool,
+    /// See `PolicyPatch::acp_timeout_secs`.
+    pub acp_timeout_secs: u64,
 }
 
 impl Config {
@@ -218,6 +225,7 @@ impl Config {
         let mut auto_apply_store = false;
         let mut auto_apply_inplace = false;
         let mut auto_compact_closed = false;
+        let mut acp_timeout_secs = 1800_u64;
         let preset_patch = preset
             .map(|name| {
                 self.presets
@@ -262,6 +270,9 @@ impl Config {
             if let Some(value) = patch.auto_compact_closed {
                 auto_compact_closed = value;
             }
+            if let Some(value) = patch.acp_timeout_secs {
+                acp_timeout_secs = value.clamp(60, 7200);
+            }
         }
         if let Some(flag) = strategy_flag {
             strategy = flag.to_string();
@@ -297,6 +308,7 @@ impl Config {
             auto_apply_store,
             auto_apply_inplace,
             auto_compact_closed,
+            acp_timeout_secs,
         })
     }
 }

@@ -3180,7 +3180,7 @@ fn cmd_watch(
                         bin,
                         &d.handle.session_id,
                         &cwd,
-                        600,
+                        resolved.acp_timeout_secs,
                     ) {
                         Ok(()) => {
                             let after = gobstopper_adapters::devin::session_observation(
@@ -4445,6 +4445,7 @@ mod tests {
             auto_apply_store: false,
             auto_apply_inplace: false,
             auto_compact_closed: false,
+            acp_timeout_secs: 1800,
         }
     }
 
