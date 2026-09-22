@@ -18,6 +18,7 @@ def load(name, filename):
 
 RUNNER = load('compaction_study', 'compaction-study.py')
 PROBE = load('provider_probe', 'provider-retention-probe.py')
+AUDIT = load('retention_audit', 'retention-audit.py')
 
 
 class StudyRunnerTests(unittest.TestCase):
@@ -96,6 +97,47 @@ class StudyRunnerTests(unittest.TestCase):
         self.assertEqual(result['status'], 'native_compaction_not_materialized')
         self.assertEqual(result['provider_commands'], 2)
         self.assertIsNone(result['recall_checks_passed'])
+
+    def test_audit_pairs_by_marker_increase_and_surgery(self):
+        def entry(ts, strategy, session='s1', path='/Users/x/.codex/sessions/r.jsonl', sha=None):
+            return {'provider': 'codex', 'session_id': session, 'path': path, 'ts': ts,
+                    'strategy': strategy, 'bytes': 1, 'sha256': sha or f'{ts:064x}'}
+        # Marker counts per sha: compactions land between snapshots regardless
+        # of how the hook labels line up.
+        markers = {f'{ts:064x}': count for ts, count in
+                   [(1, 0), (2, 0), (3, 1), (4, 1), (5, 1), (6, 2), (7, 2), (8, 2)]}
+        skipped = []
+        read = lambda sha: markers.get(sha, 0) * b'"type":"compacted"\n'
+        entries = [
+            entry(1, 'pre-compact'),
+            entry(2, 'post-compact'),   # no increase: bracket missed the write
+            entry(3, 'pre-compact'),   # +1 marker here -> provider_native (1->2? no: 2->3)
+            entry(4, 'elide'),         # surgery label, flat marker -> surgery_next
+            entry(5, 'pre-compact'),
+            entry(6, 'post-compact'),  # +1 marker at 5->6 -> provider_native
+            entry(7, 'pre-undo'),
+            entry(8, 'post-compact'),
+        ]
+        result = AUDIT.pairs(entries, read, skipped)
+        kinds = sorted((p['kind'], p['before']['ts'], p['marker_before'], p['marker_after'])
+                       for p in result)
+        self.assertEqual(kinds, [
+            ('provider_native', 2, 0, 1),
+            ('provider_native', 5, 1, 2),
+            ('surgery_next', 4, 1, 1),
+        ])
+        self.assertFalse(any(p['before']['ts'] in (1, 3, 7, 8) for p in result))
+        # Test-fixture paths and oversized/index-filtered entries are excluded.
+        tmp = [entry(9, 'pre-compact', path='/tmp/fixture.jsonl'),
+               entry(10, 'post-compact', path='/tmp/fixture.jsonl')]
+        self.assertEqual(AUDIT.pairs(tmp, read, skipped), [])
+        big = entry(11, 'pre-compact', sha=f'{11:064x}')
+        big['bytes'] = AUDIT.MAX_TRANSIT_BYTES + 1
+        AUDIT.pairs([big, entry(12, 'post-compact')], read, skipped)
+        self.assertEqual(skipped[-1]['reason'], 'index_filtered')
+        # Per-session cap keeps the newest pairs.
+        many = [entry(ts, 'auto' if ts % 2 else 'post-compact') for ts in range(1, 13)]
+        self.assertEqual(len(AUDIT.pairs(many, read, skipped)), AUDIT.MAX_PAIRS_PER_SESSION)
 
     def test_seed_styles_carry_identical_facts(self):
         for seed in PROBE.SEEDS.values():

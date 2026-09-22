@@ -887,23 +887,48 @@ fn apply_inner(
                 raw = out;
             }
             // A digest lands as a synthetic user-input node appended to the
-            // live chain tail, so replayed exports keep it in context.
+            // live chain tail, so replayed exports keep it in context. The
+            // head must be repointed at the new node — liveness walks up
+            // from `main_chain_id`, so a child of the old head is dead.
             Edit::InjectDigest { digest } => {
-                let last_node: Option<i64> = raw
-                    .lines()
-                    .filter_map(|l| serde_json::from_str::<Value>(l).ok())
-                    .filter(|r| r.get("type").and_then(Value::as_str) == Some("message_node"))
-                    .filter_map(|r| r.get("node_id").and_then(Value::as_i64))
-                    .max();
-                let Some(parent) = last_node else {
+                let mut head: Option<i64> = None;
+                let mut last_node: Option<i64> = None;
+                let mut meta_line: Option<usize> = None;
+                for (index, line) in raw.lines().enumerate() {
+                    let Ok(record) = serde_json::from_str::<Value>(line) else {
+                        continue;
+                    };
+                    match record.get("type").and_then(Value::as_str) {
+                        Some("session_meta") => {
+                            meta_line = Some(index);
+                            head = record.get("main_chain_id").and_then(Value::as_i64).or(head);
+                        }
+                        Some("message_node") => {
+                            if let Some(id) = record.get("node_id").and_then(Value::as_i64) {
+                                last_node = Some(last_node.map_or(id, |m| m.max(id)));
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let (Some(head), Some(meta_index)) = (head, meta_line) else {
                     return Err(AdapterError::InvalidEdit(
-                        "devin export has no message nodes for digest attachment",
+                        "devin export has no session head for digest attachment",
                     ));
                 };
+                let new_id = last_node.map_or(0, |m| m.saturating_add(1));
+                let mut lines: Vec<String> = raw.split('\n').map(str::to_string).collect();
+                let mut meta: Value = serde_json::from_str(&lines[meta_index]).map_err(|_| {
+                    AdapterError::InvalidEdit("devin session_meta is not parseable")
+                })?;
+                meta["main_chain_id"] = Value::from(new_id);
+                lines[meta_index] = serde_json::to_string(&meta)
+                    .map_err(|_| AdapterError::InvalidEdit("session_meta not serializable"))?;
+                raw = lines.join("\n");
                 let record = serde_json::json!({
                     "type": "message_node",
-                    "node_id": parent + 1,
-                    "parent_node_id": parent,
+                    "node_id": new_id,
+                    "parent_node_id": head,
                     "chat_message": digest_message(digest),
                     "created_at": Value::Null,
                     "metadata": Value::Null,
@@ -2150,6 +2175,50 @@ mod tests {
             )
             .unwrap();
         assert_eq!(count, 3);
+    }
+
+    #[test]
+    fn export_apply_repoints_head_so_digest_stays_live() {
+        let fx = Fixture::new("export-digest");
+        fx.add_session("sess-e", "export", 1, 1_790_006_000);
+        fx.add_node(
+            "sess-e",
+            0,
+            None,
+            serde_json::json!({"role": "user", "content": "hi"}),
+            None,
+        );
+        fx.add_node(
+            "sess-e",
+            1,
+            Some(0),
+            serde_json::json!({"role": "assistant", "content": "ok"}),
+            None,
+        );
+        let bytes = export_bytes(&db_path(&fx.root), "sess-e").unwrap();
+        let path = fx.root.join("export.jsonl");
+        fs::write(&path, &bytes).unwrap();
+        let edits = vec![gobstopper_core::plan::Edit::InjectDigest {
+            digest: digest_block(),
+        }];
+        apply(&path, &edits).unwrap();
+        let after = fs::read(&path).unwrap();
+        let mut lines = after.split(|b| *b == b'\n');
+        let meta: Value = serde_json::from_slice(lines.next().unwrap()).unwrap();
+        assert_eq!(meta["main_chain_id"].as_i64().unwrap(), 2);
+        let last: Value = serde_json::from_slice(lines.nth(2).unwrap()).unwrap();
+        assert_eq!(last["node_id"].as_i64().unwrap(), 2);
+        assert_eq!(last["parent_node_id"].as_i64().unwrap(), 1);
+        // The repointed head must make the injected node live, not an orphan.
+        let mut handle = fx.handle("sess-e");
+        handle.path = path.clone();
+        let transcript = load_bytes(handle, &after).unwrap();
+        let item = transcript
+            .items
+            .iter()
+            .find(|i| i.line_index == 3)
+            .expect("digest node missing from transcript");
+        assert!(item.est_tokens > 0, "injected digest node is dead");
     }
 
     #[test]

@@ -122,18 +122,105 @@ fn typed_replay_preserves_bound_evidence_without_claiming_live_quality() {
     assert!(report["billed_cost_usd"].is_null());
     assert!(report["continuation_success"].is_null());
     let rows = report["rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 20);
+    assert_eq!(rows.len(), 30);
     for row in rows {
         assert_eq!(row["verify_errors"], 0);
-        if row["arm"] == "typed_masking" {
-            assert_eq!(row["retention"]["retained"], 1);
-            assert_eq!(row["retention"]["same_origin_retained"], 1);
-            assert_eq!(row["floor_reached"], false);
-        } else {
-            assert_eq!(row["retention"]["retained"], 0);
+        match row["arm"].as_str().unwrap() {
+            "typed_masking" => {
+                assert_eq!(row["retention"]["retained"], 1);
+                assert_eq!(row["retention"]["same_origin_retained"], 1);
+                assert_eq!(row["retention"]["source_bound_retained"], 1);
+                assert_eq!(row["floor_reached"], false);
+            }
+            "typed_digest" => {
+                // The card carries the span verbatim, but it is a new
+                // user-origin record: text retained, provenance downgraded.
+                assert_eq!(row["retention"]["retained"], 1);
+                assert_eq!(row["retention"]["same_origin_retained"], 0);
+                assert_eq!(row["retention"]["source_bound_retained"], 0);
+                if row["status"] == "applied" {
+                    assert_eq!(row["card_items"], 1);
+                }
+            }
+            _ => assert_eq!(row["retention"]["retained"], 0),
         }
     }
     assert!(rows.last().unwrap()["applied_rounds"].as_u64().unwrap() < 10);
+}
+
+#[test]
+fn audit_scores_realized_after_and_vault_specs() {
+    let fixture = Fixture::new();
+    let manifest_path = fixture.root.join("retention.json");
+    fs::write(
+        &manifest_path,
+        serde_json::to_vec(&fixture.manifest).unwrap(),
+    )
+    .unwrap();
+    let run_against = |after: &str| -> Output {
+        Command::new(env!("CARGO_BIN_EXE_gobstopper"))
+            .arg("eval-study")
+            .arg(&fixture.source)
+            .arg("--manifest")
+            .arg(&manifest_path)
+            .arg("--against")
+            .arg(after)
+            .arg("--json")
+            .env("XDG_CONFIG_HOME", fixture.root.join("config"))
+            .env("XDG_DATA_HOME", fixture.root.join("data"))
+            .output()
+            .unwrap()
+    };
+    // After-bytes with the pinned fact stubbed out: realized retention drops.
+    let fact = "Never deploy to production without a verified migration.";
+    let after = fixture.root.join("after.jsonl");
+    let stubbed = String::from_utf8(fs::read(&fixture.source).unwrap())
+        .unwrap()
+        .replace(fact, "stub")
+        .into_bytes();
+    fs::write(&after, &stubbed).unwrap();
+    let output = run_against(after.to_str().unwrap());
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["replay_mode"], "realized_audit");
+    assert_eq!(report["rows"][0]["arm"], "realized_after");
+    assert_eq!(report["rows"][0]["status"], "realized");
+    assert_eq!(report["rows"][0]["retention"]["retained"], 0);
+    // Snapshot the unchanged source into an isolated vault, then audit
+    // against `vault:<sha256>`: every check stays source-bound.
+    let snap = Command::new(env!("CARGO_BIN_EXE_gobstopper"))
+        .arg("snapshot")
+        .arg(&fixture.source)
+        .arg("--label")
+        .arg("audit-test")
+        .env("XDG_CONFIG_HOME", fixture.root.join("config"))
+        .env("XDG_DATA_HOME", fixture.root.join("data"))
+        .output()
+        .unwrap();
+    assert!(
+        snap.status.success(),
+        "{}",
+        String::from_utf8_lossy(&snap.stderr)
+    );
+    let index = fs::read_to_string(fixture.root.join("data/gobstopper/vault/index.jsonl")).unwrap();
+    let sha: String = serde_json::from_str::<Value>(index.lines().last().unwrap()).unwrap()
+        ["sha256"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let output = run_against(&format!("vault:{sha}"));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report["rows"][0]["retention"]["source_bound_retained"], 1);
+    assert!(fixture.source.exists());
 }
 
 #[test]

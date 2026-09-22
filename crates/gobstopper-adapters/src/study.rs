@@ -1,7 +1,8 @@
 use crate::{copy, transaction, verify};
 use anyhow::{bail, ensure, Context, Result};
 use gobstopper_core::strategy::{ElideStrategy, PolicyConfig, Strategy};
-use gobstopper_core::{Edit, Provider, SessionHandle, Transcript};
+use gobstopper_core::validation::MAX_DIGEST_BYTES;
+use gobstopper_core::{DigestBlock, Edit, Provider, SessionHandle, Transcript};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashSet};
@@ -86,6 +87,57 @@ struct BoundCheck {
     text: String,
 }
 
+/// Replay arms: plain observation masking; typed masking (pinned records
+/// stay); typed digest (pinned records are elided but their spans are carried
+/// verbatim on an injected state card — same provenance downgrade a summary
+/// would impose, measured explicitly by the retention tiers).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Arm {
+    Masking,
+    Typed,
+    Digest,
+}
+
+impl Arm {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Masking => "observation_masking",
+            Self::Typed => "typed_masking",
+            Self::Digest => "typed_digest",
+        }
+    }
+}
+
+/// Build a state card carrying the pinned check spans verbatim. Returns the
+/// digest and how many pinned checks fit under `MAX_DIGEST_BYTES`.
+fn retention_card(checks: &[BoundCheck], covers_items: usize) -> (DigestBlock, usize) {
+    let mut digest = DigestBlock {
+        summary: Some("typed retention card: pinned spans verbatim".to_string()),
+        covers_items,
+        ..Default::default()
+    };
+    let mut size = digest.summary.as_ref().map_or(0, |s| s.len());
+    let mut carried = 0;
+    for check in checks.iter().filter(|c| c.kind.pinned()) {
+        let text = match check.kind {
+            KnowledgeKind::Constraint => format!("constraint: {}", check.text),
+            KnowledgeKind::Procedure => format!("procedure: {}", check.text),
+            _ => check.text.clone(),
+        };
+        if size + text.len() > MAX_DIGEST_BYTES {
+            break;
+        }
+        size += text.len();
+        carried += 1;
+        match check.kind {
+            KnowledgeKind::OpenTask => digest.open_tasks.push(text),
+            KnowledgeKind::Procedure => digest.concepts.push(text),
+            _ => digest.decisions.push(text),
+        }
+    }
+    (digest, carried)
+}
+
 #[derive(Debug, Default, Serialize)]
 pub struct RetentionScore {
     pub total: usize,
@@ -101,6 +153,9 @@ pub struct RetentionScore {
 #[derive(Debug, Serialize)]
 pub struct RoundResult {
     pub arm: &'static str,
+    /// Pinned checks carried on the injected retention card (`typed_digest`
+    /// arm only).
+    pub card_items: usize,
     pub round: usize,
     pub status: &'static str,
     pub applied_rounds: usize,
@@ -498,7 +553,8 @@ pub fn evaluate(
         .map(|c| c.record)
         .collect();
     let mut rows = Vec::new();
-    for (arm, typed) in [("observation_masking", false), ("typed_masking", true)] {
+    for arm in [Arm::Masking, Arm::Typed, Arm::Digest] {
+        let typed = arm == Arm::Typed;
         let temp = transaction::Temporary::new(&std::env::temp_dir(), bytes)?;
         let mut applied = 0;
         let began = Instant::now();
@@ -510,6 +566,7 @@ pub fn evaluate(
             let before = transaction::read(&temp.path)?;
             let mut transcript = parse(handle.clone(), &before)?;
             let before_tokens = transcript.context_tokens();
+            let mut card_items = 0;
             let mut selection_policy = policy.clone();
             selection_policy.floor_tokens = 0;
             let mut plan = ElideStrategy.evaluate(&transcript, &selection_policy);
@@ -538,6 +595,20 @@ pub fn evaluate(
                 plan.edits.retain(
                     |e| !matches!(e, Edit::Elide { line_indexes, .. } if line_indexes.is_empty()),
                 );
+                if arm == Arm::Digest && !plan.edits.is_empty() {
+                    let covered: usize = plan
+                        .edits
+                        .iter()
+                        .map(|e| match e {
+                            Edit::Elide { line_indexes, .. } => line_indexes.len(),
+                            _ => 0,
+                        })
+                        .sum();
+                    let (digest, carried) = retention_card(&checks, covered);
+                    card_items = carried;
+                    projected += digest.estimate_overhead();
+                    plan.edits.push(Edit::InjectDigest { digest });
+                }
                 plan.context_tokens_after = projected;
                 if !policy.accepts_savings(before_tokens, projected) {
                     plan.edits.clear();
@@ -558,18 +629,29 @@ pub fn evaluate(
             applied += usize::from(changed);
             transcript = parse(handle.clone(), &after)?;
             let findings = verify::verify(handle.provider, &after);
-            let retention = score(&checks, &slots(&transcript, &after)?);
-            if typed {
-                ensure!(
+            let after_slots = slots(&transcript, &after)?;
+            let retention = score(&checks, &after_slots);
+            match arm {
+                Arm::Typed => ensure!(
                     checks
                         .iter()
                         .filter(|c| c.kind.pinned())
                         .all(|c| !retention.missing_ids.contains(&c.id)),
                     "typed replay lost pinned content"
-                );
+                ),
+                Arm::Digest => ensure!(
+                    checks
+                        .iter()
+                        .filter(|c| c.kind.pinned())
+                        .take(card_items)
+                        .all(|c| after_slots.iter().any(|s| s.text.contains(&c.text))),
+                    "digest replay lost card-carried text"
+                ),
+                Arm::Masking => {}
             }
             rows.push(RoundResult {
-                arm,
+                arm: arm.name(),
+                card_items,
                 round,
                 status: if changed { "applied" } else { "no_change" },
                 applied_rounds: applied,
@@ -649,6 +731,90 @@ pub fn evaluate(
             "Token counts are adapter estimates, not fresh provider usage or billing measurements.",
             "Static replay without growth is a stress/idempotence check, not multiple independent tasks or successful compactions.",
             "The built-in structured strategy is a masking fallback; no semantic summarizer or provider is invoked.",
+        ],
+    })
+}
+
+/// Score-only audit: bind the manifest to `before` bytes and measure which
+/// checks survive in independent `after` bytes (e.g. a post-compaction vault
+/// snapshot or the live transcript). No replay and no mutation — this reports
+/// realized retention of whatever already happened between the two states.
+pub fn audit(
+    handle: SessionHandle,
+    before_bytes: &[u8],
+    manifest: Manifest,
+    manifest_sha256: String,
+    after_bytes: &[u8],
+) -> Result<StudyReport> {
+    let provider = handle.provider;
+    let before = parse(handle.clone(), before_bytes)?;
+    let checks = bind(&manifest, &before, before_bytes)?;
+    let source_findings = verify::verify(provider, before_bytes);
+    let after = parse(handle, after_bytes)?;
+    let findings = verify::verify(provider, after_bytes);
+    let retention = score(&checks, &slots(&after, after_bytes)?);
+    Ok(StudyReport {
+        schema: "gobstopper-retention-study-v1",
+        provider,
+        source_sha256: copy::sha256(before_bytes),
+        manifest_sha256,
+        source_verify_errors: source_findings
+            .iter()
+            .filter(|f| f.severity == verify::Severity::Error)
+            .count(),
+        source_verify_warnings: source_findings
+            .iter()
+            .filter(|f| f.severity == verify::Severity::Warning)
+            .count(),
+        min_savings_tokens: 0,
+        label_source: manifest.label_source,
+        replay_mode: "realized_audit",
+        provider_calls: 0,
+        billed_cost_usd: None,
+        continuation_success: None,
+        trigger_tokens: 0,
+        floor_tokens: 0,
+        keep_recent_tool_outputs: 0,
+        rows: vec![RoundResult {
+            arm: "realized_after",
+            card_items: 0,
+            round: 1,
+            status: "realized",
+            applied_rounds: 0,
+            source_bytes: before_bytes.len(),
+            result_bytes: after_bytes.len(),
+            result_sha256: copy::sha256(after_bytes),
+            estimated_context_before: before.context_tokens(),
+            estimated_context_after: after.context_tokens(),
+            floor_reached: false,
+            pinned_records: 0,
+            verify_errors: findings
+                .iter()
+                .filter(|f| f.severity == verify::Severity::Error)
+                .count(),
+            verify_warnings: findings
+                .iter()
+                .filter(|f| f.severity == verify::Severity::Warning)
+                .count(),
+            new_verify_errors: findings
+                .iter()
+                .filter(|f| {
+                    f.severity == verify::Severity::Error && !source_findings.contains(f)
+                })
+                .count(),
+            retention,
+            duration_ms: 0,
+        }],
+        unmeasured: vec![
+            "continuation_task_success",
+            "billed_savings",
+            "evidence_retrieval",
+        ],
+        limitations: vec![
+            "Labels are supplied, not inferred or independently validated; retention is conditional on annotation coverage.",
+            "Realized before/after measurement; attribution to a specific compaction depends on the pair the caller supplies.",
+            "Provider-native compaction replaces records wholesale: source_bound is expected to be 0; retained/same_origin carry the signal.",
+            "Token counts are adapter estimates, not fresh provider usage or billing measurements.",
         ],
     })
 }
