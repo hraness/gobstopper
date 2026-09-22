@@ -269,8 +269,13 @@ Claude commands, capped at $0.25 each, using an isolated configuration directory
 no tools, safe mode, and no MCP servers. It requires explicit opt-in and stops
 if that isolated profile is not authenticated; it never copies credentials.
 It checks for a persisted native compaction boundary before testing recall.
-After interactive login in that isolated profile, a fresh probe output directory
-can reuse it with `--auth-home /private/previous-probe/claude-home`:
+`--seed-style baseline` uses explicit test framing; `--seed-style naturalistic`
+embeds the identical facts in a plausible work narrative. Recall is scored twice:
+strict exact match (`recall_checks_passed`) and containment
+(`recall_checks_lenient`), so a semantically preserved superset answer is not
+indistinguishable from a lost fact. After interactive login in that isolated
+profile, a fresh probe output directory can reuse it with
+`--auth-home /private/previous-probe/claude-home`:
 
 ```sh
 python3 scripts/provider-retention-probe.py --claude-bin /absolute/path/to/claude --output /private/new-native-probe --allow-provider-calls

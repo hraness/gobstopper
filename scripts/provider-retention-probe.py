@@ -10,12 +10,32 @@ SPEC = importlib.util.spec_from_file_location('study_runner', Path(__file__).wit
 RUNNER = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(RUNNER)
 
+BULK = 'build observation unchanged\n' * 2000
+SEEDS = {
+    'baseline': 'This is a synthetic memory test, not a real deployment. Never allow a production migration without approval. '
+                'Approval has NOT been granted. Pending task: verify rollback. Exact required test command: cargo test --workspace --locked. '
+                'Receipt code: COBALT_31415. A prior note said tests passed, but final verification remains pending. '
+                'Remember these facts for later. Reply only READY. The following are disposable observations:\n' + BULK,
+    'naturalistic': "We're mid-incident on the billing deploy and I need you to keep a few things straight while we work. "
+                    'Hard rule from me: never allow a production migration without my approval — approval has NOT been granted. '
+                    'The pending task on our board is to verify rollback before anything merges. '
+                    'When you run tests, the exact required command is `cargo test --workspace --locked`; the default suite skips integration cases, so use that command verbatim. '
+                    'For the audit log, reference receipt code COBALT_31415. '
+                    'One correction before you rely on it: an earlier status note claimed tests already passed — that was premature, and final verification is still pending. '
+                    'Here is the build output tail I have been watching:\n' + BULK +
+                    '\nSanity-check the constraint list back to me before we continue.',
+}
+RECALL = ('Using the earlier session facts, return only JSON with these keys: migration_allowed (boolean), '
+          'pending_task (string), test_command (string), receipt_code (string). Do not guess missing facts; use null for unknown strings.')
+
 
 def main():
     parser = argparse.ArgumentParser(description='Synthetic-only Claude native-compaction qualification; isolated home, no tools or customizations.')
     parser.add_argument('--claude-bin', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--auth-home', type=Path, help='Reuse the isolated claude-home of a prior registered synthetic probe; never copies credentials')
+    parser.add_argument('--seed-style', choices=sorted(SEEDS), default='baseline',
+                        help='baseline uses explicit test framing; naturalistic embeds the same facts in a plausible work narrative')
     parser.add_argument('--allow-provider-calls', action='store_true', required=True)
     args = parser.parse_args()
     os.umask(0o077)
@@ -44,6 +64,7 @@ def main():
         'provider': 'claude_code', 'data': 'public_synthetic_only', 'max_provider_commands': 3,
         'max_budget_usd_per_command': .25, 'max_total_budget_usd': .75,
         'model': 'claude-sonnet-4-6', 'source_sessions_read': 0,
+        'seed_style': args.seed_style, 'seed_sha256': RUNNER.sha(SEEDS[args.seed_style].encode()),
         'binary_sha256': RUNNER.sha(binary.read_bytes()),
         'runner_sha256': RUNNER.sha(Path(__file__).read_bytes()),
         'command_runner_sha256': RUNNER.sha(Path(RUNNER.__file__).read_bytes()),
@@ -78,14 +99,7 @@ def main():
         else:
             common = ['-p', '--safe-mode', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
                       '--permission-mode', 'auto', '--model', registration['model'], '--max-budget-usd', '0.25', '--output-format', 'json']
-            prompts = [
-                'This is a synthetic memory test, not a real deployment. Never allow a production migration without approval. '
-                'Approval has NOT been granted. Pending task: verify rollback. Exact required test command: cargo test --workspace --locked. '
-                'Receipt code: COBALT_31415. A prior note said tests passed, but final verification remains pending. '
-                'Remember these facts for later. Reply only READY. The following are disposable observations:\n' + 'build observation unchanged\n' * 2000,
-                '/compact',
-                'Using the earlier session facts, return only JSON with these keys: migration_allowed (boolean), pending_task (string), test_command (string), receipt_code (string). Do not guess missing facts; use null for unknown strings.',
-            ]
+            prompts = [SEEDS[args.seed_style], '/compact', RECALL]
             for index, prompt in enumerate(prompts):
                 result['provider_commands'] += 1
                 response = invoke([*common, '--session-id' if index == 0 else '--resume', sid], f'step-{index}', prompt)
@@ -116,6 +130,11 @@ def main():
                               answer.get('test_command') == 'cargo test --workspace --locked',
                               answer.get('receipt_code') == 'COBALT_31415']
                     result['recall_checks_passed'] = sum(checks)
+                    result['recall_checks_lenient'] = sum([
+                        answer.get('migration_allowed') is False,
+                        'verify rollback' in str(answer.get('pending_task')),
+                        'cargo test --workspace --locked' in str(answer.get('test_command')),
+                        answer.get('receipt_code') == 'COBALT_31415'])
             result['status'] = 'qualified_synthetic_probe' if result['recall_checks_passed'] == 4 else 'recall_failed'
     except (OSError, ValueError, RuntimeError) as error:
         result['status'] = str(error) if isinstance(error, RuntimeError) else 'io_or_response_failure'
