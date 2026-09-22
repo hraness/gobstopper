@@ -34,7 +34,7 @@ use crate::config;
 use anyhow::{bail, Context, Result};
 use gobstopper_adapters::{detect, vault};
 use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
-use gobstopper_core::Provider;
+use gobstopper_core::{Provider, SessionHandle};
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -372,15 +372,21 @@ fn snapshot_and_log(
     let session_id = payload["session_id"].as_str().unwrap_or("unknown");
     let transcript = payload["transcript_path"].as_str().map(PathBuf::from);
     let mut provider = Provider::ClaudeCode;
+    // Newest prior vault object for this session — the before-state a
+    // post-compact snapshot pairs with, same rule the audit driver uses.
+    let prior_sha = vault::for_session(session_id, vault_root)
+        .ok()
+        .and_then(|entries| entries.into_iter().next())
+        .map(|e| e.sha256);
+    let mut new_sha = None;
     if let Some(path) = &transcript {
         if path.is_file() {
             if let Some(sniffed) = detect::sniff_provider(path) {
                 provider = sniffed;
             }
-            if let Err(e) =
-                vault::snapshot(path, provider, session_id, Some(snap_strategy), vault_root)
-            {
-                eprintln!("gobstopper hook: vault snapshot failed (non-fatal): {e}");
+            match vault::snapshot(path, provider, session_id, Some(snap_strategy), vault_root) {
+                Ok(entry) => new_sha = Some(entry.sha256),
+                Err(e) => eprintln!("gobstopper hook: vault snapshot failed (non-fatal): {e}"),
             }
         }
     }
@@ -389,7 +395,7 @@ fn snapshot_and_log(
     if payload.get("session_id").is_none() && transcript.is_none() {
         return;
     }
-    let event = CompactionEvent::new(
+    let mut event = CompactionEvent::new(
         provider,
         session_id,
         "native",
@@ -402,6 +408,35 @@ fn snapshot_and_log(
         0,
         None,
     );
+    if let Some(sha) = &new_sha {
+        if snap_strategy == "post-compact" {
+            event.snapshot_after_sha256 = Some(sha.clone());
+            // Pair with the prior object when it actually differs —
+            // identical bytes mean no observable mutation to score.
+            if let (Some(before), Some(path)) =
+                (prior_sha.filter(|p| p != sha), transcript.as_ref())
+            {
+                event.snapshot_before_sha256 = Some(before.clone());
+                let handle = SessionHandle {
+                    provider,
+                    session_id: session_id.to_string(),
+                    path: path.clone(),
+                    cwd: None,
+                    age_secs: 0,
+                };
+                if let Some((total, retained, lexical)) =
+                    crate::realized_retention(&handle, &before, sha)
+                {
+                    event.retention_total = Some(total);
+                    event.retention_retained = Some(retained);
+                    event.retention_lexical = Some(lexical);
+                }
+            }
+        } else {
+            // A pre-compact snapshot *is* the before-state evidence.
+            event.snapshot_before_sha256 = Some(sha.clone());
+        }
+    }
     if let Err(e) = append_event(log_path, &event) {
         eprintln!("gobstopper hook: telemetry write failed (non-fatal): {e}");
     }
@@ -419,6 +454,10 @@ fn postcompact_devin(payload: &Value, roots: &detect::Roots, vault_root: &Path, 
     if payload.get("session_id").is_none() && payload.get("summary").is_none() {
         return;
     }
+    let prior_sha = vault::for_session(session_id, vault_root)
+        .ok()
+        .and_then(|entries| entries.into_iter().next())
+        .map(|e| e.sha256);
     let event = CompactionEvent::new(
         Provider::Devin,
         session_id,
@@ -444,7 +483,7 @@ fn postcompact_devin(payload: &Value, roots: &detect::Roots, vault_root: &Path, 
     let db = gobstopper_adapters::devin::db_path(&roots.devin_home);
     match gobstopper_adapters::devin::export_bytes(&db, session_id) {
         Ok(bytes) => {
-            if let Err(e) = vault::snapshot_data(
+            match vault::snapshot_data(
                 &bytes,
                 &db,
                 Provider::Devin,
@@ -452,7 +491,41 @@ fn postcompact_devin(payload: &Value, roots: &detect::Roots, vault_root: &Path, 
                 Some("post-compact"),
                 vault_root,
             ) {
-                eprintln!("gobstopper hook: vault snapshot failed (non-fatal): {e}");
+                Ok(entry) => {
+                    // Pair the new post-compact object with the prior
+                    // snapshot and emit a measurement record — action
+                    // "none" so consumers summing `provider_compact`
+                    // applies don't double count. The minimal `applied`
+                    // event above stays first so telemetry survives a
+                    // timeout kill during this slower work.
+                    if let Some(before) = prior_sha.filter(|p| p != &entry.sha256) {
+                        let handle = SessionHandle {
+                            provider: Provider::Devin,
+                            session_id: session_id.to_string(),
+                            path: db.clone(),
+                            cwd: None,
+                            age_secs: 0,
+                        };
+                        if let Some((total, retained, lexical)) =
+                            crate::realized_retention(&handle, &before, &entry.sha256)
+                        {
+                            let mut scored = event.clone();
+                            scored.action = "none".to_string();
+                            scored.strategy = "native:evidence".to_string();
+                            scored.snapshot_before_sha256 = Some(before);
+                            scored.snapshot_after_sha256 = Some(entry.sha256);
+                            scored.retention_total = Some(total);
+                            scored.retention_retained = Some(retained);
+                            scored.retention_lexical = Some(lexical);
+                            if let Err(e) = append_event(log_path, &scored) {
+                                eprintln!(
+                                    "gobstopper hook: telemetry write failed (non-fatal): {e}"
+                                );
+                            }
+                        }
+                    }
+                }
+                Err(e) => eprintln!("gobstopper hook: vault snapshot failed (non-fatal): {e}"),
             }
         }
         Err(e) => eprintln!("gobstopper hook: devin export failed (non-fatal): {e}"),

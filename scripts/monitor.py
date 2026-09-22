@@ -26,6 +26,8 @@ except ImportError:
 SCHEMA = "gobstopper/local-monitor-v1"
 LOG_BYTES = 10 * 1024 * 1024
 CAPTURE_BYTES = 8 * 1024 * 1024
+EVENTS_LOG_BYTES = 16 * 1024 * 1024
+EVENTS_LOG = Path.home() / ".local" / "share" / "gobstopper" / "events.jsonl"
 TIMEOUT_SECONDS = 45
 SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 PLAN_LINE = re.compile(rb"^\[dry-run\] codex ([A-Za-z0-9_-]{1,12}): ")
@@ -333,6 +335,50 @@ def save_observation(directory, observation):
             pass
 
 
+def retention_summary(log_path, allowlist):
+    """Aggregate measured-retention events for allowlisted sessions.
+
+    Counts and flagged session ids only — event payload fields beyond the
+    numeric retention triple never cross the boundary. A "lossy" flag marks
+    compactions whose lexical coverage fell below half the bound checks.
+    """
+    out = {"measured": 0, "checks": 0, "literal": 0, "lexical": 0,
+           "lossy_sessions": []}
+    try:
+        if log_path.stat().st_size > EVENTS_LOG_BYTES:
+            return out
+        lines = log_path.read_text().splitlines()
+    except OSError:
+        return out
+    seen_lossy = set()
+    for line in lines:
+        if "retention_total" not in line:
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        session = event.get("session_id")
+        if session not in allowlist:
+            continue
+        total, literal = event.get("retention_total"), event.get("retention_retained")
+        lexical = event.get("retention_lexical")
+        values = (total, literal or 0, lexical or 0)
+        if not all(isinstance(v, int) and 0 <= v <= 100_000 for v in values):
+            continue
+        out["measured"] += 1
+        out["checks"] += total
+        out["literal"] += literal or 0
+        out["lexical"] += lexical or 0
+        if total and lexical is not None and lexical * 2 < total \
+                and session not in seen_lossy:
+            seen_lossy.add(session)
+            out["lossy_sessions"].append(session)
+    return out
+
+
 def observe(binary, output_dir, sessions, providers=()):
     if not sessions or len(sessions) > 128 or any(not SESSION_ID.fullmatch(s) for s in sessions):
         raise MonitorError("invalid_sessions")
@@ -400,6 +446,10 @@ def observe(binary, output_dir, sessions, providers=()):
                              "plan_count": (len(plans) if watch_status["error"] is None
                                             and report_status["available"] and not ambiguous_plan else None),
                              "scope": "allowlisted_sessions", "policy": "built_in_defaults"})
+        samples = context_samples(report, sessions, providers)
+        # Retention events for allowlisted sessions plus provider-opt-in
+        # samples — the same privacy boundary as context_samples.
+        allowlist = set(sessions) | {s["session_id"] for s in samples}
         observation = {
             "schema": SCHEMA,
             "observed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -408,7 +458,8 @@ def observe(binary, output_dir, sessions, providers=()):
             "report": report_status,
             "watch": watch_status,
             "sessions": session_rows(report, sessions, previous),
-            "context_samples": context_samples(report, sessions, providers),
+            "context_samples": samples,
+            "retention": retention_summary(EVENTS_LOG, allowlist),
         }
         save_observation(directory, observation)
         return observation

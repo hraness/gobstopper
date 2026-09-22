@@ -297,8 +297,11 @@ embeds the identical facts in a plausible work narrative; `constraints` makes
 the seed rule-dense; `pinned` keeps the rules out of the transcript entirely —
 they ride in `--append-system-prompt`, the provider's own pinned-context
 channel (safe mode disables CLAUDE.md discovery), while conversational facts
-still go through the summarizer. Rule-bearing styles add a `rules[]` recall
-scored per-marker as `constraint_rules_recalled`. Recall is scored twice:
+still go through the summarizer. `claude_md` exercises the production pin
+channel instead — the same rules land in a workspace `CLAUDE.md` and the arm
+drops `--safe-mode` so project memory loads (the isolated config home and
+scratch workspace remain the boundary). Rule-bearing styles add a `rules[]`
+recall scored per-marker as `constraint_rules_recalled`. Recall is scored twice:
 strict exact match (`recall_checks_passed`) and containment
 (`recall_checks_lenient`), so a semantically preserved superset answer is not
 indistinguishable from a lost fact. After interactive login in that isolated

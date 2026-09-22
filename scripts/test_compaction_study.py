@@ -159,7 +159,7 @@ class StudyRunnerTests(unittest.TestCase):
     def test_seed_styles_carry_identical_facts(self):
         for style, seed in PROBE.SEEDS.items():
             facts = ('verify rollback', 'COBALT_31415', 'pending')
-            if style != 'pinned':  # pinned keeps its rules in CLAUDE.md only
+            if style not in ('pinned', 'claude_md'):  # pinned arms keep rules out of the transcript
                 facts += ('production migration', 'NOT been granted',
                           'cargo test --workspace --locked')
             for fact in facts:
