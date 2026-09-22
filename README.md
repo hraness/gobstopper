@@ -293,7 +293,12 @@ no tools, safe mode, and no MCP servers. It requires explicit opt-in and stops
 if that isolated profile is not authenticated; it never copies credentials.
 It checks for a persisted native compaction boundary before testing recall.
 `--seed-style baseline` uses explicit test framing; `--seed-style naturalistic`
-embeds the identical facts in a plausible work narrative. Recall is scored twice:
+embeds the identical facts in a plausible work narrative; `constraints` makes
+the seed rule-dense; `pinned` keeps the rules out of the transcript entirely —
+they ride in `--append-system-prompt`, the provider's own pinned-context
+channel (safe mode disables CLAUDE.md discovery), while conversational facts
+still go through the summarizer. Rule-bearing styles add a `rules[]` recall
+scored per-marker as `constraint_rules_recalled`. Recall is scored twice:
 strict exact match (`recall_checks_passed`) and containment
 (`recall_checks_lenient`), so a semantically preserved superset answer is not
 indistinguishable from a lost fact. After interactive login in that isolated

@@ -140,11 +140,17 @@ class StudyRunnerTests(unittest.TestCase):
         self.assertEqual(len(AUDIT.pairs(many, read, skipped)), AUDIT.MAX_PAIRS_PER_SESSION)
 
     def test_seed_styles_carry_identical_facts(self):
-        for seed in PROBE.SEEDS.values():
-            for fact in ('production migration', 'NOT been granted', 'verify rollback',
-                         'cargo test --workspace --locked', 'COBALT_31415', 'pending'):
-                self.assertIn(fact, seed)
+        for style, seed in PROBE.SEEDS.items():
+            facts = ('verify rollback', 'COBALT_31415', 'pending')
+            if style != 'pinned':  # pinned keeps its rules in CLAUDE.md only
+                facts += ('production migration', 'NOT been granted',
+                          'cargo test --workspace --locked')
+            for fact in facts:
+                self.assertIn(fact, seed, style)
             self.assertIn('build observation unchanged\n' * 10, seed)
+        for marker in ('production migration', 'NOT been granted', 'payments worker',
+                       'services/billing', 'cargo test --workspace --locked'):
+            self.assertIn(marker, PROBE.PINNED_RULES_MD)
         for marker in ('synthetic memory test', 'Reply only READY', 'Remember these facts'):
             self.assertNotIn(marker.lower(), PROBE.SEEDS['naturalistic'].lower())
 
