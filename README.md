@@ -204,6 +204,86 @@ overwritten by a standalone compaction run; live session surgery must be
 dispatched by the session owner. Each compaction appends a numeric record
 to `events.jsonl` in the `gobstopper/compaction-events-v1` schema.
 
+### Typed-retention experiments (opt-in)
+
+`eval-study` compares observation masking with source-bound typed masking on
+private temporary copies. It does not change `auto`, call a model, emit live
+compaction telemetry, or modify the provider session. Constraints, procedures,
+and open tasks are pinned in their original records and roles; retrieved text
+never becomes a higher-authority instruction. A requested floor may remain
+unreachable rather than dropping a pinned item.
+
+```sh
+gobstopper eval-study /private/source.jsonl --prepare-manifest /private/checks.json
+gobstopper eval-study /private/source.jsonl --manifest /private/checks.json --rounds 10 --trigger 1 --floor 40000 --json
+```
+
+Preparation refuses an existing destination and writes only hashes, byte spans,
+JSON pointers, types, and opaque check IDs, not transcript text. Its labels are
+**heuristic candidates, not audited truth**: at most 16 complete lines per type,
+with elidable records considered first and source order breaking ties. Reviewed
+manifests can instead use `label_source = "reviewed"`; classification coverage
+is not measured by retention. The JSON schema is `gobstopper-retention-v1`, with
+`source_sha256`, `label_source`, and `checks` entries containing `id`, `kind`,
+`record_index`, `pointer`, `start_byte`, `end_byte`, and `sha256` of that exact
+UTF-8 span. Types are `constraint`, `procedure`, `open_task`, `fact`, `preference`,
+and `episode`. Only the first three are pinned. Source identity, live context,
+text-only pointers, span boundaries, duplicate IDs, and hashes are checked
+before any replay. Limits: 64 MiB of source, 1 MiB of manifest, 256 checks,
+4 KiB per span, and 1–10 rounds.
+
+The report separates text presence, same-origin presence, and preservation at
+the original source record/pointer. `by_kind` holds `[total, source-bound
+retained]`; the elidable subset is reported separately. Dead branches and
+metadata cannot satisfy a check. Pre-existing source verification errors and
+newly introduced errors are counted separately. Counts are not semantic or
+behavioral scores. Estimated context uses adapter item estimates, not stale provider usage records
+or billing. Both arms use the same policy, including minimum savings and the
+protected recent tool-output tail.
+
+Without new work, replay is explicitly `static_stress`; unchanged passes do not
+count as applied compactions. For Codex/Claude fixtures, optional `growth`
+entries (`after_round`, `records`) append complete provider records between
+rounds and are verified before use. Checks still refer to the initial source;
+this is not a test of revised tasks, independent tasks, or agent reasoning.
+Devin growth is rejected until provider-authored chain progression is supported.
+Provider-native compaction, semantic summarization, continuation success, cost,
+and retrieval are explicitly **unmeasured**, not successful or zero-cost
+comparators. The built-in `structured` strategy is not used as a substitute for
+a semantic summarizer.
+
+A bounded pilot can freeze up to eight selected session exports and register its
+protocol before outcomes. Choose a new private output directory outside Git:
+
+```sh
+python3 scripts/compaction-study.py --binary target/release/gobstopper --output /private/new-pilot --session SESSION_ID
+```
+
+It pins the executable, source exports, annotation manifests, and hashes;
+keeps content private; uses isolated config/telemetry paths; and checks that the
+frozen inputs remain unchanged. There are no provider calls. Commands have
+output/deadline limits and the study has a 900-second overall deadline.
+
+The separate synthetic-only provider qualification probe makes at most three
+Claude commands, capped at $0.25 each, using an isolated configuration directory,
+no tools, safe mode, and no MCP servers. It requires explicit opt-in and stops
+if that isolated profile is not authenticated; it never copies credentials.
+It checks for a persisted native compaction boundary before testing recall.
+After interactive login in that isolated profile, a fresh probe output directory
+can reuse it with `--auth-home /private/previous-probe/claude-home`:
+
+```sh
+python3 scripts/provider-retention-probe.py --claude-bin /absolute/path/to/claude --output /private/new-native-probe --allow-provider-calls
+```
+
+A passing synthetic probe is not a four-arm real-session comparison or evidence
+of billed savings. No new strategy is activated in the watch daemon by these
+commands. Design references: [Knowledge Triage](https://arxiv.org/abs/2608.22752),
+[The Complexity Trap](https://arxiv.org/abs/2508.21433),
+[SelfCompact](https://arxiv.org/abs/2606.23525),
+[ACON](https://arxiv.org/abs/2510.00615), and
+[LongMemEval](https://arxiv.org/abs/2410.10813).
+
 Config: `~/.config/gobstopper/config.toml`
 
 ```toml
