@@ -152,6 +152,32 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    #[command(
+        about = "Compare source-bound typed retention on private replay copies; never calls providers"
+    )]
+    EvalStudy {
+        session: String,
+        #[arg(
+            long,
+            required_unless_present = "prepare_manifest",
+            conflicts_with = "prepare_manifest",
+            help = "Source-hashed gobstopper-retention-v1 annotation manifest"
+        )]
+        manifest: Option<PathBuf>,
+        #[arg(
+            long,
+            help = "Write a new metadata-only heuristic annotation manifest; does not run the study"
+        )]
+        prepare_manifest: Option<PathBuf>,
+        #[arg(long, default_value_t = 10, value_parser = clap::value_parser!(u8).range(1..=10))]
+        rounds: u8,
+        #[arg(long)]
+        trigger: Option<u64>,
+        #[arg(long)]
+        floor: Option<u64>,
+        #[arg(long)]
+        json: bool,
+    },
     /// Emit the Claude `cache_edits` tool_use_ids for a session as JSON.
     /// Does not modify the transcript; the caller dispatches the ids to
     /// the Anthropic API.
@@ -4180,6 +4206,63 @@ fn main() -> Result<()> {
             *floor,
             *json,
         ),
+        Cmd::EvalStudy {
+            session,
+            manifest,
+            prepare_manifest,
+            rounds,
+            trigger,
+            floor,
+            json,
+        } => {
+            let d = find_session(&cli, &cfg, session)?;
+            let mut policy = cfg
+                .resolve(d.handle.provider, &d.handle.session_id, None, None)?
+                .policy;
+            if let Some(value) = trigger {
+                policy.trigger_tokens = *value;
+            }
+            if let Some(value) = floor {
+                policy.floor_tokens = *value;
+            }
+            let bytes =
+                if d.handle.provider == Provider::Devin && devin::is_store_path(&d.handle.path) {
+                    devin::export_bytes(&d.handle.path, &d.handle.session_id)?
+                } else {
+                    gobstopper_adapters::transaction::read(&d.handle.path)?
+                };
+            if let Some(path) = prepare_manifest {
+                let count = gobstopper_adapters::study::prepare_manifest(d.handle, &bytes, path)?;
+                println!(
+                    "{}",
+                    serde_json::json!({"checks":count,"label_source":"heuristic","study_run":false})
+                );
+                return Ok(());
+            }
+            let (manifest, digest) = gobstopper_adapters::study::read_manifest(
+                manifest.as_deref().context("manifest is required")?,
+            )?;
+            let report = gobstopper_adapters::study::evaluate(
+                d.handle,
+                &bytes,
+                manifest,
+                digest,
+                &policy,
+                usize::from(*rounds),
+            )?;
+            if *json {
+                println!("{}", serde_json::to_string_pretty(&report)?);
+            } else {
+                println!(
+                    "{}: {} (no provider calls; cost and continuation unmeasured)",
+                    report.schema, report.replay_mode
+                );
+                for row in &report.rows {
+                    println!("{} round {}: {} ({} applied), ~{} -> ~{} tokens; retention {}/{}; floor reached: {}", row.arm, row.round, row.status, row.applied_rounds, row.estimated_context_before, row.estimated_context_after, row.retention.same_origin_retained, row.retention.total, row.floor_reached);
+                }
+            }
+            Ok(())
+        }
         Cmd::CacheEdits {
             session,
             trigger,
