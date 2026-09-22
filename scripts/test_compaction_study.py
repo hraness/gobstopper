@@ -97,6 +97,15 @@ class StudyRunnerTests(unittest.TestCase):
         self.assertEqual(result['provider_commands'], 2)
         self.assertIsNone(result['recall_checks_passed'])
 
+    def test_seed_styles_carry_identical_facts(self):
+        for seed in PROBE.SEEDS.values():
+            for fact in ('production migration', 'NOT been granted', 'verify rollback',
+                         'cargo test --workspace --locked', 'COBALT_31415', 'pending'):
+                self.assertIn(fact, seed)
+            self.assertIn('build observation unchanged\n' * 10, seed)
+        for marker in ('synthetic memory test', 'Reply only READY', 'Remember these facts'):
+            self.assertNotIn(marker.lower(), PROBE.SEEDS['naturalistic'].lower())
+
     def test_materialized_compaction_and_recall_are_separate_checks(self):
         code, result, _ = self.probe(True, True)
         self.assertEqual(code, 0)
