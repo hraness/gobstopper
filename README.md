@@ -232,8 +232,9 @@ is not measured by retention. The JSON schema is `gobstopper-retention-v1`, with
 UTF-8 span. Types are `constraint`, `procedure`, `open_task`, `fact`, `preference`,
 and `episode`. Only the first three are pinned. Source identity, live context,
 text-only pointers, span boundaries, duplicate IDs, and hashes are checked
-before any replay. Limits: 64 MiB of source, 1 MiB of manifest, 256 checks,
-4 KiB per span, and 1–10 rounds.
+before any replay. Limits: 64 MiB of source for replay (512 MiB — the vault
+transit bound — for score-only manifest prep and `--against` audits),
+1 MiB of manifest, 256 checks, 4 KiB per span, and 1–10 rounds.
 
 The report separates text presence, same-origin presence, and preservation at
 the original source record/pointer. `lexical_retained` is a paraphrase-sensitive
