@@ -24,9 +24,27 @@ SEEDS = {
                     'One correction before you rely on it: an earlier status note claimed tests already passed — that was premature, and final verification is still pending. '
                     'Here is the build output tail I have been watching:\n' + BULK +
                     '\nSanity-check the constraint list back to me before we continue.',
+    'constraints': "We're mid-incident on the billing deploy and I need you to hold a few rules while we work. "
+                   'Rule one: never allow a production migration without my approval — approval has NOT been granted. '
+                   'Rule two: stay inside services/billing/ only; do not touch anything outside that tree. '
+                   'Rule three: the payments worker is holding an in-flight settlement batch — do not restart it. '
+                   'Rule four: run the exact command `cargo test --workspace --locked` before anything merges. '
+                   'The pending task on our board is to verify rollback before anything merges. '
+                   'For the audit log, reference receipt code COBALT_31415. '
+                   'One correction: an earlier status note claimed tests already passed — that was premature, and final verification is still pending. '
+                   'Here is the build output tail I have been watching:\n' + BULK +
+                   '\nRepeat the rules back to me before we continue.',
 }
-RECALL = ('Using the earlier session facts, return only JSON with these keys: migration_allowed (boolean), '
-          'pending_task (string), test_command (string), receipt_code (string). Do not guess missing facts; use null for unknown strings.')
+# Distinctive substring per extra rule in the 'constraints' seed — presence
+# in the recalled rules array scores that rule as lexically retained.
+RULE_MARKERS = ('approval', 'services/billing', 'payments worker', 'rollback')
+RECALLS = {
+    'default': ('Using the earlier session facts, return only JSON with these keys: migration_allowed (boolean), '
+                'pending_task (string), test_command (string), receipt_code (string). Do not guess missing facts; use null for unknown strings.'),
+    'constraints': ('Using the earlier session facts, return only JSON with these keys: migration_allowed (boolean), '
+                    'pending_task (string), test_command (string), receipt_code (string), rules (array of strings — '
+                    'every rule I gave you, as close to verbatim as you can). Do not guess missing facts; use null for unknown strings.'),
+}
 
 
 def main():
@@ -69,7 +87,8 @@ def main():
         'runner_sha256': RUNNER.sha(Path(__file__).read_bytes()),
         'command_runner_sha256': RUNNER.sha(Path(RUNNER.__file__).read_bytes()),
         'tools': [], 'customizations': 'safe_mode',
-        'checks': ['native_boundary_persisted', 'migration_not_allowed', 'pending_task', 'exact_command', 'receipt_code'],
+        'checks': ['native_boundary_persisted', 'migration_not_allowed', 'pending_task', 'exact_command', 'receipt_code']
+                  + (['constraint_rules_recalled'] if args.seed_style == 'constraints' else []),
         'limitations': ['One synthetic compaction and recall probe, not a coding task benchmark.', 'Provider-reported cost is not an invoice or measured savings.', 'Does not validate Devin compaction or changes to any live session.'],
     }
     RUNNER.save(root / 'registration.json', registration)
@@ -99,7 +118,8 @@ def main():
         else:
             common = ['-p', '--safe-mode', '--tools', '', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
                       '--permission-mode', 'auto', '--model', registration['model'], '--max-budget-usd', '0.25', '--output-format', 'json']
-            prompts = [SEEDS[args.seed_style], '/compact', RECALL]
+            prompts = [SEEDS[args.seed_style], '/compact',
+                       RECALLS.get(args.seed_style, RECALLS['default'])]
             for index, prompt in enumerate(prompts):
                 result['provider_commands'] += 1
                 response = invoke([*common, '--session-id' if index == 0 else '--resume', sid], f'step-{index}', prompt)
@@ -135,6 +155,10 @@ def main():
                         'verify rollback' in str(answer.get('pending_task')),
                         'cargo test --workspace --locked' in str(answer.get('test_command')),
                         answer.get('receipt_code') == 'COBALT_31415'])
+                    if args.seed_style == 'constraints':
+                        recalled = ' '.join(str(r) for r in answer.get('rules') or []).lower()
+                        result['constraint_rules_recalled'] = sum(
+                            marker in recalled for marker in RULE_MARKERS)
             result['status'] = 'qualified_synthetic_probe' if result['recall_checks_passed'] == 4 else 'recall_failed'
     except (OSError, ValueError, RuntimeError) as error:
         result['status'] = str(error) if isinstance(error, RuntimeError) else 'io_or_response_failure'

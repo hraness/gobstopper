@@ -258,7 +258,10 @@ snapshots whose provider compaction-marker count increased (Claude
 `compact_boundary`, Codex `"type":"compacted"` — hook bracket labels alone can
 miss the actual write), pairs surgery-labeled snapshots with the next
 snapshot, and runs the audit over each pair: realized, per-kind retention of
-compactions that already happened — including provider-native ones.
+compactions that already happened — including provider-native ones. Devin's
+marker is `metadata.summarized_from` — its `/compact` appends a summary node
+rather than rewriting history, so expect flat context deltas and nonzero
+source-bound retention.
 
 Without new work, replay is explicitly `static_stress`; unchanged passes do not
 count as applied compactions. For Codex/Claude fixtures, optional `growth`
