@@ -237,6 +237,20 @@ watch tries the ACP compact first and falls back to `auto_apply_store`
 elision on failure. Live (locked) sessions are never touched — the context
 is provider-owned.
 
+Protocol notes, verified on the wire: requests must be **serialized** —
+`session/prompt` sent before `session/load` resolves reaches an unloaded
+session (`-32002 "Session not found"`). The prompt reply is only an ack;
+the compaction runs asynchronously and reports
+`_cognition.ai/compaction` notifications (`started` → `completed` with
+the summary text, or a failure status) plus a `Context compacted`
+display message. Dropping the client at the ack aborts the in-flight
+compaction, so `acp_compact` holds the session until a terminal status
+arrives. `session/load`'s result `_meta` carries `isLocked` /
+`lockHolderPid` — the authoritative ownership claim (ACP clients hold
+sessions without flock), and an owned session aborts before `/compact`.
+A compaction that started but never confirmed is left untouched rather
+than falling back to store mutation.
+
 The same `install-hooks` run installs the Claude Code `UserPromptSubmit`
 advisor (`gobstopper hook prompt-policy:claude`) into
 `~/.claude/settings.json` alongside the existing `PreCompact` and
