@@ -85,7 +85,32 @@ struct BoundCheck {
     origin: Origin,
     elidable: bool,
     text: String,
+    /// Normalized content tokens — the lexical-tier comparison set.
+    tokens: HashSet<String>,
 }
+
+/// Words too generic to count as fact content.
+const STOPWORDS: &[&str] = &[
+    "this", "that", "with", "from", "have", "been", "were", "they", "will", "would", "there",
+    "their", "about", "which", "when", "then", "than", "into", "your", "them", "what", "does",
+    "just", "also", "some", "here", "should", "could", "must", "only", "over", "such", "make",
+    "made",
+];
+
+/// Lowercase alphanumeric tokens of ≥4 chars minus stopwords — a
+/// paraphrase-sensitive comparison set for the lexical retention tier.
+fn norm_tokens(text: &str) -> HashSet<String> {
+    text.split(|c: char| !c.is_alphanumeric())
+        .map(str::to_lowercase)
+        .filter(|t| t.len() >= 4 && !STOPWORDS.contains(&t.as_str()))
+        .collect()
+}
+
+/// Share of a check's distinct content tokens present in one slot. A
+/// provider summary that paraphrases keeps most content words while
+/// losing the literal bytes — this tier measures that middle ground.
+/// It is lexical coverage, not semantic equivalence.
+const LEXICAL_COVER: f64 = 0.75;
 
 /// Replay arms: plain observation masking; typed masking (pinned records
 /// stay); typed digest (pinned records are elided but their spans are carried
@@ -142,6 +167,9 @@ fn retention_card(checks: &[BoundCheck], covers_items: usize) -> (DigestBlock, u
 pub struct RetentionScore {
     pub total: usize,
     pub retained: usize,
+    /// Checks whose distinct content tokens are ≥75% covered by a single
+    /// live slot — survives paraphrase where verbatim text does not.
+    pub lexical_retained: usize,
     pub same_origin_retained: usize,
     pub source_bound_retained: usize,
     pub elidable_total: usize,
@@ -481,6 +509,7 @@ fn bind(manifest: &Manifest, transcript: &Transcript, bytes: &[u8]) -> Result<Ve
                 .iter()
                 .any(|i| i.line_index == check.record_index && i.elidable_bytes.is_some()),
             text: text.to_string(),
+            tokens: norm_tokens(text),
         });
     }
     Ok(checks)
@@ -491,8 +520,14 @@ fn score(checks: &[BoundCheck], texts: &[Slot]) -> RetentionScore {
         total: checks.len(),
         ..Default::default()
     };
+    let slot_tokens: Vec<HashSet<String>> = texts.iter().map(|s| norm_tokens(&s.text)).collect();
     for check in checks {
         let retained = texts.iter().any(|s| s.text.contains(&check.text));
+        let lexical = !check.tokens.is_empty()
+            && slot_tokens.iter().any(|tokens| {
+                let covered = check.tokens.intersection(tokens).count();
+                covered as f64 >= check.tokens.len() as f64 * LEXICAL_COVER
+            });
         let same_origin = texts
             .iter()
             .any(|s| s.origin == check.origin && s.text.contains(&check.text));
@@ -503,6 +538,7 @@ fn score(checks: &[BoundCheck], texts: &[Slot]) -> RetentionScore {
                 && s.text.contains(&check.text)
         });
         score.retained += usize::from(retained);
+        score.lexical_retained += usize::from(lexical);
         score.same_origin_retained += usize::from(same_origin);
         score.source_bound_retained += usize::from(source_bound);
         score.elidable_total += usize::from(check.elidable);
@@ -814,6 +850,7 @@ pub fn audit(
             "Labels are supplied, not inferred or independently validated; retention is conditional on annotation coverage.",
             "Realized before/after measurement; attribution to a specific compaction depends on the pair the caller supplies.",
             "Provider-native compaction replaces records wholesale: source_bound is expected to be 0; retained/same_origin carry the signal.",
+            "lexical_retained is normalized token coverage (≥75% of a check's content tokens in one live slot) — a paraphrase-sensitive middle tier, not semantic equivalence.",
             "Token counts are adapter estimates, not fresh provider usage or billing measurements.",
         ],
     })
@@ -887,6 +924,7 @@ mod tests {
             origin: Origin::Tool,
             elidable: true,
             text: "never deploy".into(),
+            tokens: norm_tokens("never deploy"),
         }];
         let values = vec![Slot {
             record: 4,
@@ -896,6 +934,7 @@ mod tests {
         }];
         let result = score(&checks, &values);
         assert_eq!(result.retained, 1);
+        assert_eq!(result.lexical_retained, 1);
         assert_eq!(result.same_origin_retained, 1);
         assert_eq!(result.source_bound_retained, 0);
         assert_eq!(result.elidable_retained, 0);
@@ -928,5 +967,63 @@ mod tests {
         let mut empty = manifest;
         empty.checks.clear();
         assert!(bind(&empty, &transcript, &bytes).is_err());
+    }
+
+    #[test]
+    fn lexical_tier_scores_paraphrase_without_claiming_verbatim_or_semantics() {
+        let check = |id: &str, text: &str| BoundCheck {
+            id: id.into(),
+            kind: KnowledgeKind::Constraint,
+            record: 0,
+            pointer: "/payload/text".into(),
+            origin: Origin::User,
+            elidable: false,
+            text: text.into(),
+            tokens: norm_tokens(text),
+        };
+        let slot = |text: &str| Slot {
+            record: 9,
+            pointer: "/payload/output".into(),
+            origin: Origin::Assistant,
+            text: text.into(),
+        };
+        // Paraphrase: 4 of 5 content tokens survive reordered — no verbatim match.
+        let checks = vec![
+            check("para", "deploy production after rollback verification"),
+            check("thin", "never deploy production"),
+            check("empty", "the a an"),
+        ];
+        let result = score(
+            &checks,
+            &[slot(
+                "production deploy requires rollback verification first",
+            )],
+        );
+        assert_eq!(result.retained, 0);
+        assert_eq!(result.lexical_retained, 1);
+        // Three content tokens, only two covered — under the 75% bar.
+        let checks = vec![check("thin", "never deploy production")];
+        let result = score(&checks, &[slot("never deploy staging quietly")]);
+        assert_eq!(result.lexical_retained, 0);
+        // A span with no content tokens can never satisfy the tier.
+        let checks = vec![check("empty", "the a an")];
+        let result = score(
+            &checks,
+            &[slot("never deploy production rollback verification")],
+        );
+        assert_eq!(result.lexical_retained, 0);
+        // Coverage must sit in ONE slot — tokens split across slots don't sum.
+        let checks = vec![check(
+            "para",
+            "deploy production after rollback verification",
+        )];
+        let result = score(
+            &checks,
+            &[
+                slot("deploy production pending"),
+                slot("rollback verification waited"),
+            ],
+        );
+        assert_eq!(result.lexical_retained, 0);
     }
 }

@@ -209,8 +209,9 @@ def main():
                 'estimated_context_before': detail['estimated_context_before'],
                 'estimated_context_after': detail['estimated_context_after'],
                 'retention': {k: detail['retention'][k] for k in
-                              ('total', 'retained', 'same_origin_retained', 'source_bound_retained',
-                               'elidable_total', 'elidable_retained', 'by_kind')},
+                              ('total', 'retained', 'lexical_retained', 'same_origin_retained',
+                               'source_bound_retained', 'elidable_total', 'elidable_retained',
+                               'by_kind')},
                 'new_verify_errors': detail['new_verify_errors'],
                 'status': 'ok',
             })

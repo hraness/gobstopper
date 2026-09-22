@@ -194,7 +194,13 @@ pub fn snapshot(
     root: &Path,
 ) -> anyhow::Result<VaultEntry> {
     let path = path.canonicalize()?;
-    let data = crate::transaction::read(&path)?;
+    // A live provider store is WAL-mode sqlite: a raw file read can tear
+    // mid-checkpoint, so take SQLite's consistent backup image instead.
+    let data = if provider == Provider::Devin && crate::devin::is_store_path(&path) {
+        crate::devin::snapshot_store_bytes(&path)?
+    } else {
+        crate::transaction::read(&path)?
+    };
     snapshot_data(&data, &path, provider, session_id, strategy, root)
 }
 
