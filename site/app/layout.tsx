@@ -13,7 +13,7 @@ import {
 import "@hraness/design-kit/fonts.css";
 import "./globals.css";
 
-const title = `${SITE_NAME} — earlier, smarter context compaction for coding agents`;
+const title = `${SITE_NAME}: earlier context compaction for coding agents`;
 const description = SITE_DESCRIPTION;
 const websiteId = `${absoluteUrl("/")}#website`;
 const applicationId = `${absoluteUrl("/")}#application`;

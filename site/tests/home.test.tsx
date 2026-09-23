@@ -7,7 +7,7 @@ import { publishedRelease } from "../app/publication";
 import RootLayout from "../app/layout";
 
 const SUPPORT_URL = "https://account.hraness.com/support?product=gobstopper&amp;source=web#support";
-const SUPPORT_LABEL = "Support ongoing development of earlier, smarter context compaction for coding agents.";
+const SUPPORT_LABEL = "Support ongoing development of Gobstopper, earlier context compaction for coding agents.";
 
 function countOccurrences(haystack: string, needle: string): number {
   let count = 0;
@@ -33,9 +33,9 @@ test("every public route has one optional support footer without product signup"
 test("the homepage leads with the README identity and the verified install command", () => {
   const html = renderToStaticMarkup(<Home />);
   expect(html.match(/<h1\b/gu)).toHaveLength(1);
-  expect(html).toContain("Compact, resume, and audit every agent session.");
+  expect(html).toContain("Compact coding-agent sessions early, with a way back.");
   if (publishedRelease === null) {
-    expect(html).toContain("First Gobstopper release in preparation");
+    expect(html).toContain("No release yet");
     expect(html).not.toContain("--tag v");
   } else {
     expect(html).toContain(`--tag v${publishedRelease.version}`);
@@ -65,8 +65,9 @@ test("scopes the editorial preset to the homepage header and real command exampl
     })
     .transform(html);
   expect(elements).toEqual(["header", "proof"]);
-  expect(html).toContain("gobstopper apply 034... --in-place --strategy compacted");
-  expect(html).toContain("On a 333k-token Claude session");
+  expect(html).toContain("autocompact 100    56,300  no");
+  expect(html).not.toContain("--in-place");
+  expect(html).toContain("On a 333k-token Claude Code session");
 });
 
 

@@ -1,19 +1,17 @@
 <!-- hraness:gobstopper-landing:start -->
 # gobstopper
 
-Automatic context compaction for coding-agent sessions — built-in Codex,
-Claude Code, and Devin adapters with provider-native compaction for closed
-sessions, and a bounded provider/strategy plugin protocol.
+Gobstopper compacts Claude Code, Codex, and Devin sessions at a context size
+you choose. It snapshots every transcript before changing it, so the original
+is never lost, and it measures what each strategy keeps.
 
-gobstopper is a cross-provider context compactor with exact, content-addressed
-recovery snapshots, resumable Claude Code and Codex transcript forks, and a
-measurement harness for projected savings, preserved prefix, structural
-validity, and probe recall.
-
-Run it, and it watches supported agent sessions. When a session's context
-crosses a configured threshold, gobstopper prepares a separate compacted fork
-using a strategy selected per session, provider, or preset. The source is
-snapshotted and never overwritten by standalone `apply` or `watch`.
+Run `gobstopper watch` and it follows your agent sessions. When a session's
+context crosses your threshold, Gobstopper compacts it with the strategy you
+picked for that session, provider, or preset. Claude Code and Codex
+compactions go to a separate fork and leave the source transcript unchanged;
+an idle Devin session is edited in place under a lock. For closed sessions,
+Gobstopper can instead ask the provider to run its own compaction. Plugins
+can add strategies and providers.
 
 <!-- hraness:gobstopper-landing:end -->
 
@@ -104,15 +102,15 @@ devin mcp add -s user gobstopper -- gobstopper mcp
 ```
 
 For Devin, `policy_check` accepts `provider = "devin"` and returns `/compact`
-when the configured threshold is crossed. Devin remains the sole owner of its
-session store; gobstopper does not edit Devin history. `devin --export out.json`
-can be inspected through a read-only provider plugin when offline analysis is
-needed.
+when the configured threshold is crossed. While a Devin session is running,
+Devin owns its store. Once the session is idle, `gobstopper apply` can compact
+it in place under a lock after a vault snapshot; see
+[docs/devin.md](docs/devin.md). `devin --export out.json` can be inspected
+through a read-only provider plugin when offline analysis is needed.
 
-Compaction itself isn't free — each cycle costs one large input call and
-risks losing detail — so strategy matters. That is the actual product
-here: not "compact earlier" but "compact with the right strategy at the
-right boundary."
+Compaction isn't free. Each cycle costs one large input call and risks losing
+detail, so the strategy and the boundary matter as much as the timing.
+Choosing them well is what Gobstopper is for.
 
 ## Strategies
 
@@ -710,8 +708,9 @@ adapters are covered by unit, regression, property, and live-resume evidence.
 Direct provider controls still belong to the live session owner. Synthetic
 Codex `compacted` records, external model scoring, and semantic editor plugins
 remain explicitly experimental or trusted extension paths. Devin support covers
-detection, numeric policy/MCP handoff, closed-session `acp` compaction, and
-vault-exported session snapshots — never direct transcript surgery.
+detection, numeric policy/MCP handoff, closed-session `acp` compaction,
+vault-exported session snapshots, and guarded in-place compaction of idle
+sessions.
 See [docs/design.md](docs/design.md), [docs/roadmap.md](docs/roadmap.md),
 [docs/plugin-protocol.md](docs/plugin-protocol.md), and
 [docs/devin.md](docs/devin.md) for the boundaries.

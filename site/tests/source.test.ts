@@ -44,7 +44,7 @@ describe("Gobstopper site source contract", () => {
     expect(Object.keys(publishedRelease).sort()).toEqual(["verificationRun", "version"]);
     const admitted = parsePublishedRelease(publishedRelease);
     if (admitted === null) {
-      expect(home).toContain("First Gobstopper release in preparation");
+      expect(home).toContain("No release yet");
       return;
     }
     const published = stableVersion(admitted.version, "published version");
