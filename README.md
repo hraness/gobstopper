@@ -2,14 +2,16 @@
 # gobstopper
 
 Gobstopper compacts Claude Code, Codex, and Devin sessions at a context size
-you choose. It snapshots every transcript before changing it, so the original
-is never lost, and it measures what each strategy keeps.
+you choose. It archives source bytes before Gobstopper initiates a compaction
+and measures what each strategy keeps. Verified snapshots provide a recovery
+path within the documented storage and provider limits.
 
 Run `gobstopper watch` and it follows your agent sessions. When a session's
 context crosses your threshold, Gobstopper compacts it with the strategy you
 picked for that session, provider, or preset. Claude Code and Codex
-compactions go to a separate fork and leave the source transcript unchanged;
-an idle Devin session is edited in place under a lock. For closed sessions,
+file compactions normally go to a separate fork. Legacy opt-in direct writes
+have an unresolved provider ownership race; see the [correctness audit](docs/correctness-audit.md).
+For closed sessions,
 Gobstopper can instead ask the provider to run its own compaction. Plugins
 can add strategies and providers.
 
@@ -26,7 +28,7 @@ the exact source, and recover a specific archived record when a summary
 isn't enough. Local rules work without a model; optional scorers change
 selection without replacing the snapshot and verification safeguards.
 
-Standalone compaction prepares a separate fork. Each provider runtime owns
+Codex and Claude file-copy compaction prepares a separate fork. Each provider runtime owns
 its loaded context; a background observer cannot replace it. Context
 reduction, successful continuation, recovery overhead, and billed usage are
 different measurements. The [published studies](https://gobstopper.sh/benchmarks)
@@ -34,11 +36,12 @@ report their cohorts, no-ops, retention tradeoffs, and limitations separately.
 
 ## Recoverable history
 
-Every standalone compaction writes the exact source bytes into a
+Codex and Claude file-copy compaction writes the exact source bytes into a
 content-addressed vault (`~/.local/share/gobstopper/vault/`) before publishing
 a fork. Snapshots use deduplicated 1 MiB chunks, so appended versions reuse
 unchanged prefix storage without creating one filesystem object per JSONL
-record.
+record. Devin snapshots instead contain a canonical per-session export, not
+the shared database or every provider-owned artifact.
 
 `gobstopper recall --query <q>` turns that vault into agent-addressable
 memory: it searches every archived state-card digest, ranks results by
@@ -68,7 +71,8 @@ as searched.
 
 Search returns at most 50 references and reports the full match count; narrow
 the query when results are truncated. Each search or read verifies and
-reconstructs the bounded snapshot, up to 128 MiB. Paging a large record repeats
+reconstructs the bounded snapshot, up to 512 MiB by default
+(`GOBSTOPPER_MAX_TRANSCRIPT_BYTES` overrides this bound). Paging a large record repeats
 that work; this is not an indexed random-access or semantic search service.
 
 Use the full object SHA from `history`, the native hook recovery pointer, or
@@ -90,10 +94,13 @@ Exact recovery is a capability, not proof that an agent will recognize a
 missing fact, choose a useful query, or complete its task more accurately.
 Measure those outcomes separately from context reduction and literal retention.
 
-`gobstopper mcp` exposes a read-only Model Context Protocol server on stdio —
+`gobstopper mcp` exposes inspection tools through a Model Context Protocol server on stdio —
 tools `policy_check`, `list_sessions`, `recall`, `history`, `show`, `diff`,
 `plan`, and `verify`. Register it once and an agent can inspect policy and
-archived state without gaining a transcript mutation tool:
+archived state without gaining an explicit transcript mutation tool. Configured
+trusted plugins and scorers can currently execute subprocesses or model calls;
+the [assurance plan](docs/correctness-plan.md#c8-plugins-and-read-only-inspection)
+tracks the remaining inspection boundary:
 
 ```sh
 claude mcp add gobstopper -- gobstopper mcp
@@ -103,10 +110,10 @@ devin mcp add -s user gobstopper -- gobstopper mcp
 
 For Devin, `policy_check` accepts `provider = "devin"` and returns `/compact`
 when the configured threshold is crossed. While a Devin session is running,
-Devin owns its store. Once the session is idle, `gobstopper apply` can compact
-it in place under a lock after a vault snapshot; see
+Devin owns its store. Legacy direct-store application checks observed idleness
+and uses a SQLite transaction, but does not establish lifetime provider custody; see
 [docs/devin.md](docs/devin.md). `devin --export out.json` can be inspected
-through a read-only provider plugin when offline analysis is needed.
+through a trusted provider-reader plugin when offline analysis is needed.
 
 Compaction isn't free. Each cycle costs one large input call and risks losing
 detail, so the strategy and the boundary matter as much as the timing.
@@ -146,10 +153,10 @@ gobstopper detect                  # sessions, context sizes, lifetime burn
 gobstopper plan <session>          # what would happen, under which strategy
 gobstopper plan <session> --trigger 100000 --floor 30000    # tune the trade-off
 gobstopper eval <session>          # every strategy side-by-side on temp copies
-gobstopper apply <session>         # vault snapshot + produce validated fork (idle sessions)
+gobstopper apply <session>         # Codex/Claude file copies; see Devin ownership limits below
 gobstopper verify <session>        # resume-validity check (exit 1 on errors)
 gobstopper fork <session>          # clone under a fresh session id + resume cmd
-gobstopper undo <session>          # restore a pre-compaction snapshot into a new fork
+gobstopper undo <session>          # Codex/Claude: restore a snapshot into a new fork
 gobstopper vault                   # list snapshots in the undo vault
 gobstopper install-hooks           # Claude + Codex compaction lifecycle hooks
 gobstopper watch --dry-run         # the daemon path: poll, threshold, prepare copy
@@ -160,7 +167,7 @@ gobstopper history <session>       # every archived state of one session
 gobstopper diff <sha-a> <sha-b>    # structural comparison of two vault snapshots
 gobstopper bench                   # benchmark every strategy across discovered sessions
 gobstopper tune <session>          # preview the adaptive trigger/floor for a session
-gobstopper mcp                     # read-only MCP server: the vault as agent tools
+gobstopper mcp                     # MCP inspection tools; configured extensions are trusted code
 ```
 
 For automation, `gobstopper plan <session> --json` returns the existing plan
@@ -195,12 +202,11 @@ The target is a policy setting, not a measured
 minimum context size, and projected savings are not billed savings. Invalid
 configuration, invalid proposals, and execution failures remain command errors.
 
-Every `apply`/`watch` compaction snapshots the source transcript into a
-content-addressed vault (`~/.local/share/gobstopper/vault/`) and publishes
-the result as a separate, verified file. The original transcript is never
-overwritten by a standalone compaction run; live session surgery must be
-dispatched by the session owner. Each compaction appends a numeric record
-to `events.jsonl` in the `gobstopper/compaction-events-v1` schema.
+Gobstopper's `apply`/`watch` paths require a source snapshot before dispatch
+or publication. File-copy paths publish a separate candidate after structural
+verification; native commands ask the provider to change its own session.
+Legacy direct-write exceptions are described above. Telemetry is best effort:
+successful event writes use the `gobstopper/compaction-events-v1` schema.
 
 ### Typed-retention experiments (opt-in)
 
@@ -410,12 +416,13 @@ in the OS credential store
 
 ```sh
 pbpaste | gobstopper auth jev     # or run it bare to use the clipboard
-gobstopper auth jev --status      # key source + masked value + live check
+gobstopper auth jev --status      # key source + live check; no key fragments
 gobstopper auth jev --delete      # remove the stored key
 ```
 
-The key is verified against the API before it is stored; a rejected key
-never reaches the keychain. Resolution order at scoring time is
+An API check precedes storage. A definitively rejected key is refused;
+network or API failures allow storage with an explicit unverified result.
+Resolution order at scoring time is
 `TYPESAFE_API_KEY` → `GOBSTOPPER_JEV_API_KEY` → OS keychain, so CI keeps
 working from env alone. Linux kernel-keyring entries are session-scoped and
 do not survive a reboot; use an environment variable for persistent
@@ -697,20 +704,21 @@ that a continuation will retrieve them automatically.
 
 ## Status
 
-The published safety posture is conservative: `plan`, `eval`, `verify`, MCP,
-and provider inspection are read-only; standalone `apply`, `watch`, and `undo`
-publish separate files and never overwrite a provider-owned source. Candidate
-publication is source-hash-bound, no-clobber, snapshotted, structurally
-verified, idempotent through durable receipts, and bounded to 128 MiB/100,000
-records. The default deterministic strategies and built-in Codex/Claude
-adapters are covered by unit, regression, property, and live-resume evidence.
+The [correctness audit](docs/correctness-audit.md) records established behavior,
+known defects and evidence limits; the [assurance plan](docs/correctness-plan.md)
+tracks the remaining work. No whole-system correctness proof is claimed.
+File-copy publication uses source hashes, no-clobber creation, snapshots,
+structural verification and operation receipts. Transcript processing defaults
+to 512 MiB and 100,000 records. These checks do not establish crash durability,
+provider resume acceptance for every version, or preservation of every task fact.
 
 Direct provider controls still belong to the live session owner. Synthetic
 Codex `compacted` records, external model scoring, and semantic editor plugins
 remain explicitly experimental or trusted extension paths. Devin support covers
 detection, numeric policy/MCP handoff, closed-session `acp` compaction,
-vault-exported session snapshots, and guarded in-place compaction of idle
-sessions.
+vault-exported session snapshots, and legacy direct-store paths whose ownership
+gap is tracked in the audit. Configured extensions are trusted executable code;
+inspection commands are not yet an enforced side-effect sandbox.
 See [docs/design.md](docs/design.md), [docs/roadmap.md](docs/roadmap.md),
 [docs/plugin-protocol.md](docs/plugin-protocol.md), and
 [docs/devin.md](docs/devin.md) for the boundaries.

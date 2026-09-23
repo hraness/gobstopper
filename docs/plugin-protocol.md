@@ -7,7 +7,7 @@ Gobstopper plugins are explicitly trusted, versioned subprocess bundles. They ar
 A manifest declares one or more closed capabilities:
 
 - `strategy`: receives an already normalized built-in transcript and proposes `Edit[]`.
-- `provider_read`: inspects a bounded source file and returns normalized items and usage. It is read-only and must return no edits.
+- `provider_read`: inspects a bounded source file and returns normalized items and usage, with no edit proposals. This is a protocol restriction on the response; a trusted subprocess can still have operating-system side effects.
 - `read_content`: allows source lines or normalized summaries to be included for an operation that also declares it.
 
 A provider plugin does not grant Gobstopper permission to rewrite that provider's files. External agents should expose native compaction through `policy-check`/MCP and use `provider_read` for exported or idle analysis.

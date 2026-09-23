@@ -1,0 +1,1473 @@
+{
+  "schema": "gobstopper.assurance.v1",
+  "phase": "C1",
+  "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+  "observed_date": "2026-09-23",
+  "scope": "Contract and effect inventory, not a completed proof or current execution receipt.",
+  "states": [
+    {
+      "id": "source_file",
+      "meaning": "Provider-owned JSONL bytes and record identity",
+      "owner": "provider; adapters only with admitted target/custody",
+      "boundary": "A copy target is a separate source identity; a reread is not retained custody."
+    },
+    {
+      "id": "provider_store",
+      "meaning": "Devin SQLite rows, active graph and provider metadata",
+      "owner": "provider; direct store adapters",
+      "boundary": "SQLite transaction serialization does not exclude loaded provider memory."
+    },
+    {
+      "id": "effective_context",
+      "meaning": "Active provider projection of source records",
+      "owner": "provider dialect adapter",
+      "boundary": "Derived view; archival bytes and reported context occupancy are different quantities."
+    },
+    {
+      "id": "export",
+      "meaning": "Canonical per-session detached JSONL export",
+      "owner": "adapters::devin",
+      "boundary": "Export is not a database backup and does not imply provider admission."
+    },
+    {
+      "id": "provider_memory",
+      "meaning": "Loaded conversation and native compaction operation",
+      "owner": "provider process",
+      "boundary": "Opaque, asynchronous; local failure can leave outcome unknown."
+    },
+    {
+      "id": "archive",
+      "meaning": "Immutable vault manifests, chunks, records and legacy objects",
+      "owner": "adapters::vault",
+      "boundary": "Transcript-bearing recovery data; integrity hashes are not durability proof."
+    },
+    {
+      "id": "vault_index",
+      "meaning": "Append/index retention metadata",
+      "owner": "adapters::vault",
+      "boundary": "Index plus pinned receipt roots govern reachability; torn input needs recovery."
+    },
+    {
+      "id": "operation_receipts",
+      "meaning": "Copy/store intent, binding, completion and recovery pins",
+      "owner": "adapters::copy",
+      "boundary": "Current pin retention has no abandonment lifecycle; completion may follow output commit."
+    },
+    {
+      "id": "event_log",
+      "meaning": "compaction-events-v1 append log",
+      "owner": "core::events and CLI callers",
+      "boundary": "Telemetry is nonfatal; absence is not proof that no mutation happened."
+    },
+    {
+      "id": "watch_state",
+      "meaning": "Settlement fingerprints, holddowns and clocks",
+      "owner": "CLI watcher",
+      "boundary": "Current generation and cooldown are not a durable reconciled operation journal."
+    },
+    {
+      "id": "cache",
+      "meaning": "Discovery and model-response caches; generated Apple bridge binary",
+      "owner": "CLI/model library",
+      "boundary": "Memory and local filesystem caches have distinct lifetime and trust."
+    },
+    {
+      "id": "config",
+      "meaning": "Provider hook settings and gobstopper policy/trust configuration",
+      "owner": "user; CLI hook installer",
+      "boundary": "Settings replacement needs concurrency/rollback contract; loading config can select trusted code."
+    },
+    {
+      "id": "credential_store",
+      "meaning": "OS keychain provider key",
+      "owner": "CLI secrets",
+      "boundary": "Environment key is separate authority; do not log key fragments."
+    },
+    {
+      "id": "experiment_output",
+      "meaning": "Synthetic inputs, manifests, reports, replay files and local evidence",
+      "owner": "explicit command/script owner",
+      "boundary": "May contain private transcript data; never imply live qualification."
+    },
+    {
+      "id": "process_state",
+      "meaning": "Owned children, pipes and temporary working state",
+      "owner": "native/plugin/model/script runners",
+      "boundary": "Unix process group custody does not authorize signals to escaped descendants."
+    },
+    {
+      "id": "output",
+      "meaning": "stdout/stderr/MCP responses and requested content",
+      "owner": "caller-visible contract",
+      "boundary": "Requested content/identity must be separated from background diagnostics."
+    }
+  ],
+  "assumptions": [
+    {
+      "id": "A-OS",
+      "statement": "OS, kernel, Rust dependencies and hardware implement documented APIs; memory safety outside reviewed code is trusted.",
+      "next_gate": "C12",
+      "explicit_model_or_evidence_limit": false
+    },
+    {
+      "id": "A-FS",
+      "statement": "Vault root inode stays stable; cooperating Unix participants honor directory flock. Rename/hard-link/fsync semantics depend on filesystem; network mounts and power-loss behavior are not qualified.",
+      "next_gate": "C3",
+      "explicit_model_or_evidence_limit": false
+    },
+    {
+      "id": "A-HASH",
+      "statement": "SHA-256 collision resistance and implementation correctness are assumed, not proved here.",
+      "next_gate": "C12",
+      "explicit_model_or_evidence_limit": false
+    },
+    {
+      "id": "A-PROVIDER",
+      "statement": "Provider dialect/version, native command semantics and account/home authority require exact qualification; age/probe heuristics do not establish exclusive session ownership.",
+      "next_gate": "C13",
+      "explicit_model_or_evidence_limit": false
+    },
+    {
+      "id": "A-EXT",
+      "statement": "Configured trusted plugins, legacy commands, model bridges and scorers execute with user authority; hash admission is not sandboxing.",
+      "next_gate": "C8",
+      "explicit_model_or_evidence_limit": false
+    },
+    {
+      "id": "A-IDENTITY",
+      "statement": "Explicit roots, canonical paths, exact session/store identity and source hashes must agree through each operation; symlink/mount/TOCTOU adversaries need separate admission.",
+      "next_gate": "C2",
+      "explicit_model_or_evidence_limit": false
+    },
+    {
+      "id": "A-CLOCK",
+      "statement": "Wall-clock changes, downtime and uncertainty expiry affect watcher suppression; current clocks are not an exactly-once protocol.",
+      "next_gate": "C4",
+      "explicit_model_or_evidence_limit": false
+    },
+    {
+      "id": "A-MODEL",
+      "statement": "TLA+ actions are finite, atomic and durable; process termination is modeled but no production refinement, filesystem crash ordering, fairness or proprietary-provider theorem follows.",
+      "next_gate": "C3",
+      "explicit_model_or_evidence_limit": true
+    },
+    {
+      "id": "A-SEMANTIC",
+      "statement": "Lossy content replacement has empirical task-dependent retention; literal/lexical scores are proxies and do not establish semantic equivalence.",
+      "next_gate": "C14",
+      "explicit_model_or_evidence_limit": false
+    },
+    {
+      "id": "A-AUTH",
+      "statement": "A caller may request exact identity/content output; configured credentials and provider home choose real external authority. Background logs have narrower disclosure authority.",
+      "next_gate": "C8",
+      "explicit_model_or_evidence_limit": false
+    },
+    {
+      "id": "A-RECEIPT",
+      "statement": "Historical receipts establish only their recorded tree, command, tools, environment and bounds; they are not reusable integration or activation gates.",
+      "next_gate": "C12",
+      "explicit_model_or_evidence_limit": true
+    }
+  ],
+  "evidence": [
+    {
+      "id": "E-SOURCE",
+      "kind": "source_review",
+      "revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "scope": "Manual audit of source boundaries at baseline, with C1 privacy corrections separately tracked.",
+      "bounds": "Source inspection, not execution or proof.",
+      "references": [
+        {
+          "path": "docs/correctness-audit.md",
+          "anchor": "## Coverage map"
+        }
+      ],
+      "exclusions": [
+        "All executions",
+        "Provider acceptance",
+        "Future revisions"
+      ]
+    },
+    {
+      "id": "E-TEST-DEFINITIONS",
+      "kind": "test_definitions",
+      "revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "scope": "Existing synthetic unit/integration, property/fault and subprocess regression definitions.",
+      "bounds": "Definitions identify intended assertions; merely linking a test is not a fresh passing receipt.",
+      "references": [
+        {
+          "path": "crates/gobstopper-adapters/tests/audit_regressions.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/tests/surgery_hegel.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/tests/recovery.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/tests/watch.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/tests/mcp.rs"
+        },
+        {
+          "path": "scripts/test_monitor.py"
+        }
+      ],
+      "exclusions": [
+        "Unlisted schedules",
+        "Real provider versions/accounts",
+        "New code execution"
+      ]
+    },
+    {
+      "id": "E-BASELINE-CI",
+      "kind": "historical_receipt",
+      "revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "scope": "Merged baseline CI success and same-tree audit receipt: 373 Rust tests, 31 Python tests, fmt, Clippy, MSRV 1.85 and local macOS artifact smoke.",
+      "bounds": "Local audit receipt reported exact checked tree 904cf3f44122e10329ef8ae10da7a4d070b8cfdc; no installation/live activation.",
+      "references": [
+        {
+          "url": "https://github.com/hraness/gobstopper/actions/runs/35898976525"
+        },
+        {
+          "url": "https://github.com/hraness/gobstopper/pull/88"
+        }
+      ],
+      "exclusions": [
+        "Current integration gate",
+        "All input domains",
+        "Live provider qualification"
+      ]
+    },
+    {
+      "id": "E-VAULT-TLC",
+      "kind": "bounded_model_receipt",
+      "revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "scope": "Finite vault custody/order safety pilot plus two fault controls and two reachability witnesses.",
+      "bounds": "Two publishers, one reader, one prune; atomic durable model actions. Safe run: 53,608 generated, 25,810 distinct states; four expected invariant counterexamples.",
+      "references": [
+        {
+          "path": "verify/vault/Vault.tla"
+        },
+        {
+          "path": "verify/vault/README.md"
+        },
+        {
+          "path": "verify/vault/check.py"
+        }
+      ],
+      "tool": {
+        "release": "TLA+ v1.7.4",
+        "engine": "TLC 2.19",
+        "sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+      },
+      "inputs": [
+        {
+          "path": "verify/vault/Vault.tla",
+          "sha256": "4f14d12f4e66d408aa5d8de5556a7b0e9858a4f5db1079142735d9e3c6dfb32f"
+        },
+        {
+          "path": "verify/vault/check.py",
+          "sha256": "ee9a731705b1ad02073df384b9c8d2ca96701ec709bfd13f1980b00ff0e578f4"
+        }
+      ],
+      "exclusions": [
+        "Rust refinement",
+        "Real filesystem crash durability",
+        "Unbounded actors or fairness",
+        "Semantic fidelity"
+      ]
+    },
+    {
+      "id": "E-SCANNER",
+      "kind": "scanner_inventory",
+      "revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "scope": "All 21 open rust/cleartext-logging alerts at merged baseline, individually triaged.",
+      "bounds": "CodeQL 2.27.0; scan success does not mean zero open alerts; source repairs await new exact-head scan.",
+      "references": [
+        {
+          "path": "docs/assurance/codeql-triage.json"
+        },
+        {
+          "url": "https://github.com/hraness/gobstopper/actions/runs/35898976636"
+        }
+      ],
+      "exclusions": [
+        "Dismissal",
+        "Rule suppression",
+        "Absence of other vulnerability classes"
+      ]
+    },
+    {
+      "id": "E-PLAN",
+      "kind": "specification",
+      "revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "scope": "Acceptance obligations C1\u2013C15; an assigned gate is not completed evidence.",
+      "bounds": "No production proof inferred from the roadmap.",
+      "references": [
+        {
+          "path": "docs/correctness-plan.md"
+        }
+      ],
+      "exclusions": [
+        "Unimplemented phases",
+        "Live qualification"
+      ]
+    },
+    {
+      "id": "E-C1-PRIVACY",
+      "kind": "source_review",
+      "revision": "working-tree-C1",
+      "scope": "Integration owner removes three background identity diagnostics and four credential-fragment displays; independent tests/scanner remain delivery gates.",
+      "bounds": "Source repair only until exact-head fixture and CI receipts are collected.",
+      "references": [
+        {
+          "path": "crates/gobstopper-cli/src/main.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/secrets.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/tests/auth_privacy.rs"
+        }
+      ],
+      "exclusions": [
+        "Closed scanner alerts before rescan",
+        "Whole-program noninterference"
+      ]
+    }
+  ],
+  "invariants": [
+    {
+      "id": "ID-1",
+      "owner": "adapters/CLI",
+      "predicate": "Every operation binds exact provider, canonical store, session, source version and effective retry parameters.",
+      "status": "specified",
+      "assumptions": [
+        "A-IDENTITY",
+        "A-PROVIDER"
+      ],
+      "bounds": "Production obligation; only separately scoped source/fixture/model evidence exists.",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-PLAN"
+      ],
+      "negative_control": "Foreign store/session and changed-input fixtures; generated identity laws.",
+      "exclusions": [
+        "Universal correctness",
+        "Unqualified provider/platform behavior"
+      ],
+      "next_gate": "C2",
+      "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
+    },
+    {
+      "id": "OWN-1",
+      "owner": "adapters/native runners",
+      "predicate": "Provider mutation retains compatible custody through commit/reconciliation, or refuses.",
+      "status": "specified",
+      "assumptions": [
+        "A-OS",
+        "A-PROVIDER",
+        "A-IDENTITY"
+      ],
+      "bounds": "Production obligation; only separately scoped source/fixture/model evidence exists.",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-PLAN"
+      ],
+      "negative_control": "Two-process provider/mutator exclusion and fail-closed unsupported-mode tests.",
+      "exclusions": [
+        "Universal correctness",
+        "Unqualified provider/platform behavior"
+      ],
+      "next_gate": "C2",
+      "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
+    },
+    {
+      "id": "SRC-1",
+      "owner": "adapters/copy/fork/transaction",
+      "predicate": "Failed or repeated copy preserves original source bytes; newly published output never clobbers an existing target.",
+      "status": "specified",
+      "assumptions": [
+        "A-FS",
+        "A-IDENTITY"
+      ],
+      "bounds": "Production obligation; only separately scoped source/fixture/model evidence exists.",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-PLAN"
+      ],
+      "negative_control": "Fault injection at every publication boundary plus source-byte comparisons.",
+      "exclusions": [
+        "Universal correctness",
+        "Unqualified provider/platform behavior"
+      ],
+      "next_gate": "C3",
+      "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
+    },
+    {
+      "id": "REC-1",
+      "owner": "adapters/vault/recovery",
+      "predicate": "Every retained index or receipt pin resolves to integrity-checked reconstructible data.",
+      "status": "specified",
+      "assumptions": [
+        "A-FS",
+        "A-HASH",
+        "A-MODEL"
+      ],
+      "bounds": "Production obligation; only separately scoped source/fixture/model evidence exists.",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-PLAN",
+        "E-VAULT-TLC"
+      ],
+      "negative_control": "Real storage sequences and model/production correspondence; missing/corrupt-root controls.",
+      "exclusions": [
+        "Universal correctness",
+        "Unqualified provider/platform behavior"
+      ],
+      "next_gate": "C3",
+      "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
+    },
+    {
+      "id": "REC-2",
+      "owner": "adapters/transaction/vault/copy",
+      "predicate": "After each admitted crash boundary recovery yields complete old/new state or explicit repair-required outcome.",
+      "status": "specified",
+      "assumptions": [
+        "A-FS",
+        "A-OS"
+      ],
+      "bounds": "Production obligation; only separately scoped source/fixture/model evidence exists.",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-PLAN"
+      ],
+      "negative_control": "Process-death/syscall fault matrix including publication succeeded but sync failed.",
+      "exclusions": [
+        "Universal correctness",
+        "Unqualified provider/platform behavior"
+      ],
+      "next_gate": "C3",
+      "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
+    },
+    {
+      "id": "PLAN-1",
+      "owner": "core/validation/strategy",
+      "predicate": "Admitted edits reference eligible known indexes and preserve protected tail/control records.",
+      "status": "specified",
+      "assumptions": [
+        "A-PROVIDER"
+      ],
+      "bounds": "Production obligation; only separately scoped source/fixture/model evidence exists.",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-PLAN"
+      ],
+      "negative_control": "Production predicate proofs plus independent dialect oracle and invalid-plan controls.",
+      "exclusions": [
+        "Universal correctness",
+        "Unqualified provider/platform behavior"
+      ],
+      "next_gate": "C6",
+      "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
+    },
+    {
+      "id": "PLAN-2",
+      "owner": "core/strategy/estimate",
+      "predicate": "Host rewrites meet declared bounds; deterministic repeated operations converge for fixed input and effective policy.",
+      "status": "specified",
+      "assumptions": [
+        "A-PROVIDER",
+        "A-EXT"
+      ],
+      "bounds": "Production obligation; only separately scoped source/fixture/model evidence exists.",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-PLAN"
+      ],
+      "negative_control": "Arithmetic/loop-bound proofs and generated repeated-operation laws; native behavior separate.",
+      "exclusions": [
+        "Universal correctness",
+        "Unqualified provider/platform behavior"
+      ],
+      "next_gate": "C6",
+      "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
+    },
+    {
+      "id": "DIA-1",
+      "owner": "adapters/parser/writer/verifier",
+      "predicate": "Supported dialect parser, rewrite anchor and verifier agree on effective context/linkage.",
+      "status": "specified",
+      "assumptions": [
+        "A-PROVIDER"
+      ],
+      "bounds": "Production obligation; only separately scoped source/fixture/model evidence exists.",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-PLAN"
+      ],
+      "negative_control": "Frozen versioned independent fixtures, malformed-input fuzz and continuation qualification.",
+      "exclusions": [
+        "Universal correctness",
+        "Unqualified provider/platform behavior"
+      ],
+      "next_gate": "C5",
+      "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
+    },
+    {
+      "id": "CTRL-1",
+      "owner": "CLI/native adapters",
+      "predicate": "Applied requires matching terminal operation evidence; acknowledgements/unknown outcomes never imply success.",
+      "status": "specified",
+      "assumptions": [
+        "A-PROVIDER"
+      ],
+      "bounds": "Production obligation; only separately scoped source/fixture/model evidence exists.",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-PLAN"
+      ],
+      "negative_control": "All-order protocol model and bounded unrelated/duplicate/pre-ack fixtures.",
+      "exclusions": [
+        "Universal correctness",
+        "Unqualified provider/platform behavior"
+      ],
+      "next_gate": "C4",
+      "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
+    },
+    {
+      "id": "CTRL-2",
+      "owner": "CLI/watch",
+      "predicate": "Unresolved dispatched operations cannot be replayed solely because process state, clocks or config changed.",
+      "status": "specified",
+      "assumptions": [
+        "A-CLOCK",
+        "A-PROVIDER"
+      ],
+      "bounds": "Production obligation; only separately scoped source/fixture/model evidence exists.",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-PLAN"
+      ],
+      "negative_control": "Crash/restart/two-watcher model and uncertainty-expiry negative controls.",
+      "exclusions": [
+        "Universal correctness",
+        "Unqualified provider/platform behavior"
+      ],
+      "next_gate": "C4",
+      "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
+    },
+    {
+      "id": "PRIV-1",
+      "owner": "CLI/MCP/models/scripts",
+      "predicate": "Only authorized session identities and requested fields cross each output, logging, plugin or model boundary.",
+      "status": "specified",
+      "assumptions": [
+        "A-AUTH",
+        "A-EXT"
+      ],
+      "bounds": "Production obligation; only separately scoped source/fixture/model evidence exists.",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-PLAN"
+      ],
+      "negative_control": "Sentinel/noninterference tests over every sink, plus per-alert scanner triage.",
+      "exclusions": [
+        "Universal correctness",
+        "Unqualified provider/platform behavior"
+      ],
+      "next_gate": "C8",
+      "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
+    },
+    {
+      "id": "READ-1",
+      "owner": "CLI/MCP/plugins",
+      "predicate": "Inspection effects match the documented command contract, including delegated execution and cache/compiler writes.",
+      "status": "specified",
+      "assumptions": [
+        "A-EXT",
+        "A-AUTH"
+      ],
+      "bounds": "Production obligation; only separately scoped source/fixture/model evidence exists.",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-PLAN"
+      ],
+      "negative_control": "Strict inspection mode and process/filesystem/network fixtures.",
+      "exclusions": [
+        "Universal correctness",
+        "Unqualified provider/platform behavior"
+      ],
+      "next_gate": "C8",
+      "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
+    },
+    {
+      "id": "RES-1",
+      "owner": "all effect owners",
+      "predicate": "Each external/recursive operation has explicit memory, disk, frame, queue, child and deadline bounds.",
+      "status": "specified",
+      "assumptions": [
+        "A-OS",
+        "A-EXT"
+      ],
+      "bounds": "Production obligation; only separately scoped source/fixture/model evidence exists.",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-PLAN"
+      ],
+      "negative_control": "Boundary/stress receipts and process-custody accounting; blocked pipes and descendants.",
+      "exclusions": [
+        "Universal correctness",
+        "Unqualified provider/platform behavior"
+      ],
+      "next_gate": "C14",
+      "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
+    },
+    {
+      "id": "OBS-1",
+      "owner": "core/events/probe; CLI/report",
+      "predicate": "Metrics preserve units, source provenance, missing values and reset semantics.",
+      "status": "specified",
+      "assumptions": [
+        "A-PROVIDER",
+        "A-SEMANTIC"
+      ],
+      "bounds": "Production obligation; only separately scoped source/fixture/model evidence exists.",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-PLAN"
+      ],
+      "negative_control": "Generated counter/reset laws and source-bound independent measurement fixtures.",
+      "exclusions": [
+        "Universal correctness",
+        "Unqualified provider/platform behavior"
+      ],
+      "next_gate": "C11",
+      "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
+    },
+    {
+      "id": "SEM-1",
+      "owner": "study/scorer owners",
+      "predicate": "Declared critical facts and task constraints survive within a registered studied population and measured uncertainty.",
+      "status": "specified",
+      "assumptions": [
+        "A-SEMANTIC",
+        "A-EXT"
+      ],
+      "bounds": "Production obligation; only separately scoped source/fixture/model evidence exists.",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-PLAN"
+      ],
+      "negative_control": "Held-out/blinded task outcomes and adversarial semantic counterexamples.",
+      "exclusions": [
+        "Universal correctness",
+        "Unqualified provider/platform behavior"
+      ],
+      "next_gate": "C14",
+      "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
+    },
+    {
+      "id": "REL-1",
+      "owner": "integration/release owner",
+      "predicate": "Delivered artifact bytes map to checked source and permitted activation mode.",
+      "status": "specified",
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT"
+      ],
+      "bounds": "Production obligation; only separately scoped source/fixture/model evidence exists.",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-PLAN"
+      ],
+      "negative_control": "Pinned tools/provenance and exact candidate gates, then separately recorded qualified activation.",
+      "exclusions": [
+        "Universal correctness",
+        "Unqualified provider/platform behavior"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
+    }
+  ],
+  "coverage": [
+    {
+      "name": "Normalized context and token arithmetic",
+      "owner": "core",
+      "invariants": [
+        "ID-1",
+        "PLAN-2",
+        "OBS-1"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-core/src/model.rs"
+        },
+        {
+          "path": "crates/gobstopper-core/src/estimate.rs"
+        }
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT",
+        "A-PROVIDER"
+      ],
+      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "exclusions": [
+        "Saturating arithmetic, missing/reset usage and byte/token estimation are not established for all inputs."
+      ],
+      "next_gate": "C6"
+    },
+    {
+      "name": "Plan IR and admission",
+      "owner": "core/CLI",
+      "invariants": [
+        "PLAN-1",
+        "PLAN-2"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-core/src/plan.rs"
+        },
+        {
+          "path": "crates/gobstopper-core/src/validation.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/main.rs"
+        }
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT",
+        "A-PROVIDER"
+      ],
+      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "exclusions": [
+        "No proof that every public adapter entry uses one authoritative contract."
+      ],
+      "next_gate": "C6"
+    },
+    {
+      "name": "Strategy selection, protected tail, ranking",
+      "owner": "core",
+      "invariants": [
+        "PLAN-1",
+        "PLAN-2",
+        "SEM-1"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-core/src/strategy/mod.rs"
+        }
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT",
+        "A-PROVIDER"
+      ],
+      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "exclusions": [
+        "All-strategy validity, convergence and semantic quality need independent properties."
+      ],
+      "next_gate": "C6"
+    },
+    {
+      "name": "Provider discovery and active context",
+      "owner": "adapters",
+      "invariants": [
+        "ID-1",
+        "DIA-1",
+        "OWN-1"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-adapters/src/detect.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/codex.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/claude.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/devin.rs"
+        }
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT",
+        "A-PROVIDER"
+      ],
+      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "exclusions": [
+        "Schema drift, missing data and liveness heuristics are not ownership proof."
+      ],
+      "next_gate": "C5"
+    },
+    {
+      "name": "Structural verification",
+      "owner": "adapters",
+      "invariants": [
+        "DIA-1",
+        "PLAN-1"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-adapters/src/verify.rs"
+        }
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT",
+        "A-PROVIDER"
+      ],
+      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "exclusions": [
+        "A clean report is relative to implemented checks, not provider resume or semantic proof."
+      ],
+      "next_gate": "C5"
+    },
+    {
+      "name": "Copy/fork transaction and retry receipts",
+      "owner": "adapters",
+      "invariants": [
+        "SRC-1",
+        "ID-1",
+        "REC-2"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-adapters/src/transaction.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/copy.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/fork.rs"
+        }
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT",
+        "A-PROVIDER"
+      ],
+      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "exclusions": [
+        "Final reread/rename race, syscall uncertainty and receipt reconciliation remain."
+      ],
+      "next_gate": "C3"
+    },
+    {
+      "name": "Vault, recovery, pruning",
+      "owner": "adapters",
+      "invariants": [
+        "REC-1",
+        "REC-2",
+        "RES-1"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-adapters/src/vault.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/recovery.rs"
+        }
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-BASELINE-CI",
+        "E-VAULT-TLC"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT",
+        "A-PROVIDER"
+      ],
+      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "exclusions": [
+        "Finite custody pilot includes process termination but excludes filesystem crash ordering and noncooperating readers; root/pin lifecycle incomplete."
+      ],
+      "next_gate": "C3"
+    },
+    {
+      "name": "Devin SQLite mutation/restore",
+      "owner": "adapters",
+      "invariants": [
+        "OWN-1",
+        "ID-1",
+        "REC-2"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-adapters/src/devin.rs"
+        }
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT",
+        "A-PROVIDER"
+      ],
+      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "exclusions": [
+        "Released flock probe and SQL transaction do not retain provider-compatible custody."
+      ],
+      "next_gate": "C2"
+    },
+    {
+      "name": "Native compaction and watch state",
+      "owner": "CLI/native adapters",
+      "invariants": [
+        "CTRL-1",
+        "CTRL-2",
+        "OWN-1",
+        "OBS-1",
+        "RES-1"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/main.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/devin.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/claude.rs"
+        }
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT",
+        "A-PROVIDER"
+      ],
+      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "exclusions": [
+        "Session-only ACP correlation, unknown expiry, multiple watchers and Claude lifecycle remain."
+      ],
+      "next_gate": "C4"
+    },
+    {
+      "name": "Hooks and settings",
+      "owner": "CLI",
+      "invariants": [
+        "ID-1",
+        "REC-2",
+        "PRIV-1"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/hooks.rs"
+        }
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT",
+        "A-PROVIDER"
+      ],
+      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "exclusions": [
+        "Settings races, backup identity and exact pre/post native operation correlation remain."
+      ],
+      "next_gate": "C9"
+    },
+    {
+      "name": "Configuration and plugins",
+      "owner": "CLI/adapters",
+      "invariants": [
+        "READ-1",
+        "PRIV-1",
+        "RES-1"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/config.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/plugins.rs"
+        }
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT",
+        "A-EXT"
+      ],
+      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "exclusions": [
+        "Trusted extensions are unsandboxed; aggregate input and effect boundaries need gates."
+      ],
+      "next_gate": "C8"
+    },
+    {
+      "name": "Model scorers/digests",
+      "owner": "CLI/model owners",
+      "invariants": [
+        "SEM-1",
+        "PRIV-1",
+        "RES-1",
+        "READ-1"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/apple.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/jev.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/llm_scorer.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/secrets.rs"
+        }
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT",
+        "A-EXT"
+      ],
+      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "exclusions": [
+        "Caches/model drift/remote privacy and unsupported rationale remain separate obligations."
+      ],
+      "next_gate": "C10"
+    },
+    {
+      "name": "MCP and CLI inspection",
+      "owner": "CLI",
+      "invariants": [
+        "ID-1",
+        "READ-1",
+        "PRIV-1",
+        "RES-1"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/mcp.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/main.rs"
+        }
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT",
+        "A-EXT"
+      ],
+      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "exclusions": [
+        "MCP framing currently unbounded; plan can invoke trusted code/models; requested content still sensitive."
+      ],
+      "next_gate": "C8"
+    },
+    {
+      "name": "Evaluation, retention, reporting",
+      "owner": "adapters/core/CLI",
+      "invariants": [
+        "OBS-1",
+        "SEM-1",
+        "ID-1"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-adapters/src/eval.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/study.rs"
+        },
+        {
+          "path": "crates/gobstopper-core/src/probe.rs"
+        },
+        {
+          "path": "crates/gobstopper-core/src/events.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/report.rs"
+        }
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT",
+        "A-PROVIDER"
+      ],
+      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "exclusions": [
+        "Proxies, selection bias, annotation authority and counter resets need stronger independent oracles."
+      ],
+      "next_gate": "C11"
+    },
+    {
+      "name": "Monitor and experiments",
+      "owner": "script owners",
+      "invariants": [
+        "READ-1",
+        "RES-1",
+        "OBS-1",
+        "PRIV-1"
+      ],
+      "source": [
+        {
+          "path": "scripts/monitor.py"
+        },
+        {
+          "path": "scripts/compaction-study.py"
+        },
+        {
+          "path": "scripts/retention-audit.py"
+        },
+        {
+          "path": "scripts/provider-retention-probe.py"
+        }
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT",
+        "A-PROVIDER"
+      ],
+      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "exclusions": [
+        "Independent Python vault reader lacks Rust custody; real accounts require explicit qualification."
+      ],
+      "next_gate": "C14"
+    },
+    {
+      "name": "Build, supply chain, public claims",
+      "owner": "integration owner",
+      "invariants": [
+        "REL-1",
+        "PRIV-1"
+      ],
+      "source": [
+        {
+          "path": "Cargo.toml"
+        },
+        {
+          "path": "Cargo.lock"
+        },
+        {
+          "path": ".github/workflows/ci.yml"
+        },
+        {
+          "path": "README.md"
+        }
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-RECEIPT",
+        "A-PROVIDER"
+      ],
+      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "exclusions": [
+        "No whole-system theorem or universal provider/platform/install qualification; scan success leaves baseline alerts."
+      ],
+      "next_gate": "C12"
+    }
+  ],
+  "compatibility": [
+    {
+      "id": "events",
+      "version": "gobstopper/compaction-events-v1",
+      "source": [
+        {
+          "path": "crates/gobstopper-core/src/events.rs",
+          "anchor": "SCHEMA"
+        }
+      ],
+      "read_write_behavior": "Additive optional/defaulted fields; enum vocabulary and validation are closed. Malformed/unsupported entries must not be interpreted as successful operations.",
+      "upgrade_downgrade": "No destructive migration. Older readers may ignore additive fields; new action/outcome vocabulary requires explicit compatibility tests.",
+      "next_gate": "C11"
+    },
+    {
+      "id": "vault-manifest",
+      "version": "write schema_version=3; read 3, 2 or absent legacy record version; legacy raw objects",
+      "source": [
+        {
+          "path": "crates/gobstopper-adapters/src/vault.rs",
+          "anchor": "fn reconstruct_manifest"
+        }
+      ],
+      "read_write_behavior": "Version 3 chunk reconstruction checks hashes/size/source hash; unsupported numbered manifest versions refuse. Index optional fields default for old records.",
+      "upgrade_downgrade": "Manifest digest differs from reconstructed source digest. Older binaries may not read v3; preserve old artifact/state, never down-convert by overwriting originals.",
+      "next_gate": "C3"
+    },
+    {
+      "id": "copy-receipt",
+      "version": "schema_version=1; CopyReceipt and DevinStoreReceipt",
+      "source": [
+        {
+          "path": "crates/gobstopper-adapters/src/copy.rs",
+          "anchor": "pub struct CopyReceipt"
+        }
+      ],
+      "read_write_behavior": "CopyReceipt readers use deny_unknown_fields and exact version checks before reuse; optional snapshot pin field admits earlier shapes. DevinStoreReceipt is a strict serialized type, but direct store operations do not implement receipt-based retry. The prune pin reader extracts references from generic JSON.",
+      "upgrade_downgrade": "Unknown CopyReceipt fields/versions refuse reuse. No implicit receipt downgrade, deletion or abandonment policy; no store retry protocol inferred. Pending/completed pins remain retained.",
+      "next_gate": "C3"
+    },
+    {
+      "id": "watch-state",
+      "version": "generation=8",
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/main.rs",
+          "anchor": "WATCH_STATE_GENERATION"
+        }
+      ],
+      "read_write_behavior": "Missing fields default; old generations discard settlement arms. Current >= check accepts future generations; corrupt/unreadable state currently defaults empty. Clocks older than one day drop.",
+      "upgrade_downgrade": "Not an exact-version journal. Downgrading across future generations or losing state can lose unresolved-operation knowledge; durable migration/reconciliation required.",
+      "next_gate": "C4"
+    },
+    {
+      "id": "plugin",
+      "version": "protocol_version=1",
+      "source": [
+        {
+          "path": "crates/gobstopper-adapters/src/plugins.rs",
+          "anchor": "pub struct Manifest"
+        }
+      ],
+      "read_write_behavior": "Strict manifest/request/response fields, closed capabilities, binary SHA trust. Commands may run with host authority.",
+      "upgrade_downgrade": "Version mismatch refused; no sandbox or forward schema negotiation. Requalify binary hash, capabilities and all effective inputs.",
+      "next_gate": "C8"
+    },
+    {
+      "id": "retention",
+      "version": "gobstopper-retention-v1",
+      "source": [
+        {
+          "path": "crates/gobstopper-adapters/src/study.rs",
+          "anchor": "gobstopper-retention-v1"
+        }
+      ],
+      "read_write_behavior": "Manifest source SHA and annotation schema bind the study source; typed labels do not establish label truth.",
+      "upgrade_downgrade": "Version/source mismatch refused; independent reviewed labels and held-out evaluation required for semantic claims.",
+      "next_gate": "C11"
+    },
+    {
+      "id": "report",
+      "version": "schemaVersion=1; profile=session-observations-v1",
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/report.rs",
+          "anchor": "pub const SCHEMA_VERSION"
+        }
+      ],
+      "read_write_behavior": "--strict controls gobstopper extension emission. Stable normalized metrics need missingness/provenance preservation.",
+      "upgrade_downgrade": "Additive evolution under same profile only with compatibility tests; a new meaning/unit needs new version.",
+      "next_gate": "C11"
+    },
+    {
+      "id": "stable-cli-json",
+      "version": "detect / policy-check / plan --json / verify --json / vault --json: no global version",
+      "source": [
+        {
+          "path": "AGENTS.md",
+          "anchor": "additive-only"
+        }
+      ],
+      "read_write_behavior": "Repository policy promises additive fields, not wire negotiation. policy-check --session reads provider state despite numeric form being pure.",
+      "upgrade_downgrade": "No blanket downgrade promise; semantic changes require explicit contract fixtures and versioned shape where necessary.",
+      "next_gate": "C1"
+    },
+    {
+      "id": "mcp",
+      "version": "JSON-RPC 2.0 newline framing; default protocolVersion 2025-06-18",
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/mcp.rs",
+          "anchor": "const PROTOCOL_VERSION"
+        }
+      ],
+      "read_write_behavior": "Initialize echoes requested protocolVersion without an explicit supported-version gate. Content tools require --allow-transcript-content; planning extensions remain trusted.",
+      "upgrade_downgrade": "Protocol negotiation/version rejection and bounded request framing remain C8 work; no mutating tool advertised.",
+      "next_gate": "C8"
+    },
+    {
+      "id": "assurance",
+      "version": "gobstopper.assurance.v1 / effects.v1 / claims.v1 / codeql-triage.v1",
+      "source": [
+        {
+          "path": "docs/assurance/README.md",
+          "anchor": "structural"
+        }
+      ],
+      "read_write_behavior": "Versioned repository evidence inventory; source markers and structural cross-checks, no proof inference.",
+      "upgrade_downgrade": "Unknown ledger versions reject; update validator and negative fixtures together on schema changes.",
+      "next_gate": "C12"
+    }
+  ],
+  "activation_gates": [
+    {
+      "id": "artifact",
+      "owner": "integration owner",
+      "requires": [
+        "Current candidate fmt/Clippy/tests/MSRV and Required CI",
+        "Independent review and source/scanner triage",
+        "Exact tree/tool/lockfile receipts"
+      ],
+      "permits": "Publish reviewed guarded source/artifact after repository admission.",
+      "does_not_permit": [
+        "Unqualified provider mutation",
+        "Installing/restarting live watchers",
+        "Reusing historical receipts as current gates"
+      ],
+      "next_gate": "C12"
+    },
+    {
+      "id": "native",
+      "owner": "provider qualification owner",
+      "requires": [
+        "Exact provider binary/version/account/home and target identity",
+        "Qualified session ownership/serialization and operation correlation",
+        "Bounded lifecycle, durable uncertainty and recovery evidence"
+      ],
+      "permits": "Only the qualified provider/version/mode and bounded population.",
+      "does_not_permit": [
+        "Assuming idle age is custody",
+        "Treating acknowledgement or timeout as completion",
+        "Fallback to direct surgery after uncertain native dispatch"
+      ],
+      "next_gate": "C13"
+    },
+    {
+      "id": "direct-write",
+      "owner": "adapters owner",
+      "requires": [
+        "Retained compatible provider custody through commit/reconciliation or disabled unsupported mode",
+        "Source/store/session/graph binding and preserved recovery path",
+        "Concurrent writer and crash fixtures"
+      ],
+      "permits": "Only an explicitly admitted direct-write mode; artifact publication may keep it disabled.",
+      "does_not_permit": [
+        "Using a released flock probe as ownership",
+        "Unsafe rename after final reread",
+        "Deleting source or receipt state to recover"
+      ],
+      "next_gate": "C2"
+    },
+    {
+      "id": "provider-study",
+      "owner": "registered study owner",
+      "requires": [
+        "Explicit allow-provider-calls flag and inspected existing account/home",
+        "Fresh synthetic session/output and declared bounded call/time/cost limits",
+        "Pinned source/binary/config, preserved receipt and recovery evidence"
+      ],
+      "permits": "Only registered synthetic provider calls within the existing authorized account boundary.",
+      "does_not_permit": [
+        "New paid account",
+        "Live user session mutation",
+        "Population-wide savings/retention claims from a convenience case"
+      ],
+      "next_gate": "C13"
+    }
+  ]
+}

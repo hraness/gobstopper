@@ -1,0 +1,14 @@
+{
+  "purpose": "Negative admission control: a source review may not become an unbounded proof claim.",
+  "claim_id": "CLAIM-SYSTEM",
+  "replacement": {
+    "status": "proven",
+    "assertion": "The entire system is provably correct for all providers and executions.",
+    "bounds": ""
+  },
+  "expected_errors": [
+    "unsupported assurance status",
+    "missing bounds",
+    "unsupported universal assertion"
+  ]
+}

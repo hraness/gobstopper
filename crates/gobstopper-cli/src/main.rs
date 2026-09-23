@@ -373,7 +373,7 @@ enum Cmd {
         #[arg(long)]
         label: Option<String>,
     },
-    /// Run a read-only Model Context Protocol server on stdio, exposing
+    /// Run a Model Context Protocol inspection server on stdio, exposing
     /// sessions and the snapshot vault as tools an agent can call
     /// (list_sessions, recall, history, show, diff, plan, verify).
     Mcp {
@@ -3886,11 +3886,8 @@ fn cmd_watch(
                     // no recovery point.
                     let pre_snapshot = match snapshot_before_edit(&d, "pre-compact") {
                         Ok(entry) => entry,
-                        Err(e) => {
-                            eprintln!(
-                                "acp /compact for {} skipped: pre-compact snapshot failed ({e})",
-                                d.handle.session_id
-                            );
+                        Err(_) => {
+                            eprintln!("acp /compact skipped: pre-compact snapshot failed");
                             continue;
                         }
                     };
@@ -4044,11 +4041,8 @@ fn cmd_watch(
                 }
                 let pre_snapshot = match snapshot_before_edit(&d, "pre-compact") {
                     Ok(entry) => entry,
-                    Err(e) => {
-                        eprintln!(
-                            "codex thread/compact for {} skipped: pre-compact snapshot failed ({e})",
-                            d.handle.session_id
-                        );
+                    Err(_) => {
+                        eprintln!("codex thread/compact skipped: pre-compact snapshot failed");
                         continue;
                     }
                 };
@@ -4115,10 +4109,7 @@ fn cmd_watch(
                         if let Err(e2) = append_event(&default_log_path(), &ev) {
                             eprintln!("telemetry write failed (non-fatal): {e2}");
                         }
-                        eprintln!(
-                            "codex thread/compact for {} failed: {e}",
-                            d.handle.session_id
-                        );
+                        eprintln!("codex thread/compact failed: provider outcome unresolved");
                         // Terminal provider outcomes hold the session
                         // down on a cooldown keyed on session_id — the
                         // failed turn rewrote the rollout, so a
@@ -4693,9 +4684,8 @@ fn auth_jev(status: bool, delete: bool) -> Result<()> {
             return Ok(());
         };
         println!(
-            "jev: {} key {} — {}",
+            "jev: {} key configured — {}",
             source.describe(),
-            secrets::masked(&key),
             match jev::health_check(&key, &endpoint) {
                 jev::Health::Ok => "verified",
                 jev::Health::Rejected => "rejected by API (401/403)",
@@ -4709,7 +4699,7 @@ fn auth_jev(status: bool, delete: bool) -> Result<()> {
         std::io::stdin().read_to_string(&mut buf)?;
         buf.trim().to_string()
     } else if let Some(k) = secrets::clipboard_secret() {
-        println!("found a key on the clipboard: {}", secrets::masked(&k));
+        println!("found a plausible key on the clipboard");
         print!("store it in the OS keychain? [y/N] ");
         std::io::stdout().flush()?;
         let mut ans = String::new();
@@ -4733,13 +4723,9 @@ fn auth_jev(status: bool, delete: bool) -> Result<()> {
         health => {
             secrets::store_jev_key(&key)?;
             match health {
-                jev::Health::Ok => println!(
-                    "typesafe key {} verified and stored in the OS keychain",
-                    secrets::masked(&key)
-                ),
+                jev::Health::Ok => println!("typesafe key verified and stored in the OS keychain"),
                 jev::Health::Unverified => println!(
-                    "typesafe key {} stored in the OS keychain (could not verify: network/API error)",
-                    secrets::masked(&key)
+                    "typesafe key stored in the OS keychain (could not verify: network/API error)"
                 ),
                 jev::Health::Rejected => unreachable!(),
             }

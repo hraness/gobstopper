@@ -42,7 +42,7 @@ workspace plus the retained XCB compatibility package in
          aicharts, write side owned by gobstopper
 ```
 
-## 1. What exists (v0.2, shipped and hardened)
+## 1. Historical implementation milestones (v0.2)
 
 - Session detection across `~/.codex/sessions` and `~/.claude/projects`
   (content sniffing, not filename guessing; custom roots for managed
@@ -53,7 +53,7 @@ workspace plus the retained XCB compatibility package in
 - `Edit` IR (`Elide` / `InjectDigest` / `ProviderCompact` / `CacheEdit`),
   deterministic strategies, layered config (`policy → provider → preset →
   session`), minimum-savings admission, bounded plugins, `policy-check`, and
-  copy-only watch.
+  watch with copy publication, native dispatch and legacy direct-write exceptions.
 - Verified against real session files: candidate elision preserves Claude
   `parentUuid` chains and Codex ordinal/window/tool-pair invariants;
   live-branch-only
@@ -69,10 +69,11 @@ workspace plus the retained XCB compatibility package in
   compaction yields recorded in `events.jsonl`. Deterministic, bounded,
   and self-explaining via closed-vocab reasons in plan output and
   telemetry; `gobstopper tune <session>` previews the adjustment.
-- Read-only MCP server (`gobstopper mcp`): agents query sessions,
+- MCP inspection server (`gobstopper mcp`): agents query sessions,
   state-card recall, vault history/show/diff, dry-run plans, and
   transcript verification over stdio JSON-RPC — agent-addressable
-  memory without a mutating surface.
+  memory without an explicit transcript mutation tool. Configured extensions
+  currently retain subprocess/model side effects; C8 closes this boundary.
 
 ## 2. Landscape position (why this is a real niche)
 
@@ -94,8 +95,9 @@ not competitors.
 
 ## 3. Phase A — surgery correctness & reversibility (v0.2, shipped)
 
-The durable core is safe JSONL surgery. Before scaling strategies, make
-the write path bulletproof and undoable.
+This phase introduced JSONL transforms and recovery tools. Its historical
+completion marks describe implemented features; the correctness audit and
+assurance ledger define the current evidence and remaining storage/custody gaps.
 
 - ✅ `gobstopper verify <file>`: resume-validity checker — orphaned
   `tool_use`/`tool_result` pairs, broken `parentUuid` chains, malformed
@@ -104,13 +106,13 @@ the write path bulletproof and undoable.
 - ✅ **Content-addressed vault** (`~/.local/share/gobstopper/vault/`):
   every `apply`/`watch` snapshots the pre-edit transcript by digest;
   `gobstopper undo <session>` restores (and snapshots the compacted
-  state first — undo is itself undoable). Nobody else offers "undo a
-  compaction." The vault doubles as the eval corpus (§6).
+  state first). Recovery remains conditional on storage integrity and exact
+  target identity. The vault doubles as the eval corpus (§6).
 - ✅ **Fork-on-write**: `gobstopper fork <session>` clones the transcript
   under a fresh session id (`sessionId`/`session_meta` rewritten, chains
   preserved) and prints the provider resume command. Default posture for
   anything risky.
-- ✅ **Telemetry**: every mutating path appends a
+- ✅ **Telemetry**: mutating paths attempt to append a
   `gobstopper/compaction-events-v1` record to `events.jsonl` (§4, §6).
 - ✅ **Quota pressure**: `policy-check --quota-pressure low|normal|high`
   scales the effective trigger ×1.15/×1.0/×0.7 for any session owner that
@@ -184,8 +186,8 @@ the write path bulletproof and undoable.
   XCB compatibility package exposes the bounded editor shim. Neither
   path grants Gobstopper ownership of XCB provider processes or durable state.
 - ~~**Double-buffer compaction**~~ was implemented experimentally and then
-  retired: safe publication is copy-only, so watch never swaps a staged file
-  over a provider-owned transcript.
+  retired. Its removal did not remove every other direct-write path;
+  current provider-custody remediation is tracked in C2.
 
 ## 5. Phase C — the agentic strategy, wired (v0.4)
 
@@ -282,9 +284,12 @@ consumers need the same interface — is met.
 
 ## 10. Correctness and qualification remediation
 
-This section supersedes earlier completion claims about safe live file rewriting,
-structured summarization, double buffering, measured savings, and plugin bounds.
-The audit baseline is `c6d91a8`. Existing passing tests did not establish those claims.
+This section records the historical R1–R8 plan against baseline `c6d91a8`.
+Its acceptance statements are intended requirements, not current guarantees.
+The [current audit](correctness-audit.md), [assurance inventory](assurance/README.md)
+and C1–C15 plan supersede its completion claims and execution rules. In particular,
+legacy direct-store and watch exceptions violate the universal copy-only wording
+below; the current plan addresses them explicitly.
 
 ### Constraints
 

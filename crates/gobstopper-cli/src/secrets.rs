@@ -61,18 +61,6 @@ pub fn delete_jev_key() -> anyhow::Result<bool> {
     }
 }
 
-/// Mask a key for display: keep the first 3 and last 4 chars, hide the
-/// rest. Keys too short to split degrade to fully masked.
-pub fn masked(key: &str) -> String {
-    let k = key.trim();
-    let n = k.chars().count();
-    if n <= 8 {
-        "…".to_string()
-    } else {
-        format!("{}…{}", &k[..3], &k[n - 4..])
-    }
-}
-
 /// Read the system clipboard (bounded) for onboarding. Returns `None`
 /// when no clipboard tool exists, it fails, or the content is not a
 /// plausible API key.
@@ -124,14 +112,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn masked_shows_only_edges() {
-        assert_eq!(masked("tsk_abcdefghijklmnop1234"), "tsk…1234");
-        assert_eq!(masked("short"), "…");
-    }
-
-    #[test]
     fn plausible_key_filters() {
         assert!(plausible_key("tsk_abcdefghijklmnop1234"));
+        assert!(plausible_key("秘密鍵の取り扱いを確認する試験"));
         assert!(!plausible_key("short"));
         assert!(!plausible_key("has a space in the middle of it"));
         assert!(!plausible_key("line\nbreak_abcdefghijklmnop"));

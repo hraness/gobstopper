@@ -2,10 +2,10 @@
 
 Gobstopper integrates with Devin through its local session store and documented
 control-plane surfaces. It reads Devin's session database for inspection and
-planning, and it can rewrite payload bytes in place for **idle** sessions
-through a locked, transactional write path. Live sessions remain
-provider-owned: Gobstopper delegates to Devin's `/compact` and never injects
-input into another process.
+planning and can delegate compaction to Devin's `/compact`. Legacy direct-store
+writes are transactional but lack proven lifetime provider custody. Their
+ownership and restore-identity gaps are tracked in the
+[correctness audit](correctness-audit.md); observed idleness is not a lock.
 
 ## Session discovery
 
@@ -19,9 +19,10 @@ Devin stores sessions in a SQLite database:
 Sessions are resolved by ID, ID prefix, or title — pass the session ID, never
 the `sessions.db` path (the database is a shared store, not a transcript file).
 
-A session is **active** while its `session_locks/<id>.lock` file is flock-held
-by a live Devin process. Active sessions are provider-owned: Gobstopper plans
-native delegation for them and never proposes local surgery.
+A held `session_locks/<id>.lock` is one signal of an **active** session.
+ACP ownership can also be reported by the provider. A missing or momentarily
+unheld file does not prove custody for a later operation. Sessions observed as
+active receive native-delegation plans.
 
 ## Inspection and planning
 
@@ -46,14 +47,15 @@ produce elision plans, and `apply` performs the guarded store write below.
 resumable Devin artifact. Detached export files can be processed and evaluated
 directly.
 
-## Guarded store mutation
+## Legacy store mutation and unresolved custody
 
 `gobstopper apply <session-id>` on an idle Devin session rewrites the session
 in place:
 
 1. The canonical per-session export is snapshot into the vault (the shared
    database file is never the snapshot unit — unrelated sessions live in it).
-2. The session lock is acquired; a locked session aborts before any write.
+2. The session lock is probed and immediately released; an observed locked
+   session aborts. This leaves a race with a subsequently starting provider.
 3. One SQLite transaction updates elided `chat_message` payloads with
    conditional identity checks, inserts a Gobstopper digest node on the main
    chain, and moves `sessions.main_chain_id` to it.
@@ -62,8 +64,9 @@ in place:
 
 `gobstopper undo` restores the snapshot: original message payloads and chain
 head are written back and Gobstopper-injected digest nodes are deleted. Undo
-refuses if foreign provider nodes were appended after the snapshot — restore
-never orphans provider state it did not create.
+checks for appended foreign nodes, but same-ID foreign stores, graph identity
+and changed current values are not completely bound. These checks do not
+establish safe restoration under concurrent or mismatched state.
 
 `watch` can perform this write automatically for idle Devin sessions that
 cross the trigger, but only when the operator opts in:
@@ -87,8 +90,8 @@ and skips the transcript load while it is unchanged. This matters because
 store-reported context stays stale after a Gobstopper write; without the
 fingerprint every pass would re-plan an unchanged session. Claude in-place
 rewrites additionally require the fingerprint to hold across two
-consecutive passes before writing, which closes the
-`ChangedDuringWrite` race window that mtime-only idle detection leaked.
+consecutive passes before writing. That filters ongoing activity but cannot
+close the check-to-write race or protect an already open append descriptor.
 Sessions that are still live skip the transcript load entirely: `auto`
 delegates to the provider for active sessions unconditionally, so the
 loop emits the delegation decision straight from the cheap usage read.
@@ -158,8 +161,8 @@ An over-threshold response uses:
 }
 ```
 
-The caller executes `/compact` inside the owned Devin session. Gobstopper never
-becomes a second session writer.
+The caller executes `/compact` inside its owned Devin session. This advisory
+path does not itself write the session store.
 
 Configure Devin independently from Codex and Claude Code:
 
@@ -233,9 +236,9 @@ advertised command — so `watch` can drive provider-native compaction on
 node lands on the main chain; print-mode `-p "/compact"` is a silent
 no-op). Enabled per provider with `auto_compact_closed = true`; when the
 flock check says the session is idle and the rollout cohort is treatment,
-watch tries the ACP compact first and falls back to `auto_apply_store`
-elision on failure. Live (locked) sessions are never touched — the context
-is provider-owned.
+watch tries ACP compaction. Failure or an uncertain outcome never falls back
+to direct store mutation. An observed lock refuses dispatch; proving ownership
+through concurrent provider startup is a separate qualification obligation.
 
 Protocol notes, verified on the wire: requests must be **serialized** —
 `session/prompt` sent before `session/load` resolves reaches an unloaded
@@ -246,16 +249,16 @@ the summary text, or a failure status) plus a `Context compacted`
 display message. Dropping the client at the ack aborts the in-flight
 compaction, so `acp_compact` holds the session until a terminal status
 arrives. `session/load`'s result `_meta` carries `isLocked` /
-`lockHolderPid` — the authoritative ownership claim (ACP clients hold
-sessions without flock), and an owned session aborts before `/compact`.
-The lock is process-exclusive: `session/load` on a session another
-client holds fails outright with `-32015 "already open in another
-process (PID …)"`, so a second client cannot reach a live session even
-before `/compact` is considered. A compaction that started but never
+`lockHolderPid`. The adapter rejects a reported owner before `/compact`.
+Earlier trials observed `session/load` refusing another client's session
+with `-32015 "already open in another process (PID …)"`. This historical
+observation does not establish lifetime custody for every provider version;
+see the [qualification plan](correctness-plan.md). A compaction that started but never
 confirmed is left untouched rather than falling back to store mutation.
 `completed` is also possible when the provider's compactor finds nothing
-to do — watch post-checks `context_tokens` and records a `skipped` /
-`provider_noop` event rather than a false `applied`.
+to do. Watch compares available same-session context observations; a zero,
+reset or missing value leaves the reduction unresolved. A measured unchanged
+context records a no-op with an expiring cooldown, rather than claimed savings.
 
 The same `install-hooks` run installs the Claude Code `UserPromptSubmit`
 advisor (`gobstopper hook prompt-policy:claude`) into
@@ -286,7 +289,7 @@ pollute post-gate reads) and `--json` emits the same table for tooling. `gobstop
 `scripts/monitor.py --provider <name>` supply the per-session context
 trajectories to compare cohorts.
 
-## Read-only MCP
+## MCP inspection
 
 ```sh
 devin mcp add -s user gobstopper -- gobstopper mcp
@@ -294,9 +297,10 @@ devin mcp get gobstopper
 ```
 
 Use `-s project` for checked-in `.devin/mcp_config.json`, or omit `-s` for the
-gitignored local `.devin/mcp_config.local.json`. The server exposes only
-read-only tools. `policy_check` supports Devin; `plan`/`verify`/`detect` cover
-Devin sessions discovered from the store.
+gitignored local `.devin/mcp_config.local.json`. The server exposes inspection
+tools; configured trusted extensions can currently execute subprocesses or
+model calls. `policy_check` supports Devin; `plan`, `verify` and `list_sessions`
+cover Devin sessions discovered from the store.
 
 ## Export inspection
 

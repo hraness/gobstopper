@@ -32,7 +32,7 @@ gobstopper treats compaction as a *policy + strategy* problem:
   recommended `model_auto_compact_token_limit` for long sessions —
   evidence that earlier-than-default compaction is provider-endorsed.
 
-## Provider levers (verified against pinned versions)
+## Provider levers (historical version-specific observations)
 
 ### Codex (0.153.2, app-server v2)
 
@@ -134,9 +134,10 @@ The preferred extension surface is a versioned plugin manifest with an exact
 trusted manifest SHA-256, content-addressed bundle files, closed capabilities,
 cleared environment, and bounded stdin/stdout/deadline. Strategy plugins
 receive normalized items and propose `Edit[]`; provider plugins perform
-read-only inspection of bounded source bytes and may use logical record indexes
+inspection of bounded source bytes without returning edit proposals, and may use logical record indexes
 for whole-document formats such as Devin ATIF. The host validates every edit.
-Legacy `preset.command` remains available only with
+The protocol does not prevent a trusted subprocess from performing other OS
+effects. Legacy `preset.command` remains available only with
 `trusted_legacy_command = true` and has no sandbox guarantee.
 
 ## Failure and safety posture
@@ -181,9 +182,10 @@ Legacy `preset.command` remains available only with
   they are provider UI control, including the headless `/compact` run.
 - Before publication, exact source bytes are stored as verified, deduplicated
   1 MiB chunks in the content-addressed vault.
-- Snapshot/copy/read operations share custody of the vault directory inode;
+- Participating Rust snapshot/copy/`read_object` operations share custody of the vault directory inode;
   prune holds exclusive custody through reachability analysis, index publication
-  and deletion. Operation receipts pin their recovery objects. The bounded
+  and deletion. Legacy multi-object inspection and independent-reader paths
+  still require the C3 custody audit. Operation receipts pin their recovery objects. The bounded
   [TLA+ model](../verify/vault/README.md) checks this concurrency protocol and
   negative controls, with explicit exclusions for Rust refinement and filesystem
   crash durability. Current custody support is Unix-only and fails closed on
@@ -200,8 +202,9 @@ Legacy `preset.command` remains available only with
   bounded.
 - Watch mode rate-limits per session (`min_interval_secs`), and plans below
   `min_savings_tokens` are treated as no-ops.
-- Live provider processes remain owned by their runtime or oompa. Gobstopper
-  offers native-control proposals but never becomes a competing writer.
+- Native controls delegate writes to the provider. A liveness observation alone
+  cannot prove exclusive session ownership; version-specific qualification and
+  the remaining direct-write exceptions are tracked in the correctness plan.
 
 ## Measured findings (realized audit, offline)
 

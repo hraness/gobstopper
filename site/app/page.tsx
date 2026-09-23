@@ -30,7 +30,7 @@ const repository = "https://github.com/hraness/gobstopper";
 
 const heading = "Compact coding-agent sessions early, with a way back.";
 const summary =
-  "Gobstopper watches your Claude Code, Codex, and Devin sessions and compacts each one when its context passes a size you choose. It snapshots every transcript before changing it, so the original is never lost, and it can score what each strategy preserved.";
+  "Gobstopper watches your Claude Code, Codex, and Devin sessions and compacts each one when its context passes a size you choose. It archives source bytes before initiating compaction and measures what each strategy preserved.";
 const footnote =
   `Free and open source (MIT or Apache-2.0). Needs Rust 1.85 or newer. Runs on your machine with no account.${releaseVersion === undefined ? " No release yet; install from source." : ` Latest release: v${releaseVersion}.`}`;
 
@@ -43,7 +43,7 @@ const primitives = [
   {
     icon: "edit-ir",
     label: "A few kinds of edit",
-    summary: "Every strategy reduces to the same small set of edits, such as hiding stale tool output, inserting a digest, or asking the provider to compact. Gobstopper validates the result before writing it and never removes the parent links and ordinals a provider needs to resume the session.",
+    summary: "Strategies propose a small set of edits: hiding stale tool output, inserting a digest, or asking the provider to compact. Gobstopper checks file candidates against its supported parent-link, ordinal and tool-pair rules before publication. Provider resume acceptance is qualified separately.",
   },
   {
     icon: "strategies",
@@ -58,23 +58,23 @@ const primitives = [
   {
     icon: "undo-vault",
     label: "Undo vault",
-    summary: "Before changing anything, Gobstopper stores an exact copy of the transcript in a local vault. Claude Code and Codex compactions are written to a new fork, and undo restores the original bytes into another. Idle Devin sessions are edited in place, and undo writes the original back.",
+    summary: "Gobstopper archives source bytes before initiating compaction. Snapshot search and reads recover specific records. Claude Code and Codex copy workflows prepare a new fork, whose session identity differs from the source.",
   },
   {
     icon: "telemetry-eval",
     label: "Telemetry and eval",
-    summary: "Each compaction is logged with a pointer to its snapshot and a score for what it kept, and gobstopper events --retention totals those scores by provider. The eval command runs every strategy on temporary copies and scores how much structure each one preserved. Treat it as a regression check, not a measure of cost savings.",
+    summary: "Best-effort compaction events link snapshots and available measurements, and gobstopper events --retention totals recorded scores by provider. Eval compares strategies on temporary copies using literal probes and structural checks. Billing and successful task continuation require separate evidence.",
   },
 ] as const;
 
 const trust = [
   {
-    label: "Transcripts are never destroyed",
-    detail: "Gobstopper snapshots a transcript before it changes a byte. Claude Code and Codex compactions go to a separate copy and leave the source file alone. A Devin session is edited in place only while it is idle and locked. Rewrites keep the links a provider needs to resume the session, and gobstopper verify checks the result.",
+    label: "Source snapshots support recovery",
+    detail: "Gobstopper requires an archive snapshot before initiating compaction. Copy workflows preserve source bytes and check supported transcript structures. Recovery depends on the integrity and availability of the vault; storage failures and unsupported provider changes remain explicit limits.",
   },
   {
-    label: "Running sessions are left alone",
-    detail: "Gobstopper never edits a session that is still running. A running Claude Code or Devin session compacts only when you run /compact inside it. Custom rewrites run only on idle sessions and forks.",
+    label: "Provider ownership is explicit",
+    detail: "Native commands ask the provider to compact its session. File workflows prepare separate copies. Legacy direct writes rely on observed idleness, which cannot guarantee custody against a concurrently starting provider; the correctness audit tracks that gap.",
   },
   {
     label: "Failures are reported as failures",
@@ -89,11 +89,11 @@ const questions = [
   },
   {
     question: "Does it edit my live session?",
-    answer: "No. A running Claude Code or Devin session compacts only through `/compact` in that session. For a closed session, Gobstopper can ask the provider to compact it: `thread/compact/start` over the Codex app-server protocol, `claude --resume <id> -p /compact` for Claude Code, and `/compact` over ACP for Devin. Otherwise it rewrites idle transcripts itself, always after a snapshot. Claude Code and Codex rewrites go to a separate, validated copy; a Devin session is edited in place under a lock.",
+    answer: "Native compaction asks the provider to change its own session. File compaction normally publishes a separate Claude Code or Codex copy. Legacy direct-write options have an unresolved race with provider startup; the repository's correctness audit documents these limits. A snapshot provides a recovery path, not a guarantee against every storage or provider failure.",
   },
   {
     question: "What if a compaction loses something important?",
-    answer: "`gobstopper undo` restores the exact original bytes into a new fork and leaves the current transcript untouched. To choose a strategy before you rely on it, `gobstopper eval` runs every strategy on a copy of a transcript and reports probe recall (which exact details survived) along with any integrity problems the rewrite caused.",
+    answer: "Snapshot search can locate an archived record, and snapshot reads retrieve its verified bytes. For Claude Code and Codex, `gobstopper undo` prepares a separate fork with a new session identity. `gobstopper eval` measures literal probe retention and structural findings on copies. Those checks cannot guarantee that every task fact survives or that an agent will retrieve a missing fact.",
   },
   {
     question: "Which agents does it support?",

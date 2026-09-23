@@ -1,9 +1,10 @@
-//! `gobstopper mcp` — a read-only Model Context Protocol server over stdio.
+//! `gobstopper mcp` — inspection tools over Model Context Protocol stdio.
 //!
 //! Exposes the session detector and the snapshot vault as MCP tools so an
 //! agent can recall state-card digests, inspect recorded states, and dry-run
 //! compaction plans without leaving its session. Transport is
-//! newline-delimited JSON-RPC 2.0 on stdin/stdout; every tool is read-only.
+//! newline-delimited JSON-RPC 2.0 on stdin/stdout. No explicit transcript
+//! mutation tool is exposed; trusted planning extensions can have OS effects.
 
 use std::io::{BufRead as _, Write};
 
@@ -85,7 +86,7 @@ fn handle(cli: &Cli, cfg: &config::Config, message: &Value) -> Option<Value> {
                     .unwrap_or(PROTOCOL_VERSION),
                 "capabilities": {"tools": {"listChanged": false}},
                 "serverInfo": {"name": "gobstopper", "version": env!("CARGO_PKG_VERSION")},
-                "instructions": "Read-only access to compaction policy, detected Codex/Claude sessions, and the gobstopper snapshot vault. Devin can use policy_check and invoke /compact when directed. Use list_sessions to find sessions, recall to search state-card digests, history/show/diff to inspect recorded states, plan to dry-run compaction, and verify to check transcript integrity. No tool mutates transcripts.",
+                "instructions": "Inspection of compaction policy, detected sessions, and the gobstopper snapshot vault. Devin can use policy_check and invoke /compact when directed. Use list_sessions to find sessions, recall to search state-card digests, history/show/diff to inspect recorded states, plan to preview compaction, and verify to check transcript structure. No explicit transcript mutation tool is exposed. Configured trusted plugins and scorers may execute subprocesses, write caches, or call models; this interface does not sandbox those extensions.",
             }),
         ),
         "ping" => result(&id, json!({})),

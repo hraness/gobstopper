@@ -102,7 +102,7 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
 
 ## C1: Contracts, authority, and claim inventory
 
-- **Status:** Not started
+- **Status:** Complete — implemented and independently reviewed; delivery gates remain in C15
 - **Depends on:** none
 - **Objective:** make every correctness claim falsifiable and every mutating
   entry point explicit.
@@ -136,6 +136,11 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
   source export and through commit; fail closed on missing authority, ambiguous
   identity, lock failure or unsupported versions. Reject foreign snapshot session,
   store and graph identity. Bound SQL updates and preserve unrelated rows.
+- **Implementation decision (2026-09-23):** inspection found no documented,
+  qualified lifetime lock for direct provider writes. Disable direct-store and
+  arbitrary-path rewrite APIs before effects, retain detached byte transforms
+  and no-clobber copies, and qualify native delegation separately in C13.
+  An arbitrary path labeled "detached" is not proof of ownership.
 - **Acceptance:** start-provider versus mutate interleavings cannot admit both;
   live/unknown ownership refuses surgery; foreign restore leaves byte/row state
   unchanged; append during replacement cannot be lost; failed activation leaves
@@ -160,6 +165,13 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
   durable intent state and pin lifecycle. Include snapshot, receipt intent,
   output publication, receipt completion, reader, prune, and crash/restart in one
   model. Add syscall injection seams for write/sync/link/rename/unlink/SQL commit.
+- **Implementation decision (2026-09-23):** a durable prepared operation pins
+  both its verified recovery snapshot and exact prepared output bytes. Generated
+  identities make replaying a transform an inadequate recovery mechanism.
+  Reconciliation reads the recorded bytes and never overwrites a conflicting
+  output. Pins remain until an explicit retirement policy; malformed state
+  prevents collection. Publication errors distinguish visible effects from
+  confirmed durability.
 - **Acceptance:** fail each boundary before and after its effect; repeated recovery
   is idempotent; torn index and malformed roots never authorize deletion; shared
   chunks/legacy objects remain readable; same-second and nonmonotonic-clock
@@ -445,7 +457,8 @@ cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
 cargo test --workspace --all-targets --all-features --locked
 cargo test --workspace --doc --all-features --locked
-cargo +1.85.0 check --workspace --lib --bins --locked
+rustup run 1.85.0 cargo check --workspace --lib --bins --locked
+python3 scripts/check_assurance.py
 python3 -m unittest discover -s scripts -p 'test_*.py' -v
 python3 verify/vault/check.py --java "$JAVA" --tlc-jar "$TLC_JAR" --output "$EVIDENCE"
 ```
@@ -474,5 +487,17 @@ resolve or an honest bounded claim; do not weaken the property just to turn gree
 
 ## Implementation log
 
-<!-- Empty until future phases are executed. Record date, phase, implementation,
-focused validation, independent review, exact commit/PR, deviations and residuals. -->
+- 2026-09-23: Execution resumed after PR #88 (`ffc7148`) on branch
+  `codex/correctness-foundation`. C1 implementation is active; C2/C3 investigations
+  run in parallel without downstream edits. Source delivery does not activate
+  unqualified live-provider mutation. Phase completion requires its recorded
+  implementation, independent review and acceptance evidence.
+- 2026-09-23, C1: Added the assurance ledger, 16 coverage/invariant rows,
+  30 effect profiles, all 33 CLI commands/10 MCP tools/7 hooks/8 scripts and
+  188 conservative Rust callable classifications. Individually triaged 21
+  baseline scanner alerts; removed seven credential/background disclosure sinks
+  and corrected public claims. Structural checker and 13 negative/coverage tests
+  pass; CLI acceptance has 160 passing tests; site gate has 31 source/unit tests
+  plus one built-runtime test, with the existing image lint warning. Independent
+  review verified scanner excerpts, identities and model hashes, and approved
+  C1. No scanner closure, live qualification or whole-system theorem is claimed.

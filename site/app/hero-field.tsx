@@ -26,9 +26,9 @@ const notes: FieldNote[] = [
   { id: "elide", type: "elision", title: "elide ×43", body: "Stale tool outputs masked in place — no record deleted, linkage intact.", x: 33, y: 40, rotate: -0.8, width: 196, drift: [10, 12], seconds: 40, delay: -5, bloom: true },
   { id: "digest", type: "digest", title: "digest injected", body: "A compact state card carries the conversation forward.", x: 61, y: 49, rotate: 0.9, width: 180, drift: [8, 13], seconds: 47, delay: -18 },
   { id: "verify", type: "verify", title: "verify clean", body: "Parent chains, ordinals, and structure checked after every rewrite.", x: 87, y: 60, rotate: -1.1, width: 190, drift: [14, 8], seconds: 39, delay: -2 },
-  { id: "provider", type: "provider", title: "provider /compact", body: "On a running session the provider keeps authority — Gobstopper asks, never edits under it.", x: 91, y: 34, rotate: 0.6, width: 188, drift: [8, 11], seconds: 48, delay: -26 },
-  { id: "undo", type: "undo", title: "$ gobstopper undo", body: "restores byte-identical bytes\ninto a fresh fork", x: 17, y: 80, rotate: -2, width: 198, drift: [12, 9], seconds: 35, delay: -15 },
-  { id: "event", type: "event", title: "compaction-events-v1", body: "Every mutation emits one record: snapshot refs, edits, retention.", x: 48, y: 84, rotate: 1.5, width: 196, drift: [9, 11], seconds: 44, delay: -27 },
+  { id: "provider", type: "provider", title: "provider /compact", body: "Native compaction delegates session changes to the provider through its own controls.", x: 91, y: 34, rotate: 0.6, width: 188, drift: [8, 11], seconds: 48, delay: -26 },
+  { id: "undo", type: "undo", title: "$ gobstopper undo", body: "prepares archived content\nunder a fresh session identity", x: 17, y: 80, rotate: -2, width: 198, drift: [12, 9], seconds: 35, delay: -15 },
+  { id: "event", type: "event", title: "compaction-events-v1", body: "Best-effort events: snapshot refs and available measurements.", x: 48, y: 84, rotate: 1.5, width: 196, drift: [9, 11], seconds: 44, delay: -27 },
   { id: "strategy", type: "strategy", title: "strategy auto", body: "Picks by transcript shape — elide, structured, scored, or provider delegation.", x: 75, y: 87, rotate: -2.2, width: 196, drift: [8, 14], seconds: 40, delay: -11 },
 ];
 

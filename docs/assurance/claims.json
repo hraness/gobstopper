@@ -1,0 +1,338 @@
+{
+  "schema": "gobstopper.claims.v1",
+  "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+  "claims": [
+    {
+      "id": "CLAIM-SYSTEM",
+      "owner": "integration owner",
+      "status": "specification",
+      "assertion": "Whole-system correctness remains an assurance objective; no complete theorem is asserted.",
+      "bounds": "C1–C15 source, models, implementation proofs and qualification remain separate evidence layers.",
+      "public_sources": [
+        {
+          "path": "docs/correctness-plan.md"
+        },
+        {
+          "path": "docs/correctness-audit.md"
+        }
+      ],
+      "evidence": [
+        "E-PLAN"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "Unbounded system theorem"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-VAULT",
+      "owner": "integration owner",
+      "status": "bounded_check",
+      "assertion": "The finite vault custody/order model passed its declared safety configuration and four expected-counterexample controls.",
+      "bounds": "Two publishers, one reader, one prune; 25,810 distinct safe states; atomic durable actions at the pinned model revision.",
+      "public_sources": [
+        {
+          "path": "verify/vault/README.md"
+        }
+      ],
+      "evidence": [
+        "E-VAULT-TLC"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-MODEL"
+      ],
+      "exclusions": [
+        "Production refinement",
+        "Filesystem crash durability",
+        "Fairness"
+      ],
+      "next_gate": "C3",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-COPY",
+      "owner": "integration owner",
+      "status": "source_reviewed",
+      "assertion": "Codex/Claude default CLI apply and undo publish a fresh identity after admission; low-level replacement and Devin store paths have different custody obligations.",
+      "bounds": "Copy receipts cover their participating functions; fork/restore are not a universal exactly-once transaction.",
+      "public_sources": [
+        {
+          "path": "README.md"
+        },
+        {
+          "path": "docs/design.md"
+        }
+      ],
+      "evidence": [
+        "E-SOURCE",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "All mutators being copy-only",
+        "Crash-safe idempotence",
+        "Concurrent provider append safety"
+      ],
+      "next_gate": "C2",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-VERIFY",
+      "owner": "integration owner",
+      "status": "source_reviewed",
+      "assertion": "Structural verification reports findings from the implemented provider dialect rules.",
+      "bounds": "Passing verifies only those checks over those bytes, not provider acceptance or semantic equivalence.",
+      "public_sources": [
+        {
+          "path": "README.md"
+        },
+        {
+          "path": "docs/design.md"
+        }
+      ],
+      "evidence": [
+        "E-SOURCE",
+        "E-TEST-DEFINITIONS"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "Proprietary provider correctness",
+        "Task retention"
+      ],
+      "next_gate": "C5",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-INSPECTION",
+      "owner": "integration owner",
+      "status": "source_reviewed",
+      "assertion": "Inspection tools do not directly rewrite provider transcripts; configured planning extensions/scorers can execute and perform external I/O.",
+      "bounds": "Apple bridge resolution may compile/cache locally; MCP transcript-content permission is separate from trusted-extension authority.",
+      "public_sources": [
+        {
+          "path": "README.md"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/mcp.rs"
+        }
+      ],
+      "evidence": [
+        "E-SOURCE"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "No external process/network/cache effects",
+        "Sandbox guarantee"
+      ],
+      "next_gate": "C8",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-SAVINGS",
+      "owner": "integration owner",
+      "status": "specification",
+      "assertion": "Reported token estimates, effective-context observations, replay byte reductions and billed savings require separate provenance.",
+      "bounds": "Historic examples are dated, selected observations; missing or reset native usage is not zero context or measured savings.",
+      "public_sources": [
+        {
+          "path": "README.md"
+        },
+        {
+          "path": "docs/correctness-audit.md"
+        }
+      ],
+      "evidence": [
+        "E-PLAN",
+        "E-SOURCE"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "Universal savings percentage",
+        "Billing reduction from token estimates"
+      ],
+      "next_gate": "C11",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-SEMANTICS",
+      "owner": "integration owner",
+      "status": "specification",
+      "assertion": "Retention scores are literal/lexical or study-specific proxies within their declared source and label population.",
+      "bounds": "Lossy compression requires registered held-out tasks and uncertainty reporting for stronger retention claims.",
+      "public_sources": [
+        {
+          "path": "docs/correctness-plan.md"
+        },
+        {
+          "path": "README.md"
+        }
+      ],
+      "evidence": [
+        "E-PLAN"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "Preserving every future answer",
+        "Meaning equivalence from string overlap"
+      ],
+      "next_gate": "C14",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-SCANNER",
+      "owner": "integration owner",
+      "status": "historical_observation",
+      "assertion": "The merged baseline security analysis completed successfully while 21 cleartext-logging alerts remained open.",
+      "bounds": "Exact baseline commit; individual requested-output/secret-fragment/background/test-only triage is recorded separately.",
+      "public_sources": [
+        {
+          "path": "docs/assurance/codeql-triage.json"
+        }
+      ],
+      "evidence": [
+        "E-SCANNER"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "Alert-free codebase",
+        "Security theorem",
+        "Scanner closure before rescan"
+      ],
+      "next_gate": "C12",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-AUTH",
+      "owner": "integration owner",
+      "status": "source_reviewed",
+      "assertion": "Credential output must omit key material; a failed live health check can leave a key unverified rather than establishing validity.",
+      "bounds": "C1 removes masked key fragments; accepted storage is not a successful provider attestation.",
+      "public_sources": [
+        {
+          "path": "README.md"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/secrets.rs"
+        }
+      ],
+      "evidence": [
+        "E-C1-PRIVACY"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "All stored keys verified",
+        "Fragment masking as a secrecy proof"
+      ],
+      "next_gate": "C10",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-NATIVE",
+      "owner": "integration owner",
+      "status": "source_reviewed",
+      "assertion": "Native outcomes use provider-specific terminal evidence with conservative unknown/no-op classification.",
+      "bounds": "Codex has matching compaction-turn fixtures; ACP terminal matching is session-scoped and lacks an operation identifier. Ownership still needs qualification.",
+      "public_sources": [
+        {
+          "path": "docs/correctness-audit.md"
+        }
+      ],
+      "evidence": [
+        "E-SOURCE",
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "All three providers equivalent",
+        "Exactly-once replay",
+        "Exclusive ownership from idle heuristics"
+      ],
+      "next_gate": "C4",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-BOUNDS",
+      "owner": "integration owner",
+      "status": "source_reviewed",
+      "assertion": "Resource caps are per implementation boundary and configuration, not one universal application bound.",
+      "bounds": "Default transcript cap is 512 MiB and can be raised; discovery, MCP framing, aggregation, trusted children and cache compilation need separate budgets.",
+      "public_sources": [
+        {
+          "path": "README.md"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/transaction.rs"
+        }
+      ],
+      "evidence": [
+        "E-SOURCE"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "Every operation bounded by transcript byte cap",
+        "Liveness from finite safety checking"
+      ],
+      "next_gate": "C14",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-DELIVERY",
+      "owner": "integration owner",
+      "status": "historical_observation",
+      "assertion": "Baseline PR 88 merged a checked source tree and retained a locally built macOS artifact without installing it or restarting live watchers.",
+      "bounds": "Merged ffc7148 tree 904cf3f; historical CI and artifact receipt only.",
+      "public_sources": [
+        {
+          "path": "docs/correctness-audit.md"
+        }
+      ],
+      "evidence": [
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "Current integration admission",
+        "Live activation qualification",
+        "Universal platform support"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    }
+  ]
+}
