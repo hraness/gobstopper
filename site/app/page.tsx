@@ -31,8 +31,11 @@ const repository = "https://github.com/hraness/gobstopper";
 const heading = "Compact coding-agent sessions early, with a way back.";
 const summary =
   "Gobstopper watches your Claude Code, Codex, and Devin sessions and compacts each one when its context passes a size you choose. It snapshots every transcript before changing it, so the original is never lost, and it can score what each strategy preserved.";
+// v0.2.1 (September 18, 2026) predates Devin support and several features
+// described below. The note disappears once a newer release is published.
+const releasePredatesPage = releaseVersion === "0.2.1";
 const footnote =
-  `Free and open source (MIT or Apache-2.0). Needs Rust 1.85 or newer. Runs on your machine with no account.${releaseVersion === undefined ? " No release yet; install from source." : ` Latest release: v${releaseVersion}.`}`;
+  `Free and open source (MIT or Apache-2.0). Needs Rust 1.85 or newer. Runs on your machine with no account.${releaseVersion === undefined ? " No release yet; install from source." : ` Latest release: v${releaseVersion}.`}${releasePredatesPage ? " Devin support and several features described here are newer than that release; install from source to use them." : ""}`;
 
 const primitives = [
   {
@@ -58,7 +61,7 @@ const primitives = [
   {
     icon: "undo-vault",
     label: "Undo vault",
-    summary: "Before changing anything, Gobstopper stores an exact copy of the transcript in a local vault. Claude Code and Codex compactions are written to a new fork, and undo restores the original bytes into another. Idle Devin sessions are edited in place, and undo writes the original back.",
+    summary: "Before changing anything, Gobstopper stores an exact copy of the transcript in a local vault. By default, Claude Code and Codex compactions are written to a new fork, and undo restores the original bytes into another. Idle Devin sessions are edited in place, and undo writes the original back unless Devin has added to the session since.",
   },
   {
     icon: "telemetry-eval",
@@ -70,11 +73,11 @@ const primitives = [
 const trust = [
   {
     label: "Transcripts are never destroyed",
-    detail: "Gobstopper snapshots a transcript before it changes a byte. Claude Code and Codex compactions go to a separate copy and leave the source file alone. A Devin session is edited in place only while it is idle and locked. Rewrites keep the links a provider needs to resume the session, and gobstopper verify checks the result.",
+    detail: "Gobstopper snapshots a transcript before it changes a byte. By default, Claude Code and Codex compactions go to a separate copy and leave the source file alone. An idle Devin session is edited in place under Devin's lock, and the watcher rewrites idle Claude Code sessions in place only if you turn that on. Rewrites keep the links a provider needs to resume the session, and gobstopper verify checks the result.",
   },
   {
     label: "Running sessions are left alone",
-    detail: "Gobstopper never edits a session that is still running. A running Claude Code or Devin session compacts only when you run /compact inside it. Custom rewrites run only on idle sessions and forks.",
+    detail: "Gobstopper does not edit a session while it is running. Claude Code and Devin report which sessions are live, and a Codex session counts as running if it was written in the last three minutes. For a running Claude Code or Devin session, Gobstopper's prompt hook can suggest /compact, and the provider does the compaction. Custom rewrites run only on idle sessions and forks.",
   },
   {
     label: "Failures are reported as failures",
@@ -89,7 +92,7 @@ const questions = [
   },
   {
     question: "Does it edit my live session?",
-    answer: "No. A running Claude Code or Devin session compacts only through `/compact` in that session. For a closed session, Gobstopper can ask the provider to compact it: `thread/compact/start` over the Codex app-server protocol, `claude --resume <id> -p /compact` for Claude Code, and `/compact` over ACP for Devin. Otherwise it rewrites idle transcripts itself, always after a snapshot. Claude Code and Codex rewrites go to a separate, validated copy; a Devin session is edited in place under a lock.",
+    answer: "No. For a running Claude Code or Devin session, Gobstopper's prompt hook can suggest `/compact`, and the provider does the compaction. If you set `auto_compact_closed`, Gobstopper asks the provider to compact a closed session: `thread/compact/start` over the Codex app-server protocol, `claude --resume <id> -p /compact` for Claude Code, and `/compact` over ACP for Devin. Otherwise it rewrites idle transcripts itself, always after a snapshot. By default, Claude Code and Codex rewrites go to a separate, validated copy, and a Devin session is edited in place under Devin's lock.",
   },
   {
     question: "What if a compaction loses something important?",
@@ -199,18 +202,19 @@ gobstopper verify <session> && gobstopper undo <session>`}</code></pre>
               },
               {
                 label: "Watcher and hooks",
-                summary: "The watcher prepares a plan as a session nears its threshold and writes a validated copy once it crosses. Provider hooks instead snapshot and log each time the provider compacts on its own.",
+                summary: "The watcher checks your sessions every 30 seconds by default and writes a validated copy of an idle Claude Code or Codex session once it crosses your threshold. Provider hooks snapshot and log each time the provider compacts on its own.",
                 example: (
                   <>
                     <TopicIcon slug="watcher" />
-                    <pre tabIndex={0}><code>{`gobstopper watch --trigger 250000 --double-buffer
-gobstopper install-hooks   # Claude settings + Codex hooks.json`}</code></pre>
+                    <pre tabIndex={0}><code>{`gobstopper watch --dry-run
+gobstopper watch
+gobstopper install-hooks`}</code></pre>
                   </>
                 ),
               },
               {
                 label: "Your program",
-                summary: "A preset command receives the transcript as normalized JSON and returns edits. Package it as a versioned plugin bundle to reuse it.",
+                summary: "A preset command receives the transcript as normalized JSON and returns edits. It runs only after you mark it trusted. Package it as a versioned plugin bundle to pin the exact executable.",
                 example: (
                   <>
                     <TopicIcon slug="custom-program" />
@@ -219,7 +223,8 @@ strategy = "elide"
 keep_recent_tool_outputs = 4
 
 [presets.custom]
-command = ["node", "my-editor.js"]`}</code></pre>
+command = "node my-editor.js"
+trusted_legacy_command = true`}</code></pre>
                   </>
                 ),
               },
@@ -270,12 +275,18 @@ gobstopper watch`}</code></pre>
                 <p className="install-note">
                   <a href={publishedRelease.verificationRun}>See how this release was verified</a>.{" "}
                 </p>
+                {releasePredatesPage && (
+                  <>
+                    <p className="install-note">For Devin support and the other features newer than v{releaseVersion}, install from source:</p>
+                    <pre className="install-command" tabIndex={0}><code>{`cargo install --git ${repository} gobstopper`}</code></pre>
+                  </>
+                )}
               </>
             )}
             <p className="install-note">
               Needs Rust 1.85 or newer. Gobstopper reads Codex, Claude Code, and Devin session data on your
               machine and sends none of it anywhere.{" "}
-              <a href="/docs#install">Read the full reference</a>.
+              <a href="/docs#install--use">Read the full reference</a>.
             </p>
           </MarketingInstallPanel>
 

@@ -41,6 +41,11 @@ test("the homepage leads with the README identity and the verified install comma
     expect(html).toContain(`--tag v${publishedRelease.version}`);
     expect(html).toContain("cargo install --git");
     expect(html).toContain(publishedRelease.verificationRun);
+    // v0.2.1 predates Devin support; the page must say so and give the source install.
+    if (publishedRelease.version === "0.2.1") {
+      expect(html).toContain("Devin support and several features described here are newer than that release");
+      expect(html).toContain("cargo install --git https://github.com/hraness/gobstopper gobstopper");
+    }
   }
   expect(html).not.toContain("hraness.com/gobstopper");
 });
@@ -48,7 +53,7 @@ test("the homepage leads with the README identity and the verified install comma
 test("the docs page renders the README with its installation anchor", () => {
   const html = renderToStaticMarkup(<Docs />);
   expect(html).toContain('id="install--use"');
-  expect(html).toContain('id="the-oompa-seam"');
+  expect(html).toContain('id="integrating-with-a-session-runtime"');
   expect(html).toContain("gobstopper detect");
   expect(html).not.toContain("data-hraness-marketing-preset");
 });
@@ -67,6 +72,13 @@ test("scopes the editorial preset to the homepage header and real command exampl
   expect(elements).toEqual(["header", "proof"]);
   expect(html).toContain("autocompact 100    56,300  no");
   expect(html).not.toContain("--in-place");
+  // Retired or nonexistent flags must not appear in homepage examples.
+  expect(html).not.toContain("--double-buffer");
+  expect(html).not.toMatch(/gobstopper watch[^\n<]*--trigger/u);
+  // A preset command is a string and runs only once trusted.
+  expect(html).not.toContain("command = [");
+  expect(html).toContain("trusted_legacy_command = true");
+  expect(html).toContain('href="/docs#install--use"');
   expect(html).toContain("On a 333k-token Claude Code session");
 });
 

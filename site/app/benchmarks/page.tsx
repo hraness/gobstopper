@@ -2,27 +2,28 @@ import type { Metadata } from "next";
 
 import { SiteHeader, SiteFooter } from "../_components/site-chrome";
 
-const title = "Gobstopper benchmarks";
+const title = "Benchmarks";
+const socialTitle = "Gobstopper benchmarks";
 const description =
-  "Compaction and recovery evidence: a 729-session offline study, public synthetic archive checks, and separately scoped live trials.";
+  "Results from offline replays of 729 archived agent sessions, a synthetic snapshot-recovery study, and single-session resume trials, each dated and scoped.";
 
 export const metadata: Metadata = {
   title,
   description,
   alternates: { canonical: "/benchmarks" },
   openGraph: {
-    title,
+    title: socialTitle,
     description,
     siteName: "Gobstopper",
     type: "article",
     url: "/benchmarks",
-    images: [{ url: "/opengraph-image", width: 1200, height: 630, alt: title }],
+    images: [{ url: "/opengraph-image", width: 1200, height: 630, alt: socialTitle }],
   },
   twitter: {
     card: "summary_large_image",
-    title,
+    title: socialTitle,
     description,
-    images: [{ url: "/opengraph-image", alt: title }],
+    images: [{ url: "/opengraph-image", alt: socialTitle }],
   },
 };
 
@@ -34,12 +35,13 @@ export default function Benchmarks() {
         <article>
           <h1>Benchmarks</h1>
           <p>
-            Benchmarking compaction is split between offline structural checks
-            and live provider trials. We do not claim subscription savings
-            without completed live evidence.
+            These results come from offline replays, which project context
+            size and check which text survives, and from a few live trials
+            that resumed real sessions. We don&apos;t claim subscription or
+            billing savings from any of them.
           </p>
           <p>
-            Latest: <a href="#archived-recovery-2026-09-20">September 20 exact archived-evidence recovery checks</a>.
+            Latest: <a href="#archived-recovery-2026-09-20">September 20 snapshot search and recovery checks</a>.
           </p>
 
           <section aria-labelledby="retrospective-2026-09-19">
@@ -48,15 +50,15 @@ export default function Benchmarks() {
               <strong>36.4% median projected context reduction</strong> across
               73 high-context archived Codex root tasks, with <strong>76.9%
               sampled-string retention</strong>. All 73 produced portable{" "}
-              <code>compacted</code> plans. This was offline replay on one Mac,
-              using deterministic rules: it did not measure billing savings,
+              <code>compacted</code> plans. It was an offline replay on one Mac
+              with deterministic rules, so it did not measure billing savings,
               successful continuation, or model quality.
             </p>
             <p>
-              The wider result matters: across all 729 sessions, 92 produced
-              plans and 637 produced no plan. <strong>The overall median
-              reduction was 0%.</strong> The table includes no-plan cases in
-              every median; the root-task result does not describe every session.
+              Across all 729 sessions, 92 produced plans and 637 produced no
+              plan, and <strong>the overall median reduction was 0%.</strong>{" "}
+              Every median in the table includes no-plan cases, so the root-task
+              result does not describe every session.
             </p>
             <table>
               <caption>Portable compacted strategy; projected current-context tokens</caption>
@@ -115,8 +117,11 @@ export default function Benchmarks() {
               These tasks came from one person&apos;s Mac and can share prompts,
               projects and unobserved ancestry. The size limit excludes some long
               tasks. No provider continuation, remote scorer, semantic judge,
-              billing, cache benefit, or recovery-time comparison was run.
-              This is not a head-to-head test against fast-jev-compaction.
+              billing, cache benefit, or recovery-time comparison was run. The
+              study was not compared with{" "}
+              <a href="https://github.com/tamaratran/fast-jev-compaction">fast-jev-compaction</a>,
+              a third-party Claude Code plugin that uses Jev to decide which
+              tool output to drop.
             </p>
             <p>
               The measured evaluator could emit 65–67 probes despite a nominal
@@ -125,7 +130,7 @@ export default function Benchmarks() {
               does not retroactively change this study. The downloads identify
               the measured source commit and executable hash.
             </p>
-            <h3>Download the evidence</h3>
+            <h3>Download the data</h3>
             <ul>
               <li><a href="/benchmarks/2026-09-19/report.md">Study report (Markdown)</a></li>
               <li><a href="/benchmarks/2026-09-19/aggregates.json">Aggregate results for all five strategies (JSON)</a></li>
@@ -140,14 +145,14 @@ export default function Benchmarks() {
           </section>
 
           <section aria-labelledby="retention-policy-2026-09-19">
-            <h2 id="retention-policy-2026-09-19">Development scored-policy comparison · September 19, 2026</h2>
+            <h2 id="retention-policy-2026-09-19">Keep-score cutoff comparison · September 19, 2026</h2>
             <p>
               A separate paired replay tested an optional keep-score cutoff on
               the same 114 archived roots: 73 high-context tasks and 41 controls.
               It used <code>scored</code> with the deterministic heuristic and
-              the corrected 64-probe limit. This is a policy comparison, not a
-              new independent sample, held-out validation, or a model-backend
-              comparison.
+              the corrected 64-probe limit. It compares policies on the same
+              sample; it is not a new sample, a held-out validation, or a
+              comparison of model backends.
             </p>
             <p>
               The 0.35 cutoff raised sampled-string retention from <strong>77.05%
@@ -155,8 +160,9 @@ export default function Benchmarks() {
               <strong>36.44% to 34.96%</strong>. Forty of 73 tasks retained more
               sampled strings and none retained fewer. Two tasks produced no
               plan; their retention is derived from leaving the source unchanged.
-              This is a modest measured tradeoff, not evidence of better task
-              success or performance than fast-jev-compaction.
+              The cutoff trades a little size reduction for retention. The run
+              did not test task success and was not compared with
+              fast-jev-compaction.
             </p>
             <table>
               <caption>All 73 high-context roots; reduction medians include no-plan cases</caption>
@@ -219,14 +225,15 @@ export default function Benchmarks() {
           </section>
 
           <section aria-labelledby="apple-cutoff-2026-09-19">
-            <h2 id="apple-cutoff-2026-09-19">Bounded Apple pilot · September 19, 2026</h2>
+            <h2 id="apple-cutoff-2026-09-19">On-device Apple scorer pilot · September 19, 2026</h2>
             <p>
               A separate mechanism check used three frozen, convenience-selected
               Codex root-task inputs from one Mac, excluded from the 729-session
-              study. It compared the deterministic heuristic with a bounded
-              on-device Apple Intelligence overlay. Both used <code>scored</code>{" "}
-              and a 0.5 keep-score cutoff. This small pilot qualifies execution
-              of that configuration, not general model quality.
+              study. It compared the deterministic heuristic with an on-device
+              Apple Intelligence scorer that adjusts the heuristic&apos;s scores.
+              Both used <code>scored</code> and a 0.5 keep-score cutoff. The pilot
+              checks that this configuration runs; it does not measure model
+              quality.
             </p>
             <table>
               <caption>All three inputs, including no-plan cases; one pass per variant</caption>
@@ -241,7 +248,7 @@ export default function Benchmarks() {
               </thead>
               <tbody>
                 <tr><th scope="row">Deterministic heuristic</th><td>3 / 0</td><td>50.35%</td><td>148 / 192</td><td>0.090 s</td></tr>
-                <tr><th scope="row">Bounded Apple overlay</th><td>1 / 2</td><td>0%</td><td>192 / 192</td><td>11.912 s</td></tr>
+                <tr><th scope="row">Apple overlay (on-device)</th><td>1 / 2</td><td>0%</td><td>192 / 192</td><td>11.912 s</td></tr>
               </tbody>
             </table>
             <p>
@@ -255,9 +262,9 @@ export default function Benchmarks() {
             <p>
               The model made 12 on-device calls and supplied 92 of 92 selected
               score overlays, with no failed batches or fallback diagnostics.
-              Coverage was capped at 32 candidates per input; candidates outside
-              that bound kept heuristic scores. That expected heuristic remainder
-              is distinct from failure fallback. No remote model was called.
+              Coverage was capped at 32 candidates per input, and candidates
+              beyond the cap kept their heuristic scores by design, not because
+              a call failed. No remote model was called.
             </p>
             <p>
               All six evaluations completed without failures, source inputs and
@@ -269,18 +276,19 @@ export default function Benchmarks() {
               descriptive observations from one pass.
             </p>
             <ul>
-              <li><a href="/benchmarks/2026-09-19/apple-retention-pilot.json">Apple pilot aggregate receipt (JSON)</a></li>
+              <li><a href="/benchmarks/2026-09-19/apple-retention-pilot.json">Apple pilot aggregate results (JSON)</a></li>
               <li><a href="/benchmarks/2026-09-19/apple-retention-protocol.json">Registered Apple pilot protocol (JSON)</a></li>
             </ul>
             <p>
-              The receipt pins the measured Gobstopper executable and local
-              Apple bridge. It excludes per-input records, hashes, identifiers,
-              private paths, prompts and model responses.
+              The results file records the SHA-256 of the measured Gobstopper
+              executable and of the local Apple bridge. It excludes per-input
+              records and hashes, identifiers, private paths, prompts, and model
+              responses.
             </p>
           </section>
 
           <section aria-labelledby="archived-recovery-2026-09-20">
-            <h2 id="archived-recovery-2026-09-20">Exact archived-evidence recovery · September 20, 2026</h2>
+            <h2 id="archived-recovery-2026-09-20">Snapshot search and recovery · September 20, 2026</h2>
             <p>
               Gobstopper found all <strong>108 predeclared search targets</strong>{" "}
               and recovered all <strong>108 target records byte for byte</strong>{" "}
@@ -304,35 +312,35 @@ export default function Benchmarks() {
                 <tr><th scope="row">Known-target search</th><td>108 / 108</td></tr>
                 <tr><th scope="row">Byte-exact record recovery</th><td>108 / 108</td></tr>
                 <tr><th scope="row">Absent, case, key and version isolation queries</th><td>144 / 144</td></tr>
-                <tr><th scope="row">Bounded search and truncation accounting</th><td>36 / 36</td></tr>
+                <tr><th scope="row">Result limits and truncation counts</th><td>36 / 36</td></tr>
                 <tr><th scope="row">Candidate state-card queries</th><td>108 / 108</td></tr>
                 <tr><th scope="row">Baseline vault-format compatibility</th><td>36 / 36</td></tr>
-                <tr><th scope="row">Invalid-input, integrity, pagination and MCP safeguards</th><td>13 / 13</td></tr>
+                <tr><th scope="row">Invalid-input, integrity, pagination, and MCP safeguards</th><td>13 / 13</td></tr>
                 <tr><th scope="row">All checks</th><td>553 / 553</td></tr>
               </tbody>
             </table>
             <p>
               Half the snapshots encode Unicode as JSON escapes; six place a
               target record across a vault chunk boundary. Recovery reconstructs
-              long records through bounded 4 KiB pages. The checks also cover
+              long records through 4 KiB pages. The checks also cover
               corruption rejection, metadata-only search results, and MCP tools
               that expose transcript content only after explicit enablement.
             </p>
             <p>
-              The existing state-card recall command found 18 of 108 declared
-              field queries in the baseline and 108 of 108 in the candidate.
-              The change adds portable Codex-card handling and searches error
-              and current-work fields. The baseline did not support the new{" "}
+              The state-card recall command found 18 of 108 declared field
+              queries in the baseline build and 108 of 108 in the candidate,
+              which added portable Codex-card handling and searches the error
+              and current-work fields. The baseline did not have the{" "}
               <code>search-snapshot</code> and <code>read-snapshot</code> commands;
               those are recorded as unsupported capabilities, not retrieval
               failures or a speed comparison.
             </p>
             <p>
-              Queries, expected bytes and limits were fixed before execution.
+              Queries, expected bytes, and limits were fixed before execution.
               All 989 commands completed within the registered bounds; frozen
               fixtures, vault contents and pinned executables stayed unchanged.
               No local model, remote model or provider service was called.
-              Runtime figures in the receipt describe one pass on one machine.
+              Runtime figures in the results file describe one pass on one machine.
             </p>
             <p>
               The vault was seeded directly, so this study does not test snapshot
@@ -370,9 +378,10 @@ export default function Benchmarks() {
             provider-wide performance guarantee. Their accuracy judgments concern
             the specific resume question shown, not general task completion.
           </p>
-          <h3>Live qualification method</h3>
+          <h3>How the live trials worked</h3>
           <p>
-            Live trials resume a real session after compaction and measure:
+            Each live trial resumed a real session after compaction and
+            measured:
           </p>
           <ul>
             <li>Task completion on a held-out second prompt.</li>
@@ -405,36 +414,36 @@ export default function Benchmarks() {
                 <td>none (original)</td>
                 <td>312,722</td>
                 <td>1,405</td>
-                <td>yes — npm unification and stalled renames</td>
+                <td>yes: npm unification and stalled renames</td>
               </tr>
               <tr>
-                <td>gobstopper <code>elide</code></td>
+                <td>Gobstopper <code>elide</code></td>
                 <td>219,167</td>
                 <td>1,052</td>
-                <td>yes — same standing task, stalled renames</td>
+                <td>yes: same standing task, stalled renames</td>
               </tr>
               <tr>
-                <td>gobstopper <code>compacted</code></td>
+                <td>Gobstopper <code>compacted</code></td>
                 <td>220,447</td>
                 <td>621</td>
-                <td>yes — same standing task from the state-card digest</td>
+                <td>yes: same standing task from the state-card digest</td>
               </tr>
               <tr>
                 <td>Claude <code>--autocompact 100</code></td>
                 <td>56,300</td>
                 <td>416</td>
-                <td>no — incorrectly claimed the renames were already done and published</td>
+                <td>no: incorrectly claimed the renames were already done and published</td>
               </tr>
             </tbody>
           </table>
           <p>
-            gobstopper <code>elide</code> and <code>compacted</code> both cut the
-            resume context by about 30% while keeping the answer accurate. Claude&apos;s
+            Gobstopper&apos;s <code>elide</code> and <code>compacted</code> both cut
+            the resume context by about 30% while keeping the answer accurate. Claude&apos;s
             native <code>--autocompact 100</code> cut the resume context by ~82% but
             produced a confident, inaccurate summary of the session.
           </p>
 
-          <h3>One Codex session: experimental live comparison</h3>
+          <h3>One Codex session: resume token comparison</h3>
           <p>
             The same resume question was asked on a 101k-token Codex session
             (a real BEAM-benchmark thread) under three conditions. Provider-native
@@ -454,28 +463,28 @@ export default function Benchmarks() {
                 <td>none (original)</td>
                 <td>101,275</td>
                 <td>244</td>
-                <td>yes — Oh&apos;s memory benchmark and the 0.60 expansion gate</td>
+                <td>yes: Oh&apos;s memory benchmark and the 0.60 expansion gate</td>
               </tr>
               <tr>
-                <td>gobstopper <code>elide</code></td>
+                <td>Gobstopper <code>elide</code></td>
                 <td>57,980</td>
                 <td>83</td>
-                <td>yes — same 0.545 score and 0.60 gate</td>
+                <td>yes: same 0.545 score and 0.60 gate</td>
               </tr>
               <tr>
-                <td>gobstopper <code>compacted</code></td>
+                <td>Gobstopper <code>compacted</code></td>
                 <td>34,503</td>
                 <td>159</td>
-                <td>yes — same BEAM experiment and expansion gate</td>
+                <td>yes: same BEAM experiment and expansion gate</td>
               </tr>
             </tbody>
           </table>
           <p>
             On Codex, <code>compacted</code> cut resume input tokens by 66% and
-            <code>elide</code> cut them by 43%, both with accurate answers. Every
-            pre- and post-state is in the vault, so you can <code>gobstopper diff</code>
-            the exact structural changes and choose the strategy that matches your
-            tolerance for recall loss.
+            <code>elide</code> cut them by 43%, both with accurate answers.{" "}
+            <code>gobstopper diff</code> compares two vault snapshots
+            structurally, so you can check what a strategy removed before you
+            rely on it.
           </p>
 
           <h3>One Claude session: prefix preservation and provider cache</h3>
@@ -485,8 +494,9 @@ export default function Benchmarks() {
             conversation prefix stays byte-identical. On a 339k-token Claude
             session at a 310k floor, the same resume question was asked under
             three conditions, restoring the same session between runs with the
-            earlier experimental workflow. Current <code>undo</code> publishes a
-            separate fork and has no in-place mode. The provider&apos;s real cache
+            earlier experimental workflow. Current <code>undo</code> restores a
+            Claude Code or Codex session into a separate fork and has no
+            in-place mode. The provider&apos;s real cache
             counters were read from the API response:
           </p>
           <table>
@@ -505,12 +515,12 @@ export default function Benchmarks() {
                 <td>none (original)</td>
                 <td>10,010</td>
                 <td>325,647</td>
-                <td>—</td>
+                <td>n/a</td>
                 <td>$6.53</td>
                 <td>yes</td>
               </tr>
               <tr>
-                <td>gobstopper <code>cache_aware</code></td>
+                <td>Gobstopper <code>cache_aware</code></td>
                 <td>13,536</td>
                 <td>258,517</td>
                 <td>107,884 tokens</td>
@@ -518,7 +528,7 @@ export default function Benchmarks() {
                 <td>yes</td>
               </tr>
               <tr>
-                <td>gobstopper <code>compacted</code></td>
+                <td>Gobstopper <code>compacted</code></td>
                 <td>13,536</td>
                 <td>257,505</td>
                 <td>6,639 tokens</td>
@@ -553,8 +563,8 @@ export default function Benchmarks() {
               <tr>
                 <td>original session</td>
                 <td>5,244</td>
-                <td>—</td>
-                <td>—</td>
+                <td>n/a</td>
+                <td>n/a</td>
                 <td>yes</td>
               </tr>
               <tr>
@@ -565,7 +575,7 @@ export default function Benchmarks() {
                 <td>yes</td>
               </tr>
               <tr>
-                <td>gobstopper <code>compacted</code></td>
+                <td>Gobstopper <code>compacted</code></td>
                 <td>5,247</td>
                 <td>43</td>
                 <td>46 (43 stubs + 3 digest)</td>
@@ -578,9 +588,9 @@ export default function Benchmarks() {
             appended 59 records and removed none. The earlier Gobstopper
             experiment replaced 43 stale tool outputs and injected a
             resumable state-card digest, and <code>claude --resume</code> succeeded
-            with the model recalling the last user prompt and current task state. The
-            structural diff is available in the vault via
-            <code>gobstopper diff</code>.
+            with the model recalling the last user prompt and current task state.{" "}
+            <code>gobstopper diff</code> reports this kind of structural change
+            between two vault snapshots.
           </p>
         </article>
       </main>

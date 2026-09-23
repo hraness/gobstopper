@@ -7,9 +7,10 @@ use serde::{Deserialize, Serialize};
 /// through a fixed tool schema. The strategy owns the schema and the
 /// validation; the model driver is pluggable (`EditorDriver` below).
 ///
-/// Research basis: SelfCompact (arXiv:2606.23525) shows a model choosing
-/// *when* and *how* to compact beats fixed-interval triggers at 30-70%
-/// lower cost, provided the scaffold supplies both the tool and a rubric.
+/// Research basis: SelfCompact (arXiv:2606.23525) reports that a model
+/// choosing *when* and *how* to compact matches or exceeds fixed-interval
+/// summarization at 30-70% lower per-question cost, provided the scaffold
+/// supplies both the tool and a rubric.
 /// `agentic` supplies the tool; `auto`'s selection rules act as the rubric
 /// when no driver is configured.
 pub struct AgenticStrategy;

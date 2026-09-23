@@ -1,17 +1,19 @@
 # Gobstopper
 
-> Gobstopper plans smaller Codex and Claude Code session forks, preserves exact source snapshots, and provides explicit recovery tools. Offline token projections do not establish billing savings or task quality.
+> Gobstopper compacts Claude Code, Codex, and Devin sessions at a context size you choose and snapshots every transcript first, so the original is never lost. Its token figures are offline projections, not measured billing savings or task quality.
 
 When to use this site:
 - Use gobstopper.sh to learn what Gobstopper does, which strategies it runs, and how to install it.
-- Use /docs for the complete README: install, strategies, configuration, hooks, telemetry, evaluation, and design notes.
-- Use /benchmarks for dated evidence, cohort denominators, limitations, and aggregate downloads.
+- Use /docs for the full reference: installation, strategies, configuration, the watcher, hooks, the snapshot vault, and the MCP server.
+- Use /methodology for the occupancy model behind the projections and what each strategy does.
+- Use /benchmarks for dated results, cohort sizes, limitations, and aggregate downloads.
 
 ## Pages
 
-- [Gobstopper](https://gobstopper.sh/): earlier, smarter context compaction for coding agents — detection, an edit IR, strategies, presets, an undo vault, and telemetry.
-- [Gobstopper documentation](https://gobstopper.sh/docs): the complete Gobstopper README.
-- [Gobstopper benchmarks](https://gobstopper.sh/benchmarks): the 729-session offline study, public synthetic archive-recovery checks, and separately dated historical live trials.
+- [Gobstopper](https://gobstopper.sh/): what Gobstopper does, how to install it, and what it will not do to a running session.
+- [Gobstopper documentation](https://gobstopper.sh/docs): the README, with every command, strategy, and configuration setting it documents.
+- [Gobstopper methodology](https://gobstopper.sh/methodology): the occupancy model, the strategies, and the limits of the published benchmarks.
+- [Gobstopper benchmarks](https://gobstopper.sh/benchmarks): offline replays of 729 archived sessions, a synthetic snapshot-recovery study, and historical single-session resume trials.
 
 ## Optional
 

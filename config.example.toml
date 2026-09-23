@@ -9,7 +9,7 @@ min_interval_secs = 300        # per-session compaction rate limit
 min_savings_tokens = 4_096     # reject plans that reclaim less
 # adaptive = true              # derive trigger/floor per session from the
                                # provider window, elidable share, and past
-                               # compaction yields — see `gobstopper tune`
+                               # compaction yields; see `gobstopper tune`
 
 # Per-provider overrides
 [provider.codex]
@@ -29,7 +29,8 @@ min_savings_tokens = 4_096     # reject plans that reclaim less
                                # (treatment cohort only; 0 disables)
 
 [provider.devin]
-# Native policy only: over-threshold decisions return `/compact`.
+# Live sessions get `/compact`; `gobstopper apply` compacts idle ones in place.
+# watch writes to Devin sessions only with one of the settings below.
 # trigger_tokens = 200_000
 # auto_compact_closed = true    # watch runs `devin acp` session/load +
                                # /compact on idle over-trigger sessions
@@ -52,7 +53,8 @@ floor_tokens = 20_000
 strategy = "structured"
 trigger_tokens = 180_000
 
-# Codex-only: emit a real provider `compacted` record.
+# Elide stale outputs and inject a state card. A synthetic Codex `compacted`
+# record additionally needs `gobstopper apply --experimental-compacted`.
 [presets.compact-window]
 strategy = "compacted"
 trigger_tokens = 120_000
@@ -64,7 +66,7 @@ floor_tokens = 20_000
 # command = "python3 ~/bin/compactor.py"
 # trusted_legacy_command = true
 
-# Agentic preset backed by the compatibility package in the XCB repository:
+# Agentic preset backed by the compatibility package in the xcb repository:
 # a cheap model emits keep/elide/summarize/defer calls and the shim
 # lowers them to Edit[]. Requires an Anthropic API key (see hraness/xcb).
 # [presets.xcb-editor]

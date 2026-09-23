@@ -2,29 +2,30 @@ import type { Metadata } from "next";
 
 import { SiteHeader, SiteFooter } from "../_components/site-chrome";
 import { publishedRelease } from "../publication";
-import { readmeHtml, readmeTitle } from "../readme.generated";
+import { readmeHtml } from "../readme.generated";
 
-const title = `${readmeTitle} documentation`;
+const title = "Documentation";
+const socialTitle = "Gobstopper documentation";
 const description =
-  "The complete Gobstopper README: installation, strategies, configuration, hooks, telemetry, evaluation, and design notes.";
+  "The Gobstopper reference: how to install it, choose a compaction strategy, and configure it per provider, per session, or with named presets.";
 
 export const metadata: Metadata = {
   title,
   description,
   alternates: { canonical: "/docs" },
   openGraph: {
-    title,
+    title: socialTitle,
     description,
     siteName: "Gobstopper",
     type: "article",
     url: "/docs",
-    images: [{ url: "/docs/opengraph-image", width: 1200, height: 630, alt: title }],
+    images: [{ url: "/docs/opengraph-image", width: 1200, height: 630, alt: socialTitle }],
   },
   twitter: {
     card: "summary_large_image",
-    title,
+    title: socialTitle,
     description,
-    images: [{ url: "/docs/opengraph-image", alt: title }],
+    images: [{ url: "/docs/opengraph-image", alt: socialTitle }],
   },
 };
 
