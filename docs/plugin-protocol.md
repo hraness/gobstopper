@@ -108,7 +108,7 @@ Strategy proposals may use `elide` and `inject_digest`. External plugins cannot 
 - edits that do not reduce projected context by `min_savings_tokens`;
 - candidates that add structural verification findings.
 
-Applying a plugin's plan works like any other `apply`: Gobstopper snapshots the exact source first, then publishes a separate no-clobber fork for Claude Code and Codex, or rewrites an idle Devin session in place under its lock (see [Devin integration](devin.md)).
+Applying a plugin's plan works like any other `apply`: Gobstopper snapshots the exact source first, then publishes a separate no-clobber fork for Claude Code and Codex, or rewrites an idle Devin session in place in one database transaction (see [Devin integration](devin.md)).
 
 ## Resource and failure contract
 

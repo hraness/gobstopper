@@ -9,7 +9,8 @@ Run `gobstopper watch` and it follows your agent sessions. When a session's
 context crosses your threshold, Gobstopper compacts it with the strategy you
 picked for that session, provider, or preset. By default, Claude Code and
 Codex compactions go to a separate fork and leave the source transcript
-unchanged; an idle Devin session is edited in place under Devin's lock. For
+unchanged; an idle Devin session is edited in place in one database
+transaction. For
 closed sessions, you can have Gobstopper ask the provider to run its own
 compaction instead. Plugins can add strategies and providers.
 
@@ -106,10 +107,12 @@ devin mcp add -s user gobstopper -- gobstopper mcp
 ```
 
 For Devin, `policy_check` accepts `provider = "devin"` and returns `/compact`
-when the configured threshold is crossed. Gobstopper does not write to a Devin
-session while Devin holds its lock. Once the session is idle, `gobstopper
-apply` snapshots it to the vault and compacts it in place under that lock; see
-[docs/devin.md](docs/devin.md). A read-only provider plugin can inspect a
+when the configured threshold is crossed. Gobstopper refuses to write to a
+Devin session whose lock Devin holds when it checks. Once the session is idle,
+`gobstopper apply` snapshots it to the vault and compacts it in place in one
+SQLite transaction. The lock is checked before the write, not held during it;
+see [docs/devin.md](docs/devin.md) and the
+[correctness audit](docs/correctness-audit.md). A read-only provider plugin can inspect a
 `devin --export out.json` file for offline analysis.
 
 Each compaction cycle costs one large input call and can lose detail, so the
@@ -207,7 +210,8 @@ configuration, invalid proposals, and execution failures are command errors.
 Every `apply` or `watch` compaction first snapshots the source into the vault.
 For Claude Code and Codex, `apply` publishes the result as a separate,
 verified file and leaves the original transcript unchanged. For an idle Devin
-session, `apply` rewrites the session store in place under Devin's lock.
+session, `apply` rewrites the session store in place in one SQLite
+transaction after checking that Devin does not hold the session lock.
 `watch` also prepares separate files by default; it rewrites idle sessions in
 place only when you set `[provider.claude_code] auto_apply_inplace` or
 `[provider.devin] auto_apply_store`. Gobstopper does not rewrite a session it
@@ -584,7 +588,7 @@ gobstopper policy-check --provider codex --context-tokens 300000 \
 invokes `thread/compact/start` on its own app-server connection, or launches
 Claude Code sessions with `--autocompact <tokens>`. Transcript rewrites stay
 in Gobstopper, which publishes verified forks for an explicit resume and does
-not write to a session the runtime is running.
+not rewrite a session it detects as running.
 
 ## How providers compact today
 
@@ -720,11 +724,14 @@ recalled the standing task. That trial used an earlier build; current
 
 ## Status
 
-`plan`, `eval`, `verify`, the MCP server, and provider inspection only read.
+`plan`, `eval`, `verify`, the MCP server, and provider inspection do not
+change your sessions; configured plugins and preset commands they run are your
+own trusted code.
 For Claude Code and Codex, `apply` and `undo` write separate files and leave
 the source unchanged, and so does `watch` unless you turn on
 `auto_apply_inplace` or `auto_compact_closed`. For an idle Devin session,
-`apply` and `undo` write to the session store in place under Devin's lock.
+`apply` and `undo` write to the session store in place after checking that
+Devin does not hold the session lock.
 Before publishing a separate file, Gobstopper checks the source hash again,
 refuses to overwrite an existing file, snapshots the source, verifies the
 structure, and keeps a receipt so a repeated run does not publish twice.

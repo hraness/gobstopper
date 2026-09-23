@@ -159,8 +159,8 @@ An over-threshold response uses:
 }
 ```
 
-The caller runs `/compact` inside the Devin session. Gobstopper does not
-write to a session while Devin holds its lock.
+The caller runs `/compact` inside the Devin session. Gobstopper's own store
+writes refuse a session whose lock Devin holds at the time of the check.
 
 Configure Devin independently from Codex and Claude Code:
 
@@ -232,10 +232,12 @@ The ACP bridge does interpret `session/prompt` text that matches an
 advertised command, so `watch` can drive provider-native compaction on
 idle sessions: `devin acp` → `session/load` → `session/prompt "/compact"`
 runs the provider's own `file_compactor`. In our tests a summary node lands
-on the main chain, while print mode (`-p "/compact"`) does nothing. Enabled per provider with `auto_compact_closed = true`; when the
-flock check says the session is idle and the rollout cohort is treatment,
-watch tries the ACP compact first and falls back to `auto_apply_store`
-elision on failure. Live (locked) sessions are never touched.
+on the main chain, while print mode (`-p "/compact"`) does nothing.
+Enable it per provider with `auto_compact_closed = true`. When the flock
+check says the session is idle and the rollout cohort is treatment, watch
+runs the ACP compact. If it fails or does not confirm completion, watch
+leaves the session unchanged and does not fall back to the store write.
+Live (locked) sessions are skipped.
 
 Protocol notes, observed on the wire: requests must be serialized, because
 a `session/prompt` sent before `session/load` resolves reaches an unloaded
@@ -318,8 +320,10 @@ logical items plus usage. Provider inspection cannot return edits.
 ## Resume integrity
 
 Use Devin's own `--resume <session-id>` or `--continue` controls. Gobstopper
-does not create Devin session IDs, import a `devin --export` file into the
-session store, or treat an exported trajectory as a replacement for Devin's
-resume state. `gobstopper undo` writes back message payloads and the chain
-head from a vault snapshot of the same session, as described under
-[Guarded store mutation](#guarded-store-mutation).
+does not synthesize Devin session IDs or replace the provider's complete resume
+state with an exported trajectory. Its guarded `undo` path does restore selected
+payloads from a canonical per-session vault export into the existing store and
+rejects a foreign session identity. The idle-lock probe is not retained through
+that transaction, and restore does not bind an expected current export; these
+remaining ownership and drift risks are tracked in the
+[correctness audit](correctness-audit.md) and [plan](correctness-plan.md).

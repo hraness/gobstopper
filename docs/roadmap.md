@@ -1,5 +1,11 @@
 # gobstopper roadmap
 
+The [2026-09-23 correctness audit](correctness-audit.md) and
+[correctness assurance plan](correctness-plan.md) qualify the completion claims
+below and define the next verification work. The executable
+[vault protocol model](../verify/vault/README.md) is a bounded concurrency check,
+not a proof of the whole application.
+
 gobstopper is the context-compaction layer for the Hraness agent stack.
 This document is the engineering map: what exists, what comes next, and
 how the work shares foundations with **oompa** (session control plane),
@@ -526,4 +532,3 @@ The audit baseline is `c6d91a8`. Existing passing tests did not establish those 
   AI Gateway. Jev remains a fallback via `TYPESAFE_API_KEY`; the LLM path is
   live with `AI_GATEWAY_API_KEY` and uses `qwen/qwen-2.5-7b-instruct` by
   default. Only sanitized labels/summaries leave the machine.
-

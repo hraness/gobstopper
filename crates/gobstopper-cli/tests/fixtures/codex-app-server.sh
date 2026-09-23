@@ -4,6 +4,13 @@ set -eu
 [ "$#" -eq 3 ] && [ "$1" = app-server ] && [ "$2" = --listen ] && [ "$3" = stdio:// ] || exit 64
 : "${CODEX_HOME:?test CODEX_HOME is required}"
 log="$CODEX_HOME/requests.log"
+compact_item() {
+  printf '{"method":"item/started","params":{"threadId":"%s","turnId":"compact-turn","item":{"id":"compact-item","type":"contextCompaction"}}}\n' "$thread"
+  printf '{"method":"item/completed","params":{"threadId":"%s","turnId":"compact-turn","item":{"id":"compact-item","type":"contextCompaction"}}}\n' "$thread"
+}
+completed() {
+  printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"compact-turn","status":"completed"}}}\n' "$thread"
+}
 while IFS= read -r line; do
   printf '%s\n' "$line" >> "$log"
   case "$line" in
@@ -14,14 +21,75 @@ while IFS= read -r line; do
         *) printf '{"id":1,"result":{}}\n' ;;
       esac ;;
     *'"thread/compact/start"'*)
-      case "$line" in
-        *fail-thread*)
+      thread=${line#*'"threadId":"'}
+      thread=${thread%%'"'*}
+      case "$thread" in
+        fail-thread|structural-thread)
           printf '{"id":2,"result":{}}\n'
-          printf '{"method":"turn/completed","params":{"threadId":"fail-thread","turn":{"status":"failed","error":{"message":"usage limit exceeded"}}}}\n' ;;
-        *error-thread*) printf '{"id":2,"error":{"message":"thread not found"}}\n' ;;
+          compact_item
+          error='usage limit exceeded'
+          [ "$thread" != structural-thread ] || error='private-transcript-marker: model not supported'
+          printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"compact-turn","status":"failed","error":{"message":"%s"}}}}\n' "$thread" "$error" ;;
+        error-thread) printf '{"id":2,"error":{"message":"thread not found"}}\n' ;;
+        early-thread)
+          compact_item
+          completed
+          printf '{"id":2,"result":{}}\n' ;;
+        early-foreign-failure-thread|uncorrelated-failure-thread)
+          printf '{"method":"turn/started","params":{"threadId":"%s","turn":{"id":"foreign-turn","status":"inProgress"}}}\n' "$thread"
+          printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"foreign-turn","status":"failed"}}}\n' "$thread"
+          printf '{"id":2,"result":{}}\n'
+          if [ "$thread" = early-foreign-failure-thread ]; then
+            compact_item
+            completed
+          fi ;;
+        wrong-turn-thread)
+          printf '{"id":2,"result":{}}\n'
+          compact_item
+          printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"unrelated-turn","status":"completed"}}}\n' "$thread"
+          printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"compact-turn","status":"failed"}}}\n' "$thread" ;;
+        no-item-thread)
+          printf '{"id":2,"result":{}}\n'
+          completed ;;
+        oversized-thread)
+          printf '{"id":2,"result":{}}\n'
+          awk 'BEGIN {for (i=0;i<1048577;i++) printf "x"}' ;;
+        lost-response-thread) exit 0 ;;
+        malformed-response-thread) printf '{"id":2}\n' ;;
         *)
+          if [ "$thread" = descendant-thread ]; then
+            sleep 60 &
+            printf '%s\n' "$!" > "$CODEX_HOME/descendant.pid"
+          fi
+          if [ "$thread" = escaped-pipe-thread ]; then
+            python3 -c '
+import os, pathlib, time
+os.setsid()
+root = pathlib.Path(os.environ["CODEX_HOME"])
+(root / "escaped-ready").write_text("ready")
+until = time.monotonic() + 15
+while time.monotonic() < until and not (root / "escaped-stop").exists():
+    time.sleep(0.005)
+(root / "escaped-finished").write_text("finished")
+' &
+            while [ ! -f "$CODEX_HOME/escaped-ready" ]; do sleep 0.01; done
+          fi
+          case "${GOBSTOPPER_FIXTURE_MODE:-noop}" in
+            checkpoint)
+              cp "$XDG_DATA_HOME/gobstopper/watch-state-all.json" "$CODEX_HOME/dispatch-state.json" ;;
+            compact)
+              printf '{"type":"compacted","payload":{"replacement_history":[]}}\n' >> "$CODEX_HOME/sessions/rollout-fixture.jsonl" ;;
+            lower)
+              printf '{"type":"token_usage_record","payload":{"usage":{"input_tokens":1000,"output_tokens":0}}}\n' >> "$CODEX_HOME/sessions/rollout-fixture.jsonl" ;;
+            missing) rm "$CODEX_HOME/sessions/rollout-fixture.jsonl" ;;
+            private-error)
+              printf 'private-transcript-marker\n' >&2
+              printf '{"id":2,"error":{"message":"private-transcript-marker"}}\n'
+              continue ;;
+          esac
           printf '{"id":2,"result":{}}\n'
-          printf '{"method":"turn/completed","params":{"threadId":"ok-thread","turn":{"status":"completed"}}}\n' ;;
+          compact_item
+          completed ;;
       esac ;;
   esac
 done

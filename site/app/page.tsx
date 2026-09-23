@@ -73,7 +73,7 @@ const primitives = [
 const trust = [
   {
     label: "Transcripts are never destroyed",
-    detail: "Gobstopper snapshots a transcript before it changes a byte. By default, Claude Code and Codex compactions go to a separate copy and leave the source file alone. An idle Devin session is edited in place under Devin's lock, and the watcher rewrites idle Claude Code sessions in place only if you turn that on. Rewrites keep the links a provider needs to resume the session, and gobstopper verify checks the result.",
+    detail: "Gobstopper snapshots a transcript before it changes a byte. By default, Claude Code and Codex compactions go to a separate copy and leave the source file alone. An idle Devin session is edited in place in one database transaction, after Gobstopper checks that Devin does not hold the session lock, and the watcher rewrites idle Claude Code sessions in place only if you turn that on. Rewrites keep the links a provider needs to resume the session, and gobstopper verify checks the result.",
   },
   {
     label: "Running sessions are left alone",
@@ -92,7 +92,7 @@ const questions = [
   },
   {
     question: "Does it edit my live session?",
-    answer: "No. For a running Claude Code or Devin session, Gobstopper's prompt hook can suggest `/compact`, and the provider does the compaction. If you set `auto_compact_closed`, Gobstopper asks the provider to compact a closed session: `thread/compact/start` over the Codex app-server protocol, `claude --resume <id> -p /compact` for Claude Code, and `/compact` over ACP for Devin. Otherwise it rewrites idle transcripts itself, always after a snapshot. By default, Claude Code and Codex rewrites go to a separate, validated copy, and a Devin session is edited in place under Devin's lock.",
+    answer: "No. For a running Claude Code or Devin session, Gobstopper's prompt hook can suggest `/compact`, and the provider does the compaction. If you set `auto_compact_closed`, Gobstopper asks the provider to compact a closed session: `thread/compact/start` over the Codex app-server protocol, `claude --resume <id> -p /compact` for Claude Code, and `/compact` over ACP for Devin. Otherwise it rewrites idle transcripts itself, always after a snapshot. By default, Claude Code and Codex rewrites go to a separate, validated copy, and an idle Devin session is edited in place in one database transaction.",
   },
   {
     question: "What if a compaction loses something important?",

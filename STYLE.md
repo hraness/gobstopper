@@ -1,6 +1,6 @@
 # Public writing style
 
-<!-- synced from hraness/.github STYLE.md sha256:fcacbb77c29b3669875e7b4d4a866145fd839fffa9d4b655fe07dda8b680efe9 -->
+<!-- synced from hraness/.github STYLE.md sha256:66a56eb4c587e0b0bdbcec5fbb8dfa2879bac05dab0f9b0b9f19b3a8ccd7ffbe -->
 
 This guide covers everything written for readers outside a repository: product pages, documentation, READMEs, interface text, metadata, and text a model writes for publication. Apply the voice rules in [`WRITING.md`](WRITING.md) first. The [documentation guidelines](https://github.com/hraness/.github/blob/main/DOCUMENTATION_GUIDELINES.md) choose a document's purpose and shape, and the [README guidelines](https://github.com/hraness/.github/blob/main/README_GUIDELINES.md) cover the repository front door.
 
@@ -146,7 +146,7 @@ Readers trust a page that states its limits plainly. They skim a page that repea
 - Use sentence case for headings, buttons, tabs, labels, placeholders, and empty states.
 - Capitalize proper nouns according to their official form.
 - Put periods on full sentences, including callouts.
-- Omit periods from headings, buttons, and short labels.
+- Omit periods from headings, buttons, and short labels. A full-sentence display heading in the editorial marketing preset may end with a period.
 - Use the Oxford comma.
 - Use natural contractions when they match the voice. Do not force them.
 - Use curly quotation marks in prose and straight quotation marks in code.
@@ -234,15 +234,17 @@ A prompt, skill, or template that makes a model write published text is public c
 
 ## Say who wrote and who checked
 
-- Record who drafted and who reviewed generated or agent-drafted text: the author, an independent human, or an AI agent, by name.
-- Never credit AI-drafted text to a person as its sole author, never describe AI review as human review, and never claim a review that has no record.
+- Show AI-drafting disclosure on hraness.com only, through its shared disclosure component, on every page with AI-drafted text. Other Hraness sites and products do not carry AI-drafting disclosures, labels, or badges.
+- Everywhere, keep a record of who drafted and who reviewed generated or agent-drafted text: the author, an independent human, or an AI agent, by name.
+- Never credit AI-drafted text to a person as its sole author, never describe AI review as human review, and never claim a review that has no record. A page without a review record makes no review claim.
+- Text an agent posts from a person's account does not claim that person wrote AI-drafted work.
 
 ## Repository additions
 
 ### Facts public copy must keep
 
 - Describe Gobstopper with the README's first sentence or a shortening of it: “Gobstopper compacts Claude Code, Codex, and Devin sessions at a context size you choose.”
-- Name the condition on every write. `gobstopper apply` writes a Claude Code or Codex compaction to a new fork and leaves the source unchanged, and it edits an idle Devin session in place under Devin's session lock. By default `watch` prepares Claude Code and Codex forks and leaves Devin sessions alone; it rewrites idle sessions in place only with `[provider.claude_code] auto_apply_inplace` or `[provider.devin] auto_apply_store`, and it asks the provider to compact a closed session only with `auto_compact_closed`. `undo` restores into a new fork, except for Devin, where it writes the snapshot back and refuses if Devin appended to the session after the snapshot. Do not shorten these to “never edits”, “always a fork”, or “any compaction can be undone”.
+- Name the condition on every write. `gobstopper apply` writes a Claude Code or Codex compaction to a new fork and leaves the source unchanged, and it edits an idle Devin session in place in one SQLite transaction after checking that Devin does not hold the session lock; the lock is checked, not held. By default `watch` prepares Claude Code and Codex forks and leaves Devin sessions alone; it rewrites idle sessions in place only with `[provider.claude_code] auto_apply_inplace` or `[provider.devin] auto_apply_store`, and it asks the provider to compact a closed session only with `auto_compact_closed`. `undo` restores into a new fork, except for Devin, where it writes the snapshot back and refuses if Devin appended to the session after the snapshot. Do not shorten these to “never edits”, “always a fork”, “under Devin's lock”, or “any compaction can be undone”.
 - Show only commands and config that run on the release the page installs. The homepage installs the release in `site/published-release.json`; the README installs `main`. The retired flags `--in-place`, `--no-backup`, and `--double-buffer` exit with an error, `watch` has no `--trigger` flag, and a preset `command` is a string that needs `trusted_legacy_command = true`.
 - Label every benchmark with its date, build, and scope. The September 17, 2026 resume trials are historical single-session results on earlier builds.
 - OOMPA was retired on 2026-09-19 and replaced by xcb. Mention OOMPA only as history.

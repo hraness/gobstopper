@@ -50,15 +50,44 @@ jobs:
           shared-key: msrv
       - run: cargo check --workspace --lib --bins --locked
 
+  formal:
+    name: Vault protocol model
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - name: Fetch pinned TLC and check protocol plus negative controls
+        run: |
+          curl --fail --location --retry 2 --max-time 60 \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar \
+            --output "$RUNNER_TEMP/tla2tools.jar"
+          python3 verify/vault/check.py --java java \
+            --tlc-jar "$RUNNER_TEMP/tla2tools.jar" \
+            --output "$RUNNER_TEMP/vault-model-evidence"
+      - name: Report exact verification receipt
+        if: always()
+        run: |
+          if test -f "$RUNNER_TEMP/vault-model-evidence/receipt.json"; then
+            cat "$RUNNER_TEMP/vault-model-evidence/receipt.json"
+          fi
+          for log in "$RUNNER_TEMP"/vault-model-evidence/*.log; do
+            if test -f "$log"; then
+              cat "$log"
+            fi
+          done
+
   required:
     name: Required
     if: always()
-    needs: [quality, msrv]
+    needs: [quality, msrv, formal]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require every Rust gate
+      - name: Require every verification gate
         env:
           QUALITY: ${{ needs.quality.result }}
           MSRV: ${{ needs.msrv.result }}
-        run: test "$QUALITY" = success && test "$MSRV" = success
+          FORMAL: ${{ needs.formal.result }}
+        run: test "$QUALITY" = success && test "$MSRV" = success && test "$FORMAL" = success

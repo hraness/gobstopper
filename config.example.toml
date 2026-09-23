@@ -23,7 +23,8 @@ min_savings_tokens = 4_096     # reject plans that reclaim less
 # trigger_tokens = 180_000
 # auto_apply_inplace = true    # watch rewrites idle transcripts in place
 # auto_compact_closed = true   # watch runs `claude --resume <id> -p /compact`
-                               # on closed over-trigger sessions first
+                               # on closed over-trigger sessions; a failure
+                               # leaves the session unchanged
 # block_tokens = 500_000       # hard ceiling: the prompt-policy hook returns
                                # decision:block at/above this context size
                                # (treatment cohort only; 0 disables)
@@ -34,9 +35,11 @@ min_savings_tokens = 4_096     # reject plans that reclaim less
 # trigger_tokens = 200_000
 # auto_compact_closed = true    # watch runs `devin acp` session/load +
                                # /compact on idle over-trigger sessions
-                               # first (provider's own file_compactor)
-# auto_apply_store = true       # guarded in-place sessions.db elision as
-                               # the fallback when acp compact fails
+                               # (provider's own file_compactor); a failure
+                               # leaves the session unchanged
+# auto_apply_store = true       # guarded in-place sessions.db elision on
+                               # idle sessions; not used as a fallback when
+                               # auto_compact_closed is on
 
 # Per-session overrides, keyed by session id
 # [sessions."01a08d7c-77fd-7690-9413-e8219b379151"]

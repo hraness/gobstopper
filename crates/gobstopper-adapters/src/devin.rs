@@ -463,238 +463,427 @@ fn export_bytes_conn(
 ///
 /// The caller must already have proved the session's flock is free;
 /// `session/load` on a live-owned session would fork the context the
-/// TUI holds. The requests are pipelined (the bridge processes them in
-/// order); a `session/load` failure surfaces as the `session/prompt`
-/// error. The ACP server outlives the prompt reply, so the child is
-/// always killed on return.
+/// TUI holds. Initialize and session/load are acknowledged sequentially
+/// before dispatching /compact. Success needs both its acknowledgment and
+/// a terminal notification for the selected session, in either order.
+/// The owned process group and reader are collected on every return.
 pub fn acp_compact(
     devin_bin: &Path,
     session_id: &str,
     cwd: &Path,
     timeout_secs: u64,
 ) -> Result<(), AdapterError> {
-    use std::io::{BufRead, BufReader, Write};
+    acp_compact_in_home(devin_bin, session_id, cwd, timeout_secs, None)
+}
+
+const MAX_ACP_FRAME_BYTES: usize = 1024 * 1024;
+const MAX_ACP_REQUEST_BYTES: usize = 16 * 1024;
+const MAX_ACP_QUEUED_FRAMES: usize = 32;
+
+#[cfg(unix)]
+fn acp_nonblocking(pipe: &impl std::os::fd::AsRawFd) -> std::io::Result<()> {
+    let fd = pipe.as_raw_fd();
+    // SAFETY: the pipe owns this live descriptor throughout both calls.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: F_SETFL updates only this owned pipe's status flags.
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn acp_nonblocking<T>(_pipe: &T) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "bounded ACP pipes are unsupported on this platform",
+    ))
+}
+
+struct AcpChild {
+    child: std::process::Child,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    reader: Option<std::thread::JoinHandle<()>>,
+}
+
+impl Drop for AcpChild {
+    fn drop(&mut self) {
+        self.cancelled
+            .store(true, std::sync::atomic::Ordering::Release);
+        #[cfg(unix)]
+        {
+            // SAFETY: spawn establishes a new process group with this child's
+            // PID. No path reaps the leader before Drop, so its PID cannot be
+            // reused for an unrelated group before this signal.
+            unsafe {
+                libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL);
+            }
+        }
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+        // The reader uses a nonblocking owned pipe and checks cancellation,
+        // so inherited pipes cannot keep this join waiting for a descendant.
+        if let Some(reader) = self.reader.take() {
+            let _ = reader.join();
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum AcpReadFailure {
+    Io = 1,
+    Oversized = 2,
+    InvalidUtf8 = 3,
+    QueueTimeout = 4,
+}
+
+fn acp_read_failure(failure: &std::sync::atomic::AtomicU8) -> Option<&'static str> {
+    match failure.load(std::sync::atomic::Ordering::Acquire) {
+        0 => None,
+        1 => Some("ACP response read failed"),
+        2 => Some("ACP response frame exceeds byte limit"),
+        3 => Some("ACP response frame is not UTF-8"),
+        _ => Some("ACP response queue deadline exceeded"),
+    }
+}
+
+fn acp_read_frames(
+    mut stdout: std::process::ChildStdout,
+    sender: std::sync::mpsc::SyncSender<String>,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    failure: std::sync::Arc<std::sync::atomic::AtomicU8>,
+    deadline: std::time::Instant,
+) {
+    use std::io::Read;
+    use std::sync::atomic::Ordering;
+    let send = |frame: Vec<u8>| -> Result<(), AcpReadFailure> {
+        let mut frame = String::from_utf8(frame).map_err(|_| AcpReadFailure::InvalidUtf8)?;
+        loop {
+            if cancelled.load(Ordering::Acquire) {
+                return Ok(());
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(AcpReadFailure::QueueTimeout);
+            }
+            match sender.try_send(frame) {
+                Ok(()) | Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return Ok(()),
+                Err(std::sync::mpsc::TrySendError::Full(pending)) => {
+                    frame = pending;
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+            }
+        }
+    };
+    let result = (|| -> Result<(), AcpReadFailure> {
+        let mut frame = Vec::new();
+        let mut buffer = [0u8; 8192];
+        while !cancelled.load(Ordering::Acquire) {
+            match stdout.read(&mut buffer) {
+                Ok(0) => {
+                    if !frame.is_empty() {
+                        send(frame)?;
+                    }
+                    return Ok(());
+                }
+                Ok(count) => {
+                    for part in buffer[..count].split_inclusive(|byte| *byte == b'\n') {
+                        if frame.len() + part.len() > MAX_ACP_FRAME_BYTES {
+                            return Err(AcpReadFailure::Oversized);
+                        }
+                        frame.extend_from_slice(part);
+                        if part.last() == Some(&b'\n') {
+                            send(std::mem::take(&mut frame))?;
+                        }
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                Err(_) => return Err(AcpReadFailure::Io),
+            }
+        }
+        Ok(())
+    })();
+    if let Err(error) = result {
+        failure.store(error as u8, Ordering::Release);
+    }
+}
+
+fn acp_write_request(
+    stdin: &mut std::process::ChildStdin,
+    request: &[u8],
+    deadline: std::time::Instant,
+) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut remaining = request;
+    while !remaining.is_empty() {
+        if std::time::Instant::now() >= deadline {
+            return Err(std::io::ErrorKind::TimedOut.into());
+        }
+        match stdin.write(remaining) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(count) => remaining = &remaining[count..],
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
+fn acp_observe_compaction(message: &Value, session_id: &str) -> Result<bool, &'static str> {
+    if message.get("id").is_some()
+        || message.get("method").and_then(Value::as_str) != Some("_cognition.ai/compaction")
+        || message.pointer("/params/sessionId").and_then(Value::as_str) != Some(session_id)
+    {
+        return Ok(false);
+    }
+    match message.pointer("/params/status").and_then(Value::as_str) {
+        Some("compacted" | "completed" | "done") => Ok(true),
+        Some("failed" | "error" | "cancelled" | "canceled") => Err("ACP compaction failed"),
+        _ => Ok(false),
+    }
+}
+
+/// Run the ACP bridge against the same Devin data root used for discovery.
+pub fn acp_compact_in_home(
+    devin_bin: &Path,
+    session_id: &str,
+    cwd: &Path,
+    timeout_secs: u64,
+    devin_home: Option<&Path>,
+) -> Result<(), AdapterError> {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
-    let io_err = |kind, msg: String| AdapterError::Io {
+    let io_err = |kind, message: &str| AdapterError::Io {
         path: devin_bin.to_path_buf(),
-        source: std::io::Error::new(kind, msg),
+        source: std::io::Error::new(kind, message.to_string()),
     };
-    // Session ids are provider slugs/UUIDs; they only flow into JSON
-    // params here, but keep the same charset guard as the Claude path.
     if session_id.is_empty()
         || session_id.len() > 128
         || !session_id
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
     {
         return Err(io_err(
             std::io::ErrorKind::InvalidInput,
-            format!("refusing unusual session id for acp session/load: {session_id:?}"),
+            "invalid ACP session identifier",
         ));
     }
-    let mut child = Command::new(devin_bin)
+    let cwd = cwd.to_str().ok_or_else(|| {
+        io_err(
+            std::io::ErrorKind::InvalidInput,
+            "ACP working directory is not UTF-8",
+        )
+    })?;
+    if cwd.len() > MAX_ACP_REQUEST_BYTES {
+        return Err(io_err(
+            std::io::ErrorKind::InvalidInput,
+            "ACP request exceeds byte limit",
+        ));
+    }
+    let deadline = Instant::now()
+        .checked_add(Duration::from_secs(timeout_secs))
+        .ok_or_else(|| {
+            io_err(
+                std::io::ErrorKind::InvalidInput,
+                "ACP timeout exceeds supported range",
+            )
+        })?;
+    // Bound serialization and admission before a provider process is launched.
+    let requests = [
+        (1, serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false}}}})),
+        (2, serde_json::json!({"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":session_id,"cwd":cwd,"mcpServers":[]}})),
+        (3, serde_json::json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session_id,"prompt":[{"type":"text","text":"/compact"}]}})),
+    ].into_iter().map(|(id, request)| {
+        let mut bytes = serde_json::to_vec(&request)
+            .map_err(|_| io_err(std::io::ErrorKind::InvalidInput, "ACP request cannot be serialized"))?;
+        bytes.push(b'\n');
+        if bytes.len() > MAX_ACP_REQUEST_BYTES {
+            return Err(io_err(std::io::ErrorKind::InvalidInput, "ACP request exceeds byte limit"));
+        }
+        Ok((id, bytes))
+    }).collect::<Result<Vec<_>, _>>()?;
+    let mut command = Command::new(devin_bin);
+    command
         .arg("acp")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(Stdio::null());
+    if let Some(home) = devin_home {
+        command.env("DEVIN_DATA_DIR", home);
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+    let child = command
         .spawn()
-        .map_err(|e| io_err(e.kind(), format!("spawn devin acp: {e}")))?;
-    let kill = |child: &mut std::process::Child| {
-        let _ = child.kill();
-        let _ = child.wait();
+        .map_err(|error| io_err(error.kind(), "ACP bridge could not be started"))?;
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let failure = std::sync::Arc::new(std::sync::atomic::AtomicU8::new(0));
+    let mut custody = AcpChild {
+        child,
+        cancelled: cancelled.clone(),
+        reader: None,
     };
-    // Keep stdin open for the whole wait — the bridge may treat EOF as
-    // shutdown before it finishes the pipelined requests.
-    let mut stdin = child
+    let mut stdin = custody
+        .child
         .stdin
         .take()
-        .ok_or_else(|| io_err(std::io::ErrorKind::Other, "devin acp stdin missing".into()))?;
-    let stdout = child
+        .ok_or_else(|| io_err(std::io::ErrorKind::Other, "ACP stdin is unavailable"))?;
+    let stdout = custody
+        .child
         .stdout
         .take()
-        .ok_or_else(|| io_err(std::io::ErrorKind::Other, "devin acp stdout missing".into()))?;
-    let (tx, rx) = std::sync::mpsc::channel::<String>();
-    std::thread::spawn(move || {
-        for line in BufReader::new(stdout).lines() {
-            match line {
-                Ok(line) => {
-                    if tx.send(line).is_err() {
-                        return;
-                    }
-                }
-                _ => return,
-            }
-        }
-    });
-    let deadline = Instant::now() + Duration::from_secs(timeout_secs);
-    // Strictly sequential: `session/load` must complete before
-    // `session/prompt` or the prompt reaches an unloaded session
-    // ("Session not found"), and the bridge only binds the session
-    // registry after `initialize` resolves.
-    let requests = [
-        (
-            1,
-            serde_json::json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false}}}}),
-            "initialize",
-        ),
-        (
-            2,
-            serde_json::json!({"jsonrpc":"2.0","id":2,"method":"session/load","params":{"sessionId":session_id,"cwd":cwd,"mcpServers":[]}}),
-            "session/load",
-        ),
-        (
-            3,
-            serde_json::json!({"jsonrpc":"2.0","id":3,"method":"session/prompt","params":{"sessionId":session_id,"prompt":[{"type":"text","text":"/compact"}]}}),
-            "/compact",
-        ),
-    ];
-    for (id, req, label) in &requests {
-        if let Err(e) = writeln!(stdin, "{req}").and_then(|()| stdin.flush()) {
-            kill(&mut child);
-            return Err(io_err(e.kind(), format!("devin acp request write: {e}")));
-        }
+        .ok_or_else(|| io_err(std::io::ErrorKind::Other, "ACP stdout is unavailable"))?;
+    acp_nonblocking(&stdin)
+        .and_then(|()| acp_nonblocking(&stdout))
+        .map_err(|error| io_err(error.kind(), "ACP nonblocking pipes are unavailable"))?;
+    let (sender, receiver) = std::sync::mpsc::sync_channel(MAX_ACP_QUEUED_FRAMES);
+    let reader_failure = failure.clone();
+    custody.reader = Some(
+        std::thread::Builder::new()
+            .name("gobstopper-acp-reader".into())
+            .spawn(move || acp_read_frames(stdout, sender, cancelled, reader_failure, deadline))
+            .map_err(|error| io_err(error.kind(), "ACP reader could not be started"))?,
+    );
+
+    let receive = || -> Result<Value, AdapterError> {
         loop {
+            if let Some(reason) = acp_read_failure(&failure) {
+                return Err(io_err(std::io::ErrorKind::InvalidData, reason));
+            }
             let now = Instant::now();
             if now >= deadline {
-                kill(&mut child);
                 return Err(io_err(
                     std::io::ErrorKind::TimedOut,
-                    format!("devin acp {label} timed out"),
+                    "ACP response timed out; outcome unknown",
                 ));
             }
-            match rx.recv_timeout(deadline - now) {
-                Ok(line) => {
-                    let Ok(v) = serde_json::from_str::<Value>(&line) else {
-                        continue;
-                    };
-                    if v.get("id") != Some(&serde_json::json!(id)) {
-                        continue;
-                    }
-                    if let Some(err) = v.get("error") {
-                        kill(&mut child);
-                        return Err(io_err(
-                            std::io::ErrorKind::Other,
-                            format!("devin acp {label} rejected: {err}"),
-                        ));
-                    }
-                    // The load reply carries the authoritative ownership
-                    // claim: another client holding the session means our
-                    // prompt would land in their live session. Abort
-                    // before /compact — flock/age heuristics cannot see
-                    // ACP-held sessions.
-                    if *id == 2
-                        && v.pointer("/result/_meta/cognition.ai~1isLocked")
-                            .and_then(Value::as_bool)
-                            .unwrap_or(false)
-                    {
-                        kill(&mut child);
-                        return Err(io_err(
-                            std::io::ErrorKind::Other,
-                            "devin acp session held by another client".into(),
-                        ));
-                    }
-                    break;
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    kill(&mut child);
-                    return Err(io_err(
-                        std::io::ErrorKind::TimedOut,
-                        format!("devin acp {label} timed out"),
-                    ));
-                }
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                    // The bridge died before answering — without the
-                    // explicit reply we cannot prove the step ran.
-                    kill(&mut child);
-                    return Err(io_err(
-                        std::io::ErrorKind::Other,
-                        format!("devin acp exited before the {label} reply"),
-                    ));
-                }
-            }
-        }
-    }
-    // The prompt reply is only an ack: the bridge then emits
-    // `_cognition.ai/compaction` status notifications while the provider
-    // summarizes asynchronously. Dropping the connection here aborts the
-    // in-flight compaction, so hold the session until a terminal status
-    // (or the "Context compacted" display message) arrives.
-    let mut saw_started = false;
-    loop {
-        let now = Instant::now();
-        if now >= deadline {
-            kill(&mut child);
-            return Err(io_err(
-                std::io::ErrorKind::TimedOut,
-                if saw_started {
-                    // The provider may still be writing — callers must not
-                    // fall back to store mutation on this session.
-                    "acp_compaction_in_flight: started but never completed".to_string()
+            let line = receiver.recv_timeout(deadline - now).map_err(|error| {
+                if let Some(reason) = acp_read_failure(&failure) {
+                    io_err(std::io::ErrorKind::InvalidData, reason)
                 } else {
-                    "devin acp produced no compaction event after /compact ack".to_string()
-                },
-            ));
-        }
-        match rx.recv_timeout(deadline - now) {
-            Ok(line) => {
-                let Ok(v) = serde_json::from_str::<Value>(&line) else {
-                    continue;
-                };
-                if v.get("method").and_then(Value::as_str) == Some("_cognition.ai/compaction") {
-                    match v
-                        .pointer("/params/status")
-                        .and_then(Value::as_str)
-                        .unwrap_or("")
-                    {
-                        "started" => saw_started = true,
-                        "compacted" | "completed" | "done" => {
-                            kill(&mut child);
-                            return Ok(());
-                        }
-                        s if s.contains("fail") || s.contains("error") || s.contains("cancel") => {
-                            kill(&mut child);
-                            return Err(io_err(
-                                std::io::ErrorKind::Other,
-                                format!("devin acp compaction {s}"),
-                            ));
-                        }
-                        _ => {}
+                    match error {
+                        std::sync::mpsc::RecvTimeoutError::Timeout => io_err(
+                            std::io::ErrorKind::TimedOut,
+                            "ACP response timed out; outcome unknown",
+                        ),
+                        std::sync::mpsc::RecvTimeoutError::Disconnected => io_err(
+                            std::io::ErrorKind::UnexpectedEof,
+                            "ACP bridge closed before matching completion",
+                        ),
                     }
                 }
-                // Belt-and-suspenders: the provider also broadcasts a
-                // display message when the summary lands.
-                if v.pointer("/params/update/content/text")
-                    .and_then(Value::as_str)
-                    .is_some_and(|t| t.contains("Context compacted"))
-                {
-                    kill(&mut child);
-                    return Ok(());
-                }
+            })?;
+            if line.trim().is_empty() {
+                continue;
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                kill(&mut child);
+            let message: Value = serde_json::from_str(&line).map_err(|_| {
+                io_err(
+                    std::io::ErrorKind::InvalidData,
+                    "ACP response is not valid JSON",
+                )
+            })?;
+            if message.get("jsonrpc").and_then(Value::as_str) != Some("2.0") {
                 return Err(io_err(
-                    std::io::ErrorKind::TimedOut,
-                    if saw_started {
-                        "acp_compaction_in_flight: started but never completed".to_string()
-                    } else {
-                        "devin acp produced no compaction event after /compact ack".to_string()
-                    },
+                    std::io::ErrorKind::InvalidData,
+                    "ACP response has an invalid protocol version",
                 ));
             }
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                kill(&mut child);
+            return Ok(message);
+        }
+    };
+    let mut completed = false;
+    // Initialize and load must be acknowledged before /compact is dispatched.
+    // Once dispatched, matching progress events count even before its ACK.
+    for (id, request) in requests {
+        if let Some(reason) = acp_read_failure(&failure) {
+            return Err(io_err(std::io::ErrorKind::InvalidData, reason));
+        }
+        acp_write_request(&mut stdin, &request, deadline)
+            .map_err(|error| io_err(error.kind(), "ACP request write failed; outcome unknown"))?;
+        loop {
+            let message = receive()?;
+            if id == 3 {
+                completed |= acp_observe_compaction(&message, session_id)
+                    .map_err(|reason| io_err(std::io::ErrorKind::Other, reason))?;
+            }
+            if message.get("id") != Some(&serde_json::json!(id)) {
+                continue;
+            }
+            if message.get("method").is_some() {
+                return Err(io_err(
+                    std::io::ErrorKind::InvalidData,
+                    "ACP reply mixes request and response fields",
+                ));
+            }
+            if message.get("error").is_some() {
+                // Provider error objects may contain transcript content or credentials.
                 return Err(io_err(
                     std::io::ErrorKind::Other,
-                    if saw_started {
-                        "acp_compaction_in_flight: bridge died mid-compaction".to_string()
-                    } else {
-                        "devin acp exited before compaction completed".to_string()
-                    },
+                    "ACP request was rejected",
                 ));
             }
+            if message.get("result").is_none() {
+                return Err(io_err(
+                    std::io::ErrorKind::InvalidData,
+                    "ACP reply has no result",
+                ));
+            }
+            if id == 2 {
+                let result = message
+                    .get("result")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| {
+                        io_err(
+                            std::io::ErrorKind::InvalidData,
+                            "ACP session load result is not an object",
+                        )
+                    })?;
+                if let Some(meta) = result.get("_meta") {
+                    let meta = meta.as_object().ok_or_else(|| {
+                        io_err(
+                            std::io::ErrorKind::InvalidData,
+                            "ACP session metadata is not an object",
+                        )
+                    })?;
+                    if let Some(locked) = meta.get("cognition.ai/isLocked") {
+                        let locked = locked.as_bool().ok_or_else(|| {
+                            io_err(
+                                std::io::ErrorKind::InvalidData,
+                                "ACP session ownership is not a boolean",
+                            )
+                        })?;
+                        if locked {
+                            return Err(io_err(
+                                std::io::ErrorKind::Other,
+                                "ACP session is held by another client",
+                            ));
+                        }
+                    }
+                }
+            }
+            break;
         }
+    }
+    loop {
+        if let Some(reason) = acp_read_failure(&failure) {
+            return Err(io_err(std::io::ErrorKind::InvalidData, reason));
+        }
+        if completed {
+            return Ok(());
+        }
+        completed = acp_observe_compaction(&receive()?, session_id)
+            .map_err(|reason| io_err(std::io::ErrorKind::Other, reason))?;
     }
 }
 
@@ -1152,6 +1341,39 @@ pub fn restore_store(
     session_id: &str,
     snapshot_bytes: &[u8],
 ) -> Result<StoreReport, AdapterError> {
+    if snapshot_bytes.len() as u64 > crate::transaction::max_transcript_bytes() {
+        return Err(AdapterError::InvalidEdit(
+            "snapshot exceeds transcript byte limit",
+        ));
+    }
+    // Node IDs are local to a session and frequently overlap. Reject a
+    // foreign snapshot before opening the target database for writes.
+    let text = std::str::from_utf8(snapshot_bytes)
+        .map_err(|_| AdapterError::InvalidEdit("devin snapshot is not valid UTF-8"))?;
+    let mut records = text.lines();
+    let meta: Value = records
+        .next()
+        .and_then(|line| serde_json::from_str(line).ok())
+        .ok_or(AdapterError::InvalidEdit("snapshot lacks session metadata"))?;
+    if meta.get("type").and_then(Value::as_str) != Some("session_meta")
+        || meta.get("session_id").and_then(Value::as_str) != Some(session_id)
+    {
+        return Err(AdapterError::InvalidEdit(
+            "snapshot belongs to a different session",
+        ));
+    }
+    for (index, line) in records.enumerate() {
+        if index + 1 >= gobstopper_core::validation::MAX_ITEMS {
+            return Err(AdapterError::InvalidEdit("snapshot exceeds record limit"));
+        }
+        let record: Value = serde_json::from_str(line)
+            .map_err(|_| AdapterError::InvalidEdit("snapshot contains invalid JSON"))?;
+        if record.get("type").and_then(Value::as_str) != Some("message_node") {
+            return Err(AdapterError::InvalidEdit(
+                "snapshot contains unexpected record type",
+            ));
+        }
+    }
     let db = db_path(root);
     if session_active(root, session_id) {
         return Err(AdapterError::InvalidEdit(
@@ -2127,6 +2349,104 @@ mod tests {
     }
 
     #[test]
+    fn copy_store_binds_the_database_target_and_operation_identity() {
+        let source = Fixture::new("copy-store-source");
+        let other = Fixture::new("copy-store-other");
+        for fixture in [&source, &other] {
+            fixture.add_session("shared-id", "same session", 0, 1_790_006_000);
+            fixture.add_node(
+                "shared-id",
+                0,
+                None,
+                serde_json::json!({"role":"user", "content":"same original"}),
+                None,
+            );
+        }
+        let original = export_bytes(&db_path(&source.root), "shared-id").unwrap();
+        assert_eq!(
+            export_bytes(&db_path(&other.root), "shared-id").unwrap(),
+            original
+        );
+        let hash = crate::copy::sha256(&original);
+        let plan = gobstopper_core::CompactionPlan {
+            strategy: "structured".into(),
+            rationale: "target binding fixture".into(),
+            context_tokens_before: 100,
+            context_tokens_after: 10,
+            edits: vec![gobstopper_core::Edit::InjectDigest {
+                digest: digest_block(),
+            }],
+        };
+        let vault = source.root.join("vault");
+        let error = crate::copy::compact_devin_store(
+            &source.handle("shared-id"),
+            &hash,
+            &plan,
+            &vault,
+            &other.root,
+        )
+        .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("differs from the planned source"));
+        assert_eq!(
+            export_bytes(&db_path(&source.root), "shared-id").unwrap(),
+            original
+        );
+        assert_eq!(
+            export_bytes(&db_path(&other.root), "shared-id").unwrap(),
+            original
+        );
+        assert!(
+            !vault.exists(),
+            "wrong target must fail before snapshot publication"
+        );
+
+        // Identical exports in different stores are distinct operations:
+        // their receipts must not collide after the second DB commits.
+        for fixture in [&source, &other] {
+            crate::copy::compact_devin_store(
+                &fixture.handle("shared-id"),
+                &hash,
+                &plan,
+                &vault,
+                &fixture.root,
+            )
+            .unwrap();
+        }
+        let receipts = fs::read_dir(vault.join("operations"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
+            .count();
+        assert_eq!(receipts, 2);
+    }
+
+    #[test]
+    fn restore_store_rejects_foreign_snapshot_with_overlapping_node_ids() {
+        let fx = Fixture::new("foreign-restore");
+        for session in ["source", "target"] {
+            fx.add_session(session, session, 0, 1_790_006_000);
+            fx.add_node(
+                session,
+                0,
+                None,
+                serde_json::json!({"role":"user", "content":session}),
+                None,
+            );
+        }
+        let snapshot = export_bytes(&db_path(&fx.root), "source").unwrap();
+        let before = export_bytes(&db_path(&fx.root), "target").unwrap();
+        let error = restore_store(&fx.root, "target", &snapshot).unwrap_err();
+        assert!(error.to_string().contains("different session"));
+        assert_eq!(export_bytes(&db_path(&fx.root), "target").unwrap(), before);
+        assert_eq!(
+            export_bytes(&db_path(&fx.root), "source").unwrap(),
+            snapshot
+        );
+    }
+
+    #[test]
     fn restore_store_undoes_apply() {
         let fx = Fixture::new("restore");
         fx.add_session("sess-r", "undo", 2, 1_790_006_000);
@@ -2362,14 +2682,228 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn acp_compact_loads_session_and_sends_compact() {
-        let dir = tmpdir("acp-ok");
-        let reqs = dir.join("requests.txt");
+    fn acp_compact_accepts_completion_before_ack() {
+        let dir = tmpdir("acp-pre-ack");
+        let prompt = acp_line(
+            serde_json::json!({"jsonrpc":"2.0","method":"_cognition.ai/compaction","params":{"sessionId":"other","status":"failed"}}),
+        ) + &acp_line(
+            serde_json::json!({"jsonrpc":"2.0","method":"_cognition.ai/compaction","params":{"sessionId":"selected","status":"compacted"}}),
+        ) + &acp_reply(3, serde_json::json!({"stopReason":"end_turn"}));
+        let bin = fake_acp(&dir, &acp_reply(2, serde_json::json!({})), &prompt);
+        acp_compact(&bin, "selected", Path::new("/tmp"), 5).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn acp_line(value: Value) -> String {
+        format!("printf '%s\\n' '{value}'\n")
+    }
+
+    #[cfg(unix)]
+    fn acp_reply(id: u64, result: Value) -> String {
+        acp_line(serde_json::json!({"jsonrpc":"2.0","id":id,"result":result}))
+    }
+
+    #[cfg(unix)]
+    fn fake_acp(dir: &Path, load: &str, prompt: &str) -> PathBuf {
+        fake_devin(dir, &format!(
+            "#!/bin/sh\nwhile IFS= read -r line; do\ncase \"$line\" in\n*'\"id\":1'*) {} ;;\n*'\"id\":2'*) {load} ;;\n*'\"id\":3'*) {prompt} ;;\nesac\ndone\n",
+            acp_reply(1, serde_json::json!({})),
+        ))
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acp_compact_rejects_foreign_or_display_text_completion() {
+        let dir = tmpdir("acp-false-completion");
+        for notice in [
+            serde_json::json!({"jsonrpc":"2.0","method":"_cognition.ai/compaction","params":{"sessionId":"other","status":"compacted"}}),
+            serde_json::json!({"jsonrpc":"2.0","method":"_cognition.ai/compaction","params":{"status":"compacted"}}),
+            serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"selected","update":{"content":{"text":"Context compacted"}}}}),
+        ] {
+            let prompt = acp_reply(3, serde_json::json!({})) + &acp_line(notice) + "exit 0\n";
+            let bin = fake_acp(&dir, &acp_reply(2, serde_json::json!({})), &prompt);
+            assert!(acp_compact(&bin, "selected", Path::new("/tmp"), 5).is_err());
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acp_compact_never_echoes_private_error_payloads() {
+        let dir = tmpdir("acp-private-errors");
+        for prompt in [
+            acp_line(
+                serde_json::json!({"jsonrpc":"2.0","id":3,"error":{"code":-1,"message":"PRIVATE_SENTINEL","data":{"secret":"PRIVATE_SENTINEL"}}}),
+            ),
+            acp_line(
+                serde_json::json!({"jsonrpc":"2.0","method":"_cognition.ai/compaction","params":{"sessionId":"selected","status":"failed","message":"PRIVATE_SENTINEL"}}),
+            ),
+            "printf '%s\\n' 'PRIVATE_SENTINEL'\n".into(),
+        ] {
+            let bin = fake_acp(&dir, &acp_reply(2, serde_json::json!({})), &prompt);
+            let error = acp_compact(&bin, "selected", Path::new("/tmp"), 5).unwrap_err();
+            assert!(!error.to_string().contains("PRIVATE_SENTINEL"));
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acp_compact_refuses_malformed_or_locked_load_before_prompt() {
+        let dir = tmpdir("acp-load-admission");
+        let dispatched = dir.join("prompt-dispatched");
+        for result in [
+            Value::Null,
+            serde_json::json!({"_meta": "invalid"}),
+            serde_json::json!({"_meta":{"cognition.ai/isLocked":"true"}}),
+            serde_json::json!({"_meta":{"cognition.ai/isLocked":true}}),
+        ] {
+            let bin = fake_acp(
+                &dir,
+                &acp_reply(2, result),
+                &format!("touch '{}'\n", dispatched.display()),
+            );
+            assert!(acp_compact(&bin, "selected", Path::new("/tmp"), 5).is_err());
+            assert!(!dispatched.exists());
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acp_compact_bounds_requests_before_spawn_and_bounds_response_frames() {
+        let dir = tmpdir("acp-bounds");
+        let spawned = dir.join("spawned");
+        let bin = fake_devin(
+            &dir,
+            &format!("#!/bin/sh\ntouch '{}'\nexec sleep 30\n", spawned.display()),
+        );
+        for cwd in [
+            "x".repeat(MAX_ACP_REQUEST_BYTES + 1),
+            "\n".repeat(MAX_ACP_REQUEST_BYTES / 2),
+        ] {
+            let error = acp_compact(&bin, "selected", Path::new(&cwd), 1).unwrap_err();
+            assert!(error.to_string().contains("byte limit"));
+            assert!(!spawned.exists());
+        }
         let bin = fake_devin(
             &dir,
             &format!(
-                "#!/bin/sh\nwhile IFS= read -r line; do\n  printf '%s\\n' \"$line\" >> '{}'\n  case \"$line\" in\n    *'\"id\":1'*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}' ;;\n    *'\"id\":2'*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{}}}}' ;;\n    *'\"id\":3'*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{{\"stopReason\":\"end_turn\"}}}}'\n      printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"method\":\"_cognition.ai/compaction\",\"params\":{{\"status\":\"started\",\"sessionId\":\"sess-abc_123\"}}}}'\n      printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"method\":\"_cognition.ai/compaction\",\"params\":{{\"status\":\"compacted\",\"sessionId\":\"sess-abc_123\"}}}}' ;;\n  esac\ndone\n",
-                reqs.display()
+                "#!/bin/sh\nhead -c {} /dev/zero | tr '\\000' x\n",
+                MAX_ACP_FRAME_BYTES + 1
+            ),
+        );
+        let error = acp_compact(&bin, "selected", Path::new("/tmp"), 5).unwrap_err();
+        assert!(
+            error.to_string().contains("frame exceeds byte limit"),
+            "{error}"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acp_compact_drains_history_bursts_through_bounded_queue() {
+        let dir = tmpdir("acp-replay-burst");
+        let update = acp_line(
+            serde_json::json!({"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"selected","update":{"text":"history"}}}),
+        );
+        let load = format!("i=0\nwhile [ \"$i\" -lt 256 ]; do\n{update}i=$((i+1))\ndone\n")
+            + &acp_reply(2, serde_json::json!({}));
+        let prompt = acp_reply(3, serde_json::json!({}))
+            + &acp_line(
+                serde_json::json!({"jsonrpc":"2.0","method":"_cognition.ai/compaction","params":{"sessionId":"selected","status":"compacted"}}),
+            );
+        let bin = fake_acp(&dir, &load, &prompt);
+        acp_compact(&bin, "selected", Path::new("/tmp"), 5).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acp_compact_terminates_descendants_on_completion_and_timeout() {
+        let dir = tmpdir("acp-descendants");
+        let pid_path = dir.join("descendant.pid");
+        for completes in [true, false] {
+            let mut prompt = format!(
+                "sleep 30 &\nprintf '%s' \"$!\" > '{}'\n",
+                pid_path.display()
+            );
+            if completes {
+                prompt += &acp_reply(3, serde_json::json!({}));
+                prompt += &acp_line(
+                    serde_json::json!({"jsonrpc":"2.0","method":"_cognition.ai/compaction","params":{"sessionId":"selected","status":"compacted"}}),
+                );
+            }
+            let bin = fake_acp(&dir, &acp_reply(2, serde_json::json!({})), &prompt);
+            let start = std::time::Instant::now();
+            let result = acp_compact(
+                &bin,
+                "selected",
+                Path::new("/tmp"),
+                if completes { 5 } else { 1 },
+            );
+            assert_eq!(result.is_ok(), completes);
+            assert!(start.elapsed() < std::time::Duration::from_secs(5));
+            let pid: i32 = fs::read_to_string(&pid_path).unwrap().parse().unwrap();
+            let mut stopped = false;
+            for _ in 0..100 {
+                // SAFETY: signal 0 only probes the exact fixture-owned PID.
+                if unsafe { libc::kill(pid, 0) } == -1
+                    && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
+                {
+                    stopped = true;
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            assert!(stopped, "owned descendant remains live");
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acp_request_write_observes_deadline_when_bridge_stops_reading() {
+        use std::os::unix::process::CommandExt;
+        use std::process::{Command, Stdio};
+        let child = Command::new("/bin/sh")
+            .args(["-c", "exec sleep 30"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let mut custody = AcpChild {
+            child,
+            cancelled: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            reader: None,
+        };
+        let mut stdin = custody.child.stdin.take().unwrap();
+        acp_nonblocking(&stdin).unwrap();
+        let start = std::time::Instant::now();
+        let error = acp_write_request(
+            &mut stdin,
+            &vec![b'x'; MAX_ACP_FRAME_BYTES],
+            start + std::time::Duration::from_millis(100),
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::TimedOut);
+        assert!(start.elapsed() < std::time::Duration::from_secs(2));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn acp_compact_loads_session_and_sends_compact() {
+        let dir = tmpdir("acp-ok");
+        let reqs = dir.join("requests.txt");
+        let home_out = dir.join("home.txt");
+        let bin = fake_devin(
+            &dir,
+            &format!(
+                "#!/bin/sh\nprintf '%s' \"$DEVIN_DATA_DIR\" > '{}'\nwhile IFS= read -r line; do\n  printf '%s\\n' \"$line\" >> '{}'\n  case \"$line\" in\n    *'\"id\":1'*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{{}}}}' ;;\n    *'\"id\":2'*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{{}}}}' ;;\n    *'\"id\":3'*) printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"id\":3,\"result\":{{\"stopReason\":\"end_turn\"}}}}'\n      printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"method\":\"_cognition.ai/compaction\",\"params\":{{\"status\":\"started\",\"sessionId\":\"sess-abc_123\"}}}}'\n      printf '%s\\n' '{{\"jsonrpc\":\"2.0\",\"method\":\"_cognition.ai/compaction\",\"params\":{{\"status\":\"compacted\",\"sessionId\":\"sess-abc_123\"}}}}' ;;\n  esac\ndone\n",
+                home_out.display(), reqs.display()
             ),
         );
         acp_compact(&bin, "sess-abc_123", Path::new("/tmp"), 30).unwrap();
@@ -2380,6 +2914,19 @@ mod tests {
             "got: {sent}"
         );
         assert!(sent.contains("/compact"), "got: {sent}");
+        let configured_home = dir.join("explicit devin home");
+        acp_compact_in_home(
+            &bin,
+            "sess-abc_123",
+            Path::new("/tmp"),
+            30,
+            Some(&configured_home),
+        )
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(&home_out).unwrap(),
+            configured_home.to_string_lossy()
+        );
 
         // A JSON-RPC error on the prompt id surfaces as an error.
         let bin = fake_devin(

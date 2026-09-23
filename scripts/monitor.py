@@ -348,10 +348,12 @@ def retention_summary(log_path, allowlist):
     out = {"measured": 0, "checks": 0, "literal": 0, "lexical": 0,
            "lossy_sessions": []}
     try:
-        if log_path.stat().st_size > EVENTS_LOG_BYTES:
+        with log_path.open("rb") as log:
+            data = log.read(EVENTS_LOG_BYTES + 1)
+        if len(data) > EVENTS_LOG_BYTES:
             return out
-        lines = log_path.read_text().splitlines()
-    except OSError:
+        lines = data.decode("utf-8").splitlines()
+    except (OSError, UnicodeError):
         return out
     seen_lossy = set()
     for line in lines:
@@ -364,18 +366,20 @@ def retention_summary(log_path, allowlist):
         if not isinstance(event, dict):
             continue
         session = event.get("session_id")
-        if session not in allowlist:
+        if not isinstance(session, str) or session not in allowlist:
             continue
         total, literal = event.get("retention_total"), event.get("retention_retained")
         lexical = event.get("retention_lexical")
-        values = (total, literal or 0, lexical or 0)
-        if not all(isinstance(v, int) and 0 <= v <= 100_000 for v in values):
+        values = (total, literal, lexical)
+        if not all(type(v) is int and 0 <= v <= 100_000 for v in values):
+            continue
+        if literal > total or lexical > total:
             continue
         out["measured"] += 1
         out["checks"] += total
-        out["literal"] += literal or 0
-        out["lexical"] += lexical or 0
-        if total and lexical is not None and lexical * 2 < total \
+        out["literal"] += literal
+        out["lexical"] += lexical
+        if total and lexical * 2 < total \
                 and session not in seen_lossy:
             seen_lossy.add(session)
             out["lossy_sessions"].append(session)
