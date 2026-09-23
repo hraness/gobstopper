@@ -1183,13 +1183,34 @@ fn codex_compact(
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
     let mut stderr = child.stderr.take().unwrap();
-    std::thread::spawn(move || {
-        // Draining must outlive the child: once the reader stops, a
-        // full stderr/stdout pipe blocks the app-server mid-write —
-        // observed live as repeated init timeouts. A sink costs no
-        // memory; the channel's bound backpressures stdout.
-        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
-    });
+    // Draining must outlive the child: once the reader stops, a full
+    // stderr/stdout pipe blocks the app-server mid-write — observed
+    // live as repeated init timeouts. Keep a bounded tail so protocol
+    // failures can report why the server died.
+    let stderr_tail = std::sync::Arc::new(std::sync::Mutex::new(
+        std::collections::VecDeque::<u8>::with_capacity(16 * 1024),
+    ));
+    {
+        let tail = stderr_tail.clone();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let mut buf = [0u8; 4096];
+            loop {
+                match stderr.read(&mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(n) => {
+                        let mut q = tail.lock().unwrap();
+                        for &b in &buf[..n] {
+                            if q.len() >= 16 * 1024 {
+                                q.pop_front();
+                            }
+                            q.push_back(b);
+                        }
+                    }
+                }
+            }
+        });
+    }
     let (tx, rx) = mpsc::sync_channel::<serde_json::Value>(64);
     std::thread::spawn(move || {
         for line in std::io::BufReader::new(stdout).lines() {
@@ -1336,6 +1357,16 @@ fn codex_compact(
                 break;
             }
             _ => std::thread::sleep(Duration::from_millis(100)),
+        }
+    }
+    if outcome.is_err() {
+        let tail: Vec<u8> = stderr_tail.lock().unwrap().iter().copied().collect();
+        if !tail.is_empty() {
+            let start = tail.len().saturating_sub(2048);
+            eprintln!(
+                "codex app-server stderr tail: {}",
+                String::from_utf8_lossy(&tail[start..]).trim_end()
+            );
         }
     }
     println!("codex provider compaction: {}", outcome?);
