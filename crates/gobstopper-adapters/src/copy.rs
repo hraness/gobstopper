@@ -98,6 +98,13 @@ pub fn compact_devin_store(
     if handle.provider != Provider::Devin {
         bail!("compact_devin_store only applies to devin sessions");
     }
+    let source_path = handle.path.canonicalize()?;
+    let target_path = devin::db_path(devin_root).canonicalize()?;
+    if source_path != target_path {
+        bail!("Devin store target differs from the planned source database");
+    }
+    transaction::private_dir(vault_root)?;
+    let _custody = vault::Custody::shared(vault_root)?;
     let file_edits: Vec<Edit> = plan
         .edits
         .iter()
@@ -115,6 +122,7 @@ pub fn compact_devin_store(
     // Ops lock: one in-flight store apply per (session, source, edits).
     let identity = sha256(&serde_json::to_vec(&(
         handle.provider,
+        &source_path,
         &handle.session_id,
         source_sha256,
         &plan.edits,
@@ -135,7 +143,7 @@ pub fn compact_devin_store(
     fs2::FileExt::try_lock_exclusive(&lock).context("devin store apply is already running")?;
     let snapshot = vault::snapshot_data(
         &export,
-        &handle.path,
+        &source_path,
         handle.provider,
         &handle.session_id,
         Some(&plan.strategy),
@@ -177,6 +185,8 @@ pub fn compact(
     if handle.provider == Provider::Devin {
         bail!("devin sessions compact in place via the store path, not by fork");
     }
+    transaction::private_dir(vault_root)?;
+    let _custody = vault::Custody::shared(vault_root)?;
     if plan
         .edits
         .iter()
@@ -340,6 +350,8 @@ pub fn compact_via_compacted(
     if handle.provider != Provider::Codex {
         bail!("custom compacted records are only defined for Codex rollouts");
     }
+    transaction::private_dir(vault_root)?;
+    let _custody = vault::Custody::shared(vault_root)?;
     if plan
         .edits
         .iter()
@@ -363,6 +375,8 @@ pub fn compact_via_compacted(
         &source_path,
         source_sha256,
         &plan.edits,
+        digest,
+        keep_tail,
         "compacted",
     ))?);
     let id = format!(

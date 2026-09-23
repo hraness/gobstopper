@@ -1067,6 +1067,97 @@ pub(crate) fn realized_retention(
     Some((r.total as u64, r.retained as u64, r.lexical_retained as u64))
 }
 
+/// Classify provider completion using a frozen after-state. A cleared usage
+/// counter is missing measurement, not proof that all context was reclaimed.
+/// Return whether an applied change was actually observed.
+fn record_native_completion(
+    d: &Discovered,
+    plan: &CompactionPlan,
+    before: &vault::VaultEntry,
+    trigger: u64,
+    started: std::time::Instant,
+) -> bool {
+    let root = vault::default_root();
+    let post = vault::snapshot(
+        &d.handle.path,
+        d.handle.provider,
+        &d.handle.session_id,
+        Some("post-compact"),
+        &root,
+    )
+    .ok();
+    let observed = post.as_ref().and_then(|entry| {
+        let bytes = vault::read_object(&entry.sha256, &root).ok()?;
+        let transcript = match d.handle.provider {
+            Provider::Codex => codex::load_bytes(d.handle.clone(), &bytes),
+            Provider::ClaudeCode => {
+                gobstopper_adapters::claude::load_bytes(d.handle.clone(), &bytes)
+            }
+            Provider::Devin => devin::load_bytes(d.handle.clone(), &bytes),
+        }
+        .ok()?;
+        Some(transcript.usage.context_tokens)
+    });
+    let unchanged = post
+        .as_ref()
+        .is_some_and(|entry| entry.sha256 == before.sha256);
+    let (outcome, error, after) = match observed {
+        _ if unchanged => ("skipped", Some("provider_noop"), plan.context_tokens_before),
+        Some(after) if after >= plan.context_tokens_before => {
+            ("skipped", Some("provider_noop"), after)
+        }
+        Some(0) => (
+            "applied",
+            Some("unresolved_context"),
+            plan.context_tokens_before,
+        ),
+        Some(after) => ("applied", None, after),
+        None => (
+            "failed",
+            Some("unresolved_context"),
+            plan.context_tokens_before,
+        ),
+    };
+    let done = CompactionPlan {
+        edits: vec![],
+        context_tokens_after: after,
+        ..plan.clone()
+    };
+    let mut event = build_event(
+        d,
+        &done,
+        "provider_compact",
+        outcome,
+        trigger,
+        started.elapsed().as_millis() as u64,
+        error,
+    );
+    event.snapshot_before_sha256 = Some(before.sha256.clone());
+    event.snapshot_after_sha256 = post.map(|entry| entry.sha256);
+    if outcome == "applied" {
+        if let Some(post) = &event.snapshot_after_sha256 {
+            if let Some((total, retained, lexical)) =
+                realized_retention(&d.handle, &before.sha256, post)
+            {
+                event.retention_total = Some(total);
+                event.retention_retained = Some(retained);
+                event.retention_lexical = Some(lexical);
+            }
+        }
+    }
+    if let Err(error) = append_event(&default_log_path(), &event) {
+        eprintln!("telemetry write failed (non-fatal): {error}");
+    }
+    eprintln!(
+        "native compaction for {} {}: {}{}",
+        d.handle.provider.as_str(),
+        d.handle.session_id,
+        outcome,
+        error.map(|code| format!(" ({code})")).unwrap_or_default(),
+    );
+    outcome == "applied"
+}
+
 fn apply_edits(d: &Discovered, plan: &CompactionPlan) -> Result<u64> {
     match d.handle.provider {
         Provider::Codex => gobstopper_adapters::codex::apply(&d.handle.path, &plan.edits)
@@ -1146,233 +1237,367 @@ fn codex_failure_hold_secs(msg: &str) -> u64 {
     }
 }
 
-/// Ask a private Codex app-server to compact a thread.
-///
-/// Spawns `codex app-server --listen stdio://` — a self-contained JSON-RPC
-/// server, no daemon or standalone install required — resumes the thread into
-/// it (`thread/resume`, `excludeTurns` per the pinned pagination contract), then
-/// issues `thread/compact/start`. Request acceptance is the success boundary:
-/// compaction runs as a provider-side turn whose `contextCompaction` item and
-/// `turn/completed` arrive asynchronously; gobstopper reports the observed
-/// outcome when it lands inside a bounded wait.
+/// Only classify provider errors; provider text can contain transcript content.
+fn codex_error_class(message: &str) -> &'static str {
+    let message = message.to_ascii_lowercase();
+    if message.contains("usage limit") {
+        "usage limit exceeded"
+    } else if message.contains("cannot resume") {
+        "cannot resume provider thread"
+    } else if message.contains("not found") {
+        "provider thread not found"
+    } else if message.contains("not supported") {
+        "provider operation not supported"
+    } else {
+        "provider rejected"
+    }
+}
+
+/// A completion belongs to this operation only after its compaction item
+/// identifies the turn. Request responses and notifications may interleave.
+#[derive(Default)]
+struct CodexCompactionProgress {
+    compact_item: Option<(String, String)>,
+    item_completed: bool,
+    terminal: Option<Result<(), String>>,
+}
+
+impl CodexCompactionProgress {
+    fn observe(&mut self, value: &serde_json::Value, thread_id: &str) {
+        if value.pointer("/params/threadId").and_then(|v| v.as_str()) != Some(thread_id) {
+            return;
+        }
+        match value.get("method").and_then(|v| v.as_str()) {
+            Some(method @ ("item/started" | "item/completed"))
+                if value.pointer("/params/item/type").and_then(|v| v.as_str())
+                    == Some("contextCompaction") =>
+            {
+                let (Some(turn), Some(item)) = (
+                    value.pointer("/params/turnId").and_then(|v| v.as_str()),
+                    value.pointer("/params/item/id").and_then(|v| v.as_str()),
+                ) else {
+                    return;
+                };
+                if self.compact_item.is_none() {
+                    self.compact_item = Some((turn.to_owned(), item.to_owned()));
+                }
+                if self
+                    .compact_item
+                    .as_ref()
+                    .is_some_and(|(t, i)| t == turn && i == item)
+                    && method == "item/completed"
+                {
+                    self.item_completed = true;
+                }
+            }
+            Some("turn/completed") => {
+                let Some(turn) = value.pointer("/params/turn/id").and_then(|v| v.as_str()) else {
+                    return;
+                };
+                let expected = self.compact_item.as_ref().map(|(turn, _)| turn.as_str());
+                if expected != Some(turn) {
+                    return;
+                }
+                let status = value
+                    .pointer("/params/turn/status")
+                    .and_then(|v| v.as_str());
+                if status == Some("completed") {
+                    if self.item_completed {
+                        self.terminal = Some(Ok(()));
+                    }
+                } else {
+                    let status = match status {
+                        Some("failed") => "failed",
+                        Some("interrupted") => "interrupted",
+                        Some("aborted") => "aborted",
+                        _ => "unknown",
+                    };
+                    let detail = value
+                        .pointer("/params/turn/error/message")
+                        .and_then(|v| v.as_str())
+                        .map(codex_error_class)
+                        .unwrap_or("provider rejected");
+                    self.terminal = Some(Err(format!("codex compaction turn {status}: {detail}")));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+struct CodexChild(std::process::Child);
+
+impl CodexChild {
+    /// Observe exit without reaping on Unix. Reaping before group cleanup
+    /// releases the PID and could direct a later signal at an unrelated group.
+    fn has_exited(&mut self) -> std::io::Result<bool> {
+        #[cfg(unix)]
+        {
+            // SAFETY: waitid writes a valid siginfo_t, the PID is our retained
+            // child, and WNOWAIT keeps that identity reserved until Drop reaps it.
+            let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+            let result = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    self.0.id() as libc::id_t,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if result == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            // SAFETY: successful waitid initialized info; si_pid is zero when
+            // WNOHANG found no waitable event.
+            Ok(unsafe { info.si_pid() } != 0)
+        }
+        #[cfg(not(unix))]
+        {
+            self.0.try_wait().map(|status| status.is_some())
+        }
+    }
+}
+
+impl Drop for CodexChild {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        {
+            // SAFETY: Command::process_group(0) made this child the leader of
+            // its own group. It has not been reaped, so its positive PID cannot
+            // have been reused by another process or group. Signal before wait.
+            unsafe {
+                libc::kill(-(self.0.id() as libc::pid_t), libc::SIGKILL);
+            }
+        }
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+fn codex_read_frames(
+    mut stream: std::process::ChildStdout,
+    tx: std::sync::mpsc::SyncSender<Result<serde_json::Value, &'static str>>,
+    cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::Ordering;
+    const MAX_FRAME: usize = 1024 * 1024;
+    let mut pending = Vec::new();
+    let mut buffer = [0u8; 8192];
+    while !cancelled.load(Ordering::Acquire) {
+        match stream.read(&mut buffer) {
+            Ok(0) => {
+                if !pending.is_empty() {
+                    let _ = tx.send(
+                        serde_json::from_slice(&pending)
+                            .map_err(|_| "codex app-server emitted invalid JSON"),
+                    );
+                }
+                return;
+            }
+            Ok(n) => {
+                for part in buffer[..n].split_inclusive(|byte| *byte == b'\n') {
+                    if pending.len() + part.len() > MAX_FRAME {
+                        let _ = tx.send(Err("codex app-server frame exceeds byte limit"));
+                        return;
+                    }
+                    pending.extend_from_slice(part);
+                    if part.last() == Some(&b'\n') {
+                        let frame = serde_json::from_slice(&pending)
+                            .map_err(|_| "codex app-server emitted invalid JSON");
+                        let failed = frame.is_err();
+                        if tx.send(frame).is_err() || failed {
+                            return;
+                        }
+                        pending.clear();
+                    }
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => {
+                let _ = tx.send(Err("codex app-server stream read failed"));
+                return;
+            }
+        }
+    }
+}
+
+/// Ask a private Codex app-server to compact a thread. The response only
+/// acknowledges dispatch; success needs the compaction item and its matching
+/// terminal turn. Once dispatch starts, missing evidence is an unknown outcome.
 fn codex_compact(
     codex_bin: &std::path::Path,
     thread_id: &str,
     codex_home: Option<&std::path::Path>,
     outcome_ms: u64,
 ) -> Result<()> {
-    use std::io::BufRead;
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
-    let mut child = Command::new(codex_bin)
-        .args([
-            "app-server",
-            "--listen",
-            "stdio://",
-        ])
+    // Keep every request well below a pipe's capacity, even if a broken child
+    // answers without consuming stdin. Never interpolate unbounded identity.
+    if thread_id.is_empty()
+        || thread_id.len() > 256
+        || !thread_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        || outcome_ms == 0
+    {
+        bail!("invalid codex compaction identity or deadline");
+    }
+    let mut command = Command::new(codex_bin);
+    command
+        .args(["app-server", "--listen", "stdio://"])
         .envs(codex_home.map(|home| ("CODEX_HOME", home)))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| {
-            format!(
-                "spawning `{} app-server --listen stdio://` (set --codex-bin or $GOBSTOPPER_CODEX_BIN)",
-                codex_bin.display()
-            )
-        })?;
-    let mut stdin = child.stdin.take().unwrap();
-    let stdout = child.stdout.take().unwrap();
-    let mut stderr = child.stderr.take().unwrap();
-    // Draining must outlive the child: once the reader stops, a full
-    // stderr/stdout pipe blocks the app-server mid-write — observed
-    // live as repeated init timeouts. Keep a bounded tail so protocol
-    // failures can report why the server died.
-    let stderr_tail = std::sync::Arc::new(std::sync::Mutex::new(
-        std::collections::VecDeque::<u8>::with_capacity(16 * 1024),
-    ));
+        // Provider stderr is untrusted transcript-bearing text. Do not retain
+        // or echo it, and avoid a second pipe that could block the provider.
+        .stderr(Stdio::null());
+    #[cfg(unix)]
     {
-        let tail = stderr_tail.clone();
-        std::thread::spawn(move || {
-            use std::io::Read;
-            let mut buf = [0u8; 4096];
-            loop {
-                match stderr.read(&mut buf) {
-                    Ok(0) | Err(_) => break,
-                    Ok(n) => {
-                        let mut q = tail.lock().unwrap();
-                        for &b in &buf[..n] {
-                            if q.len() >= 16 * 1024 {
-                                q.pop_front();
-                            }
-                            q.push_back(b);
-                        }
-                    }
-                }
-            }
-        });
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
     }
-    let (tx, rx) = mpsc::sync_channel::<serde_json::Value>(64);
-    std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stdout).lines() {
-            match line {
-                Ok(text) => {
-                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
-                        if tx.send(v).is_err() {
-                            return;
-                        }
-                    }
-                }
-                Err(_) => return,
-            }
+    let mut child = CodexChild(command.spawn().with_context(|| {
+        format!(
+            "spawning `{} app-server --listen stdio://`",
+            codex_bin.display()
+        )
+    })?);
+    let mut stdin = child.0.stdin.take().unwrap();
+    let stdout = child.0.stdout.take().unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        let fd = stdout.as_raw_fd();
+        // SAFETY: stdout owns this live descriptor, which has one reader; only
+        // its status flags change. Nonblocking reads allow bounded cancellation
+        // even when a descendant creates another session and keeps stdout open.
+        let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+        if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1
+        {
+            return Err(std::io::Error::last_os_error()).context("configure bounded provider pipe");
         }
-    });
-    let mut send = |v: serde_json::Value| -> Result<()> {
-        stdin.write_all(v.to_string().as_bytes())?;
+    }
+    let (tx, rx) = mpsc::sync_channel::<Result<serde_json::Value, &'static str>>(64);
+    let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let reader_cancelled = cancelled.clone();
+    let reader = std::thread::spawn(move || codex_read_frames(stdout, tx, reader_cancelled));
+    let mut send = |value: serde_json::Value| -> Result<()> {
+        serde_json::to_writer(&mut stdin, &value)?;
         stdin.write_all(b"\n")?;
         stdin.flush()?;
         Ok(())
     };
     let deadline = |ms: u64| Instant::now() + Duration::from_millis(ms);
-    // Read frames until `id` answers or the deadline passes; notifications are
-    // skipped here — the outcome window below reads them after acceptance.
-    let await_response = |id: i64, until: Instant| -> Result<serde_json::Value> {
+    let await_response = |id: i64,
+                          until: Instant,
+                          mut progress: Option<&mut CodexCompactionProgress>|
+     -> Result<()> {
         loop {
             let left = until.saturating_duration_since(Instant::now());
             if left.is_zero() {
+                if id == 2 {
+                    bail!("provider outcome unknown awaiting dispatch response; do not replay automatically");
+                }
                 bail!("codex app-server timed out waiting for response id {id}");
             }
-            match rx.recv_timeout(left.min(Duration::from_millis(500))) {
-                Ok(v) if v.get("id").and_then(|i| i.as_i64()) == Some(id) => {
-                    if let Some(err) = v.get("error") {
-                        let msg = err
-                            .get("message")
-                            .and_then(|m| m.as_str())
-                            .unwrap_or("unknown app-server error");
-                        if msg.contains("thread not found") {
-                            bail!("codex app-server: {msg}");
-                        }
-                        let code = if msg.contains("cannot resume") {
-                            "cannot resume provider thread".to_string()
-                        } else if msg.contains("usage limit") {
-                            "usage limit exceeded".to_string()
-                        } else {
-                            // Keep the provider's message — downstream
-                            // failure classification keys on it.
-                            format!("provider rejected: {msg}")
-                        };
-                        bail!("codex app-server: {code}");
+            match rx.recv_timeout(left) {
+                Ok(Ok(value)) if value.get("id").and_then(|v| v.as_i64()) == Some(id) => {
+                    if let Some(error) = value.get("error") {
+                        let class = codex_error_class(
+                            error.get("message").and_then(|v| v.as_str()).unwrap_or(""),
+                        );
+                        bail!("codex app-server: {class}");
                     }
-                    return Ok(v);
+                    if value.get("result").is_none() {
+                        if id == 2 {
+                            bail!("provider outcome unknown: dispatch response is missing result; do not replay automatically");
+                        }
+                        bail!("codex app-server response is missing result");
+                    }
+                    return Ok(());
                 }
-                Ok(_) => continue,
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    bail!("codex app-server closed its stream before answering id {id}")
+                Ok(Ok(value)) => {
+                    if let Some(progress) = progress.as_deref_mut() {
+                        progress.observe(&value, thread_id);
+                    }
                 }
+                Ok(Err(error)) => {
+                    if id == 2 {
+                        bail!("provider outcome unknown: {error}; do not replay automatically");
+                    }
+                    bail!("{error}");
+                }
+                Err(_) if id == 2 => {
+                    bail!("provider outcome unknown awaiting dispatch response; do not replay automatically");
+                }
+                Err(_) => bail!("codex app-server closed or timed out before response id {id}"),
             }
         }
     };
-
-    let outcome = (|| -> Result<String> {
-        // Cold start under load (compile jobs, a full watch scan) pushed
-        // a real deployment past a 15s budget twice in a row.
-        let boot = deadline(60_000);
+    let outcome = (|| -> Result<()> {
         send(serde_json::json!({
             "method": "initialize", "id": 0,
             "params": {"clientInfo": {"name": "gobstopper", "version": env!("CARGO_PKG_VERSION")}}
         }))?;
-        await_response(0, boot)?;
+        await_response(0, deadline(outcome_ms.min(60_000)), None)?;
         send(serde_json::json!({"method": "initialized"}))?;
         send(serde_json::json!({
             "method": "thread/resume", "id": 1,
             "params": {"threadId": thread_id, "excludeTurns": true}
         }))?;
-        await_response(1, deadline(60_000))?;
+        await_response(1, deadline(outcome_ms.min(60_000)), None)?;
+        let mut progress = CodexCompactionProgress::default();
         send(serde_json::json!({
             "method": "thread/compact/start", "id": 2,
             "params": {"threadId": thread_id}
-        }))?;
-        await_response(2, deadline(30_000))?;
-        // Compaction accepted. The provider-side turn is owned by this
-        // app-server process — exiting early orphans it mid-write — so the
-        // caller picks the window (large threads need minutes, not 90s).
+        }))
+        .context("provider outcome unknown during dispatch; do not replay automatically")?;
+        await_response(2, deadline(outcome_ms.min(30_000)), Some(&mut progress))?;
         let end = deadline(outcome_ms);
         loop {
+            if let Some(outcome) = progress.terminal.take() {
+                return outcome.map_err(anyhow::Error::msg);
+            }
             let left = end.saturating_duration_since(Instant::now());
             if left.is_zero() {
                 bail!("provider outcome unknown at deadline; do not replay automatically");
             }
-            match rx.recv_timeout(left.min(Duration::from_millis(500))) {
-                Ok(v) => {
-                    let is_our_turn = v.get("method").and_then(|m| m.as_str())
-                        == Some("turn/completed")
-                        && v.pointer("/params/threadId").and_then(|s| s.as_str())
-                            == Some(thread_id);
-                    if is_our_turn {
-                        let status = v
-                            .pointer("/params/turn/status")
-                            .and_then(|s| s.as_str())
-                            .unwrap_or("unknown");
-                        let detail = v
-                            .pointer("/params/turn/error/message")
-                            .and_then(|s| s.as_str())
-                            .map(|m| {
-                                if m.contains("usage limit") {
-                                    ": usage limit exceeded".to_string()
-                                } else {
-                                    ": provider_error".to_string()
-                                }
-                            })
-                            .unwrap_or_default();
-                        if status == "completed" {
-                            return Ok("compaction turn completed".into());
-                        }
-                        let status = match status {
-                            "failed" => "failed",
-                            "interrupted" => "interrupted",
-                            "aborted" => "aborted",
-                            _ => "unknown",
-                        };
-                        bail!("codex compaction turn {status}{detail}");
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    bail!("provider outcome unknown after disconnect; do not replay automatically")
-                }
+            match rx.recv_timeout(left) {
+                Ok(Ok(value)) => progress.observe(&value, thread_id),
+                Ok(Err(error)) => bail!("provider outcome unknown: {error}; do not replay automatically"),
+                Err(_) => bail!("provider outcome unknown after disconnect or deadline; do not replay automatically"),
             }
         }
     })();
-    // Close stdin first so the app-server exits on EOF and releases
-    // any provider-side writer lock on the thread; SIGKILL is only a
-    // fallback — a killed server can leave the lock held and every
-    // later thread/resume then stalls behind it (observed live).
     drop(stdin);
-    let exit_deadline = Instant::now() + Duration::from_secs(5);
+    drop(rx);
+    // Graceful EOF gives the provider a chance to release its writer lock.
+    let exit_deadline = deadline(5_000);
     loop {
-        match child.try_wait() {
-            Ok(Some(_)) => break,
-            _ if Instant::now() >= exit_deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break;
-            }
-            _ => std::thread::sleep(Duration::from_millis(100)),
+        match child.has_exited() {
+            Ok(true) => break,
+            _ if Instant::now() >= exit_deadline => break,
+            _ => std::thread::sleep(Duration::from_millis(25)),
         }
     }
-    if outcome.is_err() {
-        let tail: Vec<u8> = stderr_tail.lock().unwrap().iter().copied().collect();
-        if !tail.is_empty() {
-            let start = tail.len().saturating_sub(2048);
-            eprintln!(
-                "codex app-server stderr tail: {}",
-                String::from_utf8_lossy(&tail[start..]).trim_end()
-            );
-        }
-    }
-    println!("codex provider compaction: {}", outcome?);
+    drop(child);
+    cancelled.store(true, std::sync::atomic::Ordering::Release);
+    // Receiver drop unblocks queued sends; nonblocking reads observe cancellation
+    // without waiting for EOF from any escaped descendant. Join, never detach.
+    #[cfg(unix)]
+    reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("provider pipe reader panicked"))?;
+    // Non-Unix process-tree and pipe cancellation need separate qualification.
+    #[cfg(not(unix))]
+    drop(reader);
+    outcome?;
+    println!("codex provider compaction: compaction turn completed");
     Ok(())
 }
 
@@ -1630,7 +1855,13 @@ fn cmd_vault(cli: &Cli, cfg: &config::Config, session: Option<&str>, json: bool)
     let mut entries = vault::list(&root)?;
     if let Some(q) = session {
         let d = find_session(cli, cfg, q)?;
-        entries.retain(|e| e.path == d.handle.path);
+        let canonical_path =
+            std::fs::canonicalize(&d.handle.path).unwrap_or_else(|_| d.handle.path.clone());
+        entries.retain(|e| {
+            e.provider == d.handle.provider
+                && e.session_id == d.handle.session_id
+                && (e.path == d.handle.path || e.path == canonical_path)
+        });
     }
     if json {
         println!("{}", serde_json::to_string_pretty(&entries)?);
@@ -1680,7 +1911,13 @@ fn cmd_history(cli: &Cli, cfg: &config::Config, session: &str, json: bool) -> Re
     let d = find_session(cli, cfg, session)?;
     let root = vault::default_root();
     let mut entries = vault::list(&root)?;
-    entries.retain(|e| e.path == d.handle.path || e.session_id.starts_with(session));
+    let canonical_path =
+        std::fs::canonicalize(&d.handle.path).unwrap_or_else(|_| d.handle.path.clone());
+    entries.retain(|e| {
+        e.provider == d.handle.provider
+            && e.session_id == d.handle.session_id
+            && (e.path == d.handle.path || e.path == canonical_path)
+    });
     if json {
         println!("{}", serde_json::to_string_pretty(&entries)?);
         return Ok(());
@@ -2936,7 +3173,7 @@ fn cmd_apply(
             bail!("live Claude compaction must be dispatched by its session owner; use /compact in that session");
         }
         let snapshot = snapshot_before_edit(&d, &plan.strategy)?;
-        if snapshot.sha256 != source_sha256 {
+        if snapshot.source_sha256 != source_sha256 {
             bail!("source changed before native fork preparation");
         }
         let forked = fork::restore_copy(
@@ -2957,6 +3194,10 @@ fn cmd_apply(
             },
             usage: d.usage,
         };
+        // Fork preparation changes identity metadata. Compare the provider's
+        // result with this exact fork, while retaining the original snapshot
+        // above as the recovery point for fork creation itself.
+        let native_snapshot = snapshot_before_edit(&d, "pre-compact")?;
         emit_event(&d, &plan, "provider_compact", "planned", trigger, 0, None);
         match provider_compact(
             &d,
@@ -2964,54 +3205,28 @@ fn cmd_apply(
             &roots(cli).codex_home,
         ) {
             Ok(()) => {
-                // `codex_compact` returns after the provider-side turn
-                // completes, so the fork's post state is final — vault it
-                // and score realized retention on the event.
-                let post_sha = vault::snapshot(
-                    &d.handle.path,
-                    d.handle.provider,
-                    &d.handle.session_id,
-                    Some("post-compact"),
-                    &vault::default_root(),
-                )
-                .map(|e| e.sha256)
-                .ok();
-                let mut ev = build_event(
-                    &d,
-                    &plan,
-                    "provider_compact",
-                    "applied",
-                    trigger,
-                    started.elapsed().as_millis() as u64,
-                    None,
-                );
-                ev.snapshot_before_sha256 = Some(snapshot.sha256.clone());
-                ev.snapshot_after_sha256 = post_sha.clone();
-                if let Some(post) = &post_sha {
-                    if let Some((total, retained, lexical)) =
-                        realized_retention(&d.handle, &snapshot.sha256, post)
-                    {
-                        ev.retention_total = Some(total);
-                        ev.retention_retained = Some(retained);
-                        ev.retention_lexical = Some(lexical);
-                    }
-                }
-                if let Err(e) = append_event(&default_log_path(), &ev) {
-                    eprintln!("telemetry write failed (non-fatal): {e}");
-                }
-                println!("provider compaction requested");
+                record_native_completion(&d, &plan, &native_snapshot, trigger, started);
             }
-            Err(e) => {
-                emit_event(
+            Err(error) => {
+                let failed = CompactionPlan {
+                    edits: vec![],
+                    context_tokens_after: plan.context_tokens_before,
+                    ..plan.clone()
+                };
+                let mut event = build_event(
                     &d,
-                    &plan,
+                    &failed,
                     "provider_compact",
                     "failed",
                     trigger,
                     started.elapsed().as_millis() as u64,
                     Some("provider_rejected"),
                 );
-                return Err(e);
+                event.snapshot_before_sha256 = Some(native_snapshot.sha256.clone());
+                if let Err(error) = append_event(&default_log_path(), &event) {
+                    eprintln!("telemetry write failed (non-fatal): {error}");
+                }
+                return Err(error);
             }
         }
     }
@@ -3138,6 +3353,8 @@ struct WatchState {
     #[serde(default)]
     generation: u32,
     #[serde(default)]
+    config_sha256: String,
+    #[serde(default)]
     settled: std::collections::HashMap<String, String>,
     #[serde(default)]
     settle_pass: std::collections::HashMap<String, String>,
@@ -3171,7 +3388,9 @@ struct WatchState {
 /// v7: terminal provider failures move to a session-keyed cooldown —
 /// a failed turn still mutates the rollout, so fingerprint settles
 /// never held and produced a retry storm.
-const WATCH_STATE_GENERATION: u32 = 7;
+/// v8: native no-ops expire on a cooldown; Claude native dispatch precedes
+/// planner acceptance; all providers preserve unknown usage as unmeasured.
+const WATCH_STATE_GENERATION: u32 = 8;
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -3213,6 +3432,9 @@ fn watch_state_path(provider: Option<Provider>) -> PathBuf {
 /// LaunchAgents run with a minimal PATH, so fall back to the standard
 /// install locations after searching PATH itself.
 fn claude_bin() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("GOBSTOPPER_CLAUDE_BIN").filter(|path| !path.is_empty()) {
+        return Some(PathBuf::from(path));
+    }
     let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| {
             std::env::split_paths(&p)
@@ -3233,6 +3455,9 @@ fn claude_bin() -> Option<PathBuf> {
 /// Locate the `devin` executable for ACP `session/load` + `/compact`.
 /// Same minimal-PATH problem as `claude_bin` under LaunchAgents.
 fn devin_bin() -> Option<PathBuf> {
+    if let Some(path) = std::env::var_os("GOBSTOPPER_DEVIN_BIN").filter(|path| !path.is_empty()) {
+        return Some(PathBuf::from(path));
+    }
     let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
         .map(|p| std::env::split_paths(&p).map(|d| d.join("devin")).collect())
         .unwrap_or_default();
@@ -3255,14 +3480,38 @@ fn load_watch_state(path: &Path) -> WatchState {
 
 /// Atomic write (tmp + rename) so a SIGKILL mid-save cannot leave a torn
 /// state file that wipes the suppression map on next load.
-fn save_watch_state(path: &Path, state: &WatchState) {
-    let Ok(text) = serde_json::to_string(state) else {
-        return;
-    };
-    let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, text).is_ok() {
-        let _ = std::fs::rename(&tmp, path);
+fn save_watch_state(path: &Path, state: &WatchState) -> Result<()> {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_WRITE: AtomicU64 = AtomicU64::new(0);
+    let parent = path
+        .parent()
+        .context("watch state has no parent directory")?;
+    std::fs::create_dir_all(parent)?;
+    let tmp = parent.join(format!(
+        ".watch-state-{}-{}.tmp",
+        std::process::id(),
+        NEXT_WRITE.fetch_add(1, Ordering::Relaxed),
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
     }
+    let result = (|| -> Result<()> {
+        let mut file = options.open(&tmp)?;
+        serde_json::to_writer(&mut file, state)?;
+        file.sync_all()?;
+        std::fs::rename(&tmp, path)?;
+        #[cfg(unix)]
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    result.context("persist watch state")
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -3296,6 +3545,7 @@ fn cmd_watch(
     // survive restarts so a relaunch does not re-plan every session.
     let state_path = watch_state_path(provider);
     let persisted = load_watch_state(&state_path);
+    let mut decision_config = persisted.config_sha256;
     let boot_secs = now_secs();
     let mut last_fire: std::collections::HashMap<String, std::time::Instant> = persisted
         .last_fire
@@ -3327,12 +3577,9 @@ fn cmd_watch(
     // a failed provider turn still mutates its own transcript, so a
     // fingerprint-based settle can never suppress these. Loaded under
     // the same generation gate.
-    let mut holddown: std::collections::HashMap<String, u64> =
-        if persisted.generation >= WATCH_STATE_GENERATION {
-            persisted.holddown
-        } else {
-            std::collections::HashMap::new()
-        };
+    // Cooldowns represent possibly completed effects, not old planner
+    // decisions. Preserve them even when the decision vocabulary changes.
+    let mut holddown = persisted.holddown;
     // (settle_pass is loaded above with the same generation gate.)
     // Apply hold-down: session_key -> Instant of the last successful
     // in-place mutation. A session that re-appends and re-triggers
@@ -3348,11 +3595,51 @@ fn cmd_watch(
     let mut delegated_ctx = persisted.delegated_ctx;
     let mut staged: std::collections::HashMap<String, Staged> = std::collections::HashMap::new();
     let mut discovery_cache = detect::DiscoveryCache::default();
+    // Every native dispatch first checkpoints a conservative hold. A restart
+    // during a provider call must not forget that its outcome is unknown.
+    macro_rules! persist_watch_state {
+        () => {{
+            let save_secs = now_secs();
+            save_watch_state(
+                &state_path,
+                &WatchState {
+                    generation: WATCH_STATE_GENERATION,
+                    config_sha256: decision_config.clone(),
+                    settled: settled.clone(),
+                    settle_pass: settle_pass.clone(),
+                    holddown: holddown.clone(),
+                    last_fire: last_fire
+                        .iter()
+                        .map(|(k, t)| (k.clone(), instant_to_epoch(*t, save_secs)))
+                        .collect(),
+                    last_apply: last_apply
+                        .iter()
+                        .map(|(k, t)| (k.clone(), instant_to_epoch(*t, save_secs)))
+                        .collect(),
+                    delegated_ctx: delegated_ctx.clone(),
+                },
+            )
+        }};
+    }
     // Resolved once: the claude binary path doesn't change mid-watch.
     let claude_bin = claude_bin();
     let devin_bin = devin_bin();
     loop {
         let cfg = config::load()?;
+        holddown.retain(|_, until| *until > now_secs());
+        // An unchanged transcript can have a different decision after a
+        // rollout/policy change. Config uses ordered maps; store only a hash
+        // of its effective inputs, never command strings or private paths.
+        let config_sha256 = {
+            use sha2::{Digest, Sha256};
+            format!("{:x}", Sha256::digest(format!("{cfg:?}").as_bytes()))
+        };
+        if decision_config != config_sha256 {
+            settled.clear();
+            settle_pass.clear();
+            delegated_ctx.clear();
+            decision_config = config_sha256;
+        }
         let mut found: Vec<Discovered> = detect::discover_cached(
             &roots(cli),
             if active_only {
@@ -3557,16 +3844,42 @@ fn cmd_watch(
             // planner — the provider summarizes the session itself. For
             // an idle treatment session with `auto_compact_closed`, try
             // `devin acp` `session/load` + `/compact` before paying the
-            // export+evaluate cost; on failure the normal store-apply
-            // path below is the fallback. Live sessions defer above.
-            if !dry_run
-                && d.handle.provider == Provider::Devin
-                && resolved.auto_compact_closed
-                && !d.handle.is_active()
-                && hooks::rollout_cohort(&cfg, d.handle.provider.as_str(), &d.handle.session_id)
-                    != Some(false)
-            {
+            // export+evaluate cost. Native dispatch never falls through into
+            // store surgery after an uncertain outcome. Live sessions defer.
+            if !dry_run && d.handle.provider == Provider::Devin && resolved.auto_compact_closed {
+                if d.handle.is_active() {
+                    continue;
+                }
+                if hooks::rollout_cohort(&cfg, d.handle.provider.as_str(), &d.handle.session_id)
+                    == Some(false)
+                {
+                    let control = CompactionPlan {
+                        strategy: "watch-apply:control".to_string(),
+                        rationale: "auto (closed devin): rollout control".to_string(),
+                        edits: vec![],
+                        context_tokens_before: ctx,
+                        context_tokens_after: ctx,
+                    };
+                    emit_event(
+                        &d,
+                        &control,
+                        "provider_compact",
+                        "skipped",
+                        trigger,
+                        0,
+                        None,
+                    );
+                    if let Some(fp) = &fp {
+                        settled.insert(session_key.clone(), fp.clone());
+                    }
+                    continue;
+                }
                 if let Some(bin) = &devin_bin {
+                    if devin::session_active(&roots(cli).devin_home, &d.handle.session_id)
+                        || session_fingerprint(&d) != fp
+                    {
+                        continue;
+                    }
                     // Provider-delegated compaction still mutates the
                     // session — preserve the exact before-state first, same
                     // guarantee as the transcript-apply path. A failed
@@ -3589,27 +3902,37 @@ fn cmd_watch(
                         .clone()
                         .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
                         .unwrap_or_else(|| PathBuf::from("/"));
-                    match gobstopper_adapters::devin::acp_compact(
+                    last_fire.insert(session_key.clone(), started);
+                    holddown.insert(
+                        session_key.clone(),
+                        now_secs()
+                            .saturating_add(resolved.acp_timeout_secs)
+                            .saturating_add(3600),
+                    );
+                    persist_watch_state!()?;
+                    let outcome = gobstopper_adapters::devin::acp_compact_in_home(
                         bin,
                         &d.handle.session_id,
                         &cwd,
                         resolved.acp_timeout_secs,
-                    ) {
+                        Some(&roots(cli).devin_home),
+                    );
+                    holddown.remove(&session_key);
+                    match outcome {
                         Ok(()) => {
-                            // The provider's store write can lag the
-                            // `completed` status — caring-suit read an
-                            // unchanged context right after completion and
-                            // the summary chain landed moments later. Poll
-                            // briefly before declaring a provider no-op.
-                            let mut after = 0u64;
-                            for _ in 0..6 {
-                                after = gobstopper_adapters::devin::session_observation(
+                            // A store write may lag the terminal notification. Wait
+                            // only while both the observed context and chain remain
+                            // unchanged; a usage reset is not zero reclaimed context.
+                            for attempt in 0..6 {
+                                let after = devin::session_observation(
                                     &roots(cli).devin_home,
                                     &d.handle.session_id,
                                 )
-                                .map(|(usage, _)| usage.context_tokens)
-                                .unwrap_or(0);
-                                if after > 0 && after < ctx {
+                                .map(|(usage, _)| usage.context_tokens);
+                                if after.is_none_or(|after| after < ctx)
+                                    || session_fingerprint(&d) != fp
+                                    || attempt == 5
+                                {
                                     break;
                                 }
                                 std::thread::sleep(std::time::Duration::from_secs(15));
@@ -3619,90 +3942,21 @@ fn cmd_watch(
                                 rationale: "auto (closed devin): acp /compact".to_string(),
                                 edits: vec![],
                                 context_tokens_before: ctx,
-                                context_tokens_after: if after > 0 { after } else { ctx },
+                                context_tokens_after: ctx,
                             };
                             last_fire.insert(session_key.clone(), std::time::Instant::now());
-                            // The provider reports `completed` even when its
-                            // compactor found nothing to do — context then
-                            // reads unchanged. Record that as a verified
-                            // no-op, not an apply, so reclaimed-token stats
-                            // and `provider-compacted` log lines stay honest.
-                            let noop = after > 0 && after >= ctx;
-                            // Land the after-state in the vault so every
-                            // delegated compaction produces a scorable
-                            // before/after pair, then attach realized
-                            // retention to the event. Best-effort: a missing
-                            // post snapshot or failed score never fails the
-                            // compaction that already applied.
-                            let post_sha = if noop {
-                                None
-                            } else {
-                                vault::snapshot(
-                                    &d.handle.path,
-                                    Provider::Devin,
-                                    &d.handle.session_id,
-                                    Some("post-compact"),
-                                    &vault::default_root(),
-                                )
-                                .map(|e| e.sha256)
-                                .ok()
-                            };
-                            let mut ev = build_event(
-                                &d,
-                                &done,
-                                "provider_compact",
-                                if noop { "skipped" } else { "applied" },
-                                trigger,
-                                started.elapsed().as_millis() as u64,
-                                if noop {
-                                    Some("provider_noop")
-                                } else if after == 0 {
-                                    Some("unresolved_context")
-                                } else {
-                                    None
-                                },
-                            );
-                            ev.snapshot_before_sha256 = Some(pre_snapshot.sha256.clone());
-                            ev.snapshot_after_sha256 = post_sha.clone();
-                            if let Some(post) = &post_sha {
-                                if let Some((total, retained, lexical)) =
-                                    realized_retention(&d.handle, &pre_snapshot.sha256, post)
-                                {
-                                    ev.retention_total = Some(total);
-                                    ev.retention_retained = Some(retained);
-                                    ev.retention_lexical = Some(lexical);
+                            if record_native_completion(&d, &done, &pre_snapshot, trigger, started)
+                            {
+                                if let Some(nfp) = session_fingerprint(&d) {
+                                    settled.insert(session_key.clone(), nfp);
                                 }
-                            }
-                            if let Err(e) = append_event(&default_log_path(), &ev) {
-                                eprintln!("telemetry write failed (non-fatal): {e}");
-                            }
-                            if noop {
-                                eprintln!(
-                                    "acp /compact for {} completed but context is unchanged (provider no-op)",
-                                    d.handle.session_id
-                                );
-                                // The provider ran its compactor and
-                                // found nothing to shrink — the shared
-                                // store fingerprint moves with other
-                                // sessions' writes, so only a
-                                // session-keyed cooldown bounds retries.
+                                last_apply.insert(session_key.clone(), std::time::Instant::now());
+                            } else {
                                 holddown.insert(session_key.clone(), now_secs() + 3600);
-                            } else {
-                                eprintln!(
-                                    "provider-compacted closed devin session {} via acp /compact",
-                                    d.handle.session_id
-                                );
-                                if last_apply.len() >= 4096 {
-                                    last_apply.clear();
-                                }
-                                last_apply.insert(session_key.clone(), started);
-                            }
-                            if let Some(nfp) = session_fingerprint(&d) {
-                                settled.insert(session_key.clone(), nfp);
                             }
                             continue;
                         }
-                        Err(e) => {
+                        Err(_error) => {
                             let failed = CompactionPlan {
                                 strategy: resolved.strategy.clone(),
                                 rationale: "auto (closed devin): acp /compact".to_string(),
@@ -3723,37 +3977,22 @@ fn cmd_watch(
                             if let Err(e) = append_event(&default_log_path(), &ev) {
                                 eprintln!("telemetry write failed (non-fatal): {e}");
                             }
-                            // A compaction the provider started but never
-                            // confirmed is still potentially writing —
-                            // store elision underneath it could race its
-                            // chain update. Only an outright rejection
-                            // falls back.
-                            let in_flight = e.to_string().contains("acp_compaction_in_flight");
+                            // The bridge can lose a prompt response before it sees
+                            // the provider's started event. Any bridge error may
+                            // therefore follow dispatch; do not perform a second,
+                            // different mutation underneath an uncertain operation.
                             eprintln!(
-                                "acp devin /compact for {} failed ({e}){}",
+                                "acp devin /compact for {} failed; leaving session unchanged by gobstopper",
                                 d.handle.session_id,
-                                if in_flight {
-                                    "; leaving session untouched (compaction may still be running)"
-                                } else if resolved.auto_apply_store {
-                                    "; falling back to store elision"
-                                } else {
-                                    ""
-                                },
                             );
-                            if in_flight || !resolved.auto_apply_store {
-                                // The store is shared across sessions —
-                                // its fingerprint always moves, so a
-                                // settle cannot suppress this. Hold the
-                                // session down for an hour instead.
-                                if holddown.len() >= 4096 {
-                                    holddown.clear();
-                                }
-                                holddown.insert(session_key.clone(), now_secs() + 3600);
-                                continue;
-                            }
+                            holddown.insert(session_key.clone(), now_secs() + 3600);
+                            continue;
                         }
                     }
                 }
+                eprintln!("native devin compaction unavailable: provider executable not found");
+                last_fire.insert(session_key.clone(), std::time::Instant::now());
+                continue;
             }
             // Provider-native Codex compaction also needs nothing from
             // our planner — same shape as the Devin arm above. Running
@@ -3762,7 +4001,7 @@ fn cmd_watch(
             // native lever can compact, and codex rollouts are large
             // enough that re-parsing one every pass is real cost.
             if !dry_run && d.handle.provider == Provider::Codex && resolved.auto_compact_closed {
-                if d.handle.is_active() {
+                if d.handle.is_active() || session_fingerprint(&d) != fp {
                     continue;
                 }
                 // Sub-agent threads cannot be resumed by the app-server
@@ -3818,83 +4057,36 @@ fn cmd_watch(
                     }
                 };
                 let started = std::time::Instant::now();
-                match codex_compact(
+                last_fire.insert(session_key.clone(), started);
+                holddown.insert(session_key.clone(), now_secs() + 4200);
+                persist_watch_state!()?;
+                let outcome = codex_compact(
                     &resolve_codex_bin(cli.codex_bin.as_deref()),
                     &d.handle.session_id,
                     Some(&roots(cli).codex_home),
                     600_000,
-                ) {
+                );
+                holddown.remove(&session_key);
+                match outcome {
                     Ok(()) => {
-                        // Post-state read: a `compacted` record resets
-                        // scan_usage to 0 — that IS the provider's
-                        // post-state, not an unreadable context. A turn
-                        // that completed without dropping context was a
-                        // provider no-op, not an apply.
-                        let after =
-                            gobstopper_adapters::codex::scan_usage(&d.handle.path).context_tokens;
-                        let noop = after >= ctx;
                         let done = CompactionPlan {
                             strategy: resolved.strategy.clone(),
                             rationale: "auto (closed codex): thread/compact".to_string(),
                             edits: vec![],
                             context_tokens_before: ctx,
-                            context_tokens_after: after,
+                            context_tokens_after: ctx,
                         };
-                        let post_sha = if noop {
-                            None
-                        } else {
-                            vault::snapshot(
-                                &d.handle.path,
-                                d.handle.provider,
-                                &d.handle.session_id,
-                                Some("post-compact"),
-                                &vault::default_root(),
-                            )
-                            .map(|e| e.sha256)
-                            .ok()
-                        };
-                        let mut ev = build_event(
-                            &d,
-                            &done,
-                            "provider_compact",
-                            if noop { "skipped" } else { "applied" },
-                            trigger,
-                            started.elapsed().as_millis() as u64,
-                            if noop { Some("provider_noop") } else { None },
-                        );
-                        ev.snapshot_before_sha256 = Some(pre_snapshot.sha256.clone());
-                        ev.snapshot_after_sha256 = post_sha.clone();
-                        if let Some(post) = &post_sha {
-                            if let Some((total, retained, lexical)) =
-                                realized_retention(&d.handle, &pre_snapshot.sha256, post)
-                            {
-                                ev.retention_total = Some(total);
-                                ev.retention_retained = Some(retained);
-                                ev.retention_lexical = Some(lexical);
+                        last_fire.insert(session_key.clone(), std::time::Instant::now());
+                        if record_native_completion(&d, &done, &pre_snapshot, trigger, started) {
+                            if let Some(nfp) = session_fingerprint(&d) {
+                                settled.insert(session_key.clone(), nfp);
                             }
-                        }
-                        if let Err(e) = append_event(&default_log_path(), &ev) {
-                            eprintln!("telemetry write failed (non-fatal): {e}");
-                        }
-                        if noop {
-                            eprintln!(
-                                "thread/compact for {} completed but context is unchanged (provider no-op)",
-                                d.handle.session_id
-                            );
-                            holddown.insert(session_key.clone(), now_secs() + 3600);
+                            last_apply.insert(session_key.clone(), std::time::Instant::now());
                         } else {
-                            eprintln!(
-                                "provider-compacted closed codex session {} via thread/compact",
-                                d.handle.session_id
-                            );
+                            // A no-op or unavailable post-state may become actionable
+                            // later. A fingerprint settle would outlive this cooldown.
+                            holddown.insert(session_key.clone(), now_secs() + 3600);
                         }
-                        if let Some(nfp) = session_fingerprint(&d) {
-                            settled.insert(session_key.clone(), nfp);
-                        }
-                        if last_apply.len() >= 4096 {
-                            last_apply.clear();
-                        }
-                        last_apply.insert(session_key.clone(), started);
                     }
                     Err(e) => {
                         let failed = CompactionPlan {
@@ -3940,15 +4132,115 @@ fn cmd_watch(
                         // retries.
                         let hold_secs = codex_failure_hold_secs(&msg);
                         if hold_secs > 0 {
-                            if holddown.len() >= 4096 {
-                                holddown.clear();
-                            }
                             holddown.insert(session_key.clone(), now_secs() + hold_secs);
                         } else {
                             last_fire.insert(session_key.clone(), std::time::Instant::now());
                         }
                     }
                 }
+                continue;
+            }
+            // Native summarization does not require an acceptable file-elision
+            // plan. Keep it ahead of load/evaluate, as for Codex and Devin.
+            if !dry_run && d.handle.provider == Provider::ClaudeCode && resolved.auto_compact_closed
+            {
+                if d.handle.is_active() {
+                    continue;
+                }
+                let done = CompactionPlan {
+                    strategy: resolved.strategy.clone(),
+                    rationale: "auto (closed claude): /compact".to_string(),
+                    edits: vec![],
+                    context_tokens_before: ctx,
+                    context_tokens_after: ctx,
+                };
+                if hooks::rollout_cohort(&cfg, d.handle.provider.as_str(), &d.handle.session_id)
+                    == Some(false)
+                {
+                    let tagged = CompactionPlan {
+                        strategy: "watch-apply:control".to_string(),
+                        ..done
+                    };
+                    emit_event(&d, &tagged, "provider_compact", "skipped", trigger, 0, None);
+                    if let Some(fp) = &fp {
+                        settled.insert(session_key.clone(), fp.clone());
+                    }
+                    continue;
+                }
+                if let Some(bin) = &claude_bin {
+                    // Two separate observations must agree before a headless
+                    // resume; recheck owner claims immediately before dispatch.
+                    match &fp {
+                        Some(fp) if settle_pass.get(&session_key) == Some(fp) => {
+                            settle_pass.remove(&session_key);
+                        }
+                        Some(fp) => {
+                            settle_pass.insert(session_key.clone(), fp.clone());
+                            continue;
+                        }
+                        None => continue,
+                    }
+                    if gobstopper_adapters::claude::live_sessions(&roots(cli).claude_home)
+                        .contains_key(&d.handle.session_id)
+                        || session_fingerprint(&d) != fp
+                    {
+                        continue;
+                    }
+                    let pre_snapshot = match snapshot_before_edit(&d, "pre-compact") {
+                        Ok(entry) => entry,
+                        Err(error) => {
+                            eprintln!("headless claude /compact skipped: pre-compact snapshot failed ({error})");
+                            continue;
+                        }
+                    };
+                    let started = std::time::Instant::now();
+                    last_fire.insert(session_key.clone(), started);
+                    holddown.insert(session_key.clone(), now_secs() + 3840);
+                    persist_watch_state!()?;
+                    let outcome = gobstopper_adapters::claude::headless_compact_in_home(
+                        bin,
+                        &d.handle.session_id,
+                        240,
+                        Some(&roots(cli).claude_home),
+                    );
+                    holddown.remove(&session_key);
+                    match outcome {
+                        Ok(()) => {
+                            if record_native_completion(&d, &done, &pre_snapshot, trigger, started)
+                            {
+                                if let Some(nfp) = session_fingerprint(&d) {
+                                    settled.insert(session_key.clone(), nfp);
+                                }
+                                last_apply.insert(session_key.clone(), std::time::Instant::now());
+                            } else {
+                                holddown.insert(session_key.clone(), now_secs() + 3600);
+                            }
+                        }
+                        Err(error) => {
+                            let mut event = build_event(
+                                &d,
+                                &done,
+                                "provider_compact",
+                                "failed",
+                                trigger,
+                                started.elapsed().as_millis() as u64,
+                                Some("provider_rejected"),
+                            );
+                            event.snapshot_before_sha256 = Some(pre_snapshot.sha256);
+                            if let Err(error) = append_event(&default_log_path(), &event) {
+                                eprintln!("telemetry write failed (non-fatal): {error}");
+                            }
+                            eprintln!("headless claude /compact failed ({error}); leaving session unchanged by gobstopper");
+                            // A failed/timeout process can already have changed the
+                            // session. Reconcile on a later pass, never fall through
+                            // into file surgery on this uncertain provider outcome.
+                            holddown.insert(session_key.clone(), now_secs() + 3600);
+                        }
+                    }
+                    continue;
+                }
+                eprintln!("native claude compaction unavailable: provider executable not found");
+                last_fire.insert(session_key.clone(), std::time::Instant::now());
                 continue;
             }
             let (transcript, source_sha256) = match copy::load_bound(d.handle.clone()) {
@@ -4198,159 +4490,6 @@ fn cmd_watch(
                             }
                             None => continue,
                         }
-                        // Provider-native compaction for closed sessions:
-                        // no live pid owns this transcript (is_active
-                        // above is authoritative via ~/.claude/sessions),
-                        // and the fingerprint held steady across passes.
-                        // `claude --resume -p /compact` runs the
-                        // provider's own summarization — far deeper than
-                        // deterministic elision — and fires the
-                        // PreCompact hook that snapshots into the vault.
-                        if resolved.auto_compact_closed {
-                            if let Some(bin) = &claude_bin {
-                                // Same invariant as every other mutating
-                                // path: preserve the before-state before the
-                                // provider rewrites it; a failed snapshot
-                                // aborts this pass.
-                                let pre_snapshot = match snapshot_before_edit(&d, "pre-compact") {
-                                    Ok(entry) => entry,
-                                    Err(e) => {
-                                        eprintln!(
-                                            "headless claude /compact for {} skipped: pre-compact snapshot failed ({e})",
-                                            d.handle.session_id
-                                        );
-                                        continue;
-                                    }
-                                };
-                                match gobstopper_adapters::claude::headless_compact(
-                                    bin,
-                                    &d.handle.session_id,
-                                    240,
-                                ) {
-                                    Ok(()) => {
-                                        let after =
-                                            gobstopper_adapters::claude::scan_usage(&d.handle.path)
-                                                .context_tokens;
-                                        // Provider ran /compact but the
-                                        // context did not drop — a
-                                        // no-op, not an apply (same
-                                        // honesty as devin/codex).
-                                        let noop = after > 0 && after >= ctx;
-                                        let mut done = plan.clone();
-                                        // The provider compacted — the
-                                        // plan's elision edits were not
-                                        // applied, so report items = 0.
-                                        done.edits.clear();
-                                        // Post-compact tail may carry no
-                                        // usage yet (boundary + summary);
-                                        // undercount reclaimed rather
-                                        // than claim before→0.
-                                        done.context_tokens_after = if after > 0 {
-                                            after
-                                        } else {
-                                            done.context_tokens_before
-                                        };
-                                        let post_sha = if noop {
-                                            None
-                                        } else {
-                                            vault::snapshot(
-                                                &d.handle.path,
-                                                d.handle.provider,
-                                                &d.handle.session_id,
-                                                Some("post-compact"),
-                                                &vault::default_root(),
-                                            )
-                                            .map(|e| e.sha256)
-                                            .ok()
-                                        };
-                                        let mut ev = build_event(
-                                            &d,
-                                            &done,
-                                            "provider_compact",
-                                            if noop { "skipped" } else { "applied" },
-                                            trigger,
-                                            started.elapsed().as_millis() as u64,
-                                            if noop {
-                                                Some("provider_noop")
-                                            } else if after == 0 {
-                                                Some("unresolved_context")
-                                            } else {
-                                                None
-                                            },
-                                        );
-                                        ev.snapshot_before_sha256 =
-                                            Some(pre_snapshot.sha256.clone());
-                                        ev.snapshot_after_sha256 = post_sha.clone();
-                                        if let Some(post) = &post_sha {
-                                            if let Some((total, retained, lexical)) =
-                                                realized_retention(
-                                                    &d.handle,
-                                                    &pre_snapshot.sha256,
-                                                    post,
-                                                )
-                                            {
-                                                ev.retention_total = Some(total);
-                                                ev.retention_retained = Some(retained);
-                                                ev.retention_lexical = Some(lexical);
-                                            }
-                                        }
-                                        if let Err(e) = append_event(&default_log_path(), &ev) {
-                                            eprintln!("telemetry write failed (non-fatal): {e}");
-                                        }
-                                        if noop {
-                                            eprintln!(
-                                                "headless claude /compact for {} completed but context is unchanged (provider no-op)",
-                                                d.handle.path.display()
-                                            );
-                                            holddown.insert(session_key.clone(), now_secs() + 3600);
-                                        } else {
-                                            eprintln!(
-                                                "provider-compacted closed claude session {} via /compact",
-                                                d.handle.path.display()
-                                            );
-                                        }
-                                        if let Some(nfp) = session_fingerprint(&d) {
-                                            settled.insert(session_key.clone(), nfp);
-                                        }
-                                        if last_apply.len() >= 4096 {
-                                            last_apply.clear();
-                                        }
-                                        last_apply.insert(session_key.clone(), started);
-                                        continue;
-                                    }
-                                    Err(e) => {
-                                        eprintln!(
-                                            "headless claude /compact for {} failed ({e}){}",
-                                            d.handle.path.display(),
-                                            if resolved.auto_apply_inplace {
-                                                "; falling back to in-place elision"
-                                            } else {
-                                                ""
-                                            },
-                                        );
-                                        emit_event(
-                                            &d,
-                                            &plan,
-                                            "provider_compact",
-                                            "failed",
-                                            trigger,
-                                            started.elapsed().as_millis() as u64,
-                                            Some("provider_rejected"),
-                                        );
-                                        if let Some(fp) = &fp {
-                                            settled.insert(session_key.clone(), fp.clone());
-                                        }
-                                        if !resolved.auto_apply_inplace {
-                                            continue;
-                                        }
-                                    }
-                                }
-                            } else if !resolved.auto_apply_inplace {
-                                // Headless-only mode without a resolvable
-                                // claude binary: nothing else may mutate.
-                                continue;
-                            }
-                        }
                         if !resolved.auto_apply_inplace {
                             continue;
                         }
@@ -4522,25 +4661,7 @@ fn cmd_watch(
         // (e.g. monitor's --once probes) observe only — never mutate
         // persisted state.
         if !dry_run {
-            let save_secs = now_secs();
-            save_watch_state(
-                &state_path,
-                &WatchState {
-                    generation: WATCH_STATE_GENERATION,
-                    settled: settled.clone(),
-                    settle_pass: settle_pass.clone(),
-                    holddown: holddown.clone(),
-                    last_fire: last_fire
-                        .iter()
-                        .map(|(k, t)| (k.clone(), instant_to_epoch(*t, save_secs)))
-                        .collect(),
-                    last_apply: last_apply
-                        .iter()
-                        .map(|(k, t)| (k.clone(), instant_to_epoch(*t, save_secs)))
-                        .collect(),
-                    delegated_ctx: delegated_ctx.clone(),
-                },
-            );
+            persist_watch_state!()?;
         }
         if once {
             return Ok(());
@@ -5259,6 +5380,103 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    #[test]
+    fn codex_compact_observes_completion_before_dispatch_ack() {
+        let dir = tempdir("early-notifications");
+        codex_compact(&stub_codex(), "early-thread", Some(&dir), 1_000).unwrap();
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn codex_compact_requires_the_compaction_items_terminal_turn() {
+        let dir = tempdir("unrelated-turn");
+        codex_compact(
+            &stub_codex(),
+            "early-foreign-failure-thread",
+            Some(&dir),
+            1_000,
+        )
+        .unwrap();
+        let error =
+            codex_compact(&stub_codex(), "wrong-turn-thread", Some(&dir), 1_000).unwrap_err();
+        assert!(error.to_string().contains("turn failed"), "{error:#}");
+        let error = codex_compact(&stub_codex(), "no-item-thread", Some(&dir), 100).unwrap_err();
+        assert!(error.to_string().contains("outcome unknown"), "{error:#}");
+        let error = codex_compact(
+            &stub_codex(),
+            "uncorrelated-failure-thread",
+            Some(&dir),
+            100,
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("outcome unknown"), "{error:#}");
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn codex_compact_bounds_frames_and_treats_lost_ack_as_unknown() {
+        let dir = tempdir("bounded-protocol");
+        for thread in [
+            "oversized-thread",
+            "lost-response-thread",
+            "malformed-response-thread",
+        ] {
+            let error = codex_compact(&stub_codex(), thread, Some(&dir), 1_000).unwrap_err();
+            assert!(
+                error.to_string().contains("outcome unknown"),
+                "{thread}: {error:#}"
+            );
+            assert!(codex_failure_hold_secs(&error.to_string()) > 0);
+        }
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn codex_compact_classifies_structural_failures_without_echoing_provider_text() {
+        let dir = tempdir("private-provider-error");
+        let error =
+            codex_compact(&stub_codex(), "structural-thread", Some(&dir), 1_000).unwrap_err();
+        assert_eq!(codex_failure_hold_secs(&error.to_string()), 24 * 3600);
+        assert!(!error.to_string().contains("private-transcript-marker"));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_compact_collects_descendant_pipe_holders() {
+        let dir = tempdir("child-custody");
+        let started = std::time::Instant::now();
+        codex_compact(&stub_codex(), "descendant-thread", Some(&dir), 1_000).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(3));
+        let pid = fs::read_to_string(dir.join("descendant.pid")).unwrap();
+        assert!(pid.trim().parse::<u32>().is_ok());
+        // Success requires the reader to finish. The descendant holds stdout
+        // open for 60s unless our owned process group was collected.
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn codex_compact_cancels_reader_when_descendant_escapes_process_group() {
+        let dir = tempdir("escaped-pipe-holder");
+        let started = std::time::Instant::now();
+        let result = codex_compact(&stub_codex(), "escaped-pipe-thread", Some(&dir), 5_000);
+        // Cooperatively stop this exact fixture child, even if the assertion
+        // fails. No PID probing/signaling can race unrelated host processes.
+        fs::write(dir.join("escaped-stop"), b"stop").unwrap();
+        let finish = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !dir.join("escaped-finished").exists() && std::time::Instant::now() < finish {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(
+            dir.join("escaped-finished").exists(),
+            "fixture child did not finish"
+        );
+        result.unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     fn preset_transcript() -> gobstopper_core::Transcript {
         gobstopper_core::Transcript {
             session: gobstopper_core::SessionHandle {
@@ -5478,7 +5696,7 @@ mod tests {
         state.last_apply.insert("stale".to_string(), now - 200_000); // > 1 day old
         state.holddown.insert("k".to_string(), now + 3600);
         state.delegated_ctx.insert("k".to_string(), 300_000);
-        save_watch_state(&path, &state);
+        save_watch_state(&path, &state).unwrap();
         let loaded = load_watch_state(&path);
         assert_eq!(loaded.settled.get("k").map(String::as_str), Some("fp"));
         assert_eq!(loaded.settle_pass.get("k").map(String::as_str), Some("fp"));
@@ -5553,7 +5771,7 @@ mod tests {
             codex_failure_hold_secs("codex compaction turn unknown"),
             3600
         );
-        // Transient infra → no cooldown, retry next pass.
+        // Transient infra before dispatch → rate-limit, retry next pass.
         assert_eq!(
             codex_failure_hold_secs("spawning `codex app-server --listen stdio://`"),
             0
@@ -5563,8 +5781,8 @@ mod tests {
             0
         );
         assert_eq!(
-            codex_failure_hold_secs("timed out waiting for response id 2"),
-            0
+            codex_failure_hold_secs("provider outcome unknown awaiting dispatch response"),
+            3600
         );
     }
 

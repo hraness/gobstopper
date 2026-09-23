@@ -20,6 +20,45 @@ const CHUNK_BYTES: usize = 1024 * 1024;
 const MAX_INDEX_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_INDEX_LINE_BYTES: usize = 64 * 1024;
 
+/// Stable lifetime lock on the vault root directory inode: snapshots/readers
+/// share custody, while pruning excludes publication and reconstruction until
+/// deletion finishes. Unlike index.jsonl, this directory is never replaced.
+/// Opening an existing directory also keeps reads and dry runs free of writes.
+pub(crate) struct Custody {
+    _file: fs::File,
+}
+
+impl Custody {
+    fn acquire(root: &Path, exclusive: bool) -> anyhow::Result<Self> {
+        if !fs::symlink_metadata(root)?.is_dir() {
+            bail!("vault root must be a real directory, not a symlink");
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = exclusive;
+            bail!("safe vault custody requires directory locking on this platform");
+        }
+        #[cfg(unix)]
+        {
+            let file = fs::File::open(root).context("open vault custody directory")?;
+            if exclusive {
+                fs2::FileExt::lock_exclusive(&file)?;
+            } else {
+                fs2::FileExt::lock_shared(&file)?;
+            }
+            Ok(Self { _file: file })
+        }
+    }
+
+    pub(crate) fn shared(root: &Path) -> anyhow::Result<Self> {
+        Self::acquire(root, false)
+    }
+
+    fn exclusive(root: &Path) -> anyhow::Result<Self> {
+        Self::acquire(root, true)
+    }
+}
+
 /// One snapshot record in the vault index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VaultEntry {
@@ -218,6 +257,11 @@ pub fn snapshot_data(
     strategy: Option<&str>,
     root: &Path,
 ) -> anyhow::Result<VaultEntry> {
+    if data.len() as u64 > crate::transaction::max_transcript_bytes() {
+        bail!("snapshot exceeds transcript byte limit");
+    }
+    crate::transaction::private_dir(root)?;
+    let _custody = Custody::shared(root)?;
     let data = data.to_vec();
     let path = path.to_path_buf();
     let source_sha256 = sha256_hex(&data);
@@ -461,6 +505,11 @@ pub fn list(root: &Path) -> anyhow::Result<Vec<VaultEntry>> {
 }
 
 pub fn read_object(sha256: &str, root: &Path) -> anyhow::Result<Vec<u8>> {
+    let _custody = Custody::shared(root)?;
+    read_object_locked(sha256, root)
+}
+
+fn read_object_locked(sha256: &str, root: &Path) -> anyhow::Result<Vec<u8>> {
     if sha256.len() != 64 || !is_hex(sha256) {
         bail!("invalid snapshot digest");
     }
@@ -523,12 +572,24 @@ pub struct PruneReport {
 /// stream, then drop manifest objects no index entry references and
 /// content chunks no surviving manifest reaches.
 ///
-/// Ordering is crash-safe: `index.jsonl` is rewritten first via a
-/// conditional swap (a concurrent snapshot append fails the write
-/// instead of being silently lost), then unreachable objects are
-/// unlinked — a crash mid-delete leaves only orphans a later prune
-/// reclaims. `dry_run` computes the same plan without touching disk.
+/// Stable exclusive custody excludes snapshots and active readers for
+/// the full scan and deletion. Receipt recovery references are also
+/// retained. `index.jsonl` is rewritten before unreachable objects are
+/// unlinked, so a crash mid-delete leaves only orphans. `dry_run`
+/// computes the same plan without changing stored data.
 pub fn prune(root: &Path, keep: usize, dry_run: bool) -> anyhow::Result<PruneReport> {
+    if !root.try_exists()? {
+        return Ok(PruneReport {
+            streams: 0,
+            kept_entries: 0,
+            dropped_entries: 0,
+            manifests_removed: 0,
+            chunks_removed: 0,
+            bytes_reclaimed: 0,
+            dry_run,
+        });
+    }
+    let _custody = Custody::exclusive(root)?;
     let index_path = root.join("index.jsonl");
     let original_index = if index_path.exists() {
         crate::transaction::read(&index_path)?
@@ -550,12 +611,10 @@ pub fn prune(root: &Path, keep: usize, dry_run: bool) -> anyhow::Result<PruneRep
             .push((idx, e));
     }
     let mut drop_idx = std::collections::HashSet::new();
-    for group in groups.values_mut() {
-        group.sort_by(|a, b| {
-            b.1.ts
-                .cmp(&a.1.ts)
-                .then_with(|| a.1.sha256.cmp(&b.1.sha256))
-        });
+    // list() is newest-first, including reverse append order for equal
+    // timestamps. Keep that order: a hash tie-breaker can discard the
+    // newest snapshot created within the same second.
+    for group in groups.values() {
         for (idx, _) in group.iter().skip(keep) {
             drop_idx.insert(*idx);
         }
@@ -566,8 +625,44 @@ pub fn prune(root: &Path, keep: usize, dry_run: bool) -> anyhow::Result<PruneRep
         .filter(|(i, _)| !drop_idx.contains(i))
         .map(|(_, e)| e)
         .collect();
-    let kept_shas: std::collections::HashSet<&str> =
-        kept_entries.iter().map(|e| e.sha256.as_str()).collect();
+    let mut kept_shas: std::collections::HashSet<String> =
+        kept_entries.iter().map(|e| e.sha256.clone()).collect();
+    let operations = root.join("operations");
+    if operations.exists() {
+        for entry in fs::read_dir(&operations)? {
+            let path = entry?.path();
+            if path.extension().is_none_or(|ext| ext != "json") {
+                continue;
+            }
+            let bytes = crate::transaction::read(&path)?;
+            let receipt: serde_json::Value = serde_json::from_slice(&bytes)
+                .context("invalid operation receipt; cannot safely prune recovery data")?;
+            if let Some(sha) = receipt.get("snapshot_manifest_sha256") {
+                let sha = sha.as_str().context("invalid receipt snapshot digest")?;
+                // Verify every pinned object before changing the index.
+                read_object_locked(sha, root)?;
+                kept_shas.insert(sha.to_string());
+            } else if let Some(source) = receipt.get("snapshot_sha256") {
+                // Older receipts bind full source bytes, not manifests.
+                let source = source.as_str().context("invalid receipt source digest")?;
+                if source.len() != 64 || !is_hex(source) {
+                    bail!("invalid receipt source digest");
+                }
+                kept_shas.extend(
+                    entries
+                        .iter()
+                        .filter(|entry| entry.source_sha256 == source || entry.sha256 == source)
+                        .map(|entry| entry.sha256.clone()),
+                );
+            } else {
+                bail!("operation receipt has no recovery snapshot binding");
+            }
+        }
+    }
+    for sha in &kept_shas {
+        read_object_locked(sha, root)
+            .context("retained snapshot is unreadable; cannot safely prune")?;
+    }
     let manifests_remove: std::collections::HashSet<String> = entries
         .iter()
         .enumerate()
@@ -591,12 +686,14 @@ pub fn prune(root: &Path, keep: usize, dry_run: bool) -> anyhow::Result<PruneRep
         .iter()
         .filter(|s| !manifests_remove.contains(*s))
     {
-        let Ok(bytes) = crate::transaction::read(&manifests.join(sha)) else {
-            continue;
-        };
-        let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
-            continue;
-        };
+        // A failed read/parse may hide a live chunk reference. Never
+        // turn corruption or uncertainty into destructive collection.
+        let bytes = crate::transaction::read(&manifests.join(sha))?;
+        if sha256_hex(&bytes) != *sha {
+            bail!("retained manifest failed integrity verification");
+        }
+        reconstruct_manifest(&bytes, root)?;
+        let doc: serde_json::Value = serde_json::from_slice(&bytes)?;
         if let Some(chunks) = doc.get("chunks").and_then(|c| c.as_array()) {
             for c in chunks {
                 if let Some(s) = c.as_str() {
@@ -634,8 +731,7 @@ pub fn prune(root: &Path, keep: usize, dry_run: bool) -> anyhow::Result<PruneRep
         return Ok(report);
     }
 
-    // Rewrite the index first, conditionally: a snapshot that landed
-    // during the scan aborts the prune rather than being silently lost.
+    // Rewrite the index while exclusive vault custody is still held.
     // Kept lines are matched by their exact serialized entry (index
     // lines were written by serializing VaultEntry) with a multiset so
     // duplicate identical lines survive independently. Unparseable
@@ -669,7 +765,9 @@ pub fn prune(root: &Path, keep: usize, dry_run: bool) -> anyhow::Result<PruneRep
             new_index.push(b'\n');
         }
     }
-    crate::transaction::replace(&index_path, &original_index, &new_index)?;
+    if index_path.exists() {
+        crate::transaction::replace(&index_path, &original_index, &new_index)?;
+    }
     for sha in &manifests_remove {
         let _ = fs::remove_file(manifests.join(sha));
     }
@@ -1121,6 +1219,104 @@ mod tests {
         assert_eq!(entries[0].session_id, "third");
         assert_eq!(entries[1].session_id, "second");
         assert_eq!(entries[2].session_id, "first");
+    }
+
+    #[test]
+    fn stable_custody_excludes_prune_until_snapshot_and_reader_finish() {
+        let dir = TestDir::new();
+        let root = dir.0.join("vault");
+        fs::create_dir(&root).unwrap();
+        let snapshot_custody = Custody::shared(&root).unwrap();
+        let reader_custody = Custody::shared(&root).unwrap();
+        let prune_lock = fs::File::open(&root).unwrap();
+        assert!(fs2::FileExt::try_lock_exclusive(&prune_lock).is_err());
+        drop(snapshot_custody);
+        assert!(fs2::FileExt::try_lock_exclusive(&prune_lock).is_err());
+        drop(reader_custody);
+        fs2::FileExt::try_lock_exclusive(&prune_lock).unwrap();
+        let late_reader = fs::File::open(&root).unwrap();
+        assert!(fs2::FileExt::try_lock_shared(&late_reader).is_err());
+        drop(prune_lock);
+        fs2::FileExt::try_lock_shared(&late_reader).unwrap();
+    }
+
+    #[test]
+    fn prune_keeps_last_appended_snapshot_when_timestamps_tie() {
+        let dir = TestDir::new();
+        let root = dir.0.join("vault");
+        let src = dir.0.join("s.jsonl");
+        let first = snapshot_data(b"first", &src, Provider::Codex, "s", None, &root).unwrap();
+        let second = snapshot_data(b"second", &src, Provider::Codex, "s", None, &root).unwrap();
+        let mut entries = [first, second];
+        // Append the larger hash last so lexicographic hash ordering
+        // would deterministically retain the wrong version.
+        entries.sort_by(|a, b| a.sha256.cmp(&b.sha256));
+        for entry in &mut entries {
+            entry.ts = 42;
+        }
+        let index = entries
+            .iter()
+            .map(|entry| format!("{}\n", serde_json::to_string(entry).unwrap()))
+            .collect::<String>();
+        fs::write(index_path(&root), index).unwrap();
+        prune(&root, 1, false).unwrap();
+        let kept = list(&root).unwrap();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].sha256, entries[1].sha256);
+        assert!(read_object(&kept[0].sha256, &root).is_ok());
+    }
+
+    #[test]
+    fn prune_refuses_corrupt_retained_manifest_without_deleting_anything() {
+        let dir = TestDir::new();
+        let root = dir.0.join("vault");
+        let src = dir.0.join("s.jsonl");
+        let entry = snapshot_data(b"retained", &src, Provider::Codex, "s", None, &root).unwrap();
+        let before_index = fs::read(index_path(&root)).unwrap();
+        let chunks_before: Vec<_> = fs::read_dir(chunks_dir(&root))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        fs::write(manifests_dir(&root).join(entry.sha256), b"{broken").unwrap();
+        assert!(prune(&root, 1, false).is_err());
+        assert_eq!(fs::read(index_path(&root)).unwrap(), before_index);
+        assert!(chunks_before.iter().all(|path| path.exists()));
+    }
+
+    #[test]
+    fn legacy_reads_and_dry_run_create_no_control_files() {
+        let dir = TestDir::new();
+        let root = dir.0.join("vault");
+        let objects = objects_dir(&root);
+        fs::create_dir_all(&objects).unwrap();
+        let bytes = b"legacy snapshot";
+        let sha = sha256_hex(bytes);
+        fs::write(objects.join(&sha), bytes).unwrap();
+        let children = || {
+            let mut names: Vec<_> = fs::read_dir(&root)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect();
+            names.sort();
+            names
+        };
+        let before = children();
+        assert_eq!(read_object(&sha, &root).unwrap(), bytes);
+        prune(&root, 1, true).unwrap();
+        assert_eq!(children(), before);
+        assert!(!index_path(&root).exists());
+        assert_eq!(fs::read(objects.join(sha)).unwrap(), bytes);
+    }
+
+    #[test]
+    fn prune_empty_vault_is_a_noop() {
+        let dir = TestDir::new();
+        let root = dir.0.join("vault");
+        let report = prune(&root, 1, false).unwrap();
+        assert_eq!(report.dropped_entries, 0);
+        assert_eq!(report.chunks_removed, 0);
+        assert!(!index_path(&root).exists());
+        assert!(!root.exists());
     }
 
     #[test]

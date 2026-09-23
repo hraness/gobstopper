@@ -116,7 +116,7 @@ else:
     def test_timeout_child_is_reaped_and_unstarted_watch_has_no_resources(self):
         pid_file = self.root / "timeout.pid"
         with patch.dict(os.environ, {"STUB_SLEEP": "30", "STUB_PID": str(pid_file)}), \
-                patch.object(monitor, "TIMEOUT_SECONDS", 0.5):
+                patch.object(monitor, "TIMEOUT_SECONDS", 3):
             observation = self.sample()
         self.assertEqual(observation["report"]["error"], "timeout")
         self.assert_resources(observation["report"]["resources"])
@@ -287,6 +287,36 @@ else:
         self.assertEqual(monitor.retention_summary(log.with_name("nope"), {A}),
                          {"measured": 0, "checks": 0, "literal": 0,
                           "lexical": 0, "lossy_sessions": []})
+
+    def test_retention_rejects_missing_boolean_and_impossible_measurements(self):
+        log = self.root / "retention.jsonl"
+        valid = {"session_id": A, "retention_total": 10,
+                 "retention_retained": 6, "retention_lexical": 8}
+        invalid = []
+        for field in ("retention_total", "retention_retained", "retention_lexical"):
+            for value in (None, False, True, [], {}, "", -1, 100_001):
+                invalid.append({**valid, field: value})
+            missing = dict(valid)
+            del missing[field]
+            invalid.append(missing)
+        invalid.extend([{**valid, "retention_retained": 11},
+                        {**valid, "retention_lexical": 11},
+                        {**valid, "session_id": []},
+                        {**valid, "session_id": {}}])
+        log.write_text("".join(json.dumps(event) + "\n" for event in [valid, *invalid]))
+        expected = {"measured": 1, "checks": 10, "literal": 6,
+                    "lexical": 8, "lossy_sessions": []}
+        self.assertEqual(monitor.retention_summary(log, {A}), expected)
+
+    def test_retention_read_is_bounded_and_invalid_utf8_is_unavailable(self):
+        log = self.root / "retention.jsonl"
+        empty = {"measured": 0, "checks": 0, "literal": 0,
+                 "lexical": 0, "lossy_sessions": []}
+        log.write_bytes(b"\xff")
+        self.assertEqual(monitor.retention_summary(log, {A}), empty)
+        log.write_bytes(b"x" * 33)
+        with patch.object(monitor, "EVENTS_LOG_BYTES", 32):
+            self.assertEqual(monitor.retention_summary(log, {A}), empty)
 
     def test_counter_reset_is_unknown_delta(self):
         self.sample()

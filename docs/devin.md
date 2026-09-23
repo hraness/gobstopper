@@ -317,5 +317,10 @@ logical items plus usage. Provider inspection cannot return edits.
 ## Resume integrity
 
 Use Devin's own `--resume <session-id>` or `--continue` controls. Gobstopper
-does not synthesize Devin session IDs, restore exports into the session store,
-or claim that an exported trajectory can replace provider-owned resume state.
+does not synthesize Devin session IDs or replace the provider's complete resume
+state with an exported trajectory. Its guarded `undo` path does restore selected
+payloads from a canonical per-session vault export into the existing store and
+rejects a foreign session identity. The idle-lock probe is not retained through
+that transaction, and restore does not bind an expected current export; these
+remaining ownership and drift risks are tracked in the
+[correctness audit](correctness-audit.md) and [plan](correctness-plan.md).

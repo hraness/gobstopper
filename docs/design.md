@@ -141,13 +141,19 @@ Legacy `preset.command` remains available only with
 
 ## Failure and safety posture
 
-- Standalone `apply` and `undo` are copy-only by default; retired in-place
-  and no-backup CLI flags fail visibly. Provider-scoped exceptions are
+- Standalone JSONL `apply` and `undo` are copy-only by default; retired in-place
+  and no-backup CLI flags fail visibly. Devin `undo` instead restores selected
+  payloads to its session store after the idle check; it shares the unresolved
+  ownership and current-state binding limits described in the audit.
+  Watch's provider-scoped exceptions are
   opt-in: `[provider.devin] auto_apply_store` lets `watch --provider devin`
   run the guarded SQLite write on idle sessions, and
   `[provider.claude_code] auto_apply_inplace` lets `watch --provider
-  claude_code` rewrite an idle transcript in place (Claude opens the file
-  per write, so the swap cannot orphan provider appends). Watch auto-apply
+  claude_code` rewrite an observed-idle transcript in place. These direct-write
+  modes still have an ownership gap: a provider can begin writing after an idle
+  check, and a final reread followed by rename is not compare-and-swap. Opening
+  the transcript per write does not remove that race. See the
+  [correctness audit](correctness-audit.md) and its custody remediation. Watch auto-apply
   respects `[rollout]` cohorts — control sessions are logged and skipped —
   and a per-session fingerprint suppresses re-evaluation of unchanged
   sources; Claude writes also require the fingerprint to be stable across
@@ -159,20 +165,29 @@ Legacy `preset.command` remains available only with
   and rate-limit clocks persist per-provider to `watch-state-*.json`
   after each pass, so a daemon restart resumes rather than re-planning
   every session once.
-- Claude liveness is authoritative, not mtime-inferred: records in
+- Claude liveness also checks provider markers rather than only mtime: records in
   `~/.claude/sessions/<pid>.json` map live pids to session ids, so a
-  session open-but-quiet in a TUI is still provider-owned and never
-  mutated. With `[provider.claude_code] auto_compact_closed`, a settled
+  session open-but-quiet in a TUI is detected as provider-owned and excluded
+  from surgery. This observation is not a lifetime ownership lock.
+  With `[provider.claude_code] auto_compact_closed`, a settled
   over-trigger session with *no* live owner is instead compacted by the
   provider itself — `claude --resume <id> -p /compact` — which runs
   Claude's own summarization and fires the `PreCompact` hook where the
-  vault snapshot lands; in-place elision remains the fallback. The
+  vault snapshot lands. A failed or uncertain native attempt must not fall
+  through to direct file mutation. The
   prompt-policy hook adds a last-rung `block_tokens` ceiling (default 0
   = off): at/above it, treatment sessions get `decision: "block"` until
   `/compact` runs. Slash-command prompts are never advised or blocked —
   they are provider UI control, including the headless `/compact` run.
 - Before publication, exact source bytes are stored as verified, deduplicated
   1 MiB chunks in the content-addressed vault.
+- Snapshot/copy/read operations share custody of the vault directory inode;
+  prune holds exclusive custody through reachability analysis, index publication
+  and deletion. Operation receipts pin their recovery objects. The bounded
+  [TLA+ model](../verify/vault/README.md) checks this concurrency protocol and
+  negative controls, with explicit exclusions for Rust refinement and filesystem
+  crash durability. Current custody support is Unix-only and fails closed on
+  other platforms.
 - Copy operations bind canonical source path, source hash, provider, and edits
   into a durable intent receipt. Existing targets are never overwritten, and
   incomplete receipts reconcile only against an exact output hash.

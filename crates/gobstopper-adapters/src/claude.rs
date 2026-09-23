@@ -824,6 +824,16 @@ pub fn headless_compact(
     session_id: &str,
     timeout_secs: u64,
 ) -> Result<(), AdapterError> {
+    headless_compact_in_home(claude_bin, session_id, timeout_secs, None)
+}
+
+/// Run native compaction against the same Claude state root used for discovery.
+pub fn headless_compact_in_home(
+    claude_bin: &Path,
+    session_id: &str,
+    timeout_secs: u64,
+    claude_home: Option<&Path>,
+) -> Result<(), AdapterError> {
     use std::process::{Command, Stdio};
     use std::time::{Duration, Instant};
     let io_err = |kind, msg: String| AdapterError::Io {
@@ -848,13 +858,16 @@ pub fn headless_compact(
     let mut child = {
         let mut attempt = 0u32;
         loop {
-            match Command::new(claude_bin)
+            let mut command = Command::new(claude_bin);
+            command
                 .args(["--resume", session_id, "-p", "/compact"])
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .spawn()
-            {
+                .stderr(Stdio::null());
+            if let Some(home) = claude_home {
+                command.env("CLAUDE_CONFIG_DIR", home);
+            }
+            match command.spawn() {
                 Ok(c) => break c,
                 Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 5 => {
                     attempt += 1;
@@ -959,11 +972,12 @@ mod ownership_tests {
         let dir = tmpdir("compact");
         let bin = dir.join("claude");
         let argv_out = dir.join("argv.txt");
+        let home_out = dir.join("home.txt");
         write(
             &bin,
             &format!(
-                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nexit 0\n",
-                argv_out.display()
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'\nprintf '%s' \"$CLAUDE_CONFIG_DIR\" > '{}'\nexit 0\n",
+                argv_out.display(), home_out.display()
             ),
         );
         #[cfg(unix)]
@@ -974,6 +988,12 @@ mod ownership_tests {
         headless_compact(&bin, "sess-abc_123", 30).unwrap();
         let argv = fs::read_to_string(&argv_out).unwrap();
         assert_eq!(argv, "--resume\nsess-abc_123\n-p\n/compact\n");
+        let configured_home = dir.join("explicit claude home");
+        headless_compact_in_home(&bin, "sess-abc_123", 30, Some(&configured_home)).unwrap();
+        assert_eq!(
+            fs::read_to_string(&home_out).unwrap(),
+            configured_home.to_string_lossy()
+        );
 
         // Non-zero exit surfaces as an error.
         write(&bin, "#!/bin/sh\nexit 3\n");
