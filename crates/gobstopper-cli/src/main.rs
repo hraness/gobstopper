@@ -1100,6 +1100,32 @@ fn resolve_codex_bin(flag: Option<&std::path::Path>) -> PathBuf {
     PathBuf::from("codex")
 }
 
+/// Cooldown (seconds) for a failed `thread/compact` outcome, or 0 for
+/// transient infra errors that should retry on the next pass. A failed
+/// provider turn still appends `task_started`/`task_complete` to the
+/// rollout, so suppression must key on the session, not the
+/// fingerprint — that is what `holddown` stores.
+fn codex_failure_hold_secs(msg: &str) -> u64 {
+    if msg.contains("usage limit") {
+        // Provider quota window — unknown length, retry sparingly.
+        4 * 3600
+    } else if msg.contains("cannot resume") || msg.contains("not found") {
+        // Structural for this thread state; a day bounds the noise.
+        24 * 3600
+    } else if msg.contains("outcome unknown")
+        || msg.contains("turn failed")
+        || msg.contains("turn interrupted")
+    {
+        // Possibly in-flight or a provider-side turn failure — do not
+        // race a write that may still land; if it does, the post-state
+        // reads under trigger and skips anyway.
+        3600
+    } else {
+        // Spawn, stream close, response timeout — transient infra.
+        0
+    }
+}
+
 /// Ask a private Codex app-server to compact a thread.
 ///
 /// Spawns `codex app-server --listen stdio://` — a self-contained JSON-RPC
@@ -3019,6 +3045,13 @@ struct WatchState {
     settled: std::collections::HashMap<String, String>,
     #[serde(default)]
     settle_pass: std::collections::HashMap<String, String>,
+    /// Terminal provider outcomes suppress a session for a cooldown
+    /// window, keyed on session — not fingerprint. A failed provider
+    /// turn still appends to the rollout (codex `task_started`/
+    /// `task_complete`), and the devin store is shared across sessions,
+    /// so a fingerprint-keyed settle can never hold for these.
+    #[serde(default)]
+    holddown: std::collections::HashMap<String, u64>,
     #[serde(default)]
     last_fire: std::collections::HashMap<String, u64>,
     #[serde(default)]
@@ -3039,7 +3072,10 @@ struct WatchState {
 /// `thread/compact` added — pre-v6 codex suppressions may encode "no
 /// closed-session lever" verdicts, and v6 codex failures distinguish
 /// permanent rejections (settle) from transient infra errors (retry).
-const WATCH_STATE_GENERATION: u32 = 6;
+/// v7: terminal provider failures move to a session-keyed cooldown —
+/// a failed turn still mutates the rollout, so fingerprint settles
+/// never held and produced a retry storm.
+const WATCH_STATE_GENERATION: u32 = 7;
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -3190,6 +3226,17 @@ fn cmd_watch(
     } else {
         std::collections::HashMap::new()
     };
+    // Terminal provider failures hold a session down for a cooldown —
+    // unlike `settled` this is keyed on the session, not a fingerprint:
+    // a failed provider turn still mutates its own transcript, so a
+    // fingerprint-based settle can never suppress these. Loaded under
+    // the same generation gate.
+    let mut holddown: std::collections::HashMap<String, u64> =
+        if persisted.generation >= WATCH_STATE_GENERATION {
+            persisted.holddown
+        } else {
+            std::collections::HashMap::new()
+        };
     // (settle_pass is loaded above with the same generation gate.)
     // Apply hold-down: session_key -> Instant of the last successful
     // in-place mutation. A session that re-appends and re-triggers
@@ -3255,6 +3302,15 @@ fn cmd_watch(
             if fp.is_some() && settled.get(&session_key) == fp.as_ref() {
                 continue;
             }
+            // Cooldown from a terminal provider outcome — suppresses the
+            // session even though its failed turn rewrote the file.
+            if holddown
+                .get(&session_key)
+                .is_some_and(|&until| now_secs() < until)
+            {
+                continue;
+            }
+            holddown.remove(&session_key);
             // Apply hold-down: a session mutated in place within
             // `apply_hold_secs` stays out of the loop even if a provider
             // append moved its fingerprint or stale metrics still read
@@ -3290,6 +3346,10 @@ fn cmd_watch(
                     && !dry_run
                     && ctx >= trigger * 6 / 10
                     && !staged.contains_key(&d.handle.session_id)
+                    // A codex session headed for provider-native
+                    // thread/compact gains nothing from a staged fork.
+                    && !(d.handle.provider == Provider::Codex
+                        && resolved.auto_compact_closed)
                 {
                     if let Some(s) = stage_compaction(&d, &resolved) {
                         staged.insert(d.handle.session_id.clone(), s);
@@ -3303,11 +3363,14 @@ fn cmd_watch(
                 }
             }
             // Staged fast path: source unchanged since staging -> swap.
+            // A codex session with provider-native compact enabled skips
+            // the swap and reaches the thread/compact arm below instead.
+            let codex_native = d.handle.provider == Provider::Codex && resolved.auto_compact_closed;
             if let Some(s) = staged.remove(&d.handle.session_id) {
                 let unchanged = sha256_file(&d.handle.path)
                     .map(|h| h == s.source_sha256)
                     .unwrap_or(false);
-                if !dry_run && unchanged {
+                if !dry_run && unchanged && !codex_native {
                     let started = std::time::Instant::now();
                     match copy::compact(
                         &d.handle,
@@ -3576,9 +3639,14 @@ fn cmd_watch(
                                 },
                             );
                             if in_flight || !resolved.auto_apply_store {
-                                if let Some(fp) = &fp {
-                                    settled.insert(session_key.clone(), fp.clone());
+                                // The store is shared across sessions —
+                                // its fingerprint always moves, so a
+                                // settle cannot suppress this. Hold the
+                                // session down for an hour instead.
+                                if holddown.len() >= 4096 {
+                                    holddown.clear();
                                 }
+                                holddown.insert(session_key.clone(), now_secs() + 3600);
                                 continue;
                             }
                         }
@@ -3745,22 +3813,19 @@ fn cmd_watch(
                             "codex thread/compact for {} failed: {e}",
                             d.handle.session_id
                         );
-                        // Permanent rejections and possibly in-flight
-                        // turns settle: retrying cannot help, and a turn
-                        // that does land rewrites the file (new
-                        // fingerprint) anyway. Transient infra failures —
-                        // spawn, stream close, response timeout — only
-                        // rate-limit via last_fire; the next pass retries.
-                        let permanent = msg.contains("cannot resume")
-                            || msg.contains("not found")
-                            || msg.contains("outcome unknown")
-                            || msg.contains("usage limit")
-                            || msg.contains("turn failed")
-                            || msg.contains("turn interrupted");
-                        if permanent {
-                            if let Some(fp) = &fp {
-                                settled.insert(session_key.clone(), fp.clone());
+                        // Terminal provider outcomes hold the session
+                        // down on a cooldown keyed on session_id — the
+                        // failed turn rewrote the rollout, so a
+                        // fingerprint settle can never suppress the
+                        // retry. Transient infra failures only
+                        // rate-limit via last_fire; the next pass
+                        // retries.
+                        let hold_secs = codex_failure_hold_secs(&msg);
+                        if hold_secs > 0 {
+                            if holddown.len() >= 4096 {
+                                holddown.clear();
                             }
+                            holddown.insert(session_key.clone(), now_secs() + hold_secs);
                         } else {
                             last_fire.insert(session_key.clone(), std::time::Instant::now());
                         }
@@ -4327,6 +4392,7 @@ fn cmd_watch(
                     generation: WATCH_STATE_GENERATION,
                     settled: settled.clone(),
                     settle_pass: settle_pass.clone(),
+                    holddown: holddown.clone(),
                     last_fire: last_fire
                         .iter()
                         .map(|(k, t)| (k.clone(), instant_to_epoch(*t, save_secs)))
@@ -5272,11 +5338,13 @@ mod tests {
         state.settle_pass.insert("k".to_string(), "fp".to_string());
         state.last_fire.insert("fresh".to_string(), now - 60);
         state.last_apply.insert("stale".to_string(), now - 200_000); // > 1 day old
+        state.holddown.insert("k".to_string(), now + 3600);
         state.delegated_ctx.insert("k".to_string(), 300_000);
         save_watch_state(&path, &state);
         let loaded = load_watch_state(&path);
         assert_eq!(loaded.settled.get("k").map(String::as_str), Some("fp"));
         assert_eq!(loaded.settle_pass.get("k").map(String::as_str), Some("fp"));
+        assert_eq!(loaded.holddown.get("k"), Some(&(now + 3600)));
         assert_eq!(loaded.delegated_ctx.get("k"), Some(&300_000));
         assert_eq!(loaded.last_fire.get("fresh"), Some(&(now - 60)));
         // The Instant conversion is exercised in cmd_watch; here verify
@@ -5302,6 +5370,47 @@ mod tests {
         assert!(parse_since("").is_err());
         assert!(parse_since("h").is_err());
         assert!(parse_since("1x").is_err());
+    }
+
+    #[test]
+    fn codex_failure_classes_map_to_cooldowns() {
+        // Terminal provider outcomes → session-keyed cooldown.
+        assert_eq!(
+            codex_failure_hold_secs("codex compaction turn failed: usage limit exceeded"),
+            4 * 3600
+        );
+        assert_eq!(
+            codex_failure_hold_secs("cannot resume an unloaded multi-agent v2 sub-agent"),
+            24 * 3600
+        );
+        assert_eq!(codex_failure_hold_secs("thread not found"), 24 * 3600);
+        assert_eq!(
+            codex_failure_hold_secs(
+                "provider outcome unknown at deadline; do not replay automatically"
+            ),
+            3600
+        );
+        assert_eq!(
+            codex_failure_hold_secs("codex compaction turn failed"),
+            3600
+        );
+        assert_eq!(
+            codex_failure_hold_secs("codex compaction turn interrupted"),
+            3600
+        );
+        // Transient infra → no cooldown, retry next pass.
+        assert_eq!(
+            codex_failure_hold_secs("spawning `codex app-server --listen stdio://`"),
+            0
+        );
+        assert_eq!(
+            codex_failure_hold_secs("codex app-server closed its stream"),
+            0
+        );
+        assert_eq!(
+            codex_failure_hold_secs("timed out waiting for response id 2"),
+            0
+        );
     }
 
     /// Touch a file's mtime without changing its length.
