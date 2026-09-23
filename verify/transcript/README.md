@@ -79,6 +79,8 @@ flags; this fixture family is not evidence for every production flag derivation.
 
 ```sh
 python3 verify/transcript/test_check.py
+# Prepare dependencies, including the dev dependency's nested engine build.
+cargo test -p gobstopper-adapters --test lean_correspondence --locked --no-run --jobs 2
 python3 verify/transcript/check.py --lake /absolute/path/to/lean-4.34.0/bin/lake --output "$NEW_EVIDENCE_DIR"
 cargo test -p gobstopper-adapters --locked --test lean_correspondence
 ```
@@ -86,8 +88,12 @@ cargo test -p gobstopper-adapters --locked --test lean_correspondence
 The selected `lake` must have sibling `lean` and `leanchecker` executables from
 Lean 4.34.0, commit `293d5d0c0c3f3dded4688b3ccd6a33939ac5102b`. Official archive
 pins live in [`../tools.lock.json`](../tools.lock.json). There are no external Lean
-packages. Cargo runs offline and needs the repository's existing Rust dependency
-setup. No installation or global configuration changes are made by this runner.
+packages. The preparation command may access the dependency registry. A plain
+`cargo fetch --locked` is insufficient on a clean cache: the Hegel dev dependency's
+build script builds an engine through a separate generated Cargo workspace.
+The checker then builds in a fresh target directory with Cargo offline, using
+that populated dependency cache. No installation or global configuration changes
+are made by this runner.
 
 The positive gate runs a fresh `lake build`, the exact theorem axiom inventory,
 and `lake env leanchecker --fresh Transcript`, which replays declarations and
@@ -130,7 +136,10 @@ selected by a bounded `rustc --print sysroot` query. All Rust cases invoke that
 Cargo by absolute path and set `RUSTC` to the corresponding hashed compiler.
 Version and sysroot logs have recorded digests. Compiler libraries, the linker,
 dependency cache and operating system remain trusted inputs; the receipt does
-not claim a hermetic Rust build.
+not claim a hermetic Rust build. The repository lockfile does not govern the
+transitive resolution of Hegel's separate engine workspace, although Hegel pins
+the engine crate version. Locking and attesting that nested build is a remaining
+dependency-provenance obligation.
 
 Primary references: [Lean proof validation and axiom auditing](https://lean-lang.org/doc/reference/latest/ValidatingProofs/),
 [Lean 4.34.0 release](https://github.com/leanprover/lean4/releases/tag/v4.34.0), and

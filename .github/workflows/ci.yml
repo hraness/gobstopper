@@ -144,6 +144,8 @@ jobs:
           mkdir "$RUNNER_TEMP/lean"
           tar --zstd -xf "$RUNNER_TEMP/lean.tar.zst" --strip-components=1 -C "$RUNNER_TEMP/lean"
           cargo fetch --locked
+      - name: Prepare the Rust correspondence build and nested engine cache
+        run: cargo test -p gobstopper-adapters --test lean_correspondence --locked --no-run --jobs 2
       - name: Prove algebra, audit axioms, and reject correspondence mutants
         run: python3 verify/transcript/check.py --lake "$RUNNER_TEMP/lean/bin/lake" --output "$RUNNER_TEMP/transcript-evidence"
       - name: Retain complete proof and correspondence evidence

@@ -24,7 +24,10 @@ CI runs all proof checkers with fresh output directories and retains successful 
 failed logs/receipts for 30 days. Every proof runner records exact input/tool digests,
 requires input stability and rejects incomplete output or unrelated mutant failures.
 Checksums identify bytes; they do not prove that compilers, solvers, kernels, release
-publishers or dependency registries are correct. `cargo --locked` binds dependencies;
+publishers or dependency registries are correct. `cargo --locked` binds the root
+dependency graph; dependency build scripts can create separate workspaces outside
+that lockfile. The [correspondence setup](transcript/README.md#gate-and-negative-controls)
+records the current Hegel engine bootstrap and its remaining provenance limit.
 CI separately installs the pinned toolchain and verified proof bundle.
 
 The `Required` check joins six gates: quality and regression tests, MSRV 1.85.0,

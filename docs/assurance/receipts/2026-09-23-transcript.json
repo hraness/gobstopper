@@ -1,7 +1,7 @@
 {
   "schema": "gobstopper.assurance-receipt.v1",
-  "raw_receipt_sha256": "d6087e999df8ab1a92be59896da4d2ec9729e06c32de25fe5dade071ace0f44d",
-  "observed_at": "2026-09-23T22:42:08.293976+00:00",
+  "raw_receipt_sha256": "9a354476bcd321811ea16e39f99a9111d24089fcddb0fac90420767855c34943",
+  "observed_at": "2026-09-23T23:13:42.643731+00:00",
   "scope": "Unbounded Lean structural list laws plus finite actual Rust dialect correspondence.",
   "bounds": "27 theorems, 20 synthetic cases, 23 steps per provider; kernel replay and both exact intended mutants.",
   "exclusions": [
@@ -59,7 +59,7 @@
     "crates/gobstopper-core/src/validation.rs": "f7735d12c5af9d86a2964ce9ab6502159a5dfe97ff74f2ef5bee07f42698219e",
     "verify/tools.lock.json": "face7de8e2a9aa8394973b9d335a0414d334642294dceccaddb3f6fe7575ebf7",
     "verify/transcript/Audit.lean": "7537b5f8eed4e4915a4a074ddefc039f0da36de426d9787e88c872418bcf7b8d",
-    "verify/transcript/README.md": "fc55ae799356be20d8fb8544f3b8493661edfee46dcbc2902df5e998f108609f",
+    "verify/transcript/README.md": "ae7d7a7263911d60ed0d3baae5aed78f7a6f33291d1004364037a36181cea478",
     "verify/transcript/Transcript.lean": "f633aa55525e6be28dc49ceb19b95d6392c56809603d65783d7315d22f0aeaf5",
     "verify/transcript/Vectors.lean": "db68fd28e4773416835088c4b67beeb4127427cd7031833c9c5a2bf32b88ca76",
     "verify/transcript/check.py": "47aaf9bae71891fd586b7df94187b27a38667dac20a7986be532cc2bd4c2ed64",
@@ -126,7 +126,7 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "b5f5b3ccd932f6d2217669e1875a5c6da5c7a8e69d0ad22f76aaae16b80f1e33",
+      "log_sha256": "13cf83815cab77dee110791fae4ba260e0f31b278a752491b069fcd9890d1679",
       "passed": true
     },
     {
@@ -158,7 +158,7 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "4375ada838b47d41087b68a797f61891d23e3a1864ff47a059e4a0eb4086ac16",
+      "log_sha256": "250fd16410b17e40df8768cb362f872856437cd0aaa68cffc17289ff473c6c8b",
       "passed": true
     },
     {
@@ -166,7 +166,7 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "34207808ac46362642c1e1b5c965cadc74d47497324a08bff3d192cc8c27c3f2",
+      "log_sha256": "2e815b70371485c4f9f00f008514d67852f124f72239169b30a2821f0b0af88e",
       "passed": true
     },
     {
@@ -182,7 +182,7 @@
       "exit_code": 101,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "78e2172a20cb9af9e672e9b19984cccad859832587be19b14b2ccdcffd54b6aa",
+      "log_sha256": "97045fac68fb9385710afbd0f8e6794926427442f3e0e8f8be8c5cd4ca725116",
       "passed": true
     },
     {
@@ -190,7 +190,7 @@
       "exit_code": 101,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "1daef33dd3a263fc62e93090b7330327e8c0e51f1d35f73e53b98391cfad63a7",
+      "log_sha256": "7cde86b11aad2fbba23b854a3a6ccf668c81db02a8c5c1ee65f5bf624002685a",
       "passed": true
     }
   ],
