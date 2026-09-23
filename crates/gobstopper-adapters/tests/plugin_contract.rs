@@ -44,7 +44,10 @@ impl Fixture {
             args: vec![],
             capabilities: vec![Capability::Strategy],
             provider_ids: vec!["codex".into()],
-            timeout_ms: 1000,
+            // Generous bound: under full-suite parallel load a trivial
+            // cat+printf child can exceed a 1s budget — the timeout is
+            // not what these tests exercise.
+            timeout_ms: 10_000,
             max_input_bytes: 4096,
             max_output_bytes: 4096,
             environment: vec![],
