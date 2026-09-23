@@ -1182,13 +1182,17 @@ fn codex_compact(
         })?;
     let mut stdin = child.stdin.take().unwrap();
     let stdout = child.stdout.take().unwrap();
-    let stderr = child.stderr.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
     std::thread::spawn(move || {
-        let _ = std::io::copy(&mut stderr.take(64 * 1024), &mut std::io::sink());
+        // Draining must outlive the child: once the reader stops, a
+        // full stderr/stdout pipe blocks the app-server mid-write —
+        // observed live as repeated init timeouts. A sink costs no
+        // memory; the channel's bound backpressures stdout.
+        let _ = std::io::copy(&mut stderr, &mut std::io::sink());
     });
     let (tx, rx) = mpsc::sync_channel::<serde_json::Value>(64);
     std::thread::spawn(move || {
-        for line in std::io::BufReader::new(stdout.take(4 * 1024 * 1024)).lines() {
+        for line in std::io::BufReader::new(stdout).lines() {
             match line {
                 Ok(text) => {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
@@ -1317,9 +1321,23 @@ fn codex_compact(
             }
         }
     })();
-    let _ = child.kill();
-    let _ = child.wait();
+    // Close stdin first so the app-server exits on EOF and releases
+    // any provider-side writer lock on the thread; SIGKILL is only a
+    // fallback — a killed server can leave the lock held and every
+    // later thread/resume then stalls behind it (observed live).
     drop(stdin);
+    let exit_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            _ if Instant::now() >= exit_deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break;
+            }
+            _ => std::thread::sleep(Duration::from_millis(100)),
+        }
+    }
     println!("codex provider compaction: {}", outcome?);
     Ok(())
 }
