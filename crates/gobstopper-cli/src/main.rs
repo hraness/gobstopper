@@ -3681,6 +3681,12 @@ fn cmd_watch(
                                     "acp /compact for {} completed but context is unchanged (provider no-op)",
                                     d.handle.session_id
                                 );
+                                // The provider ran its compactor and
+                                // found nothing to shrink — the shared
+                                // store fingerprint moves with other
+                                // sessions' writes, so only a
+                                // session-keyed cooldown bounds retries.
+                                holddown.insert(session_key.clone(), now_secs() + 3600);
                             } else {
                                 eprintln!(
                                     "provider-compacted closed devin session {} via acp /compact",
@@ -3870,10 +3876,18 @@ fn cmd_watch(
                         if let Err(e) = append_event(&default_log_path(), &ev) {
                             eprintln!("telemetry write failed (non-fatal): {e}");
                         }
-                        eprintln!(
-                            "provider-compacted closed codex session {} via thread/compact",
-                            d.handle.session_id
-                        );
+                        if noop {
+                            eprintln!(
+                                "thread/compact for {} completed but context is unchanged (provider no-op)",
+                                d.handle.session_id
+                            );
+                            holddown.insert(session_key.clone(), now_secs() + 3600);
+                        } else {
+                            eprintln!(
+                                "provider-compacted closed codex session {} via thread/compact",
+                                d.handle.session_id
+                            );
+                        }
                         if let Some(nfp) = session_fingerprint(&d) {
                             settled.insert(session_key.clone(), nfp);
                         }
@@ -4217,6 +4231,11 @@ fn cmd_watch(
                                         let after =
                                             gobstopper_adapters::claude::scan_usage(&d.handle.path)
                                                 .context_tokens;
+                                        // Provider ran /compact but the
+                                        // context did not drop — a
+                                        // no-op, not an apply (same
+                                        // honesty as devin/codex).
+                                        let noop = after > 0 && after >= ctx;
                                         let mut done = plan.clone();
                                         // The provider compacted — the
                                         // plan's elision edits were not
@@ -4231,23 +4250,29 @@ fn cmd_watch(
                                         } else {
                                             done.context_tokens_before
                                         };
-                                        let post_sha = vault::snapshot(
-                                            &d.handle.path,
-                                            d.handle.provider,
-                                            &d.handle.session_id,
-                                            Some("post-compact"),
-                                            &vault::default_root(),
-                                        )
-                                        .map(|e| e.sha256)
-                                        .ok();
+                                        let post_sha = if noop {
+                                            None
+                                        } else {
+                                            vault::snapshot(
+                                                &d.handle.path,
+                                                d.handle.provider,
+                                                &d.handle.session_id,
+                                                Some("post-compact"),
+                                                &vault::default_root(),
+                                            )
+                                            .map(|e| e.sha256)
+                                            .ok()
+                                        };
                                         let mut ev = build_event(
                                             &d,
                                             &done,
                                             "provider_compact",
-                                            "applied",
+                                            if noop { "skipped" } else { "applied" },
                                             trigger,
                                             started.elapsed().as_millis() as u64,
-                                            if after == 0 {
+                                            if noop {
+                                                Some("provider_noop")
+                                            } else if after == 0 {
                                                 Some("unresolved_context")
                                             } else {
                                                 None
@@ -4272,10 +4297,18 @@ fn cmd_watch(
                                         if let Err(e) = append_event(&default_log_path(), &ev) {
                                             eprintln!("telemetry write failed (non-fatal): {e}");
                                         }
-                                        eprintln!(
-                                            "provider-compacted closed claude session {} via /compact",
-                                            d.handle.path.display()
-                                        );
+                                        if noop {
+                                            eprintln!(
+                                                "headless claude /compact for {} completed but context is unchanged (provider no-op)",
+                                                d.handle.path.display()
+                                            );
+                                            holddown.insert(session_key.clone(), now_secs() + 3600);
+                                        } else {
+                                            eprintln!(
+                                                "provider-compacted closed claude session {} via /compact",
+                                                d.handle.path.display()
+                                            );
+                                        }
                                         if let Some(nfp) = session_fingerprint(&d) {
                                             settled.insert(session_key.clone(), nfp);
                                         }
