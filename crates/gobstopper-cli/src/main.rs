@@ -1249,7 +1249,9 @@ fn codex_compact(
     };
 
     let outcome = (|| -> Result<String> {
-        let boot = deadline(15_000);
+        // Cold start under load (compile jobs, a full watch scan) pushed
+        // a real deployment past a 15s budget twice in a row.
+        let boot = deadline(60_000);
         send(serde_json::json!({
             "method": "initialize", "id": 0,
             "params": {"clientInfo": {"name": "gobstopper", "version": env!("CARGO_PKG_VERSION")}}
