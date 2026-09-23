@@ -14,6 +14,8 @@ import {
 } from "@hraness/design-kit/react/server";
 
 import { SiteHeader, SiteFooter } from "./_components/site-chrome";
+import { HeroField } from "./hero-field";
+import { HeroGraphic } from "./hero-graphic";
 import { publishedRelease } from "./publication";
 
 
@@ -132,7 +134,8 @@ export default function Home() {
 
       <main id="main" tabIndex={-1}>
         <MarketingPage>
-          <div className="hraness-material-wall">
+          <div className="hraness-material-wall gob-opening">
+            <HeroField />
             <ProductHero
               align="start"
               actions={[
@@ -146,9 +149,10 @@ export default function Home() {
                 <MarketingProofFrame
                   className="hraness-material-pane"
                   caption="On a 333k-token Claude Code session, Claude's own autocompact cut the resume context by 82% and then said unfinished renames were done. Gobstopper's elide and compacted strategies cut about 30% and recalled the task correctly. One session, recorded on an earlier build; not a general benchmark."
-                  credit="Recorded September 17, 2026"
-                  title="Gobstopper vs. Claude autocompact"
+                  credit="Recorded September 17, 2026 · chart is illustrative"
+                  title="The sawtooth: compact early, every crossing."
                 >
+                  <HeroGraphic />
                   <pre className="transcript" tabIndex={0}><code>{`# input tokens on resume · recalled?
 no compaction     312,722  yes
 elide             219,167  yes
