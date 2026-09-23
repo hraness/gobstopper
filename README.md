@@ -1,19 +1,18 @@
 <!-- hraness:gobstopper-landing:start -->
 # gobstopper
 
-Automatic context compaction for coding-agent sessions — built-in Codex,
-Claude Code, and Devin adapters with provider-native compaction for closed
-sessions, and a bounded provider/strategy plugin protocol.
+Gobstopper compacts Claude Code, Codex, and Devin sessions at a context size
+you choose, earlier than the providers do on their own. It snapshots every
+transcript before changing it, so any compaction can be undone, and it
+measures what each strategy keeps.
 
-gobstopper is a cross-provider context compactor with exact, content-addressed
-recovery snapshots, resumable Claude Code and Codex transcript forks, and a
-measurement harness for projected savings, preserved prefix, structural
-validity, and probe recall.
-
-Run it, and it watches supported agent sessions. When a session's context
-crosses a configured threshold, gobstopper prepares a separate compacted fork
-using a strategy selected per session, provider, or preset. The source is
-snapshotted and never overwritten by standalone `apply` or `watch`.
+Run `gobstopper watch` and it follows your agent sessions. When a session's
+context crosses your threshold, Gobstopper prepares a separate compacted fork
+with the strategy you picked for that session, provider, or preset. Standalone
+`apply` and `watch` never overwrite the source transcript. For sessions a
+provider owns, including every Devin session, Gobstopper asks the provider to
+run its own compaction instead of editing files. Plugins can add strategies
+and providers.
 
 <!-- hraness:gobstopper-landing:end -->
 
@@ -109,10 +108,9 @@ session store; gobstopper does not edit Devin history. `devin --export out.json`
 can be inspected through a read-only provider plugin when offline analysis is
 needed.
 
-Compaction itself isn't free — each cycle costs one large input call and
-risks losing detail — so strategy matters. That is the actual product
-here: not "compact earlier" but "compact with the right strategy at the
-right boundary."
+Compaction isn't free. Each cycle costs one large input call and risks losing
+detail, so the strategy and the boundary matter as much as the timing.
+Choosing them well is what Gobstopper is for.
 
 ## Strategies
 

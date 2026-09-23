@@ -1,7 +1,7 @@
 export const SITE_ORIGIN = "https://gobstopper.sh";
 export const SITE_NAME = "Gobstopper";
 export const SITE_DESCRIPTION =
-  "Gobstopper watches Codex, Claude Code, and Devin sessions and compacts context at a threshold you control — so long sessions cost a fraction of the tokens and stay sharp.";
+  "Gobstopper compacts Claude Code, Codex, and Devin sessions at a context size you choose and snapshots every transcript first, so any compaction can be undone.";
 export const GITHUB_URL = "https://github.com/hraness/gobstopper";
 export const ARCHITECTURE_URL = "https://github.com/hraness/gobstopper/blob/main/docs/design.md";
 

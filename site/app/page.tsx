@@ -26,93 +26,97 @@ function TopicIcon({ slug }: Readonly<{ slug: string }>) {
 const releaseVersion = publishedRelease?.version;
 const repository = "https://github.com/hraness/gobstopper";
 
-const heading = "Compact, resume, and audit every agent session.";
+const heading = "Compact coding-agent sessions early, with a way back.";
 const summary =
-  "gobstopper is the first cross-provider context compactor that preserves a content-addressed archive of every conversation state, drives provider-native compaction for Claude Code, Codex, and Devin sessions, and scores what each compaction actually kept.";
+  "Gobstopper watches your Claude Code, Codex, and Devin sessions and compacts each one when its context passes a size you choose, well before the provider would. It saves an exact copy of the transcript first, so any compaction can be undone, and it can score what each strategy kept.";
 const footnote =
-  `Free and MIT licensed. Rust 1.85 or newer, local transcripts, no account.${releaseVersion === undefined ? " First Gobstopper release in preparation — install from source today." : ` Current verified release v${releaseVersion}.`}`;
+  `Free and open source (MIT or Apache-2.0). Needs Rust 1.85 or newer. Runs on your machine with no account.${releaseVersion === undefined ? " No release yet; install from source." : ` Latest release: v${releaseVersion}.`}`;
 
 const primitives = [
   {
     icon: "session-detection",
     label: "Session detection",
-    summary: "Scans Codex, Claude Code, and Devin session stores for live and idle sessions, reading each provider's own token-usage records — real context size where available, with a fallback estimate otherwise.",
+    summary: "Finds live and idle sessions in the Codex, Claude Code, and Devin session stores and reads each provider's own token counts. When a provider doesn't report context size, Gobstopper estimates it.",
   },
   {
     icon: "edit-ir",
-    label: "A small edit IR",
-    summary: "Every strategy lowers to the same edits — elide, inject digest, provider compact — and the host validates the candidate before publication. Provider linkage (parent chains, ordinals) is never removed, only rewritten in place within a line.",
+    label: "Three kinds of edit",
+    summary: "Every strategy reduces to the same three edits: hide stale tool output, insert a digest, or ask the provider to compact. Gobstopper validates the result before writing it and never removes the parent links and ordinals a provider needs to resume the session.",
   },
   {
     icon: "strategies",
     label: "Strategies",
-    summary: "auto picks by transcript shape; sawtooth delegates to the provider's native compaction; elide masks stale tool output; structured emits a conservative state-card placeholder; scored can rank candidates and draft state cards with a free on-device model on macOS (opt-in); agentic is reserved for a bounded editor-model backend.",
+    summary: "The default, auto, picks a strategy from the shape of the transcript. Sawtooth hands off to the provider's own compaction, elide hides stale tool output, and structured writes a conservative state card. Scored ranks what to hide and, on macOS, can draft state cards with a free on-device model if you opt in. Agentic accepts edits proposed by a program you trust.",
   },
   {
     icon: "presets-config",
     label: "Presets, plugins and config",
-    summary: "Global defaults, per-provider and per-session overrides, named presets, an explicitly-trusted legacy command hook, and versioned plugin bundles with exact artifact identity and host-side edit validation.",
+    summary: "Set defaults once, override them per provider or per session, and save named presets. Plugins are versioned bundles pinned to an exact executable, and Gobstopper checks every edit they return. The older command hook still works once you trust it explicitly.",
   },
   {
     icon: "undo-vault",
     label: "Undo vault",
-    summary: "Every apply snapshots the transcript into a content-addressed vault first. gobstopper undo restores byte-identical bytes into a new fork — the original transcript is never overwritten by a standalone compaction.",
+    summary: "Before changing anything, Gobstopper stores an exact copy of the transcript in a local vault. The undo command restores those bytes into a new fork, and a standalone compaction never overwrites the original.",
   },
   {
     icon: "telemetry-eval",
     label: "Telemetry and eval",
-    summary: "Every mutation emits a compaction event carrying vault snapshot references and realized retention scores for dashboards — `gobstopper events --retention` rolls them up per provider. gobstopper eval runs all strategies on temp copies and scores structural retention; it is a regression signal, not a live cost measurement.",
+    summary: "Each compaction is logged with a pointer to its snapshot and a score for what it kept, and gobstopper events --retention totals those scores by provider. The eval command runs every strategy on temporary copies and scores how much structure each one preserved. Treat it as a regression check, not a measure of cost savings.",
   },
 ] as const;
 
 const trust = [
   {
     label: "Transcripts are never destroyed",
-    detail: "Rewrites replace payload content inside existing lines, never deleting records, so provider resume chains stay valid. Standalone compaction publishes a separate, verified transcript copy; the source file is left unchanged. A verified snapshot exists before any byte changes, and gobstopper verify checks structural integrity after.",
+    detail: "Gobstopper snapshots a transcript before it changes a byte. A standalone compaction writes a separate copy and leaves the source file alone. Rewrites change content inside existing records and never delete one, so the provider can still resume the session, and gobstopper verify checks the result.",
   },
   {
-    label: "Provider keeps live authority",
-    detail: "On a running session Gobstopper asks the provider's own compaction machinery instead of editing files under it. Custom transcript surgery stays an offline operation on idle sessions and forks.",
+    label: "Running sessions stay with the provider",
+    detail: "While a provider is serving a session, Gobstopper asks the provider to compact it instead of editing files underneath. Custom rewrites run only on idle sessions and forks.",
   },
   {
-    label: "Honest outcomes",
-    detail: "A provider-side compaction that fails is recorded as failed — quota rejections included. Eval reports structural retention and verify findings, not measured subscription savings. Public claims distinguish occupancy models from completed benchmarks.",
+    label: "Failures are reported as failures",
+    detail: "A provider compaction that fails, including a quota rejection, is recorded as failed. Eval reports what a strategy kept and what verify found, not money saved, and this site labels projections separately from benchmark results.",
   },
 ] as const;
 
 const questions = [
   {
     question: "How much does it actually save?",
-    answer: "Compaction lowers context occupancy in a sawtooth model: average context per turn is roughly (trigger+floor)/2. A 250k/40k policy is ~3.3x lower occupancy than a 1M-window default, and 150k/20k is ~5.6x lower. These are occupancy projections, not measured subscription savings: real cost depends on cache hit rates, billing for summary turns, re-fetches from lost detail, and how often compaction runs. We report file-byte changes and observed provider usage where available; we do not claim dollar or quota savings without a completed benchmark.",
+    answer: "Compaction lowers how much context each turn carries. Context grows and drops in a sawtooth, so the average per turn is roughly (trigger + floor) / 2. A 250k/40k policy carries about 3.3x less context than a 1M-window default, and 150k/20k about 5.6x less. Those are projections, not measured savings. Real cost depends on cache hit rates, how summary turns are billed, details the agent has to fetch again, and how often compaction runs. We report file-byte changes and observed provider usage where we have them, and we don't claim dollar or quota savings without a completed benchmark.",
   },
   {
     question: "Does it edit my live session?",
-    answer: "Standalone `apply` or `watch` produces a separate, validated transcript copy and leaves the source unchanged. For a session the provider is actively serving, Gobstopper delegates to provider-native compaction — Codex thread/compact/start over the app-server protocol, Claude /compact through stream-json, Devin /compact over ACP. Local rewrites only touch idle transcripts, and always with a vault snapshot first.",
+    answer: "No. Standalone `apply` and `watch` write a separate, validated copy and leave the source unchanged. When a session belongs to the provider, Gobstopper asks the provider to compact it: `thread/compact/start` over the Codex app-server protocol, `claude --resume <id> -p /compact` for Claude Code, and `/compact` over ACP for Devin. Gobstopper rewrites files only for idle transcripts, and always takes a snapshot first.",
   },
   {
     question: "What if a compaction loses something important?",
-    answer: "gobstopper undo restores the exact bytes into a new fork, leaving the current transcript untouched. gobstopper eval replays every strategy against a transcript copy and reports probe recall — which verbatim details survived — plus post-rewrite integrity findings, so you can pick a strategy with evidence before trusting it live.",
+    answer: "`gobstopper undo` restores the exact original bytes into a new fork and leaves the current transcript untouched. To choose a strategy before you rely on it, `gobstopper eval` runs every strategy on a copy of a transcript and reports probe recall (which exact details survived) along with any integrity problems the rewrite caused.",
   },
   {
     question: "Which agents does it support?",
-    answer: "Codex, Claude Code, and Devin today, over their real session formats. Devin stays provider-owned — detection, policy, and native compaction, never transcript surgery. The edit IR is provider-neutral, so another JSONL-transcript agent needs only a small adapter.",
+    answer: "Codex, Claude Code, and Devin, each through its real session format. For Devin, Gobstopper detects sessions, applies your policy, and triggers Devin's own compaction, but never edits Devin's history. Edits are provider-neutral, so another agent that stores JSONL transcripts needs only a small adapter.",
   },
   {
     question: "Can I run my own compaction logic?",
-    answer: "Yes — a `preset.command` pipes normalized transcript JSON to a program and applies the edits it returns, or a versioned `gobstopper-plugin.json` bundle declares capabilities and a checked executable. Host-side validation bounds every proposal: no edit can grow the transcript, skip protected recent output, bypass linkage checks, or exceed digest size. Trusted subprocesses are not security sandboxes, so explicit trust and artifact identity are required.",
+    answer: "Yes. A `preset.command` sends the normalized transcript JSON to your program and applies the edits it returns. A versioned `gobstopper-plugin.json` bundle does the same with declared capabilities and a pinned executable. Gobstopper checks every proposed edit: none may grow the transcript, remove protected recent output, break the resume links, or exceed the digest size limit. Your program runs as an ordinary subprocess, not in a sandbox, so Gobstopper runs it only after you trust that exact executable.",
   },
   {
     question: "Who made it?",
-    answer: "Ben Guo, a musician and builder, formerly a founder and engineering leader at companies including Venmo and Stripe, now building from Puerto Rico. Gobstopper is published by Hraness under the MIT license.",
+    answer: "Ben Guo, a musician and builder, formerly a founder and engineering leader at companies including Venmo and Stripe, now building from Puerto Rico. Hraness publishes Gobstopper under the MIT and Apache-2.0 licenses.",
   },
 ] as const;
+
+function withCode(text: string) {
+  return text.split("`").map((part, index) => (index % 2 === 1 ? <code key={index}>{part}</code> : part));
+}
 
 const structuredData = {
   "@context": "https://schema.org",
   "@type": "FAQPage",
   mainEntity: questions.map(({ answer, question }) => ({
     "@type": "Question",
-    acceptedAnswer: { "@type": "Answer", text: answer },
+    acceptedAnswer: { "@type": "Answer", text: answer.replaceAll("`", "") },
     name: question,
   })),
 };
@@ -141,18 +145,15 @@ export default function Home() {
               frame={(
                 <MarketingProofFrame
                   className="hraness-material-pane"
-                  caption="On a 333k-token Claude session, native --autocompact 100 appended 59 records and removed 0; gobstopper compacted removed 43 stale tool records and resumed cleanly."
-                  credit="Live qualification"
-                  title="Head-to-head: gobstopper vs. Claude --autocompact"
+                  caption="On a 333k-token Claude Code session, Claude's own autocompact cut the resume context by 82% and then said unfinished renames were done. Gobstopper's elide and compacted strategies cut about 30% and recalled the task correctly. One session, recorded on an earlier build; not a general benchmark."
+                  credit="Recorded September 17, 2026"
+                  title="Gobstopper vs. Claude autocompact"
                 >
-                  <pre className="transcript" tabIndex={0}><code>{`$ claude --resume 034... --autocompact 100
-# provider added 59 records, removed 0
-
-$ gobstopper apply 034... --in-place --strategy compacted
-# elided 43 records, injected digest, resumed cleanly
-
-$ gobstopper diff 034-original 034-compacted
-removed: 43   added: 46 (43 stubs + 3 tail records)`}</code></pre>
+                  <pre className="transcript" tabIndex={0}><code>{`# tokens on resume · recalled?
+no compaction     312,722  yes
+elide             219,167  yes
+compacted         220,447  yes
+autocompact 100    56,300  no`}</code></pre>
                 </MarketingProofFrame>
               )}
               heading={heading}
@@ -163,7 +164,7 @@ removed: 43   added: 46 (43 stubs + 3 tail records)`}</code></pre>
           </div>
 
           <MarketingPrimitives
-            heading="A policy over your transcripts, not a new editor."
+            heading="You decide when to compact and how."
             headingId="model-title"
             id="model"
             items={primitives.map((primitive) => ({
@@ -172,17 +173,17 @@ removed: 43   added: 46 (43 stubs + 3 tail records)`}</code></pre>
               summary: primitive.summary,
             }))}
             label=""
-            summary="Providers compact late — near the top of the context window, where every turn is most expensive and recall is already degrading. Gobstopper moves the boundary down and lets you choose what happens there."
+            summary="Providers compact near the top of the context window, where each turn costs the most and long-context recall is weakest. Gobstopper lets you set a lower threshold and choose what happens when a session crosses it."
           />
 
           <MarketingInterfaceGrid
-            heading="One policy, three ways in."
+            heading="Run it yourself, in the background, or from your own code."
             headingId="interfaces-title"
             id="interfaces"
             interfaces={[
               {
                 label: "CLI",
-                summary: "Detect, plan, apply, verify, undo — every step inspectable before anything changes.",
+                summary: "Find sessions, preview a plan, apply it, verify the result, and undo it if you need to. Nothing changes until you apply.",
                 example: (
                   <>
                     <TopicIcon slug="cli" />
@@ -194,7 +195,7 @@ gobstopper verify <session> && gobstopper undo <session>`}</code></pre>
               },
               {
                 label: "Watcher and hooks",
-                summary: "A polling daemon that stages a plan before the threshold and publishes a validated copy when crossed — or provider hooks that snapshot and log around native compaction.",
+                summary: "The watcher prepares a plan as a session nears its threshold and writes a validated copy once it crosses. Provider hooks instead snapshot and log each time the provider compacts on its own.",
                 example: (
                   <>
                     <TopicIcon slug="watcher" />
@@ -205,7 +206,7 @@ gobstopper install-hooks   # Claude settings + Codex hooks.json`}</code></pre>
               },
               {
                 label: "Your program",
-                summary: "preset.command receives normalized transcript JSON and returns edits. A versioned plugin bundle declares capabilities and a checked executable for the same seam.",
+                summary: "A preset command receives the transcript as normalized JSON and returns edits. Package it as a versioned plugin bundle to reuse it.",
                 example: (
                   <>
                     <TopicIcon slug="custom-program" />
@@ -220,23 +221,23 @@ command = ["node", "my-editor.js"]`}</code></pre>
               },
             ]}
             label=""
-            summary="The same plans, edits, and safety rails underneath each entry point. There is no agent-only path behind the convenient one."
+            summary="All three use the same plans, edits, and checks. None of them skips the snapshot or the validation."
           />
 
           <MarketingSection
-            heading="What Gobstopper will not do."
+            heading="What Gobstopper won't do."
             headingId="boundary-title"
             id="boundary"
             label=""
-            summary="Compaction that breaks a resume chain or hides a failure is worse than none. The constraints are enforced in code, not promised in prose."
+            summary="A compaction that breaks resume or hides a failure is worse than none."
           >
             <MarketingTrustBoundary
-              heading="Small enough to trust."
+              heading="Rules the code enforces."
               headingId="kernel-title"
               id="kernel"
               items={trust}
               label=""
-              summary="These rules are enforced by the command surface and its tests, not by convention."
+              summary="Each rule is checked by the commands themselves and covered by tests."
             />
           </MarketingSection>
 
@@ -246,7 +247,7 @@ command = ["node", "my-editor.js"]`}</code></pre>
             headingId="install-title"
             id="install"
           >
-            <p className="install-note">{releaseVersion === undefined ? "First Gobstopper release in preparation — install from source" : `Current verified release · v${releaseVersion}`}</p>
+            <p className="install-note">{releaseVersion === undefined ? "No release yet. Install from source." : `Latest release: v${releaseVersion}`}</p>
             {publishedRelease === null ? (
               <>
                 <pre className="install-command" tabIndex={0}><code>{`cargo install --git ${repository} gobstopper
@@ -263,13 +264,13 @@ gobstopper --help`}</code></pre>
 gobstopper plan <session> --trigger 250000
 gobstopper watch`}</code></pre>
                 <p className="install-note">
-                  <a href={publishedRelease.verificationRun}>Public release verification</a>.{" "}
+                  <a href={publishedRelease.verificationRun}>See how this release was verified</a>.{" "}
                 </p>
               </>
             )}
             <p className="install-note">
-              Needs Rust 1.85 or newer. Reads Codex, Claude Code, and Devin session data locally;
-              nothing leaves the machine.{" "}
+              Needs Rust 1.85 or newer. Gobstopper reads Codex, Claude Code, and Devin session data on your
+              machine and sends none of it anywhere.{" "}
               <a href="/docs#install">Read the full reference</a>.
             </p>
           </MarketingInstallPanel>
@@ -280,7 +281,7 @@ gobstopper watch`}</code></pre>
             id="questions"
             label=""
             questions={questions.map(({ answer, question }) => ({
-              answer: <p>{answer}</p>,
+              answer: <p>{withCode(answer)}</p>,
               question,
             }))}
           />
@@ -299,7 +300,7 @@ gobstopper watch`}</code></pre>
             <p>
               Gobstopper is built by Ben Guo, a musician and builder, formerly a founder and
               engineering leader at companies including Venmo and Stripe, now building from
-              Puerto Rico. It is published by Hraness under the MIT license.
+              Puerto Rico. Hraness publishes it under the MIT and Apache-2.0 licenses.
             </p>
           </MarketingMaker>
 
@@ -308,25 +309,25 @@ gobstopper watch`}</code></pre>
               {
                 heading: "The agent platform",
                 headingId: "related-tools",
-                summary: "The layer your agent runs through — sessions, accounts, web reads, and the models behind them.",
+                summary: "Tools for the accounts, web reads, and models your agent runs on.",
                 items: [
                   {
                     name: "Ghostget",
                     href: "https://ghostget.com",
-                    role: "A bounded bridge to provider data",
-                    relationship: "Ghostget bounds what each web read puts into the context Gobstopper compacts — a measured article costs about 3,800 tokens where the raw page carries 36,000.",
+                    role: "A fast web gateway for agents",
+                    relationship: "Ghostget shrinks each web read before it reaches the context. One measured article came to about 3,800 tokens, against 36,000 for the raw page.",
                   },
                   {
                     name: "xcb",
                     href: "https://xcb.sh",
-                    role: "A metaharness for agent subscriptions",
-                    relationship: "xcb runs the subscriptions behind the sessions Gobstopper compacts — one terminal workspace with account custody and visible token spend.",
+                    role: "One router for your Claude, Codex, and Devin subscriptions",
+                    relationship: "xcb runs the subscriptions behind your sessions from one terminal workspace and shows the token spend on each account.",
                   },
                   {
                     name: "Aicharts",
                     href: "https://aicharts.io",
                     role: "AI model benchmarks and usage inspection",
-                    relationship: "Aicharts measures the spend Gobstopper cuts — benchmarks for the models your agent uses, and local inspection of what a session actually cost.",
+                    relationship: "Aicharts benchmarks the models your agent uses and shows what each local session cost.",
                   },
                 ],
               },
@@ -361,10 +362,10 @@ gobstopper watch`}</code></pre>
                 ],
               },
             ]}
-            heading="From the same workshop."
+            heading="More from Hraness."
             headingId="related-title"
             label="Related"
-            summary="Each Hraness product owns one private domain and gives your agent the same kind of access: local, bounded, and inspectable."
+            summary="Other tools your agent can use alongside Gobstopper."
           />
 
           <MarketingCallToAction
@@ -373,7 +374,7 @@ gobstopper watch`}</code></pre>
               { href: "/docs", label: "Read the docs" },
             ]}
             footnote={footnote}
-            heading="Let long sessions stay long — and cheap."
+            heading="Keep long sessions going for less."
             headingId="cta-title"
             summary="Set a trigger, pick a strategy, and stop paying for the same 900k tokens on every turn."
           />
