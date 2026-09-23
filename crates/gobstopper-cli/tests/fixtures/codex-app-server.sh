@@ -62,6 +62,8 @@ while IFS= read -r line; do
           if [ "$thread" = early-foreign-failure-thread ]; then
             compact_item
             completed
+          else
+            exit 0
           fi ;;
         wrong-turn-thread)
           printf '{"id":2,"result":{}}\n'
@@ -70,7 +72,11 @@ while IFS= read -r line; do
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"compact-turn","status":"failed"}}}\n' "$thread" ;;
         no-item-thread)
           printf '{"id":2,"result":{}}\n'
-          completed ;;
+          completed
+          exit 0 ;;
+        no-terminal-open-thread)
+          printf '{"id":2,"result":{}}\n'
+          compact_item ;;
         oversized-thread)
           printf '{"id":2,"result":{}}\n'
           awk 'BEGIN {for (i=0;i<1048577;i++) printf "x"}' ;;

@@ -2,20 +2,25 @@ use serde_json::{json, Value};
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, SystemTime};
+
+static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture(PathBuf);
 
 impl Fixture {
     fn new() -> Self {
         let root = std::env::temp_dir().join(format!(
-            "gobstopper-score-{}-{}",
+            "gobstopper-score-{}-{}-{}",
             std::process::id(),
             SystemTime::now()
                 .duration_since(SystemTime::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
         ));
+        fs::create_dir(&root).unwrap();
         fs::create_dir_all(root.join("codex/sessions")).unwrap();
         fs::create_dir_all(root.join("config/gobstopper")).unwrap();
         fs::write(

@@ -627,3 +627,14 @@ resolve or an honest bounded claim; do not weaken the property just to turn gree
   the published integration candidate. Final branch/head, merge and guarded
   artifact-install outcomes are recorded in PR 90 and the retained delivery
   receipt, rather than predicted by this source document.
+
+- 2026-09-23, delivery review: Linux reproduced all six required gates after the
+  Lean setup explicitly prepared a dev dependency's nested engine cache. Root
+  lockfile coverage and that nested provenance limitation are documented.
+  Independent review retained 19 individually assessed requested-output/numeric
+  CodeQL findings without suppression and repaired separate background watch
+  disclosures. Final regression work also isolated two immediate flock-release
+  tests from unrelated sibling forks, removed clock-only fixture-name collisions,
+  and separated mismatched protocol EOF from a real post-ack silence deadline.
+  Assertions, production deadlines and suite inventories remain intact. Final
+  refreshed receipts and exact-head delivery results are tracked in PR 90.

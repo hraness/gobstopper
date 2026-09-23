@@ -539,6 +539,93 @@ fn native_provider_errors_do_not_echo_private_provider_output() {
     assert!(!String::from_utf8_lossy(&output.stderr).contains("private-transcript-marker"));
     assert!(!String::from_utf8_lossy(&output.stdout).contains("private-transcript-marker"));
     assert_eq!(f.events()[0]["outcome"], "failed");
+
+    // Ordinary detached preparation and its failures use the same background
+    // privacy boundary as native dispatch. Identities remain in private events.
+    for failure in [None, Some("copy"), Some("plan")] {
+        let f = Fixture::new();
+        let session = "private-watch-session-sentinel";
+        let source = f.0.join(format!(
+            "claude/projects/private-watch-path-sentinel/{session}.jsonl"
+        ));
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        let records = [
+            serde_json::json!({"type":"assistant","uuid":"a","parentUuid":null,"sessionId":session,
+                "message":{"role":"assistant","content":[{"type":"tool_use","id":"call","name":"Read","input":{}}]}}),
+            serde_json::json!({"type":"user","uuid":"b","parentUuid":"a","sessionId":session,
+                "message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call","content":"private-watch-content-sentinel".repeat(500)}]}}),
+        ];
+        let original = records
+            .iter()
+            .map(|record| format!("{record}\n"))
+            .collect::<String>();
+        fs::write(&source, &original).unwrap();
+        f.idle(&source);
+        let strategy = if failure == Some("plan") {
+            "private-watch-strategy-sentinel"
+        } else {
+            "elide"
+        };
+        fs::write(
+            f.0.join("config/gobstopper/config.toml"),
+            format!("[policy]\nstrategy='{strategy}'\ntrigger_tokens=2\nfloor_tokens=1\nmin_savings_tokens=0\nkeep_recent_tool_outputs=0\n"),
+        ).unwrap();
+        if failure == Some("copy") {
+            fs::create_dir_all(f.0.join("data/gobstopper")).unwrap();
+            fs::write(f.0.join("data/gobstopper/vault"), "private-vault-sentinel").unwrap();
+        }
+        let output = f
+            .command(&["watch", "--once", "--provider", "claude"])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(output.stdout.is_empty());
+        let diagnostic = String::from_utf8(output.stderr).unwrap();
+        assert_eq!(
+            diagnostic,
+            match failure {
+                None => "prepared compacted fork\n",
+                Some("copy") => "compact transcript failed: copy_prepare_failed\n",
+                _ => "plan transcript failed: policy_resolution_failed\n",
+            }
+        );
+        assert!(!diagnostic.contains("private-"));
+        assert!(!diagnostic.contains(f.0.to_str().unwrap()));
+        assert_eq!(fs::read_to_string(&source).unwrap(), original);
+        assert_eq!(
+            fs::read_dir(source.parent().unwrap()).unwrap().count(),
+            if failure.is_none() { 2 } else { 1 }
+        );
+    }
+
+    // Discovery can read a valid tail while the full transcript has invalid
+    // UTF-8 earlier. The adapter error includes its path; watch must not echo it.
+    let f = Fixture::new();
+    let source = f.0.join("codex/sessions/rollout-fixture.jsonl");
+    let mut original = b"{\"type\":\"session_meta\",\"payload\":{\"id\":\"private-watch-session-sentinel\",\"cwd\":\"/private-watch-path-sentinel\"}}\n\xff\n".to_vec();
+    original.extend_from_slice(
+        serde_json::json!({"padding":"x".repeat(600_000)})
+            .to_string()
+            .as_bytes(),
+    );
+    original.extend_from_slice(b"\n{\"type\":\"token_usage_record\",\"payload\":{\"usage\":{\"input_tokens\":5000,\"output_tokens\":20},\"thread_token_usage\":{\"input_tokens\":5000}}}\n");
+    fs::write(&source, &original).unwrap();
+    f.idle(&source);
+    let output = f
+        .command(&["watch", "--once", "--provider", "codex"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "load transcript failed: transcript_read_failed\n"
+    );
+    assert_eq!(fs::read(source).unwrap(), original);
 }
 
 #[test]
@@ -647,7 +734,7 @@ fn legacy_uncertainty_and_malformed_watch_state_fail_closed() {
         fs::write(
             &state,
             if damaged {
-                "{torn".to_string()
+                serde_json::json!({"generation":"private-watch-state-sentinel"}).to_string()
             } else {
                 serde_json::json!({"generation":8,"holddown":{key:1}}).to_string()
             },
@@ -655,6 +742,7 @@ fn legacy_uncertainty_and_malformed_watch_state_fail_closed() {
         .unwrap();
         let output = f.native_codex("noop").output().unwrap();
         assert_eq!(output.status.success(), !damaged);
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("private-watch-state-sentinel"));
         assert!(!f.0.join("codex/requests.log").exists());
         if !damaged {
             let state: serde_json::Value =

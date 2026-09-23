@@ -14,6 +14,8 @@ tracked in [PR 90](https://github.com/hraness/gobstopper/pull/90).
 - [codeql-triage.json](codeql-triage.json): all 21 baseline alerts with individual
   authorization/source/sink review. These records do not dismiss or suppress a
   scanner finding. Source repair and a fresh scan are different evidence.
+- [codeql-pr90-review.md](codeql-pr90-review.md): individual dispositions for the
+  19 PR findings, separate background diagnostic repairs, and scanner limits.
 - [qualification.json](qualification.json): provider/platform/mode matrix. No live
   native cell is qualified; released CLI native dispatch is guarded, including
   configurations that previously opted in to automatic closed-session compaction.

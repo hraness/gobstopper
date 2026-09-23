@@ -1157,8 +1157,8 @@ fn emit_event(
         duration_ms,
         error_code,
     );
-    if let Err(e) = append_event(&default_log_path(), &ev) {
-        eprintln!("telemetry write failed (non-fatal): {e}");
+    if append_event(&default_log_path(), &ev).is_err() {
+        eprintln!("telemetry write failed (non-fatal): event_append_failed");
     }
 }
 
@@ -1276,8 +1276,8 @@ fn record_native_completion(
             }
         }
     }
-    if let Err(error) = append_event(&default_log_path(), &event) {
-        eprintln!("telemetry write failed (non-fatal): {error}");
+    if append_event(&default_log_path(), &event).is_err() {
+        eprintln!("telemetry write failed (non-fatal): event_append_failed");
     }
     eprintln!(
         "native {} compaction: {}{}",
@@ -3770,8 +3770,9 @@ fn load_watch_state(path: &Path) -> Result<WatchState> {
     if bytes.len() as u64 > MAX_STATE_BYTES {
         bail!("watch state exceeds byte bound");
     }
-    let mut state: WatchState = serde_json::from_slice(&bytes)
-        .context("watch state is malformed; preserve it for repair before dispatch")?;
+    let mut state: WatchState = serde_json::from_slice(&bytes).map_err(|_| {
+        anyhow::anyhow!("watch state is malformed; preserve it for repair before dispatch")
+    })?;
     if state.generation > WATCH_STATE_GENERATION {
         bail!("watch state was written by a newer protocol; downgrade refused");
     }
@@ -3941,6 +3942,9 @@ fn cmd_watch(
                     delegated_ctx: delegated_ctx.clone(),
                 },
             )
+            .map_err(|_| {
+                anyhow::anyhow!("persist watch state failed; repair required before dispatch")
+            })
         }};
     }
     // Resolved once: the claude binary path doesn't change mid-watch.
@@ -4009,6 +4013,7 @@ fn cmd_watch(
             );
             let Ok(resolved) = cfg.resolve(d.handle.provider, &d.handle.session_id, None, None)
             else {
+                eprintln!("plan transcript failed: policy_resolution_failed");
                 continue;
             };
             if legacy_unresolved.contains(&session_key) {
@@ -4226,7 +4231,9 @@ fn cmd_watch(
                             continue;
                         }
                     };
-                    operation.dispatch()?;
+                    operation
+                        .dispatch()
+                        .map_err(|_| anyhow::anyhow!("native dispatch checkpoint failed"))?;
                     let outcome = gobstopper_adapters::devin::acp_compact_in_home(
                         operation.binary(),
                         &d.handle.session_id,
@@ -4269,14 +4276,20 @@ fn cmd_watch(
                                 trigger,
                                 started,
                             );
-                            operation.finish(
-                                observed,
-                                Some(native_operations::TerminalEvidence {
-                                    session_id: d.handle.session_id.clone(),
-                                    turn_id: None,
-                                    item_id: None,
-                                }),
-                            )?;
+                            operation
+                                .finish(
+                                    observed,
+                                    Some(native_operations::TerminalEvidence {
+                                        session_id: d.handle.session_id.clone(),
+                                        turn_id: None,
+                                        item_id: None,
+                                    }),
+                                )
+                                .map_err(|_| {
+                                    anyhow::anyhow!(
+                                        "native completion checkpoint failed; outcome unresolved"
+                                    )
+                                })?;
                             if observed == Some(true) {
                                 if let Some(nfp) = session_fingerprint(&d) {
                                     settled.insert(session_key.clone(), nfp);
@@ -4288,7 +4301,11 @@ fn cmd_watch(
                             continue;
                         }
                         Err(_error) => {
-                            operation.finish(None, None)?;
+                            operation.finish(None, None).map_err(|_| {
+                                anyhow::anyhow!(
+                                    "native completion checkpoint failed; outcome unresolved"
+                                )
+                            })?;
                             let failed = CompactionPlan {
                                 strategy: resolved.strategy.clone(),
                                 rationale: "auto (closed devin): acp /compact".to_string(),
@@ -4306,8 +4323,10 @@ fn cmd_watch(
                                 Some("provider_rejected"),
                             );
                             ev.snapshot_before_sha256 = Some(pre_snapshot.sha256.clone());
-                            if let Err(e) = append_event(&default_log_path(), &ev) {
-                                eprintln!("telemetry write failed (non-fatal): {e}");
+                            if append_event(&default_log_path(), &ev).is_err() {
+                                eprintln!(
+                                    "telemetry write failed (non-fatal): event_append_failed"
+                                );
                             }
                             // The bridge can lose a prompt response before it sees
                             // the provider's started event. Any bridge error may
@@ -4407,7 +4426,9 @@ fn cmd_watch(
                         continue;
                     }
                 };
-                operation.dispatch()?;
+                operation
+                    .dispatch()
+                    .map_err(|_| anyhow::anyhow!("native dispatch checkpoint failed"))?;
                 let outcome = codex_compact(
                     operation.binary(),
                     &d.handle.session_id,
@@ -4427,7 +4448,11 @@ fn cmd_watch(
                         last_fire.insert(session_key.clone(), std::time::Instant::now());
                         let observed =
                             record_native_completion(&d, &done, &pre_snapshot, trigger, started);
-                        operation.finish(observed, Some(terminal))?;
+                        operation.finish(observed, Some(terminal)).map_err(|_| {
+                            anyhow::anyhow!(
+                                "native completion checkpoint failed; outcome unresolved"
+                            )
+                        })?;
                         if observed == Some(true) {
                             if let Some(nfp) = session_fingerprint(&d) {
                                 settled.insert(session_key.clone(), nfp);
@@ -4440,7 +4465,11 @@ fn cmd_watch(
                         }
                     }
                     Err(e) => {
-                        operation.finish(None, None)?;
+                        operation.finish(None, None).map_err(|_| {
+                            anyhow::anyhow!(
+                                "native completion checkpoint failed; outcome unresolved"
+                            )
+                        })?;
                         let failed = CompactionPlan {
                             strategy: resolved.strategy.clone(),
                             rationale: "auto (closed codex): thread/compact".to_string(),
@@ -4468,8 +4497,8 @@ fn cmd_watch(
                             }),
                         );
                         ev.snapshot_before_sha256 = Some(pre_snapshot.sha256.clone());
-                        if let Err(e2) = append_event(&default_log_path(), &ev) {
-                            eprintln!("telemetry write failed (non-fatal): {e2}");
+                        if append_event(&default_log_path(), &ev).is_err() {
+                            eprintln!("telemetry write failed (non-fatal): event_append_failed");
                         }
                         eprintln!("codex thread/compact failed: provider outcome unresolved");
                         // Terminal provider outcomes hold the session
@@ -4537,8 +4566,10 @@ fn cmd_watch(
                     }
                     let pre_snapshot = match snapshot_before_edit(&d, "pre-compact") {
                         Ok(entry) => entry,
-                        Err(error) => {
-                            eprintln!("headless claude /compact skipped: pre-compact snapshot failed ({error})");
+                        Err(_) => {
+                            eprintln!(
+                                "headless claude /compact skipped: pre-compact snapshot failed"
+                            );
                             continue;
                         }
                     };
@@ -4566,7 +4597,9 @@ fn cmd_watch(
                             continue;
                         }
                     };
-                    operation.dispatch()?;
+                    operation
+                        .dispatch()
+                        .map_err(|_| anyhow::anyhow!("native dispatch checkpoint failed"))?;
                     let outcome = gobstopper_adapters::claude::headless_compact_in_home(
                         operation.binary(),
                         &d.handle.session_id,
@@ -4583,14 +4616,20 @@ fn cmd_watch(
                                 trigger,
                                 started,
                             );
-                            operation.finish(
-                                observed,
-                                Some(native_operations::TerminalEvidence {
-                                    session_id: d.handle.session_id.clone(),
-                                    turn_id: None,
-                                    item_id: None,
-                                }),
-                            )?;
+                            operation
+                                .finish(
+                                    observed,
+                                    Some(native_operations::TerminalEvidence {
+                                        session_id: d.handle.session_id.clone(),
+                                        turn_id: None,
+                                        item_id: None,
+                                    }),
+                                )
+                                .map_err(|_| {
+                                    anyhow::anyhow!(
+                                        "native completion checkpoint failed; outcome unresolved"
+                                    )
+                                })?;
                             if observed == Some(true) {
                                 if let Some(nfp) = session_fingerprint(&d) {
                                     settled.insert(session_key.clone(), nfp);
@@ -4601,7 +4640,11 @@ fn cmd_watch(
                             }
                         }
                         Err(_error) => {
-                            operation.finish(None, None)?;
+                            operation.finish(None, None).map_err(|_| {
+                                anyhow::anyhow!(
+                                    "native completion checkpoint failed; outcome unresolved"
+                                )
+                            })?;
                             let mut event = build_event(
                                 &d,
                                 &done,
@@ -4612,8 +4655,10 @@ fn cmd_watch(
                                 Some("provider_rejected"),
                             );
                             event.snapshot_before_sha256 = Some(pre_snapshot.sha256);
-                            if let Err(error) = append_event(&default_log_path(), &event) {
-                                eprintln!("telemetry write failed (non-fatal): {error}");
+                            if append_event(&default_log_path(), &event).is_err() {
+                                eprintln!(
+                                    "telemetry write failed (non-fatal): event_append_failed"
+                                );
                             }
                             eprintln!("headless claude /compact outcome unresolved; automatic replay blocked");
                             // A failed/timeout process can already have changed the
@@ -4630,14 +4675,11 @@ fn cmd_watch(
             }
             let (transcript, source_sha256) = match copy::load_bound(d.handle.clone()) {
                 Ok(t) => t,
-                Err(e) => {
+                Err(_) => {
                     if let Some(fp) = fp {
                         settled.insert(session_key.clone(), fp);
                     }
-                    eprintln!(
-                        "load {} failed: {e}",
-                        d.handle.cwd.as_deref().unwrap_or(&d.handle.path).display()
-                    );
+                    eprintln!("load transcript failed: transcript_read_failed");
                     continue;
                 }
             };
@@ -4727,15 +4769,9 @@ fn cmd_watch(
                         }
                         continue;
                     }
-                    let r = copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root())
-                        .map(|receipt| {
-                            eprintln!("prepared copy {}", receipt.path.display());
-                            if let Some(sha) = &receipt.snapshot_manifest_sha256 {
-                                eprintln!("recovery snapshot: {sha}");
-                            }
-                        });
+                    let r = copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root());
                     match r {
-                        Ok(()) => {
+                        Ok(_) => {
                             last_fire.insert(session_key.clone(), std::time::Instant::now());
                             emit_event(
                                 &d,
@@ -4746,17 +4782,14 @@ fn cmd_watch(
                                 started.elapsed().as_millis() as u64,
                                 None,
                             );
-                            eprintln!(
-                                "prepared compacted fork for {}",
-                                d.handle.cwd.as_deref().unwrap_or(&d.handle.path).display()
-                            );
+                            eprintln!("prepared compacted fork");
                             // The fork does not touch the source; until the
                             // source changes there is nothing new to prepare.
                             if let Some(fp) = &fp {
                                 settled.insert(session_key.clone(), fp.clone());
                             }
                         }
-                        Err(e) => {
+                        Err(_) => {
                             emit_event(
                                 &d,
                                 &plan,
@@ -4766,10 +4799,7 @@ fn cmd_watch(
                                 started.elapsed().as_millis() as u64,
                                 Some("apply_failed"),
                             );
-                            eprintln!(
-                                "compact {} failed: {e}",
-                                d.handle.cwd.as_deref().unwrap_or(&d.handle.path).display()
-                            );
+                            eprintln!("compact transcript failed: copy_prepare_failed");
                             if let Some(fp) = &fp {
                                 settled.insert(session_key.clone(), fp.clone());
                             }
@@ -4781,14 +4811,11 @@ fn cmd_watch(
                         settled.insert(session_key.clone(), fp.clone());
                     }
                 }
-                Err(e) => {
+                Err(_) => {
                     if let Some(fp) = &fp {
                         settled.insert(session_key.clone(), fp.clone());
                     }
-                    eprintln!(
-                        "plan {} failed: {e}",
-                        d.handle.cwd.as_deref().unwrap_or(&d.handle.path).display()
-                    );
+                    eprintln!("plan transcript failed: plan_failed");
                 }
             }
         }
@@ -5780,16 +5807,38 @@ mod tests {
         let error =
             codex_compact(&stub_codex(), "wrong-turn-thread", Some(&dir), 1_000).unwrap_err();
         assert!(error.to_string().contains("turn failed"), "{error:#}");
-        let error = codex_compact(&stub_codex(), "no-item-thread", Some(&dir), 100).unwrap_err();
-        assert!(error.to_string().contains("outcome unknown"), "{error:#}");
-        let error = codex_compact(
-            &stub_codex(),
+        for thread in [
+            "no-item-thread",
             "uncorrelated-failure-thread",
-            Some(&dir),
-            100,
-        )
-        .unwrap_err();
-        assert!(error.to_string().contains("outcome unknown"), "{error:#}");
+            "no-terminal-open-thread",
+        ] {
+            fs::remove_file(dir.join("requests.log")).unwrap();
+            let started = std::time::Instant::now();
+            // Correlation failures close after their deliberately unmatched
+            // notifications. The separate open fixture exercises the actual
+            // terminal deadline, with the normal fixture startup allowance.
+            let error = codex_compact(&stub_codex(), thread, Some(&dir), 1_000).unwrap_err();
+            assert!(
+                error.to_string().starts_with("provider outcome unknown"),
+                "{thread}: {error:#}"
+            );
+            assert!(
+                !error.to_string().contains("dispatch response"),
+                "{thread}: {error:#}"
+            );
+            let log = fs::read_to_string(dir.join("requests.log")).unwrap();
+            let requests: Vec<serde_json::Value> = log
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            assert_eq!(requests.len(), 4, "{thread}");
+            assert_eq!(requests[3]["method"], "thread/compact/start", "{thread}");
+            assert_eq!(requests[3]["params"]["threadId"], thread);
+            if thread == "no-terminal-open-thread" {
+                assert!(started.elapsed() >= std::time::Duration::from_millis(1_000));
+                assert!(started.elapsed() < std::time::Duration::from_secs(10));
+            }
+        }
         fs::remove_dir_all(dir).unwrap();
     }
 

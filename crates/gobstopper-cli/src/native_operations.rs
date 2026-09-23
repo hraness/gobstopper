@@ -928,6 +928,39 @@ mod tests {
         }
     }
 
+    /// An unrelated sibling test may fork while this test owns a flock. Even
+    /// CLOEXEC descriptors remain open in that child until exec, so closing our
+    /// copy alone need not release custody immediately. Test the drop invariant
+    /// after exec in a process with no sibling tests, without weakening lock()
+    /// or retrying a busy result. The reviewed runner bounds and reaps the child.
+    fn isolated_lock_test_child(name: &str) -> bool {
+        const SELECTOR: &str = "GOBSTOPPER_NATIVE_LOCK_TEST_CHILD";
+        if std::env::var(SELECTOR).ok().as_deref() == Some(name) {
+            return true;
+        }
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command
+            .args(["--exact", name, "--test-threads=1", "--color=never"])
+            .env(SELECTOR, name);
+        let output =
+            gobstopper_adapters::plugins::run_bounded(command, Vec::new(), 10_000, 64 * 1024)
+                .expect("isolated lock test must finish successfully within its process bounds");
+        let output = String::from_utf8(output).unwrap();
+        assert!(output.lines().any(|line| line == "running 1 test"));
+        assert!(output
+            .lines()
+            .any(|line| line == format!("test {name} ... ok")));
+        let outcomes: Vec<_> = output
+            .lines()
+            .filter(|line| line.starts_with("test result:"))
+            .collect();
+        assert_eq!(outcomes.len(), 1);
+        assert!(
+            outcomes[0].starts_with("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; ")
+        );
+        false
+    }
+
     #[test]
     fn journal_accepts_terminal_history_but_rejects_uncertain_replay() {
         let f = Fixture::new();
@@ -1004,6 +1037,11 @@ mod tests {
 
     #[test]
     fn failed_dispatch_persistence_never_authorizes_a_provider_call() {
+        if !isolated_lock_test_child(
+            "native_operations::tests::failed_dispatch_persistence_never_authorizes_a_provider_call",
+        ) {
+            return;
+        }
         use faults::Stage::*;
         for stage in [BeforeWrite, PartialWrite, AfterWrite, BeforeSync, AfterSync] {
             let fixture = Fixture::new();
@@ -1015,6 +1053,12 @@ mod tests {
             prepared.binary_sha256 = binary_sha256;
             fixture.read(&[prepared.clone()]).unwrap();
             let custody = open_regular(&fixture.0.join("lock"), true, true).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::fd::AsRawFd;
+                let flags = unsafe { libc::fcntl(custody.as_raw_fd(), libc::F_GETFD) };
+                assert!(flags >= 0 && flags & libc::FD_CLOEXEC != 0);
+            }
             lock(&custody).unwrap();
             let mut operation = Operation {
                 file: open_regular(&fixture.0.join("journal"), true, false).unwrap(),
@@ -1138,6 +1182,11 @@ mod tests {
 
     #[test]
     fn independent_openers_share_custody_until_owner_releases() {
+        if !isolated_lock_test_child(
+            "native_operations::tests::independent_openers_share_custody_until_owner_releases",
+        ) {
+            return;
+        }
         let f = Fixture::new();
         let path = f.0.join("lock");
         let first = open_regular(&path, true, true).unwrap();

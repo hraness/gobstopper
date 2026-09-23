@@ -1,18 +1,22 @@
 //! Process fixtures only: no installed provider, account, or user session.
 #![cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{fs, path::PathBuf, time::Duration};
+
+static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture(PathBuf);
 impl Fixture {
     fn new(mode: &str) -> Self {
         let path = std::env::temp_dir().join(format!(
-            "gobstopper-native-child-{}-{}-{mode}",
+            "gobstopper-native-child-{}-{}-{}-{mode}",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .unwrap()
-                .as_nanos()
+                .as_nanos(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed)
         ));
         fs::create_dir(&path).unwrap();
         let script = path.join("provider");
