@@ -597,7 +597,11 @@ With `[provider.codex] auto_compact_closed`, `watch` drives
 `codex app-server` (pre/post vault snapshots + realized retention on the
 event, same as the devin acp path). Multi-agent v2 sub-agent threads cannot
 be resumed by the app-server and are skipped (`watch-apply:sub-agent`
-events); plain forks resume normally.
+events); plain forks resume normally. Terminal provider outcomes — quota
+rejections, structural resume failures, unconfirmed turns — suppress the
+session on a session-keyed cooldown (a failed turn still rewrites the
+rollout, so a fingerprint-settle cannot hold); transient errors like a
+missing `codex` binary retry on the next pass.
 
 ## Layout
 
