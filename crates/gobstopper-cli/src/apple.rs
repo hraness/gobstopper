@@ -1,27 +1,25 @@
 //! Shared Apple on-device bridge plumbing for gobstopper's local-model
 //! features (the `apple` scorer and `apple` digest writer).
 //!
-//! One persistent `apple-foundation` bridge process serves every feature in
-//! the process: the on-device model is serial anyway, so requests queue
-//! in-process rather than fanning out. Resolution order for the bridge
-//! binary mirrors the scorer docs: `GOBSTOPPER_APPLE_BRIDGE` → sibling of
+//! Each uncached request uses one bounded, owned `--once` process. Requests
+//! serialize in-process, with the deadline including queue time. Resolution for
+//! an already-installed bridge follows the scorer docs:
+//! `GOBSTOPPER_APPLE_BRIDGE` → sibling of
 //! the gobstopper binary → `~/.local/share/gobstopper/apple-bridge`
-//! (auto-built via swiftc when absent).
+//! (missing binaries cause mechanical fallback; inference never builds tools).
 //!
 //!   GOBSTOPPER_APPLE_BRIDGE     - explicit bridge binary path
-//!   GOBSTOPPER_APPLE_TIMEOUT_MS - 180000 (first request pays model warm-up)
+//!   GOBSTOPPER_APPLE_TIMEOUT_MS - 180000 (uncached requests may pay model warm-up)
 
 use std::collections::{HashMap, HashSet};
-use std::io::{BufRead, BufReader};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use anyhow::Context;
 use sha2::{Digest, Sha256};
 
-/// Bridge binary resolution. The managed share path rebuilds automatically
-/// when the embedded bridge source changes; env/sibling paths are
-/// user-managed and used as-is.
+/// Resolve an installed bridge without invoking a compiler or changing files.
 pub(crate) fn resolve_bridge() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("GOBSTOPPER_APPLE_BRIDGE") {
         let path = PathBuf::from(path);
@@ -35,7 +33,7 @@ pub(crate) fn resolve_bridge() -> Option<PathBuf> {
     }
     let installed = std::env::var_os("HOME")
         .map(|h| PathBuf::from(h).join(".local/share/gobstopper/apple-bridge"))?;
-    apple_foundation::ensure_bridge(&installed).ok()
+    installed.is_file().then_some(installed)
 }
 
 pub(crate) fn timeout_ms() -> u64 {
@@ -46,55 +44,160 @@ pub(crate) fn timeout_ms() -> u64 {
         .clamp(100, 600_000)
 }
 
-/// Live availability check against the bridge binary. Prints the model's
-/// reason on stderr when unavailable so every caller reports once.
+/// Bounded availability check. Provider diagnostics are never echoed.
 pub(crate) fn available(bridge: &Path) -> bool {
-    match apple_foundation::check(&[bridge.to_string_lossy().into_owned()]) {
-        Ok(a) if a.available => true,
-        Ok(a) => {
-            eprintln!(
-                "apple: model unavailable ({})",
-                a.reason.as_deref().unwrap_or("unknown")
-            );
-            false
+    let mut command = inference_command(bridge);
+    command.arg("--check");
+    gobstopper_adapters::plugins::run_bounded(command, Vec::new(), 15_000, 32 * 1024)
+        .ok()
+        .and_then(|raw| crate::mcp::strict_json(&raw).ok())
+        .is_some_and(|value| {
+            value.get("available").and_then(serde_json::Value::as_bool) == Some(true)
+        })
+}
+
+fn inference_command(path: &Path) -> std::process::Command {
+    let mut command = std::process::Command::new(path);
+    for key in [
+        "AI_GATEWAY_API_KEY",
+        "GOBSTOPPER_LLM_API_KEY",
+        "TYPESAFE_API_KEY",
+        "GOBSTOPPER_JEV_API_KEY",
+        "GOBSTOPPER_CURL_BEARER",
+    ] {
+        command.env_remove(key);
+    }
+    command
+}
+
+fn binary_identity(path: &Path) -> anyhow::Result<[u8; 32]> {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options
+        .open(path)
+        .map_err(|_| anyhow::anyhow!("bridge_unavailable"))?;
+    const MAX: u64 = 512 * 1024 * 1024;
+    let meta = file
+        .metadata()
+        .map_err(|_| anyhow::anyhow!("bridge_unavailable"))?;
+    anyhow::ensure!(
+        meta.is_file() && meta.len() <= MAX,
+        "bridge_identity_invalid"
+    );
+    let mut reader = file.take(MAX + 1);
+    let mut hasher = Sha256::new();
+    let mut count = 0u64;
+    let mut bytes = [0u8; 64 * 1024];
+    loop {
+        let n = reader
+            .read(&mut bytes)
+            .map_err(|_| anyhow::anyhow!("bridge_identity_invalid"))?;
+        if n == 0 {
+            break;
         }
-        Err(e) => {
-            eprintln!("apple: availability check failed: {e:#}");
-            false
+        count += n as u64;
+        anyhow::ensure!(count <= MAX, "bridge_identity_invalid");
+        hasher.update(&bytes[..n]);
+    }
+    Ok(hasher.finalize().into())
+}
+
+/// Stable, owner-controlled executable paths are assumed between hashing and
+/// exec. This identifies client bytes, not opaque Apple model weights.
+pub(crate) struct Bridge {
+    path: PathBuf,
+    identity: [u8; 32],
+    timeout_ms: u64,
+}
+
+impl Bridge {
+    pub(crate) fn request(
+        &self,
+        request: &apple_foundation::Request,
+    ) -> anyhow::Result<serde_json::Value> {
+        use std::time::{Duration, Instant};
+        static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let max = request.max_output_bytes.unwrap_or(16_384);
+        anyhow::ensure!(
+            !request.prompt.is_empty()
+                && request.prompt.len() <= 32_768
+                && request
+                    .instructions
+                    .as_ref()
+                    .is_none_or(|s| s.len() <= 4096)
+                && (1..=262_144).contains(&max),
+            "inference_input_invalid"
+        );
+        let deadline = Instant::now() + Duration::from_millis(self.timeout_ms);
+        let _serial = loop {
+            match SERIAL.try_lock() {
+                Ok(guard) => break guard,
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    anyhow::bail!("inference_custody_unavailable")
+                }
+                Err(_) if Instant::now() >= deadline => anyhow::bail!("inference_deadline"),
+                Err(_) => std::thread::sleep(Duration::from_millis(5)),
+            }
+        };
+        anyhow::ensure!(
+            binary_identity(&self.path)? == self.identity,
+            "bridge_identity_changed"
+        );
+        let mut message = serde_json::json!({"id":1,"prompt":request.prompt,"expectJson":request.expect_json,"maxOutputBytes":max});
+        if let Some(instructions) = &request.instructions {
+            message["instructions"] = instructions.clone().into();
         }
+        if let Some(schema) = &request.schema {
+            message["schema"] = schema.clone();
+        }
+        let input =
+            serde_json::to_vec(&message).map_err(|_| anyhow::anyhow!("inference_input_invalid"))?;
+        anyhow::ensure!(input.len() <= 64 * 1024, "inference_input_invalid");
+        let left = deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis() as u64;
+        anyhow::ensure!(left > 0, "inference_deadline");
+        let mut command = inference_command(&self.path);
+        command.arg("--once");
+        let raw =
+            gobstopper_adapters::plugins::run_bounded_inference(command, input, left, max + 4096)
+                .map_err(|_| anyhow::anyhow!("inference_process_failed"))?;
+        let envelope = crate::mcp::strict_json(&raw)
+            .map_err(|_| anyhow::anyhow!("inference_response_invalid"))?;
+        anyhow::ensure!(
+            envelope.get("id").and_then(serde_json::Value::as_u64) == Some(1)
+                && envelope.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
+                && envelope.get("error").is_none(),
+            "inference_response_invalid"
+        );
+        let value = envelope
+            .get("value")
+            .context("inference_response_invalid")?;
+        anyhow::ensure!(value.to_string().len() <= max, "inference_response_invalid");
+        Ok(value.clone())
     }
 }
 
-/// The process-wide bridge. Spawned once on first use; the client kills
-/// and lazily respawns it after timeouts or process death.
-pub(crate) fn shared_bridge(
-    bridge: &Path,
-    timeout_ms: u64,
-) -> Option<&'static apple_foundation::Bridge> {
-    static BRIDGE: OnceLock<Option<apple_foundation::Bridge>> = OnceLock::new();
-    BRIDGE
-        .get_or_init(|| {
-            apple_foundation::Bridge::with_options(
-                &[bridge.to_string_lossy().into_owned()],
-                apple_foundation::Options {
-                    request_timeout: std::time::Duration::from_millis(timeout_ms),
-                    max_pending: 8,
-                },
-            )
-            .ok()
-        })
-        .as_ref()
+/// Construct an identified client; no process starts until an uncached request.
+pub(crate) fn shared_bridge(bridge: &Path, timeout_ms: u64) -> Option<Bridge> {
+    let path = bridge.canonicalize().ok()?;
+    let identity = binary_identity(&path).ok()?;
+    Some(Bridge {
+        path,
+        identity,
+        timeout_ms: timeout_ms.clamp(100, 600_000),
+    })
 }
 
-/// Process-wide prompt→response cache shared by every Apple feature.
-/// `watch` re-evaluates an unchanged transcript each poll interval; the
-/// model inputs (excerpts of immutable lines plus the tail) are identical
-/// while nothing new has been appended, so a bounded cache turns repeat
-/// evaluations into zero model calls. The schema text is part of the key
-/// so distinct request shapes never collide. Bounded at 64 entries with
-/// oldest-first eviction — a stale entry only means a regenerated
-/// response, never a wrong one. `GOBSTOPPER_APPLE_CACHE=0` disables both
-/// reads and writes.
+/// Process-local response cache: task, prompt, instructions, schema and
+/// identified bridge bytes must match. Opaque Apple model weights are not
+/// attested by this identity. At most 64 validated bounded values survive,
+/// with oldest-first eviction. GOBSTOPPER_APPLE_CACHE=0 disables both paths.
 const CACHE_MAX: usize = 64;
 type CacheKey = [u8; 32];
 
@@ -144,22 +247,33 @@ fn apple_cache_enabled() -> bool {
     cache_enabled(std::env::var("GOBSTOPPER_APPLE_CACHE").ok().as_deref())
 }
 
-pub(crate) fn cache_get(prompt: &str, schema: &serde_json::Value) -> Option<serde_json::Value> {
+pub(crate) fn cache_get(
+    bridge: &Bridge,
+    task: &str,
+    request: &apple_foundation::Request,
+) -> Option<serde_json::Value> {
     if !apple_cache_enabled() {
         return None;
     }
     response_cache()
         .lock()
         .ok()?
-        .get(&cache_key(prompt, schema))
+        .get(&cache_key(bridge, task, request))
 }
 
-pub(crate) fn cache_put(prompt: &str, schema: &serde_json::Value, value: &serde_json::Value) {
+/// Call only after task-specific response validation. Failed/partial generation
+/// never publishes a cache entry.
+pub(crate) fn cache_put(
+    bridge: &Bridge,
+    task: &str,
+    request: &apple_foundation::Request,
+    value: &serde_json::Value,
+) {
     if !apple_cache_enabled() {
         return;
     }
     if let Ok(mut cache) = response_cache().lock() {
-        cache.put(cache_key(prompt, schema), value.clone());
+        cache.put(cache_key(bridge, task, request), value.clone());
     }
 }
 
@@ -168,10 +282,20 @@ fn response_cache() -> &'static std::sync::Mutex<ResponseCache> {
     CACHE.get_or_init(|| std::sync::Mutex::new(ResponseCache::default()))
 }
 
-fn cache_key(prompt: &str, schema: &serde_json::Value) -> CacheKey {
-    let schema = schema.to_string();
+fn cache_key(bridge: &Bridge, task: &str, request: &apple_foundation::Request) -> CacheKey {
+    let shape = serde_json::json!([
+        "gobstopper-apple-v2",
+        task,
+        bridge.path,
+        bridge.identity,
+        request.instructions,
+        request.schema,
+        request.expect_json,
+        request.max_output_bytes
+    ]);
+    let schema = shape.to_string();
     let mut hasher = Sha256::new();
-    for part in [schema.as_bytes(), prompt.as_bytes()] {
+    for part in [schema.as_bytes(), request.prompt.as_bytes()] {
         hasher.update((part.len() as u64).to_le_bytes());
         hasher.update(part);
     }
@@ -184,12 +308,16 @@ pub(crate) fn excerpt(line: &str, max_bytes: usize) -> String {
     if line.len() <= max_bytes {
         return line.to_string();
     }
-    let head = (max_bytes * 3) / 4;
-    let tail = max_bytes - head;
+    let marker = format!(" …[{} bytes elided]… ", line.len());
+    if marker.len() >= max_bytes {
+        return head_bytes(line, max_bytes).to_string();
+    }
+    let available = max_bytes - marker.len();
+    let head = (available * 3) / 4;
+    let tail = available - head;
     format!(
-        "{} …[{} bytes elided]… {}",
+        "{}{marker}{}",
         head_bytes(line, head),
-        line.len(),
         tail_bytes(line, tail)
     )
 }
@@ -213,30 +341,105 @@ fn tail_bytes(s: &str, n: usize) -> &str {
 /// Pull the given JSONL line numbers out of a transcript file, each
 /// bounded to `item_bytes`, until the excerpt budget is spent.
 pub(crate) fn read_excerpts(
-    path: &Path,
+    transcript: &gobstopper_core::Transcript,
     wanted: &[usize],
     item_bytes: usize,
     total_bytes: usize,
 ) -> anyhow::Result<Vec<(usize, String)>> {
-    let file =
-        std::fs::File::open(path).with_context(|| format!("open transcript {}", path.display()))?;
+    anyhow::ensure!(
+        wanted.len() <= 256 && item_bytes <= 2048 && total_bytes <= 256 * 2048,
+        "excerpt_bounds_invalid"
+    );
+    if wanted.is_empty() || item_bytes == 0 || total_bytes == 0 {
+        return Ok(Vec::new());
+    }
+    use gobstopper_adapters::{claude, codex, devin, transaction};
+    use gobstopper_core::Provider;
+    let handle = transcript.session.clone();
+    let bytes = match handle.provider {
+        Provider::Devin => devin::export_bytes(&handle.path, &handle.session_id)
+            .map_err(|_| anyhow::anyhow!("excerpt_source_unavailable"))?,
+        _ => transaction::read(&handle.path)
+            .map_err(|_| anyhow::anyhow!("excerpt_source_unavailable"))?,
+    };
+    let current = match handle.provider {
+        Provider::Codex => codex::load_bytes(handle, &bytes),
+        Provider::ClaudeCode => claude::load_bytes(handle, &bytes),
+        Provider::Devin => devin::load_bytes(handle, &bytes),
+    }
+    .map_err(|_| anyhow::anyhow!("excerpt_source_invalid"))?;
+    anyhow::ensure!(
+        serde_json::to_vec(&current.items)? == serde_json::to_vec(&transcript.items)?,
+        "excerpt_source_changed"
+    );
     let wanted: HashSet<usize> = wanted.iter().copied().collect();
-    let last = wanted.iter().copied().max().unwrap_or(0);
+    anyhow::ensure!(
+        wanted.iter().all(
+            |line| current.items.iter().any(|item| item.line_index == *line
+                && item.elidable_bytes.is_some()
+                && item.payload_sha256.is_some())
+        ),
+        "excerpt_identity_unavailable"
+    );
     let mut out = Vec::new();
     let mut budget = total_bytes;
-    let mut line = String::new();
-    let mut reader = BufReader::new(file);
-    let mut idx = 0usize;
-    while idx <= last && reader.read_line(&mut line)? > 0 {
-        if wanted.contains(&idx) && budget > 256 {
-            let e = excerpt(line.trim_end(), item_bytes.min(budget));
-            budget = budget.saturating_sub(e.len());
+    for (idx, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
+        if wanted.contains(&idx) && budget > 0 {
+            let raw =
+                std::str::from_utf8(line).map_err(|_| anyhow::anyhow!("excerpt_source_invalid"))?;
+            let e = excerpt(raw.trim_end(), item_bytes.min(budget));
+            budget -= e.len();
             out.push((idx, e));
         }
-        line.clear();
-        idx += 1;
     }
     Ok(out)
+}
+
+#[cfg(test)]
+pub(crate) fn test_bridge() -> Bridge {
+    Bridge {
+        path: PathBuf::from("/synthetic/must-not-spawn"),
+        identity: [0; 32],
+        timeout_ms: 100,
+    }
+}
+
+#[cfg(test)]
+pub(crate) struct BridgeFixture {
+    pub root: PathBuf,
+    pub bridge: Bridge,
+}
+#[cfg(test)]
+impl BridgeFixture {
+    pub(crate) fn new(body: &str) -> Self {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "gobstopper-inference-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let path = root.join("provider");
+        std::fs::write(&path, format!("#!/bin/sh\nset -eu\n{body}\n")).unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let bridge = shared_bridge(&path, 3000).unwrap();
+        Self { root, bridge }
+    }
+    pub(crate) fn reply(reply: &str) -> Self {
+        Self::new(&format!(
+            "cat >/dev/null\nprintf '%s\\n' '{}'",
+            reply.replace('\'', "'\\''")
+        ))
+    }
+}
+#[cfg(test)]
+impl Drop for BridgeFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.root);
+    }
 }
 
 #[cfg(test)]
@@ -250,13 +453,18 @@ mod tests {
     #[test]
     fn cache_round_trip_and_schema_isolation() {
         let _g = LOCK.lock().unwrap();
-        let schema_a = serde_json::json!({"kind": "a"});
-        let schema_b = serde_json::json!({"kind": "b"});
-        let v = serde_json::json!({"digest": {}});
-        cache_put("cache-test-prompt-1", &schema_a, &v);
-        assert_eq!(cache_get("cache-test-prompt-1", &schema_a), Some(v));
-        assert_eq!(cache_get("cache-test-prompt-1", &schema_b), None);
-        assert_eq!(cache_get("cache-test-prompt-2", &schema_a), None);
+        let bridge = test_bridge();
+        let request = apple_foundation::Request::guided(
+            "cache-test-prompt-1",
+            serde_json::json!({"kind":"a"}),
+        );
+        let mut changed = request.clone();
+        changed.schema = Some(serde_json::json!({"kind":"b"}));
+        let value = serde_json::json!({"digest":{}});
+        cache_put(&bridge, "fixture", &request, &value);
+        assert_eq!(cache_get(&bridge, "fixture", &request), Some(value));
+        assert_eq!(cache_get(&bridge, "fixture", &changed), None);
+        assert_eq!(cache_get(&bridge, "other", &request), None);
     }
 
     #[test]
@@ -281,11 +489,90 @@ mod tests {
     }
 
     #[test]
-    fn cache_key_is_stable_and_schema_isolated() {
-        let a = serde_json::json!({"kind": "a"});
-        let b = serde_json::json!({"kind": "b"});
-        assert_eq!(cache_key("prompt", &a), cache_key("prompt", &a));
-        assert_ne!(cache_key("prompt", &a), cache_key("prompt", &b));
-        assert_ne!(cache_key("prompt", &a), cache_key("other", &a));
+    fn cache_key_is_stable_and_contract_isolated() {
+        let bridge = test_bridge();
+        let request = apple_foundation::Request::guided("prompt", serde_json::json!({"kind":"a"}));
+        let key = cache_key(&bridge, "score", &request);
+        assert_eq!(key, cache_key(&bridge, "score", &request));
+        let mut changed = request.clone();
+        changed.instructions = Some("new instructions".into());
+        assert_ne!(key, cache_key(&bridge, "score", &changed));
+        assert_ne!(key, cache_key(&bridge, "digest", &request));
+        let mut changed_bridge = test_bridge();
+        changed_bridge.identity = [1; 32];
+        assert_ne!(key, cache_key(&changed_bridge, "score", &request));
+    }
+
+    #[test]
+    fn bounded_bridge_rejects_malformed_flood_hang_and_private_errors() {
+        let request =
+            apple_foundation::Request::guided("synthetic", serde_json::json!({"type":"object"}));
+        let good = BridgeFixture::reply(r#"{"id":1,"ok":true,"value":{"scores":{"p_0":0.8}}}"#);
+        assert_eq!(good.bridge.request(&request).unwrap()["scores"]["p_0"], 0.8);
+        for reply in [
+            r#"{"id":2,"ok":true,"value":{}}"#,
+            r#"{"id":1,"ok":false,"error":{"code":"PRIVATE_SENTINEL"}}"#,
+            r#"{"id":1,"id":1,"ok":true,"value":{}}"#,
+            "PRIVATE_SENTINEL invalid json",
+        ] {
+            let fixture = BridgeFixture::reply(reply);
+            let error = fixture.bridge.request(&request).unwrap_err().to_string();
+            assert!(!error.contains("PRIVATE_SENTINEL"));
+            assert_eq!(error, "inference_response_invalid");
+        }
+        for body in [
+            "cat >/dev/null\nexec sleep 10",
+            "cat >/dev/null\nyes x | head -c 200000",
+        ] {
+            let mut fixture = BridgeFixture::new(body);
+            fixture.bridge.timeout_ms = 300;
+            let start = std::time::Instant::now();
+            assert!(fixture.bridge.request(&request).is_err());
+            assert!(start.elapsed() < std::time::Duration::from_secs(2));
+        }
+    }
+
+    #[test]
+    fn bridge_timeout_collects_owned_descendant_before_return() {
+        let mut fixture = BridgeFixture::new(
+            "cat >/dev/null\n(sleep 1; printf survived > \"$0-survived\") &\nsleep 10",
+        );
+        fixture.bridge.timeout_ms = 300;
+        let start = std::time::Instant::now();
+        let request = apple_foundation::Request::text("synthetic");
+        assert!(fixture.bridge.request(&request).is_err());
+        assert!(start.elapsed() < std::time::Duration::from_secs(1));
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        assert!(!fixture.root.join("provider-survived").exists());
+    }
+
+    #[test]
+    fn excerpts_bind_to_one_normalized_source_and_exact_byte_budgets() {
+        let fixture = BridgeFixture::reply("{}");
+        let path = fixture.root.join("rollout-synthetic.jsonl");
+        let raw = format!("{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"synthetic\"}}}}\n{{\"type\":\"response_item\",\"payload\":{{\"type\":\"function_call_output\",\"call_id\":\"a\",\"output\":\"{}\"}}}}\n", "é".repeat(2048));
+        std::fs::write(&path, &raw).unwrap();
+        let handle = gobstopper_core::SessionHandle {
+            provider: gobstopper_core::Provider::Codex,
+            session_id: "synthetic".into(),
+            path: path.clone(),
+            cwd: None,
+            age_secs: 0,
+        };
+        let transcript = gobstopper_adapters::codex::load_bytes(handle, raw.as_bytes()).unwrap();
+        let excerpts = read_excerpts(&transcript, &[1], 101, 101).unwrap();
+        assert_eq!(excerpts.len(), 1);
+        assert!(excerpts[0].1.len() <= 101);
+        assert!(read_excerpts(&transcript, &[0], 100, 100).is_err());
+        std::fs::write(&path, raw.replace(&"é".repeat(2048), &"z".repeat(4096))).unwrap();
+        assert_eq!(
+            read_excerpts(&transcript, &[1], 100, 100)
+                .unwrap_err()
+                .to_string(),
+            "excerpt_source_changed"
+        );
+        for size in 0..80 {
+            assert!(excerpt(&"é".repeat(100), size).len() <= size);
+        }
     }
 }

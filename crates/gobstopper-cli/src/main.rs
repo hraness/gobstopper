@@ -8,6 +8,7 @@ mod hooks;
 mod jev;
 mod llm_scorer;
 mod mcp;
+mod native_operations;
 mod report;
 mod secrets;
 
@@ -210,13 +211,17 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Install provider hook entries (Claude settings.json, Codex
-    /// hooks.json) that call back into `gobstopper hook <event>` at
-    /// compaction lifecycle points. Additive merge; never removes
-    /// existing hooks.
-    InstallHooks,
-    /// Remove gobstopper hook entries from provider config.
-    UninstallHooks,
+    /// Export inert provider hook settings candidates; direct mutation requires
+    /// provider-owned custody and is disabled. The output must be a new file.
+    InstallHooks {
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Export candidates removing exactly owned hook entries.
+    UninstallHooks {
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
     /// Handle a provider hook callback (reads hook JSON on stdin).
     /// Invoked by provider hook configs, not by users.
     #[command(hide = true)]
@@ -382,6 +387,12 @@ enum Cmd {
         #[arg(long)]
         allow_transcript_content: bool,
     },
+    /// Inspect durable native operation metadata and unresolved dispatches.
+    /// Does not clear uncertainty, retry a provider call, or create state.
+    NativeOperations,
+    /// Reconcile only an operation with already recorded matching Codex terminal
+    /// evidence. Does not infer completion or retry a provider call.
+    NativeReconcile { operation_sha256: String },
     /// Poll for sessions over threshold and prepare verified compacted forks.
     Watch {
         /// Poll interval in seconds.
@@ -504,18 +515,32 @@ fn roots(cli: &Cli) -> Roots {
 }
 
 fn find_session(cli: &Cli, cfg: &config::Config, query: &str) -> Result<Discovered> {
+    if query.trim().is_empty() || query.len() > 4096 || query.chars().any(char::is_control) {
+        bail!("session selector must be nonempty, bounded text without control characters");
+    }
     let path = PathBuf::from(query);
     if path.is_file() {
         // A SQLite store is never a transcript: resolve sessions inside it
         // by id instead of treating the file as provider data.
-        if std::fs::File::open(&path)
-            .and_then(|mut f| {
-                use std::io::Read;
-                let mut magic = [0u8; 16];
-                f.read_exact(&mut magic).map(|_| magic)
-            })
-            .is_ok_and(|m| m == *b"SQLite format 3\0")
+        let mut options = std::fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
         {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        let mut file = options.open(&path)?;
+        anyhow::ensure!(
+            file.metadata()?.is_file(),
+            "session input must be a regular file"
+        );
+        let mut magic = [0u8; 16];
+        let read_magic = match file.read_exact(&mut magic) {
+            Ok(()) => true,
+            Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => false,
+            Err(error) => return Err(error.into()),
+        };
+        if read_magic && magic == *b"SQLite format 3\0" {
             bail!(
                 "{} is a SQLite store; pass a devin session id (e.g. `gobstopper plan <id>`), not the file",
                 path.display()
@@ -570,8 +595,8 @@ fn find_session(cli: &Cli, cfg: &config::Config, query: &str) -> Result<Discover
 }
 
 /// Resolve an eval-study byte source: a session id/transcript path, or
-/// `vault:<sha256>` for a snapshot object (Devin store snapshots are
-/// materialized and exported to the transcript dialect first).
+/// `vault:<sha256>` for a snapshot object. Devin snapshots must contain the
+/// canonical single-session export, never an unqualified raw store image.
 fn eval_spec_bytes(
     cli: &Cli,
     cfg: &config::Config,
@@ -584,17 +609,14 @@ fn eval_spec_bytes(
             .find(|e| e.sha256 == sha)
             .with_context(|| format!("no vault entry for {sha}"))?;
         let bytes = vault::read_object(&entry.sha256, &root)?;
-        // Devin vault objects are the session's canonical export already;
-        // only a hypothetical raw store image needs materializing first.
-        let bytes = if entry.provider == Provider::Devin && bytes.starts_with(b"SQLite format 3") {
-            let temp = std::env::temp_dir().join(format!("gobstopper-audit-{sha}.db"));
-            std::fs::write(&temp, &bytes).with_context(|| format!("write {}", temp.display()))?;
-            let exported = devin::export_bytes(&temp, &entry.session_id);
-            let _ = std::fs::remove_file(&temp);
-            exported?
-        } else {
-            bytes
-        };
+        // Current snapshots always use the canonical export. Raw store images
+        // may be torn or depend on a missing WAL; retain them for explicit
+        // recovery, without materializing them into a predictable shared file.
+        if entry.provider == Provider::Devin && bytes.starts_with(b"SQLite format 3") {
+            bail!(
+                "raw Devin store images are unavailable for replay; use a canonical session export"
+            );
+        }
         return Ok((
             SessionHandle {
                 provider: entry.provider,
@@ -615,20 +637,87 @@ fn eval_spec_bytes(
     Ok((d.handle, bytes))
 }
 
-/// Recent applied compactions for one session as
-/// `(context_tokens_before, est_reclaimed_tokens)`, newest first —
-/// the past-yield evidence the adaptive tuner reads.
-fn recent_applied(session_id: &str, provider: Provider) -> Vec<(u64, u64)> {
+/// Recent positive provider-record reductions for one exact source, newest
+/// first. Legacy estimates and unavailable accounting never tune thresholds.
+fn recent_applied(handle: &SessionHandle) -> Vec<(u64, u64)> {
     let path = gobstopper_core::events::default_log_path();
     let Ok(events) = gobstopper_core::events::read_events(&path) else {
         return Vec::new();
     };
-    events
-        .iter()
-        .filter(|e| e.session_id == session_id && e.provider == provider && e.outcome == "applied")
-        .rev()
+    recent_applied_from(&events, handle)
+}
+
+fn recent_applied_from(events: &[CompactionEvent], handle: &SessionHandle) -> Vec<(u64, u64)> {
+    let Ok(canonical) = std::fs::canonicalize(&handle.path) else {
+        return Vec::new();
+    };
+    if !canonical.is_file() {
+        return Vec::new();
+    }
+    // Match eval::token_observation's canonical provider/session/store binding.
+    let Ok(identity) = serde_json::to_vec(&(handle.provider, &handle.session_id, &canonical))
+    else {
+        return Vec::new();
+    };
+    let identity = copy::sha256(&identity);
+    let mut pairs = std::collections::BTreeMap::new();
+    for (index, event) in events.iter().enumerate() {
+        if event.provider != handle.provider
+            || event.session_id != handle.session_id
+            || event.source_identity_sha256.as_ref() != Some(&identity)
+            || !matches!(
+                event.action.as_str(),
+                "provider_compact" | "transcript_compact"
+            )
+        {
+            continue;
+        }
+        // This helper requires error-free application, valid positive context
+        // reports, matching identities and matching retained snapshot pairs.
+        let Some(reduction) = event.recorded_context_reduction_tokens() else {
+            continue;
+        };
+        let (Some(before), Some(after)) = (
+            event.before_observation.as_ref(),
+            event.after_observation.as_ref(),
+        ) else {
+            continue;
+        };
+        let (Some(before_tokens), Some(before_manifest), Some(after_manifest)) = (
+            before.context_tokens,
+            before.snapshot_manifest_sha256.as_ref(),
+            after.snapshot_manifest_sha256.as_ref(),
+        ) else {
+            continue;
+        };
+        let evidence = (
+            before_tokens,
+            reduction,
+            &before.source_sha256,
+            &after.source_sha256,
+        );
+        let entry = pairs
+            .entry((before_manifest, after_manifest))
+            .or_insert((Some(index), evidence));
+        if entry.1 != evidence {
+            entry.0 = None;
+        }
+    }
+    // Replayed duplicates neither multiply history nor move an old pair ahead
+    // of newer distinct measurements. Conflicts stay excluded after replay.
+    let mut samples: Vec<_> = pairs
+        .values()
+        .filter_map(|(index, evidence)| {
+            index
+                .filter(|_| evidence.1 > 0)
+                .map(|index| (index, (evidence.0, evidence.1)))
+        })
+        .collect();
+    samples.sort_unstable_by_key(|(index, _)| std::cmp::Reverse(*index));
+    samples
+        .into_iter()
         .take(3)
-        .map(|e| (e.context_tokens_before, e.est_reclaimed_tokens))
+        .map(|(_, sample)| sample)
         .collect()
 }
 
@@ -638,22 +727,21 @@ fn adaptive_sample(transcript: &gobstopper_core::Transcript) -> gobstopper_core:
         model_context_window: transcript.usage.model_context_window,
         context_tokens: transcript.context_tokens(),
         elidable_tokens: Some(transcript.elidable_tokens()),
-        recent: recent_applied(&transcript.session.session_id, transcript.session.provider),
+        recent: recent_applied(&transcript.session),
     }
 }
 
 /// Transcript-free adaptive sample for cheap pre-checks (watch loop):
 /// the elidable-share rule is skipped.
 fn adaptive_sample_usage(
-    provider: Provider,
-    session_id: &str,
+    handle: &SessionHandle,
     usage: &gobstopper_core::UsageSample,
 ) -> gobstopper_core::AdaptiveSample {
     gobstopper_core::AdaptiveSample {
         model_context_window: usage.model_context_window,
         context_tokens: usage.context_tokens,
         elidable_tokens: None,
-        recent: recent_applied(session_id, provider),
+        recent: recent_applied(handle),
     }
 }
 
@@ -686,7 +774,7 @@ fn maybe_scorer() -> Option<Box<dyn gobstopper_core::ScoreDriver>> {
         // unavailable bridge, or typo'd name is never invisible.
         static WARN: std::sync::Once = std::sync::Once::new();
         WARN.call_once(|| {
-            eprintln!("warning: GOBSTOPPER_SCORER={name} resolved no driver; using heuristic");
+            eprintln!("warning: scorer_unavailable; using heuristic");
         });
     }
     driver
@@ -767,6 +855,29 @@ fn evaluate_detailed(
     transcript: &gobstopper_core::Transcript,
     resolved: &config::Resolved,
 ) -> Result<Evaluation> {
+    evaluate_with_effects(transcript, resolved, false)
+}
+
+/// Deterministic MCP inspection does not inherit the caller's inference or
+/// extension environment. It shares admission with executable planning.
+fn evaluate_inspection(
+    transcript: &gobstopper_core::Transcript,
+    resolved: &config::Resolved,
+) -> Result<Option<CompactionPlan>> {
+    Ok(match evaluate_with_effects(transcript, resolved, true)? {
+        Evaluation::Plan(plan) => Some(plan),
+        Evaluation::NoPlan(_) => None,
+    })
+}
+
+fn evaluate_with_effects(
+    transcript: &gobstopper_core::Transcript,
+    resolved: &config::Resolved,
+    inspection: bool,
+) -> Result<Evaluation> {
+    if inspection {
+        resolved.ensure_inspection()?;
+    }
     config::validate_policy(&resolved.policy)?;
     let (policy, adaptive_reasons) = effective_policy(transcript, resolved);
     config::validate_policy(&policy)?;
@@ -836,7 +947,8 @@ fn evaluate_detailed(
     }
     let mut plan = if resolved.strategy == "scored" {
         let candidates = ScoredStrategy::candidates(transcript, &policy);
-        let (scores, scorer_summary) = if let Some(driver) = maybe_scorer() {
+        let driver = if inspection { None } else { maybe_scorer() };
+        let (scores, scorer_summary) = if let Some(driver) = driver {
             let scores = driver.score(transcript, &candidates);
             (scores, driver.last_run_summary())
         } else {
@@ -856,7 +968,9 @@ fn evaluate_detailed(
         strat.evaluate(transcript, &policy)
     };
     if let Some(plan) = &mut plan {
-        apple_digest::maybe_upgrade(plan, transcript);
+        if !inspection {
+            apple_digest::maybe_upgrade(plan, transcript);
+        }
         gobstopper_core::validation::validate_edits(transcript, &policy, &plan.edits)
             .map_err(anyhow::Error::msg)?;
         if !policy.accepts_savings(plan.context_tokens_before, plan.context_tokens_after) {
@@ -1017,7 +1131,7 @@ fn build_event(
                 Edit::CacheEdit { tool_use_ids } => tool_use_ids.len() as u64,
                 Edit::ProviderCompact { .. } => 0,
             })
-            .sum(),
+            .fold(0u64, u64::saturating_add),
         duration_ms,
         error_code.map(|s| s.to_string()),
     )
@@ -1076,7 +1190,7 @@ fn record_native_completion(
     before: &vault::VaultEntry,
     trigger: u64,
     started: std::time::Instant,
-) -> bool {
+) -> Option<bool> {
     let root = vault::default_root();
     let post = vault::snapshot(
         &d.handle.path,
@@ -1086,40 +1200,51 @@ fn record_native_completion(
         &root,
     )
     .ok();
-    let observed = post.as_ref().and_then(|entry| {
-        let bytes = vault::read_object(&entry.sha256, &root).ok()?;
-        let transcript = match d.handle.provider {
-            Provider::Codex => codex::load_bytes(d.handle.clone(), &bytes),
-            Provider::ClaudeCode => {
-                gobstopper_adapters::claude::load_bytes(d.handle.clone(), &bytes)
-            }
-            Provider::Devin => devin::load_bytes(d.handle.clone(), &bytes),
-        }
-        .ok()?;
-        Some(transcript.usage.context_tokens)
+    // Parse accounting from the exact retained objects on both sides. Discovery
+    // samples and the plan are estimates; neither can certify these bytes.
+    let reader = vault::Reader::open(&root).ok();
+    let canonical_handle = d.handle.path.canonicalize().ok().map(|path| SessionHandle {
+        path,
+        ..d.handle.clone()
     });
+    let observation = |entry: &vault::VaultEntry| {
+        let bytes = reader.as_ref()?.read_object(&entry.sha256).ok()?;
+        if copy::sha256(&bytes) != entry.source_sha256 {
+            return None;
+        }
+        eval::token_observation(canonical_handle.as_ref()?, &bytes, Some(&entry.sha256)).ok()
+    };
+    let before_observation = observation(before);
+    let after_observation = post.as_ref().and_then(observation);
+    let before_tokens = before_observation
+        .as_ref()
+        .and_then(|observed| observed.context_tokens)
+        .filter(|tokens| *tokens > 0);
+    let after_tokens = after_observation
+        .as_ref()
+        .and_then(|observed| observed.context_tokens)
+        .filter(|tokens| *tokens > 0);
+    let same_identity = before_observation
+        .as_ref()
+        .zip(after_observation.as_ref())
+        .is_some_and(|(before, after)| {
+            before.source_identity_sha256 == after.source_identity_sha256
+        });
     let unchanged = post
         .as_ref()
-        .is_some_and(|entry| entry.sha256 == before.sha256);
-    let (outcome, error, after) = match observed {
-        _ if unchanged => ("skipped", Some("provider_noop"), plan.context_tokens_before),
-        Some(after) if after >= plan.context_tokens_before => {
+        .is_some_and(|entry| entry.source_sha256 == before.source_sha256);
+    let context_before = before_tokens.unwrap_or(plan.context_tokens_before);
+    let (outcome, error, after) = match (before_tokens, after_tokens) {
+        _ if unchanged && same_identity => ("skipped", Some("provider_noop"), context_before),
+        (Some(before), Some(after)) if same_identity && after >= before => {
             ("skipped", Some("provider_noop"), after)
         }
-        Some(0) => (
-            "applied",
-            Some("unresolved_context"),
-            plan.context_tokens_before,
-        ),
-        Some(after) => ("applied", None, after),
-        None => (
-            "failed",
-            Some("unresolved_context"),
-            plan.context_tokens_before,
-        ),
+        (Some(_), Some(after)) if same_identity => ("applied", None, after),
+        _ => ("failed", Some("unresolved_context"), context_before),
     };
     let done = CompactionPlan {
         edits: vec![],
+        context_tokens_before: context_before,
         context_tokens_after: after,
         ..plan.clone()
     };
@@ -1134,6 +1259,12 @@ fn record_native_completion(
     );
     event.snapshot_before_sha256 = Some(before.sha256.clone());
     event.snapshot_after_sha256 = post.map(|entry| entry.sha256);
+    event.source_identity_sha256 = before_observation
+        .as_ref()
+        .map(|observed| observed.source_identity_sha256.clone());
+    event.before_observation = before_observation;
+    event.after_observation = after_observation;
+    drop(reader);
     if outcome == "applied" {
         if let Some(post) = &event.snapshot_after_sha256 {
             if let Some((total, retained, lexical)) =
@@ -1154,18 +1285,76 @@ fn record_native_completion(
         outcome,
         error.map(|code| format!(" ({code})")).unwrap_or_default(),
     );
-    outcome == "applied"
+    match outcome {
+        "applied" => Some(true),
+        "skipped" => Some(false),
+        _ => None,
+    }
 }
 
-fn apply_edits(d: &Discovered, plan: &CompactionPlan) -> Result<u64> {
-    match d.handle.provider {
-        Provider::Codex => gobstopper_adapters::codex::apply(&d.handle.path, &plan.edits)
-            .map_err(|e| anyhow::anyhow!(e)),
-        Provider::ClaudeCode => gobstopper_adapters::claude::apply(&d.handle.path, &plan.edits)
-            .map_err(|e| anyhow::anyhow!(e)),
-        Provider::Devin => gobstopper_adapters::devin::apply(&d.handle.path, &plan.edits)
-            .map_err(|e| anyhow::anyhow!(e)),
-    }
+fn prepare_native_operation(
+    cli: &Cli,
+    d: &Discovered,
+    binary: &Path,
+    snapshot: &vault::VaultEntry,
+    policy_sha256: &str,
+) -> Result<native_operations::Operation> {
+    let roots = roots(cli);
+    let (home, contract) = match d.handle.provider {
+        Provider::Codex => (
+            &roots.codex_home,
+            "private-app-server-matching-compaction-item-and-turn-v1",
+        ),
+        Provider::ClaudeCode => (
+            &roots.claude_home,
+            "private-resume-exit-status-assumption-v1",
+        ),
+        Provider::Devin => (
+            &roots.devin_home,
+            "private-acp-session-terminal-no-overlapping-operation-assumption-v1",
+        ),
+    };
+    native_operations::Operation::prepare(
+        &d.handle,
+        home,
+        binary,
+        snapshot,
+        policy_sha256,
+        contract,
+    )
+}
+
+fn record_native_admission_failure(
+    d: &Discovered,
+    strategy: &str,
+    context: u64,
+    trigger: u64,
+    error: &anyhow::Error,
+) {
+    let code = if native_operations::activation_unqualified(error) {
+        "native_unqualified"
+    } else if native_operations::executable_unavailable(error) {
+        "spawn_failed"
+    } else {
+        "custody_unavailable"
+    };
+    let refused = CompactionPlan {
+        strategy: strategy.to_owned(),
+        rationale: "native dispatch admission refused".into(),
+        edits: vec![],
+        context_tokens_before: context,
+        context_tokens_after: context,
+    };
+    emit_event(
+        d,
+        &refused,
+        "provider_compact",
+        "failed",
+        trigger,
+        0,
+        Some(code),
+    );
+    eprintln!("native dispatch refused before provider execution ({code})");
 }
 
 /// Route a `ProviderCompact` edit to the provider's own machinery.
@@ -1173,7 +1362,7 @@ fn provider_compact(
     d: &Discovered,
     codex_bin: &std::path::Path,
     codex_home: &std::path::Path,
-) -> Result<()> {
+) -> Result<native_operations::TerminalEvidence> {
     match d.handle.provider {
         Provider::Codex => {
             codex_compact(codex_bin, &d.handle.session_id, Some(codex_home), 600_000)
@@ -1259,10 +1448,14 @@ struct CodexCompactionProgress {
     compact_item: Option<(String, String)>,
     item_completed: bool,
     terminal: Option<Result<(), String>>,
+    early_terminals: std::collections::BTreeMap<String, Result<(), String>>,
 }
 
 impl CodexCompactionProgress {
     fn observe(&mut self, value: &serde_json::Value, thread_id: &str) {
+        if self.terminal.as_ref().is_some_and(Result::is_err) {
+            return;
+        }
         if value.pointer("/params/threadId").and_then(|v| v.as_str()) != Some(thread_id) {
             return;
         }
@@ -1277,6 +1470,18 @@ impl CodexCompactionProgress {
                 ) else {
                     return;
                 };
+                if turn.is_empty()
+                    || turn.len() > 256
+                    || item.is_empty()
+                    || item.len() > 256
+                    || turn.chars().any(char::is_control)
+                    || item.chars().any(char::is_control)
+                {
+                    self.terminal = Some(Err(
+                        "provider outcome unknown: invalid terminal identity".into(),
+                    ));
+                    return;
+                }
                 if self.compact_item.is_none() {
                     self.compact_item = Some((turn.to_owned(), item.to_owned()));
                 }
@@ -1293,17 +1498,17 @@ impl CodexCompactionProgress {
                 let Some(turn) = value.pointer("/params/turn/id").and_then(|v| v.as_str()) else {
                     return;
                 };
-                let expected = self.compact_item.as_ref().map(|(turn, _)| turn.as_str());
-                if expected != Some(turn) {
+                if turn.is_empty() || turn.len() > 256 || turn.chars().any(char::is_control) {
+                    self.terminal = Some(Err(
+                        "provider outcome unknown: invalid terminal identity".into(),
+                    ));
                     return;
                 }
                 let status = value
                     .pointer("/params/turn/status")
                     .and_then(|v| v.as_str());
-                if status == Some("completed") {
-                    if self.item_completed {
-                        self.terminal = Some(Ok(()));
-                    }
+                let outcome = if status == Some("completed") {
+                    Ok(())
                 } else {
                     let status = match status {
                         Some("failed") => "failed",
@@ -1316,10 +1521,33 @@ impl CodexCompactionProgress {
                         .and_then(|v| v.as_str())
                         .map(codex_error_class)
                         .unwrap_or("provider rejected");
-                    self.terminal = Some(Err(format!("codex compaction turn {status}: {detail}")));
+                    Err(format!("codex compaction turn {status}: {detail}"))
+                };
+                if let Some(previous) = self.early_terminals.get(turn) {
+                    if previous != &outcome {
+                        self.terminal = Some(Err(
+                            "provider outcome unknown: conflicting terminal evidence".into(),
+                        ));
+                        return;
+                    }
+                } else {
+                    if self.early_terminals.len() >= 64 {
+                        self.terminal = Some(Err(
+                            "provider outcome unknown: terminal buffer exhausted".into(),
+                        ));
+                        return;
+                    }
+                    self.early_terminals.insert(turn.to_owned(), outcome);
                 }
             }
             _ => {}
+        }
+        if let Some((turn, _)) = &self.compact_item {
+            if let Some(outcome) = self.early_terminals.get(turn) {
+                if outcome.is_err() || self.item_completed {
+                    self.terminal = Some(outcome.clone());
+                }
+            }
         }
     }
 }
@@ -1387,7 +1615,7 @@ fn codex_read_frames(
             Ok(0) => {
                 if !pending.is_empty() {
                     let _ = tx.send(
-                        serde_json::from_slice(&pending)
+                        mcp::strict_json(&pending)
                             .map_err(|_| "codex app-server emitted invalid JSON"),
                     );
                 }
@@ -1401,7 +1629,7 @@ fn codex_read_frames(
                     }
                     pending.extend_from_slice(part);
                     if part.last() == Some(&b'\n') {
-                        let frame = serde_json::from_slice(&pending)
+                        let frame = mcp::strict_json(&pending)
                             .map_err(|_| "codex app-server emitted invalid JSON");
                         let failed = frame.is_err();
                         if tx.send(frame).is_err() || failed {
@@ -1431,18 +1659,20 @@ fn codex_compact(
     thread_id: &str,
     codex_home: Option<&std::path::Path>,
     outcome_ms: u64,
-) -> Result<()> {
+) -> Result<native_operations::TerminalEvidence> {
     use std::sync::mpsc;
     use std::time::{Duration, Instant};
 
     // Keep every request well below a pipe's capacity, even if a broken child
     // answers without consuming stdin. Never interpolate unbounded identity.
-    if thread_id.is_empty()
+    if !cfg!(unix)
+        || thread_id.is_empty()
         || thread_id.len() > 256
         || !thread_id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
         || outcome_ms == 0
+        || outcome_ms > 3_600_000
     {
         bail!("invalid codex compaction identity or deadline");
     }
@@ -1538,7 +1768,7 @@ fn codex_compact(
             }
         }
     };
-    let outcome = (|| -> Result<()> {
+    let outcome = (|| -> Result<native_operations::TerminalEvidence> {
         send(serde_json::json!({
             "method": "initialize", "id": 0,
             "params": {"clientInfo": {"name": "gobstopper", "version": env!("CARGO_PKG_VERSION")}}
@@ -1560,7 +1790,15 @@ fn codex_compact(
         let end = deadline(outcome_ms);
         loop {
             if let Some(outcome) = progress.terminal.take() {
-                return outcome.map_err(anyhow::Error::msg);
+                outcome.map_err(anyhow::Error::msg)?;
+                let (turn, item) = progress
+                    .compact_item
+                    .context("missing compaction identity")?;
+                return Ok(native_operations::TerminalEvidence {
+                    session_id: thread_id.to_owned(),
+                    turn_id: Some(turn),
+                    item_id: Some(item),
+                });
             }
             let left = end.saturating_duration_since(Instant::now());
             if left.is_zero() {
@@ -1595,9 +1833,9 @@ fn codex_compact(
     // Non-Unix process-tree and pipe cancellation need separate qualification.
     #[cfg(not(unix))]
     drop(reader);
-    outcome?;
+    let terminal = outcome?;
     println!("codex provider compaction: compaction turn completed");
-    Ok(())
+    Ok(terminal)
 }
 
 fn print_plan(d: &Discovered, plan: &CompactionPlan, prefix_tokens: u64, json: bool) -> Result<()> {
@@ -1748,37 +1986,42 @@ fn cmd_undo(
     yes: bool,
     in_place: bool,
 ) -> Result<()> {
+    use sha2::{Digest, Sha256};
     if in_place {
         bail!("standalone in-place restore is retired because a provider may hold an open writer; omit --in-place to restore a verified fork");
     }
     let d = find_session(cli, cfg, session)?;
+    if d.handle.provider == Provider::Devin {
+        bail!("direct Devin store mutation is disabled: lifetime provider custody is unavailable; use provider-owned /compact or inspect an exported copy");
+    }
     let root = vault::default_root();
-    // Devin snapshots share the store path; the session id disambiguates.
-    let canonical = d
-        .handle
-        .path
-        .canonicalize()
-        .unwrap_or_else(|_| d.handle.path.clone());
-    let matches_session = |e: &vault::VaultEntry| {
-        (e.path == d.handle.path || e.path == canonical)
-            && (d.handle.provider != Provider::Devin || e.session_id == d.handle.session_id)
-    };
+    let reader = vault::Reader::open(&root)?;
+    let entries: Vec<_> = reader
+        .entries()?
+        .into_iter()
+        .filter(|entry| matches_snapshot_session(entry, &d.handle))
+        .collect();
     let entry = match sha {
-        Some(prefix) => vault::list(&root)?
+        Some(prefix) => {
+            let full = resolve_snapshot_sha(&entries, prefix)?;
+            entries
+                .into_iter()
+                .find(|entry| entry.sha256 == full)
+                .unwrap()
+        }
+        None => entries
             .into_iter()
-            .filter(|e| matches_session(e))
-            .find(|e| e.sha256.starts_with(prefix))
-            .ok_or_else(|| {
-                anyhow::anyhow!("no vault snapshot matching '{prefix}' for this session")
-            })?,
-        None => vault::list(&root)?
-            .into_iter()
-            .find(|e| {
-                matches_session(e)
-                    && !matches!(e.strategy.as_deref(), Some("post-compact" | "pre-undo"))
-            })
+            .find(|e| !matches!(e.strategy.as_deref(), Some("post-compact" | "pre-undo")))
             .ok_or_else(|| anyhow::anyhow!("no vault snapshot for {}", d.handle.path.display()))?,
     };
+    let retained = reader.read_object(&entry.sha256)?;
+    anyhow::ensure!(
+        fork::source_session_id(d.handle.provider, &retained)? == d.handle.session_id
+            && entry.bytes == retained.len() as u64
+            && (entry.source_sha256.is_empty()
+                || entry.source_sha256 == format!("{:x}", Sha256::digest(&retained))),
+        "snapshot bytes do not match the selected session identity"
+    );
     println!(
         "restore snapshot {} — {} bytes, session {}",
         &entry.sha256[..16],
@@ -1802,33 +2045,6 @@ fn cmd_undo(
             println!("aborted");
             return Ok(());
         }
-    }
-    if d.handle.provider == Provider::Devin {
-        // In-place restore: the snapshot object is the session's canonical
-        // export; the store gets its payloads and chain head back, and any
-        // digest nodes we injected are removed.
-        let current = devin::export_bytes(&d.handle.path, &d.handle.session_id)
-            .map_err(|e| anyhow::anyhow!(e))?;
-        vault::snapshot_data(
-            &current,
-            &d.handle.path,
-            d.handle.provider,
-            &d.handle.session_id,
-            Some("pre-undo"),
-            &root,
-        )?;
-        let snapshot_bytes = vault::read_object(&entry.sha256, &root)?;
-        let report = devin::restore_store(
-            &roots(cli).devin_home,
-            &d.handle.session_id,
-            &snapshot_bytes,
-        )
-        .map_err(|e| anyhow::anyhow!(e))?;
-        println!(
-            "restored {} payloads in place; resume: {}",
-            report.nodes_rewritten, report.resume_hint
-        );
-        return Ok(());
     }
     // Snapshot the current (post-compaction) state too, so undo is undoable.
     if d.handle.path.is_file() {
@@ -1939,21 +2155,61 @@ fn cmd_history(cli: &Cli, cfg: &config::Config, session: &str, json: bool) -> Re
     Ok(())
 }
 
+fn matches_snapshot_session(entry: &vault::VaultEntry, handle: &SessionHandle) -> bool {
+    let canonical = handle
+        .path
+        .canonicalize()
+        .unwrap_or_else(|_| handle.path.clone());
+    entry.provider == handle.provider
+        && entry.session_id == handle.session_id
+        && (entry.path == handle.path || entry.path == canonical)
+}
+
+fn resolve_snapshot_sha(entries: &[vault::VaultEntry], prefix: &str) -> Result<String> {
+    if prefix.is_empty() || prefix.len() > 64 || !prefix.bytes().all(|b| b.is_ascii_hexdigit()) {
+        bail!("snapshot selector must be a nonempty hexadecimal SHA-256 prefix");
+    }
+    let prefix = prefix.to_ascii_lowercase();
+    let matches: std::collections::BTreeSet<_> = entries
+        .iter()
+        .filter(|entry| entry.sha256.starts_with(&prefix))
+        .map(|entry| entry.sha256.clone())
+        .collect();
+    match matches.len() {
+        0 => bail!("no snapshot matches the requested SHA prefix"),
+        1 => Ok(matches.into_iter().next().unwrap()),
+        _ => bail!("snapshot SHA prefix is ambiguous; use the full SHA-256"),
+    }
+}
+
 fn show_summary(cli: &Cli, cfg: &config::Config, target: &str) -> Result<serde_json::Value> {
     let root = vault::default_root();
-    let entries = vault::list(&root)?;
+    let reader = vault::Reader::open(&root)?;
+    let entries = reader.entries()?;
     let entry = if target.len() >= 16 && target.chars().all(|c| c.is_ascii_hexdigit()) {
-        entries
+        let sha = resolve_snapshot_sha(&entries, target)?;
+        let matches: Vec<_> = entries
             .into_iter()
-            .find(|e| e.sha256.starts_with(target))
-            .with_context(|| format!("no snapshot matches sha prefix {target:?}"))?
+            .filter(|entry| entry.sha256 == sha)
+            .collect();
+        let selected = matches.first().unwrap();
+        if matches.iter().any(|entry| {
+            entry.provider != selected.provider
+                || entry.session_id != selected.session_id
+                || entry.path != selected.path
+        }) {
+            bail!("snapshot has multiple recorded source identities; select a session instead");
+        }
+        matches.into_iter().next().unwrap()
     } else {
         let d = find_session(cli, cfg, target)?;
-        vault::latest_for(&d.handle.path, &root)?
+        entries
+            .into_iter()
+            .find(|entry| matches_snapshot_session(entry, &d.handle))
             .with_context(|| format!("no vault snapshot for {}", d.handle.path.display()))?
     };
 
-    let data = vault::read_object(&entry.sha256, &root)?;
+    let data = reader.read_object(&entry.sha256)?;
     let mut type_counts: std::collections::BTreeMap<String, usize> =
         std::collections::BTreeMap::new();
     for line in data.split(|&b| b == b'\n') {
@@ -2021,18 +2277,26 @@ fn recall_rows(
     limit: usize,
 ) -> Result<Vec<vault::RecallDigest>> {
     let root = vault::default_root();
-    let session_key = match session {
-        Some(s) => {
-            let d = find_session(cli, cfg, s)?;
-            if d.handle.session_id.starts_with(s) {
-                s.to_string()
-            } else {
-                d.handle.session_id.clone()
-            }
-        }
-        None => "*".to_string(),
-    };
-    let mut digests = vault::recall(&session_key, query, sha, &root)?;
+    let reader = vault::Reader::open(&root)?;
+    let selected = session
+        .map(|session| find_session(cli, cfg, session))
+        .transpose()?;
+    let mut entries: Vec<_> = reader
+        .entries()?
+        .into_iter()
+        .filter(|entry| {
+            selected
+                .as_ref()
+                .is_none_or(|d| matches_snapshot_session(entry, &d.handle))
+        })
+        .collect();
+    let full_sha = sha
+        .map(|prefix| resolve_snapshot_sha(&entries, prefix))
+        .transpose()?;
+    if let Some(sha) = &full_sha {
+        entries.retain(|entry| &entry.sha256 == sha);
+    }
+    let mut digests = reader.recall_entries(&entries, query)?;
     digests.truncate(limit);
     Ok(digests)
 }
@@ -2129,18 +2393,11 @@ fn cmd_recall(
 
 fn diff_summary(a: &str, b: &str) -> Result<serde_json::Value> {
     let root = vault::default_root();
-    let entries = vault::list(&root)?;
-    let a_full = entries
-        .iter()
-        .find(|e| e.sha256.starts_with(a))
-        .map(|e| e.sha256.clone())
-        .with_context(|| format!("no snapshot matches sha prefix {a:?}"))?;
-    let b_full = entries
-        .iter()
-        .find(|e| e.sha256.starts_with(b))
-        .map(|e| e.sha256.clone())
-        .with_context(|| format!("no snapshot matches sha prefix {b:?}"))?;
-    let summary = vault::diff(&a_full, &b_full, &root)?;
+    let reader = vault::Reader::open(&root)?;
+    let entries = reader.entries()?;
+    let a_full = resolve_snapshot_sha(&entries, a)?;
+    let b_full = resolve_snapshot_sha(&entries, b)?;
+    let summary = reader.diff(&a_full, &b_full)?;
     Ok(serde_json::json!({
         "sha_a": summary.sha1,
         "sha_b": summary.sha2,
@@ -2159,18 +2416,11 @@ fn cmd_diff(a: &str, b: &str, json: bool) -> Result<()> {
         return Ok(());
     }
     let root = vault::default_root();
-    let entries = vault::list(&root)?;
-    let a_full = entries
-        .iter()
-        .find(|e| e.sha256.starts_with(a))
-        .map(|e| e.sha256.clone())
-        .with_context(|| format!("no snapshot matches sha prefix {a:?}"))?;
-    let b_full = entries
-        .iter()
-        .find(|e| e.sha256.starts_with(b))
-        .map(|e| e.sha256.clone())
-        .with_context(|| format!("no snapshot matches sha prefix {b:?}"))?;
-    let summary = vault::diff(&a_full, &b_full, &root)?;
+    let reader = vault::Reader::open(&root)?;
+    let entries = reader.entries()?;
+    let a_full = resolve_snapshot_sha(&entries, a)?;
+    let b_full = resolve_snapshot_sha(&entries, b)?;
+    let summary = reader.diff(&a_full, &b_full)?;
     println!(
         "snapshot a: {} ({} records)",
         summary.sha1, summary.record_count_a
@@ -2224,83 +2474,77 @@ fn devin_config_home() -> PathBuf {
         .unwrap_or_else(|| home.join(".config").join("devin"))
 }
 
-fn cmd_install_hooks(uninstall: bool, roots: &Roots) -> Result<()> {
-    let claude_settings = roots.claude_home.join("settings.json");
-    let claude_targets = [
-        hooks::HookTarget::ClaudePreCompact,
-        hooks::HookTarget::ClaudeSessionStart,
-        hooks::HookTarget::ClaudeUserPromptSubmit,
-    ];
-    let report = if uninstall {
-        hooks::uninstall(&claude_settings, Some("hooks"))?
-    } else {
-        hooks::install(&claude_settings, &claude_targets, Some("hooks"))?
+fn cmd_install_hooks(uninstall: bool, roots: &Roots, output: Option<&Path>) -> Result<()> {
+    let Some(output) = output else {
+        bail!("provider settings custody is unavailable; use --output <new-file> to export an inert candidate bundle");
     };
-    println!(
-        "{}: +{} -{}",
-        report.path.display(),
-        report.added.len(),
-        report.skipped.len()
-    );
-    for a in &report.added {
-        println!("  {} {a}", if uninstall { "removed" } else { "added" });
-    }
-    // Devin's user-level hooks live in config.json under a "hooks" key —
-    // the same nested shape as Claude's settings.json. (Flat
-    // hooks.v1.json is only a *project*-level file: .devin/hooks.v1.json.)
-    let devin_config = devin_config_home().join("config.json");
-    let devin_targets = [
-        hooks::HookTarget::DevinUserPromptSubmit,
-        hooks::HookTarget::DevinPostCompaction,
+    let targets = [
+        (
+            roots.claude_home.join("settings.json"),
+            vec![
+                hooks::HookTarget::ClaudePreCompact,
+                hooks::HookTarget::ClaudeSessionStart,
+                hooks::HookTarget::ClaudeUserPromptSubmit,
+            ],
+        ),
+        (
+            devin_config_home().join("config.json"),
+            vec![
+                hooks::HookTarget::DevinUserPromptSubmit,
+                hooks::HookTarget::DevinPostCompaction,
+            ],
+        ),
+        (
+            roots.codex_home.join("hooks.json"),
+            vec![
+                hooks::HookTarget::CodexPreCompact,
+                hooks::HookTarget::CodexSessionStart,
+            ],
+        ),
     ];
-    let report = if uninstall {
-        hooks::uninstall(&devin_config, Some("hooks"))?
-    } else {
-        hooks::install(&devin_config, &devin_targets, Some("hooks"))?
-    };
+    // Prepare every provider before publishing anything. The bundle contains
+    // settings values and is intentionally exported as a private new file.
+    let candidates = targets
+        .iter()
+        .map(|(path, entries)| hooks::prepare_settings(path, entries, Some("hooks"), uninstall))
+        .collect::<Result<Vec<_>>>()?;
+    let output_parent = fs_canonical_parent(output)?;
+    let output_path = output_parent.join(output.file_name().context("output needs a file name")?);
+    for (path, _) in &targets {
+        if let Ok(parent) = fs_canonical_parent(path) {
+            if Some(output_path.as_path())
+                == path.file_name().map(|name| parent.join(name)).as_deref()
+            {
+                bail!("candidate bundle cannot be a provider settings path");
+            }
+        }
+    }
+    let bytes = serde_json::to_vec_pretty(&serde_json::json!({
+        "schema": "gobstopper/hook-settings-bundle-v1",
+        "activation": "unqualified; provider-owned application and trust review required",
+        "candidates": candidates,
+    }))?;
+    gobstopper_adapters::transaction::publish_new(&output_path, &bytes)?;
     println!(
-        "{}: +{} -{}",
-        report.path.display(),
-        report.added.len(),
-        report.skipped.len()
+        "Exported {} inert settings candidates to {}; provider settings were not changed.",
+        candidates.len(),
+        output.display()
     );
-    for a in &report.added {
-        println!("  {} {a}", if uninstall { "removed" } else { "added" });
-    }
-    if hooks::codex_hooks_supported() {
-        // Codex also accepts inline `[hooks]` tables in `config.toml`; the
-        // standalone JSON file is the additive, non-destructive install point.
-        let codex_hooks = roots.codex_home.join("hooks.json");
-        let codex_targets = [
-            hooks::HookTarget::CodexPreCompact,
-            hooks::HookTarget::CodexSessionStart,
-        ];
-        let report = if uninstall {
-            hooks::uninstall(&codex_hooks, Some("hooks"))?
-        } else {
-            hooks::install(&codex_hooks, &codex_targets, Some("hooks"))?
-        };
-        println!(
-            "{}: +{} -{}",
-            report.path.display(),
-            report.added.len(),
-            report.skipped.len()
-        );
-        for a in &report.added {
-            println!("  {} {a}", if uninstall { "removed" } else { "added" });
-        }
-        if !uninstall {
-            println!("note: codex requires one-time hook trust approval (/hooks in the TUI)");
-        }
-    } else {
-        println!("codex hooks: not supported by the installed codex version — skipped");
-    }
     Ok(())
 }
 
+fn fs_canonical_parent(path: &Path) -> Result<PathBuf> {
+    Ok(std::fs::canonicalize(
+        path.parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new(".")),
+    )?)
+}
+
 fn cmd_hook(cli: &Cli, cfg: &config::Config, event: &str) -> Result<()> {
-    let mut buf = String::new();
-    std::io::stdin().read_to_string(&mut buf)?;
+    let Some(buf) = hooks::read_stdin_bounded()? else {
+        return Ok(());
+    };
     if let Some(out) = hooks::handle(event, &buf, &roots(cli), cfg)? {
         println!("{out}");
     }
@@ -2359,7 +2603,11 @@ fn cmd_events(
     json: bool,
 ) -> Result<()> {
     let path = default_log_path();
-    let mut events = gobstopper_core::events::read_events(&path).unwrap_or_default();
+    let mut events = match gobstopper_core::events::read_events(&path) {
+        Ok(events) => events,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(_) => bail!("compaction telemetry unavailable"),
+    };
     if let Some(prefix) = session {
         events.retain(|e| e.session_id.starts_with(prefix));
     }
@@ -2427,9 +2675,11 @@ fn cmd_events(
         return Ok(());
     }
     let applied: Vec<&CompactionEvent> = events.iter().filter(|e| e.outcome == "applied").collect();
-    let reclaimed: u64 = applied.iter().map(|e| e.est_reclaimed_tokens).sum();
+    let reclaimed = applied.iter().fold(0u64, |total, event| {
+        total.saturating_add(event.est_reclaimed_tokens)
+    });
     println!(
-        "{} events ({} applied) — ~{} tokens reclaimed lifetime",
+        "{} retained events ({} labelled applied) — ~{} estimated token reductions (not billing)",
         events.len(),
         applied.len(),
         reclaimed
@@ -2449,21 +2699,76 @@ fn cmd_events(
     Ok(())
 }
 
-/// `events --retention`: per-event realized retention plus a
-/// per-provider rollup. Read-only over the local event log.
+/// Exact retained-byte pairs qualify lexical retention, including when provider
+/// context usage is absent. Duplicate observations count once; conflicting
+/// values for one pair disqualify that pair instead of choosing a winner.
+fn qualified_retention(events: &[CompactionEvent]) -> Vec<&CompactionEvent> {
+    let mut pairs = std::collections::BTreeMap::new();
+    for (index, event) in events.iter().enumerate() {
+        let (Some(identity), Some(before), Some(after), Some(total), Some(literal), Some(lexical)) = (
+            event.source_identity_sha256.as_ref(),
+            event.before_observation.as_ref(),
+            event.after_observation.as_ref(),
+            event.retention_total,
+            event.retention_retained,
+            event.retention_lexical,
+        ) else {
+            continue;
+        };
+        if event.outcome != "applied"
+            || !matches!(
+                event.action.as_str(),
+                "provider_compact" | "transcript_compact"
+            )
+            || event.error_code.is_some()
+            || !before.is_valid()
+            || !after.is_valid()
+            || literal > total
+            || lexical > total
+            || identity != &before.source_identity_sha256
+            || identity != &after.source_identity_sha256
+            || before.snapshot_manifest_sha256.is_none()
+            || after.snapshot_manifest_sha256.is_none()
+            || before.snapshot_manifest_sha256 != event.snapshot_before_sha256
+            || after.snapshot_manifest_sha256 != event.snapshot_after_sha256
+        {
+            continue;
+        }
+        let key = (
+            event.provider.as_str(),
+            &event.session_id,
+            identity,
+            &event.snapshot_before_sha256,
+            &event.snapshot_after_sha256,
+        );
+        let counts = (
+            total,
+            literal,
+            lexical,
+            &before.source_sha256,
+            &after.source_sha256,
+        );
+        let entry = pairs.entry(key).or_insert((Some(index), counts));
+        if entry.1 != counts {
+            entry.0 = None;
+        }
+    }
+    let mut indices: Vec<_> = pairs.values().filter_map(|(index, _)| *index).collect();
+    indices.sort_unstable();
+    indices.into_iter().map(|index| &events[index]).collect()
+}
+
+/// Read-only lexical retention over qualified, deduplicated retained-byte pairs.
 fn print_retention(events: &[CompactionEvent], tail: usize, json: bool) -> Result<()> {
-    let measured: Vec<&CompactionEvent> = events
-        .iter()
-        .filter(|e| e.retention_total.is_some())
-        .collect();
+    let measured = qualified_retention(events);
     let mut by_provider: std::collections::BTreeMap<&str, [u64; 4]> =
         std::collections::BTreeMap::new();
     for e in &measured {
         let agg = by_provider.entry(e.provider.as_str()).or_default();
-        agg[0] += 1;
-        agg[1] += e.retention_retained.unwrap_or(0);
-        agg[2] += e.retention_lexical.unwrap_or(0);
-        agg[3] += e.retention_total.unwrap_or(0);
+        agg[0] = agg[0].saturating_add(1);
+        agg[1] = agg[1].saturating_add(e.retention_retained.unwrap_or(0));
+        agg[2] = agg[2].saturating_add(e.retention_lexical.unwrap_or(0));
+        agg[3] = agg[3].saturating_add(e.retention_total.unwrap_or(0));
     }
     if json {
         let providers: serde_json::Map<String, serde_json::Value> = by_provider
@@ -2484,6 +2789,7 @@ fn print_retention(events: &[CompactionEvent], tail: usize, json: bool) -> Resul
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "measured_events": measured.len(),
+                "measurement_basis": "deduplicated_source_bound_literal_lexical_retention_not_task_success",
                 "events": measured,
                 "by_provider": providers,
             }))?
@@ -2505,7 +2811,7 @@ fn print_retention(events: &[CompactionEvent], tail: usize, json: bool) -> Resul
         let lexical = e.retention_lexical.unwrap_or(0);
         // Flag events whose summary dropped below half the bound checks —
         // a lossy compaction worth reviewing, not a failure.
-        let flag = if total > 0 && lexical * 2 < total {
+        let flag = if total > 0 && lexical < total / 2 + total % 2 {
             " LOSSY"
         } else {
             ""
@@ -2527,7 +2833,12 @@ fn print_retention(events: &[CompactionEvent], tail: usize, json: bool) -> Resul
 
 fn cmd_fork(cli: &Cli, cfg: &config::Config, session: &str) -> Result<()> {
     let d = find_session(cli, cfg, session)?;
-    let r = fork::fork(d.handle.provider, &d.handle.path, None)?;
+    let r = fork::fork_with_vault(
+        d.handle.provider,
+        &d.handle.path,
+        None,
+        &vault::default_root(),
+    )?;
     println!("forked {} -> {}", d.handle.session_id, r.session_id);
     println!("  {}", r.path.display());
     println!("  resume: {}", r.resume_hint);
@@ -2552,19 +2863,14 @@ fn cmd_eval(
     if let Some(f) = floor {
         policy.floor_tokens = f;
     }
+    config::validate_policy(&policy)?;
     let scorer = maybe_scorer();
     let judge = jev::eval_judge();
     let hooks = eval::EvalHooks {
         scorer: scorer.as_deref(),
         probe_judge: judge.as_deref(),
     };
-    let rows = eval::eval_transcript_with_hooks(
-        d.handle.provider,
-        &d.handle.path,
-        &policy,
-        strategy_flag,
-        &hooks,
-    )?;
+    let rows = eval::eval_session_with_hooks(&d.handle, &policy, strategy_flag, &hooks)?;
     if json {
         println!("{}", serde_json::to_string_pretty(&rows)?);
         return Ok(());
@@ -2578,32 +2884,41 @@ fn cmd_eval(
     );
     for row in &rows {
         match (&row.plan, &row.error) {
-            (Some(plan), _) => {
+            (_, Some(e)) => println!("  {:<11} error: {e}", row.strategy),
+            (Some(plan), None) => {
                 let probe = match &row.probe_score {
-                    Some(s) if s.probes_total > 0 => format!(
-                        "  recall {:.0}% ({}/{}){}",
+                    Some(s) if s.recall_available => format!(
+                        "  literal retention {:.0}% ({}/{}, complete={}){}",
                         s.recall * 100.0,
                         s.probes_recalled,
-                        s.probes_total,
-                        if s.tail_intact { "" } else { ", tail lost" },
+                        s.probes_requested,
+                        s.complete,
+                        if s.tail_probes_total > 0 && s.complete && !s.tail_intact {
+                            ", sampled tail probe absent"
+                        } else {
+                            ""
+                        },
                     ),
-                    _ => String::new(),
+                    _ => "  literal retention unmeasured".to_string(),
                 };
                 let semantic = match &row.semantic_score {
-                    Some(s) if s.probes_total > 0 => format!(
-                        "  semantic {:.0}% ({}/{})",
+                    Some(s) if s.recall_available => format!(
+                        "  literal+judge estimate {:.0}% ({}/{}, complete={})",
                         s.recall * 100.0,
                         s.probes_recalled,
-                        s.probes_total,
+                        s.probes_requested,
+                        s.complete,
                     ),
+                    Some(_) => "  judge estimate incomplete".to_string(),
                     _ => String::new(),
                 };
                 println!(
-                    "  {:<11} {} -> ~{} (saves ~{}){}{}{}",
+                    "  {:<11} {} -> ~{} (projected reduction ~{}; {}){}{}{}",
                     row.strategy,
                     plan.context_tokens_before,
                     plan.context_tokens_after,
                     row.est_reclaimed,
+                    row.execution_state,
                     probe,
                     semantic,
                     if row.verify_errors > 0 {
@@ -2613,7 +2928,6 @@ fn cmd_eval(
                     },
                 );
             }
-            (None, Some(e)) => println!("  {:<11} error: {e}", row.strategy),
             (None, None) => println!("  {:<11} no plan", row.strategy),
         }
     }
@@ -2717,6 +3031,29 @@ fn cmd_cache_edits(
     Ok(())
 }
 
+fn csv_field(value: &str) -> String {
+    if value.contains([',', '"', '\r', '\n']) {
+        format!("\"{}\"", value.replace('"', "\"\""))
+    } else {
+        value.to_owned()
+    }
+}
+
+fn bench_failure_row(provider: Provider, session: &str, failure: &str) -> String {
+    // Missing measurements stay empty. A closed category avoids emitting source
+    // contents or private parser diagnostics into the benchmark artifact.
+    let mut fields = vec![String::new(); 24];
+    fields[0] = provider.as_str().to_owned();
+    fields[1] = csv_field(session);
+    fields[16] = "failed".to_owned();
+    fields[17] = "unavailable".to_owned();
+    fields[20] = "false".to_owned();
+    fields[21] = "false".to_owned();
+    fields[22] = "unavailable".to_owned();
+    fields[23] = failure.to_owned();
+    format!("{}\n", fields.join(","))
+}
+
 fn cmd_bench(
     cli: &Cli,
     all: bool,
@@ -2735,19 +3072,24 @@ fn cmd_bench(
     // in `plan`. The probe judge is skipped: bench emits no semantic
     // columns, and a remote call per session × strategy would spend
     // requests on data nobody reads.
-    let scorer = maybe_scorer();
-    let hooks = eval::EvalHooks {
-        scorer: scorer.as_deref(),
-        probe_judge: None,
-    };
+    let scorer = std::cell::OnceCell::new();
     let mut csv = String::new();
     csv.push_str(
-        "provider,session,strategy,context_before,context_after,est_reclaimed,prefix_tokens,prefix_ratio,score,verify_errors,verify_warnings,probes_total,probes_recalled,recall,tail_intact,duration_ms\n",
+        "provider,session,strategy,context_before,context_after,est_reclaimed,prefix_tokens,prefix_ratio,score,verify_errors,verify_warnings,probes_total,probes_recalled,recall,tail_intact,duration_ms,execution_state,token_basis,source_sha256,result_sha256,retention_complete,recall_available,retention_basis,failure\n",
     );
+    let mut row_count = 0;
     for d in sessions {
         let mut resolved = match cfg.resolve(d.handle.provider, &d.handle.session_id, None, None) {
             Ok(r) => r,
-            Err(_) => continue,
+            Err(_) => {
+                csv.push_str(&bench_failure_row(
+                    d.handle.provider,
+                    &d.handle.session_id,
+                    "policy_resolution_failed",
+                ));
+                row_count += 1;
+                continue;
+            }
         };
         if let Some(t) = trigger {
             resolved.policy.trigger_tokens = t;
@@ -2755,15 +3097,30 @@ fn cmd_bench(
         if let Some(f) = floor {
             resolved.policy.floor_tokens = f;
         }
-        let rows = match eval::eval_transcript_with_hooks(
-            d.handle.provider,
-            &d.handle.path,
-            &resolved.policy,
-            None,
-            &hooks,
-        ) {
+        if config::validate_policy(&resolved.policy).is_err() {
+            csv.push_str(&bench_failure_row(
+                d.handle.provider,
+                &d.handle.session_id,
+                "policy_resolution_failed",
+            ));
+            row_count += 1;
+            continue;
+        }
+        let hooks = eval::EvalHooks {
+            scorer: scorer.get_or_init(maybe_scorer).as_deref(),
+            probe_judge: None,
+        };
+        let rows = match eval::eval_session_with_hooks(&d.handle, &resolved.policy, None, &hooks) {
             Ok(rows) => rows,
-            Err(_) => continue,
+            Err(_) => {
+                csv.push_str(&bench_failure_row(
+                    d.handle.provider,
+                    &d.handle.session_id,
+                    "session_evaluation_failed",
+                ));
+                row_count += 1;
+                continue;
+            }
         };
         for row in rows {
             let plan = row.plan.as_ref();
@@ -2795,9 +3152,9 @@ fn cmd_bench(
                 strategy::cache_preservation_score(row.est_reclaimed, row.prefix_tokens, before)
             };
             csv.push_str(&format!(
-                "{},{},{},{},{},{},{},{:.4},{:.0},{},{},{},{},{:.2},{},{}\n",
+                "{},{},{},{},{},{},{},{:.4},{:.0},{},{},{},{},{:.2},{},{},{},{},{},{},{},{},literal_presence,{}\n",
                 d.handle.provider.as_str(),
-                d.handle.session_id,
+                csv_field(&d.handle.session_id),
                 row.strategy,
                 before,
                 after,
@@ -2811,17 +3168,21 @@ fn cmd_bench(
                 probes_recalled,
                 recall,
                 tail_intact,
-                row.duration_ms
+                row.duration_ms,
+                row.execution_state,
+                row.token_basis,
+                row.source_sha256,
+                row.result_sha256.as_deref().unwrap_or(""),
+                row.probe_score.as_ref().is_some_and(|score| score.complete),
+                row.probe_score.as_ref().is_some_and(|score| score.recall_available),
+                if row.error.is_some() { "strategy_evaluation_failed" } else { "" }
             ));
+            row_count += 1;
         }
     }
     if let Some(path) = output {
-        std::fs::write(path, csv.as_bytes())?;
-        println!(
-            "wrote {} rows to {}",
-            csv.lines().count().saturating_sub(1),
-            path.display()
-        );
+        gobstopper_adapters::transaction::publish_new(path, csv.as_bytes())?;
+        println!("wrote {} rows to {}", row_count, path.display());
     } else {
         print!("{}", csv);
     }
@@ -2931,6 +3292,9 @@ fn cmd_apply(
         bail!("standalone in-place compaction is retired because a provider may hold an open writer; omit --in-place to publish a verified fork");
     }
     let d = find_session(cli, cfg, session)?;
+    if d.handle.provider == Provider::Devin {
+        bail!("direct Devin store mutation is disabled: lifetime provider custody is unavailable; use provider-owned /compact or inspect an exported copy");
+    }
     if d.handle.provider == Provider::Codex {
         if let Some(parent) = codex::parent_thread(&d.handle.path) {
             if parent != d.handle.session_id {
@@ -2956,6 +3320,28 @@ fn cmd_apply(
         .edits
         .iter()
         .any(|e| matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }));
+    if plan
+        .edits
+        .iter()
+        .any(|edit| matches!(edit, Edit::ProviderCompact { .. }))
+    {
+        let homes = roots(cli);
+        let (home, binary) = match d.handle.provider {
+            Provider::Codex => (
+                &homes.codex_home,
+                resolve_codex_bin(cli.codex_bin.as_deref()),
+            ),
+            Provider::ClaudeCode => (
+                &homes.claude_home,
+                claude_bin().context("Claude executable unavailable")?,
+            ),
+            Provider::Devin => (
+                &homes.devin_home,
+                devin_bin().context("Devin executable unavailable")?,
+            ),
+        };
+        native_operations::check_activation(&d.handle, home, &binary)?;
+    }
     if !has_provider_control && plan.context_tokens_after >= plan.context_tokens_before {
         bail!(
             "plan has no net context benefit ({} -> {} tokens); refusing to rewrite",
@@ -3067,59 +3453,6 @@ fn cmd_apply(
                 return Err(e);
             }
         }
-    } else if d.handle.provider == Provider::Devin && !file_edits.is_empty() {
-        // In-place store path: snapshot the canonical export, then one
-        // guarded SQLite transaction rewrites payloads. A detached fork
-        // file is not a resumable Devin artifact, so this provider gets
-        // no copy path at all.
-        let file_result: anyhow::Result<u64> = copy::compact_devin_store(
-            &d.handle,
-            &source_sha256,
-            &plan,
-            &vault::default_root(),
-            &roots(cli).devin_home,
-        )
-        .map(|receipt| {
-            println!(
-                "rewrote {} payloads in place{}",
-                receipt.nodes_rewritten,
-                receipt
-                    .digest_node_id
-                    .map(|id| format!("; digest node {id}"))
-                    .unwrap_or_default()
-            );
-            if let Some(sha) = &receipt.snapshot_manifest_sha256 {
-                println!("recovery snapshot: {sha}");
-            }
-            println!("resume the session: {}", receipt.resume_hint);
-            receipt.reclaimed_bytes
-        });
-        match file_result {
-            Ok(reclaimed) => {
-                emit_event(
-                    &d,
-                    &plan,
-                    "transcript_compact",
-                    "planned",
-                    trigger,
-                    started.elapsed().as_millis() as u64,
-                    None,
-                );
-                println!("reclaimed ~{reclaimed} bytes in the session store");
-            }
-            Err(e) => {
-                emit_event(
-                    &d,
-                    &plan,
-                    "transcript_compact",
-                    "failed",
-                    trigger,
-                    started.elapsed().as_millis() as u64,
-                    Some("apply_failed"),
-                );
-                return Err(e);
-            }
-        }
     } else if !file_edits.is_empty() {
         let file_result: anyhow::Result<u64> =
             copy::compact(&d.handle, &source_sha256, &plan, &vault::default_root()).map(
@@ -3198,15 +3531,20 @@ fn cmd_apply(
         // above as the recovery point for fork creation itself.
         let native_snapshot = snapshot_before_edit(&d, "pre-compact")?;
         emit_event(&d, &plan, "provider_compact", "planned", trigger, 0, None);
-        match provider_compact(
-            &d,
-            &resolve_codex_bin(cli.codex_bin.as_deref()),
-            &roots(cli).codex_home,
-        ) {
-            Ok(()) => {
-                record_native_completion(&d, &plan, &native_snapshot, trigger, started);
+        let binary = resolve_codex_bin(cli.codex_bin.as_deref());
+        let policy_sha256 =
+            copy::sha256(format!("{cfg:?}:{:?}:{plan:?}", resolved.policy).as_bytes());
+        let mut operation =
+            prepare_native_operation(cli, &d, &binary, &native_snapshot, &policy_sha256)?;
+        operation.dispatch()?;
+        match provider_compact(&d, operation.binary(), &roots(cli).codex_home) {
+            Ok(terminal) => {
+                let observed =
+                    record_native_completion(&d, &plan, &native_snapshot, trigger, started);
+                operation.finish(observed, Some(terminal))?;
             }
             Err(error) => {
+                operation.finish(None, None)?;
                 let failed = CompactionPlan {
                     edits: vec![],
                     context_tokens_after: plan.context_tokens_before,
@@ -3269,73 +3607,6 @@ fn session_cost_hint(d: &Discovered) -> u64 {
     }
 }
 
-/// Content hash of a file, for the staged-swap unchanged check.
-fn sha256_file(path: &std::path::Path) -> Option<String> {
-    use sha2::{Digest, Sha256};
-    let bytes = std::fs::read(path).ok()?;
-    Some(format!("{:x}", Sha256::digest(&bytes)))
-}
-
-/// A fully-applied transcript copy waiting to be swapped in at trigger.
-struct Staged {
-    path: PathBuf,
-    /// Content hash of the source file when staged — if the provider
-    /// wrote since, the staged copy is missing records and must be
-    /// discarded. A hash, not a length: a same-length rewrite would pass
-    /// a size check.
-    source_sha256: String,
-    plan: CompactionPlan,
-}
-
-/// Build a compacted copy of the transcript ahead of the trigger.
-/// Returns None when there is nothing to stage (no plan, or the plan
-/// only delegates to the provider — that path is instant anyway).
-fn stage_compaction(d: &Discovered, resolved: &config::Resolved) -> Option<Staged> {
-    let transcript = detect::load(d).ok()?;
-    let plan = evaluate(&transcript, resolved).ok()??;
-    let file_edits: Vec<Edit> = plan
-        .edits
-        .iter()
-        .filter(|e| !matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
-        .cloned()
-        .collect();
-    if file_edits.is_empty() {
-        return None;
-    }
-    let staged_path = d.handle.path.with_extension("gobstopper-staged");
-    std::fs::copy(&d.handle.path, &staged_path).ok()?;
-    let staged_d = Discovered {
-        handle: gobstopper_core::SessionHandle {
-            path: staged_path.clone(),
-            ..d.handle.clone()
-        },
-        usage: d.usage,
-    };
-    let staged_plan = CompactionPlan {
-        edits: file_edits,
-        ..plan.clone()
-    };
-    let clean = apply_edits(&staged_d, &staged_plan).is_ok()
-        && std::fs::read(&staged_path)
-            .ok()
-            .map(|b| {
-                !verify::verify(d.handle.provider, &b)
-                    .iter()
-                    .any(|f| f.severity == verify::Severity::Error)
-            })
-            .unwrap_or(false);
-    if !clean {
-        let _ = std::fs::remove_file(&staged_path);
-        return None;
-    }
-    let source_sha256 = sha256_file(&d.handle.path)?;
-    Some(Staged {
-        path: staged_path,
-        source_sha256,
-        plan,
-    })
-}
-
 /// Per-daemon persisted watch state: terminal-decision fingerprints,
 /// the Claude settle arm, rate-limit clocks, and the last-emitted
 /// delegation context all survive a daemon restart, so relaunching does
@@ -3364,6 +3635,10 @@ struct WatchState {
     /// so a fingerprint-keyed settle can never hold for these.
     #[serde(default)]
     holddown: std::collections::HashMap<String, u64>,
+    /// Pre-journal versions mixed uncertain dispatches and known cooldowns.
+    /// Preserve these ambiguities permanently instead of guessing after expiry.
+    #[serde(default)]
+    legacy_unresolved: std::collections::HashSet<String>,
     #[serde(default)]
     last_fire: std::collections::HashMap<String, u64>,
     #[serde(default)]
@@ -3389,7 +3664,7 @@ struct WatchState {
 /// never held and produced a retry storm.
 /// v8: native no-ops expire on a cooldown; Claude native dispatch precedes
 /// planner acceptance; all providers preserve unknown usage as unmeasured.
-const WATCH_STATE_GENERATION: u32 = 8;
+const WATCH_STATE_GENERATION: u32 = 9;
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
@@ -3470,11 +3745,55 @@ fn devin_bin() -> Option<PathBuf> {
     candidates.into_iter().find(|c| c.is_file())
 }
 
-fn load_watch_state(path: &Path) -> WatchState {
-    let Ok(text) = std::fs::read_to_string(path) else {
-        return WatchState::default();
+fn load_watch_state(path: &Path) -> Result<WatchState> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = match options.open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(WatchState::default()),
+        Err(e) => {
+            return Err(e).context("watch state unavailable; repair required before dispatch")
+        }
     };
-    serde_json::from_str(&text).unwrap_or_default()
+    const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
+    if !file.metadata()?.is_file() || file.metadata()?.len() > MAX_STATE_BYTES {
+        bail!("watch state must be a bounded regular file; repair required");
+    }
+    let mut bytes = Vec::new();
+    file.take(MAX_STATE_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_STATE_BYTES {
+        bail!("watch state exceeds byte bound");
+    }
+    let mut state: WatchState = serde_json::from_slice(&bytes)
+        .context("watch state is malformed; preserve it for repair before dispatch")?;
+    if state.generation > WATCH_STATE_GENERATION {
+        bail!("watch state was written by a newer protocol; downgrade refused");
+    }
+    if state.generation < 9 {
+        state
+            .legacy_unresolved
+            .extend(state.holddown.keys().cloned());
+    }
+    Ok(state)
+}
+
+fn legacy_native_uncertainty() -> Result<std::collections::HashSet<String>> {
+    let mut unresolved = std::collections::HashSet::new();
+    for provider in [
+        None,
+        Some(Provider::Codex),
+        Some(Provider::ClaudeCode),
+        Some(Provider::Devin),
+    ] {
+        unresolved.extend(load_watch_state(&watch_state_path(provider))?.legacy_unresolved);
+    }
+    Ok(unresolved)
 }
 
 /// Atomic write (tmp + rename) so a SIGKILL mid-save cannot leave a torn
@@ -3543,7 +3862,11 @@ fn cmd_watch(
     // telemetry log): fingerprints, settle arms, and rate-limit clocks
     // survive restarts so a relaunch does not re-plan every session.
     let state_path = watch_state_path(provider);
-    let persisted = load_watch_state(&state_path);
+    let persisted = load_watch_state(&state_path)?;
+    // A provider-specific watcher and the all-provider watcher share native
+    // targets. Migrate uncertainty from every legacy lane before dispatch.
+    let mut legacy_unresolved = legacy_native_uncertainty()?;
+    legacy_unresolved.extend(persisted.legacy_unresolved);
     let mut decision_config = persisted.config_sha256;
     let boot_secs = now_secs();
     let mut last_fire: std::collections::HashMap<String, std::time::Instant> = persisted
@@ -3592,7 +3915,6 @@ fn cmd_watch(
     // Last emitted delegation context per session — identical
     // provider_compact/skipped events are not re-logged every pass.
     let mut delegated_ctx = persisted.delegated_ctx;
-    let mut staged: std::collections::HashMap<String, Staged> = std::collections::HashMap::new();
     let mut discovery_cache = detect::DiscoveryCache::default();
     // Every native dispatch first checkpoints a conservative hold. A restart
     // during a provider call must not forget that its outcome is unknown.
@@ -3607,6 +3929,7 @@ fn cmd_watch(
                     settled: settled.clone(),
                     settle_pass: settle_pass.clone(),
                     holddown: holddown.clone(),
+                    legacy_unresolved: legacy_unresolved.clone(),
                     last_fire: last_fire
                         .iter()
                         .map(|(k, t)| (k.clone(), instant_to_epoch(*t, save_secs)))
@@ -3625,13 +3948,29 @@ fn cmd_watch(
     let devin_bin = devin_bin();
     loop {
         let cfg = config::load()?;
+        legacy_unresolved.extend(legacy_native_uncertainty()?);
         holddown.retain(|_, until| *until > now_secs());
         // An unchanged transcript can have a different decision after a
         // rollout/policy change. Config uses ordered maps; store only a hash
         // of its effective inputs, never command strings or private paths.
         let config_sha256 = {
             use sha2::{Digest, Sha256};
-            format!("{:x}", Sha256::digest(format!("{cfg:?}").as_bytes()))
+            let mut environment: Vec<_> = std::env::vars_os()
+                .filter(|(name, _)| name.to_string_lossy().starts_with("GOBSTOPPER_"))
+                .collect();
+            environment.sort();
+            format!(
+                "{:x}",
+                Sha256::digest(
+                    format!(
+                        "{}:{cfg:?}:{:?}:{:?}:{environment:?}",
+                        env!("CARGO_PKG_VERSION"),
+                        roots(cli),
+                        cli.codex_bin,
+                    )
+                    .as_bytes()
+                )
+            )
         };
         if decision_config != config_sha256 {
             settled.clear();
@@ -3672,6 +4011,25 @@ fn cmd_watch(
             else {
                 continue;
             };
+            if legacy_unresolved.contains(&session_key) {
+                eprintln!("legacy native outcome unresolved; automatic dispatch remains blocked");
+                continue;
+            }
+            if !dry_run && resolved.auto_compact_closed {
+                let homes = roots(cli);
+                let home = match d.handle.provider {
+                    Provider::Codex => &homes.codex_home,
+                    Provider::ClaudeCode => &homes.claude_home,
+                    Provider::Devin => &homes.devin_home,
+                };
+                match native_operations::Operation::pending(&d.handle, home) {
+                    Ok(false) => {}
+                    _ => {
+                        eprintln!("native dispatch blocked: existing operation needs reconciliation or repair");
+                        continue;
+                    }
+                }
+            }
             // Suppression: a session whose content fingerprint matches its
             // last terminal decision is byte-identical — skip the load.
             // This check precedes the context fallback load so suppressed
@@ -3707,7 +4065,7 @@ fn cmd_watch(
             let trigger = if resolved.policy.adaptive {
                 gobstopper_core::adapt(
                     &resolved.policy,
-                    &adaptive_sample_usage(d.handle.provider, &d.handle.session_id, &d.usage),
+                    &adaptive_sample_usage(&d.handle, &d.usage),
                 )
                 .policy
                 .effective_trigger()
@@ -3722,70 +4080,12 @@ fn cmd_watch(
                     .unwrap_or(0)
             };
             if ctx < trigger {
-                // Below trigger: optionally precompute the compacted file
-                // so the trigger crossing is a rename, not a rewrite.
-                if double_buffer
-                    && !dry_run
-                    && ctx >= trigger * 6 / 10
-                    && !staged.contains_key(&d.handle.session_id)
-                    // A codex session headed for provider-native
-                    // thread/compact gains nothing from a staged fork.
-                    && !(d.handle.provider == Provider::Codex
-                        && resolved.auto_compact_closed)
-                {
-                    if let Some(s) = stage_compaction(&d, &resolved) {
-                        staged.insert(d.handle.session_id.clone(), s);
-                    }
-                }
                 continue;
             }
             if let Some(t) = last_fire.get(&session_key) {
                 if t.elapsed().as_secs() < resolved.policy.min_interval_secs {
                     continue;
                 }
-            }
-            // Staged fast path: source unchanged since staging -> swap.
-            // A codex session with provider-native compact enabled skips
-            // the swap and reaches the thread/compact arm below instead.
-            let codex_native = d.handle.provider == Provider::Codex && resolved.auto_compact_closed;
-            if let Some(s) = staged.remove(&d.handle.session_id) {
-                let unchanged = sha256_file(&d.handle.path)
-                    .map(|h| h == s.source_sha256)
-                    .unwrap_or(false);
-                if !dry_run && unchanged && !codex_native {
-                    let started = std::time::Instant::now();
-                    match copy::compact(
-                        &d.handle,
-                        &s.source_sha256,
-                        &s.plan,
-                        &vault::default_root(),
-                    )
-                    .map(|_| ())
-                    {
-                        Ok(()) => {
-                            last_fire.insert(session_key.clone(), std::time::Instant::now());
-                            emit_event(
-                                &d,
-                                &s.plan,
-                                "transcript_compact",
-                                "planned",
-                                trigger,
-                                started.elapsed().as_millis() as u64,
-                                None,
-                            );
-                            eprintln!(
-                                "prepared compacted fork for {}",
-                                d.handle.cwd.as_deref().unwrap_or(&d.handle.path).display()
-                            );
-                            continue;
-                        }
-                        Err(e) => eprintln!(
-                            "staged swap {} failed: {e}",
-                            d.handle.cwd.as_deref().unwrap_or(&d.handle.path).display()
-                        ),
-                    }
-                }
-                let _ = std::fs::remove_file(&s.path); // stale or dry-run
             }
             // Live fast path: `auto` unconditionally delegates active
             // sessions to the provider, and the delegation arm skips
@@ -3906,8 +4206,29 @@ fn cmd_watch(
                             .saturating_add(3600),
                     );
                     persist_watch_state!()?;
-                    let outcome = gobstopper_adapters::devin::acp_compact_in_home(
+                    let mut operation = match prepare_native_operation(
+                        cli,
+                        &d,
                         bin,
+                        &pre_snapshot,
+                        &decision_config,
+                    ) {
+                        Ok(operation) => operation,
+                        Err(error) => {
+                            holddown.remove(&session_key);
+                            record_native_admission_failure(
+                                &d,
+                                &resolved.strategy,
+                                ctx,
+                                trigger,
+                                &error,
+                            );
+                            continue;
+                        }
+                    };
+                    operation.dispatch()?;
+                    let outcome = gobstopper_adapters::devin::acp_compact_in_home(
+                        operation.binary(),
                         &d.handle.session_id,
                         &cwd,
                         resolved.acp_timeout_secs,
@@ -3941,8 +4262,22 @@ fn cmd_watch(
                                 context_tokens_after: ctx,
                             };
                             last_fire.insert(session_key.clone(), std::time::Instant::now());
-                            if record_native_completion(&d, &done, &pre_snapshot, trigger, started)
-                            {
+                            let observed = record_native_completion(
+                                &d,
+                                &done,
+                                &pre_snapshot,
+                                trigger,
+                                started,
+                            );
+                            operation.finish(
+                                observed,
+                                Some(native_operations::TerminalEvidence {
+                                    session_id: d.handle.session_id.clone(),
+                                    turn_id: None,
+                                    item_id: None,
+                                }),
+                            )?;
+                            if observed == Some(true) {
                                 if let Some(nfp) = session_fingerprint(&d) {
                                     settled.insert(session_key.clone(), nfp);
                                 }
@@ -3953,6 +4288,7 @@ fn cmd_watch(
                             continue;
                         }
                         Err(_error) => {
+                            operation.finish(None, None)?;
                             let failed = CompactionPlan {
                                 strategy: resolved.strategy.clone(),
                                 rationale: "auto (closed devin): acp /compact".to_string(),
@@ -4050,15 +4386,37 @@ fn cmd_watch(
                 last_fire.insert(session_key.clone(), started);
                 holddown.insert(session_key.clone(), now_secs() + 4200);
                 persist_watch_state!()?;
+                let binary = resolve_codex_bin(cli.codex_bin.as_deref());
+                let mut operation = match prepare_native_operation(
+                    cli,
+                    &d,
+                    &binary,
+                    &pre_snapshot,
+                    &decision_config,
+                ) {
+                    Ok(operation) => operation,
+                    Err(error) => {
+                        holddown.remove(&session_key);
+                        record_native_admission_failure(
+                            &d,
+                            &resolved.strategy,
+                            ctx,
+                            trigger,
+                            &error,
+                        );
+                        continue;
+                    }
+                };
+                operation.dispatch()?;
                 let outcome = codex_compact(
-                    &resolve_codex_bin(cli.codex_bin.as_deref()),
+                    operation.binary(),
                     &d.handle.session_id,
                     Some(&roots(cli).codex_home),
                     600_000,
                 );
                 holddown.remove(&session_key);
                 match outcome {
-                    Ok(()) => {
+                    Ok(terminal) => {
                         let done = CompactionPlan {
                             strategy: resolved.strategy.clone(),
                             rationale: "auto (closed codex): thread/compact".to_string(),
@@ -4067,7 +4425,10 @@ fn cmd_watch(
                             context_tokens_after: ctx,
                         };
                         last_fire.insert(session_key.clone(), std::time::Instant::now());
-                        if record_native_completion(&d, &done, &pre_snapshot, trigger, started) {
+                        let observed =
+                            record_native_completion(&d, &done, &pre_snapshot, trigger, started);
+                        operation.finish(observed, Some(terminal))?;
+                        if observed == Some(true) {
                             if let Some(nfp) = session_fingerprint(&d) {
                                 settled.insert(session_key.clone(), nfp);
                             }
@@ -4079,6 +4440,7 @@ fn cmd_watch(
                         }
                     }
                     Err(e) => {
+                        operation.finish(None, None)?;
                         let failed = CompactionPlan {
                             strategy: resolved.strategy.clone(),
                             rationale: "auto (closed codex): thread/compact".to_string(),
@@ -4184,8 +4546,29 @@ fn cmd_watch(
                     last_fire.insert(session_key.clone(), started);
                     holddown.insert(session_key.clone(), now_secs() + 3840);
                     persist_watch_state!()?;
-                    let outcome = gobstopper_adapters::claude::headless_compact_in_home(
+                    let mut operation = match prepare_native_operation(
+                        cli,
+                        &d,
                         bin,
+                        &pre_snapshot,
+                        &decision_config,
+                    ) {
+                        Ok(operation) => operation,
+                        Err(error) => {
+                            holddown.remove(&session_key);
+                            record_native_admission_failure(
+                                &d,
+                                &resolved.strategy,
+                                ctx,
+                                trigger,
+                                &error,
+                            );
+                            continue;
+                        }
+                    };
+                    operation.dispatch()?;
+                    let outcome = gobstopper_adapters::claude::headless_compact_in_home(
+                        operation.binary(),
                         &d.handle.session_id,
                         240,
                         Some(&roots(cli).claude_home),
@@ -4193,8 +4576,22 @@ fn cmd_watch(
                     holddown.remove(&session_key);
                     match outcome {
                         Ok(()) => {
-                            if record_native_completion(&d, &done, &pre_snapshot, trigger, started)
-                            {
+                            let observed = record_native_completion(
+                                &d,
+                                &done,
+                                &pre_snapshot,
+                                trigger,
+                                started,
+                            );
+                            operation.finish(
+                                observed,
+                                Some(native_operations::TerminalEvidence {
+                                    session_id: d.handle.session_id.clone(),
+                                    turn_id: None,
+                                    item_id: None,
+                                }),
+                            )?;
+                            if observed == Some(true) {
                                 if let Some(nfp) = session_fingerprint(&d) {
                                     settled.insert(session_key.clone(), nfp);
                                 }
@@ -4203,7 +4600,8 @@ fn cmd_watch(
                                 holddown.insert(session_key.clone(), now_secs() + 3600);
                             }
                         }
-                        Err(error) => {
+                        Err(_error) => {
+                            operation.finish(None, None)?;
                             let mut event = build_event(
                                 &d,
                                 &done,
@@ -4217,7 +4615,7 @@ fn cmd_watch(
                             if let Err(error) = append_event(&default_log_path(), &event) {
                                 eprintln!("telemetry write failed (non-fatal): {error}");
                             }
-                            eprintln!("headless claude /compact failed ({error}); leaving session unchanged by gobstopper");
+                            eprintln!("headless claude /compact outcome unresolved; automatic replay blocked");
                             // A failed/timeout process can already have changed the
                             // session. Reconcile on a later pass, never fall through
                             // into file surgery on this uncertain provider outcome.
@@ -4300,280 +4698,32 @@ fn cmd_watch(
                         }
                         continue;
                     }
-                    if d.handle.provider == Provider::Devin {
-                        // Devin idle-session levers: provider-native
-                        // `devin acp` /compact (auto_compact_closed) and/or
-                        // the guarded in-place store write
-                        // (auto_apply_store).
-                        if !resolved.auto_apply_store && !resolved.auto_compact_closed {
-                            continue;
-                        }
-                        if d.handle.is_active() {
-                            eprintln!(
-                                "devin session in {} is live; /compact in-session",
-                                d.handle.cwd.as_deref().unwrap_or(Path::new("?")).display()
-                            );
-                            continue;
-                        }
-                        // Rollout gate: control-cohort sessions log one
-                        // decision per content version and skip, so cohort
-                        // comparison attributes savings to automation.
-                        if hooks::rollout_cohort(
-                            &cfg,
-                            d.handle.provider.as_str(),
-                            &d.handle.session_id,
-                        ) == Some(false)
-                        {
-                            let mut tagged = plan.clone();
-                            tagged.strategy = "watch-apply:control".to_string();
-                            emit_event(
-                                &d,
-                                &tagged,
-                                action,
-                                "skipped",
-                                trigger,
-                                started.elapsed().as_millis() as u64,
-                                None,
-                            );
-                            if let Some(fp) = &fp {
-                                settled.insert(session_key.clone(), fp.clone());
-                            }
-                            continue;
-                        }
-                        if !resolved.auto_apply_store {
-                            continue;
-                        }
-                        let r = copy::compact_devin_store(
-                            &d.handle,
-                            &source_sha256,
-                            &plan,
-                            &vault::default_root(),
-                            &roots(cli).devin_home,
-                        );
-                        match r {
-                            Ok(receipt) => {
-                                let before_sha = receipt.snapshot_manifest_sha256.clone();
-                                let post_sha = vault::snapshot(
-                                    &d.handle.path,
-                                    d.handle.provider,
-                                    &d.handle.session_id,
-                                    Some("post-compact"),
-                                    &vault::default_root(),
-                                )
-                                .map(|e| e.sha256)
-                                .ok();
-                                let mut ev = build_event(
-                                    &d,
-                                    &plan,
-                                    action,
-                                    "applied",
-                                    trigger,
-                                    started.elapsed().as_millis() as u64,
-                                    None,
-                                );
-                                ev.snapshot_before_sha256 = before_sha.clone();
-                                ev.snapshot_after_sha256 = post_sha.clone();
-                                if let (Some(before), Some(post)) = (&before_sha, &post_sha) {
-                                    if let Some((total, retained, lexical)) =
-                                        realized_retention(&d.handle, before, post)
-                                    {
-                                        ev.retention_total = Some(total);
-                                        ev.retention_retained = Some(retained);
-                                        ev.retention_lexical = Some(lexical);
-                                    }
-                                }
-                                if let Err(e) = append_event(&default_log_path(), &ev) {
-                                    eprintln!("telemetry write failed (non-fatal): {e}");
-                                }
-                                eprintln!(
-                                    "compacted devin session in {} in place (~{} bytes reclaimed; snapshot {})",
-                                    d.handle.cwd.as_deref().unwrap_or(Path::new("?")).display(),
-                                    receipt.reclaimed_bytes,
-                                    receipt.snapshot_manifest_sha256.as_deref().unwrap_or("?"),
-                                );
-                                // Post-write fingerprint: our own write
-                                // moved the chain, so store the new value
-                                // and stay suppressed until the provider
-                                // appends again.
-                                if let Some(nfp) = session_fingerprint(&d) {
-                                    settled.insert(session_key.clone(), nfp);
-                                }
-                                if last_apply.len() >= 4096 {
-                                    last_apply.clear();
-                                }
-                                last_apply.insert(session_key.clone(), started);
-                            }
-                            Err(e) => {
-                                emit_event(
-                                    &d,
-                                    &plan,
-                                    action,
-                                    "failed",
-                                    trigger,
-                                    started.elapsed().as_millis() as u64,
-                                    Some("apply_failed"),
-                                );
-                                eprintln!(
-                                    "devin store compact in {} failed: {e}",
-                                    d.handle.cwd.as_deref().unwrap_or(Path::new("?")).display()
-                                );
-                                if let Some(fp) = &fp {
-                                    settled.insert(session_key.clone(), fp.clone());
-                                }
-                            }
-                        }
-                        continue;
-                    }
-                    if d.handle.provider == Provider::ClaudeCode
-                        && (resolved.auto_apply_inplace || resolved.auto_compact_closed)
+                    if d.handle.provider == Provider::Devin
+                        || (d.handle.provider == Provider::ClaudeCode
+                            && resolved.auto_apply_inplace)
                     {
-                        // Closed-session handling for Claude: provider-native
-                        // headless compaction and/or in-place JSONL rewrite.
-                        // For in-place rewrite the provider opens the
-                        // transcript per write (no persistent handle), so
-                        // the rename swap cannot orphan appends, and
-                        // transaction::apply rechecks bytes before
-                        // replacing. Snapshot first.
-                        if d.handle.is_active() {
-                            continue;
-                        }
-                        // Rollout gate: same cohort contract as Devin —
-                        // control sessions log and skip, one decision per
-                        // content version.
-                        if hooks::rollout_cohort(
-                            &cfg,
-                            d.handle.provider.as_str(),
-                            &d.handle.session_id,
-                        ) == Some(false)
-                        {
-                            let mut tagged = plan.clone();
-                            tagged.strategy = "watch-apply:control".to_string();
-                            emit_event(
-                                &d,
-                                &tagged,
-                                action,
-                                "skipped",
-                                trigger,
-                                started.elapsed().as_millis() as u64,
-                                None,
-                            );
-                            if let Some(fp) = &fp {
-                                settled.insert(session_key.clone(), fp.clone());
-                            }
-                            continue;
-                        }
-                        // Two-pass settle: mtime alone leaks sessions whose
-                        // provider appended between discovery and apply
-                        // (ChangedDuringWrite would abort anyway, but the
-                        // churn is wasted). Require an unchanged
-                        // fingerprint across consecutive passes.
-                        match &fp {
-                            Some(fp) if settle_pass.get(&session_key) == Some(fp) => {
-                                settle_pass.remove(&session_key);
-                            }
-                            Some(fp) => {
-                                settle_pass.insert(session_key.clone(), fp.clone());
-                                continue;
-                            }
-                            None => continue,
-                        }
-                        if !resolved.auto_apply_inplace {
-                            continue;
-                        }
-                        let file_edits: Vec<Edit> = plan
-                            .edits
-                            .iter()
-                            .filter(|e| {
-                                !matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. })
-                            })
-                            .cloned()
-                            .collect();
-                        if file_edits.is_empty() {
-                            continue;
-                        }
-                        let snap = vault::snapshot(
-                            &d.handle.path,
-                            d.handle.provider,
-                            &d.handle.session_id,
-                            Some(&resolved.strategy),
-                            &vault::default_root(),
+                        let blocked = CompactionPlan {
+                            context_tokens_after: plan.context_tokens_before,
+                            ..plan.clone()
+                        };
+                        emit_event(
+                            &d,
+                            &blocked,
+                            action,
+                            "blocked",
+                            trigger,
+                            started.elapsed().as_millis() as u64,
+                            Some("custody_unavailable"),
                         );
-                        let r = snap.and_then(|entry| {
-                            let file_plan = CompactionPlan {
-                                edits: file_edits,
-                                ..plan.clone()
-                            };
-                            apply_edits(&d, &file_plan).map(|reclaimed| (entry, reclaimed))
-                        });
-                        match r {
-                            Ok((entry, reclaimed)) => {
-                                // Post-apply snapshot + realized retention —
-                                // every in-place compaction emits a scorable
-                                // before/after pair on its event. Best-effort:
-                                // evidence gaps never fail a completed apply.
-                                let post_sha = vault::snapshot(
-                                    &d.handle.path,
-                                    d.handle.provider,
-                                    &d.handle.session_id,
-                                    Some("post-compact"),
-                                    &vault::default_root(),
-                                )
-                                .map(|e| e.sha256)
-                                .ok();
-                                let mut ev = build_event(
-                                    &d,
-                                    &plan,
-                                    action,
-                                    "applied",
-                                    trigger,
-                                    started.elapsed().as_millis() as u64,
-                                    None,
-                                );
-                                ev.snapshot_before_sha256 = Some(entry.sha256.clone());
-                                ev.snapshot_after_sha256 = post_sha.clone();
-                                if let Some(post) = &post_sha {
-                                    if let Some((total, retained, lexical)) =
-                                        realized_retention(&d.handle, &entry.sha256, post)
-                                    {
-                                        ev.retention_total = Some(total);
-                                        ev.retention_retained = Some(retained);
-                                        ev.retention_lexical = Some(lexical);
-                                    }
-                                }
-                                if let Err(e) = append_event(&default_log_path(), &ev) {
-                                    eprintln!("telemetry write failed (non-fatal): {e}");
-                                }
-                                eprintln!(
-                                    "compacted claude transcript {} in place (~{reclaimed} bytes; snapshot {})",
-                                    d.handle.path.display(),
-                                    entry.sha256,
-                                );
-                                if let Some(nfp) = session_fingerprint(&d) {
-                                    settled.insert(session_key.clone(), nfp);
-                                }
-                                if last_apply.len() >= 4096 {
-                                    last_apply.clear();
-                                }
-                                last_apply.insert(session_key.clone(), started);
-                            }
-                            Err(e) => {
-                                emit_event(
-                                    &d,
-                                    &plan,
-                                    action,
-                                    "failed",
-                                    trigger,
-                                    started.elapsed().as_millis() as u64,
-                                    Some("apply_failed"),
-                                );
-                                eprintln!(
-                                    "claude in-place compact {} failed: {e}",
-                                    d.handle.path.display()
-                                );
-                                if let Some(fp) = &fp {
-                                    settled.insert(session_key.clone(), fp.clone());
-                                }
-                            }
+                        if d.handle.provider == Provider::Devin && resolved.auto_apply_store {
+                            eprintln!("auto_apply_store disabled: lifetime custody unavailable");
+                        } else {
+                            eprintln!(
+                                "direct provider mutation disabled: lifetime custody unavailable"
+                            );
+                        }
+                        if let Some(fp) = &fp {
+                            settled.insert(session_key.clone(), fp.clone());
                         }
                         continue;
                     }
@@ -4695,8 +4845,9 @@ fn auth_jev(status: bool, delete: bool) -> Result<()> {
         return Ok(());
     }
     let key = if !std::io::stdin().is_terminal() {
-        let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf)?;
+        let buf = hooks::read_stdin_bounded()?.context(
+            "authentication input must be valid UTF-8 with EOF within 64 KiB and five seconds",
+        )?;
         buf.trim().to_string()
     } else if let Some(k) = secrets::clipboard_secret() {
         println!("found a plausible key on the clipboard");
@@ -5118,8 +5269,8 @@ fn main() -> Result<()> {
             floor,
             plan,
         } => cmd_cache_edits(&cli, &cfg, session, *trigger, *floor, *plan),
-        Cmd::InstallHooks => cmd_install_hooks(false, &roots(&cli)),
-        Cmd::UninstallHooks => cmd_install_hooks(true, &roots(&cli)),
+        Cmd::InstallHooks { output } => cmd_install_hooks(false, &roots(&cli), output.as_deref()),
+        Cmd::UninstallHooks { output } => cmd_install_hooks(true, &roots(&cli), output.as_deref()),
         Cmd::Hook { event } => cmd_hook(&cli, &cfg, event),
         Cmd::Report {
             strict,
@@ -5197,6 +5348,25 @@ fn main() -> Result<()> {
         } => cmd_bench(&cli, *all, *trigger, *floor, output.as_deref()),
         Cmd::Snapshot { session, label } => cmd_snapshot(&cli, &cfg, session, label.as_deref()),
         Cmd::Mcp { .. } => mcp::run(&cli, &cfg),
+        Cmd::NativeOperations => {
+            let mut rows = native_operations::inspect()?;
+            let mut legacy: Vec<_> = legacy_native_uncertainty()?.into_iter().collect();
+            legacy.sort();
+            rows.extend(legacy.into_iter().map(|target| {
+                serde_json::json!({
+                    "state": "legacy_unknown", "target_key": target,
+                    "automatic_replay_blocked": true,
+                    "reason": "legacy state did not preserve operation terminal identity",
+                })
+            }));
+            println!("{}", serde_json::to_string_pretty(&rows)?);
+            Ok(())
+        }
+        Cmd::NativeReconcile { operation_sha256 } => {
+            native_operations::reconcile(operation_sha256)?;
+            println!("native operation reconciled from its recorded matching terminal evidence");
+            Ok(())
+        }
         Cmd::Auth {
             provider,
             status,
@@ -5260,7 +5430,235 @@ fn _assert_error_surface(e: AdapterError) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn benchmark_csv_quotes_record_delimiters() {
+        assert_eq!(super::csv_field("ordinary"), "ordinary");
+        assert_eq!(
+            super::csv_field("a,b\r\n\"quoted\""),
+            "\"a,b\r\n\"\"quoted\"\"\""
+        );
+        let row = super::bench_failure_row(
+            gobstopper_core::Provider::Devin,
+            "a,b",
+            "session_evaluation_failed",
+        );
+        assert!(row.starts_with("devin,\"a,b\","));
+        assert!(row.ends_with(",session_evaluation_failed\n"));
+    }
+
     use super::*;
+
+    #[test]
+    fn adaptive_history_is_store_bound_measured_and_deduplicated() {
+        use gobstopper_core::model::ContextState;
+        let dir = tempdir("adaptive-history");
+        let handle = |name: &str| {
+            let path = dir.join(name);
+            fs::write(&path, b"synthetic source").unwrap();
+            SessionHandle {
+                provider: Provider::Codex,
+                session_id: "same-session".into(),
+                path: fs::canonicalize(path).unwrap(),
+                cwd: None,
+                age_secs: 0,
+            }
+        };
+        let selected = handle("selected.jsonl");
+        let foreign = handle("foreign.jsonl");
+        let event = |handle: &SessionHandle, tokens: u64, after: u64, manifest: &str| {
+            let observation = |tokens, snapshot: &str| {
+                let bytes = format!(
+                    "{}\n{}\n",
+                    serde_json::json!({"type":"session_meta","payload":{"id":handle.session_id}}),
+                    serde_json::json!({"type":"token_usage_record","payload":{
+                        "usage":{"input_tokens":tokens,"output_tokens":0},
+                        "thread_token_usage":{"input_tokens":tokens,"cached_input_tokens":0}}}),
+                );
+                // The production observation producer, rather than the helper
+                // under test, establishes the canonical identity and accounting.
+                eval::token_observation(handle, bytes.as_bytes(), Some(snapshot)).unwrap()
+            };
+            let before = observation(
+                tokens,
+                &copy::sha256(format!("before-{manifest}").as_bytes()),
+            );
+            let after = observation(after, &copy::sha256(format!("after-{manifest}").as_bytes()));
+            let mut event = CompactionEvent::new(
+                handle.provider,
+                &handle.session_id,
+                "auto",
+                "provider_compact",
+                "applied",
+                250_000,
+                500_000,
+                0,
+                0,
+                1,
+                None,
+            );
+            event.source_identity_sha256 = Some(before.source_identity_sha256.clone());
+            event.snapshot_before_sha256 = before.snapshot_manifest_sha256.clone();
+            event.snapshot_after_sha256 = after.snapshot_manifest_sha256.clone();
+            event.before_observation = Some(before);
+            event.after_observation = Some(after);
+            event
+        };
+        let valid = event(&selected, 1000, 980, "a");
+        assert_eq!(
+            recent_applied_from(std::slice::from_ref(&valid), &selected),
+            [(1000, 20)],
+            "legacy context and reclaimed estimates must not enter tuning"
+        );
+        assert!(recent_applied_from(&[event(&foreign, 1000, 980, "a")], &selected).is_empty());
+        for mode in 0..11 {
+            let mut invalid = valid.clone();
+            match mode {
+                0 => invalid.source_identity_sha256 = None,
+                1 => invalid.before_observation = None,
+                2 => invalid.error_code = Some("unresolved_context".into()),
+                3 => invalid.outcome = "planned".into(),
+                4 => invalid.action = "none".into(),
+                5 => invalid.provider = Provider::ClaudeCode,
+                6 => invalid.session_id = "another-session".into(),
+                7 => invalid.snapshot_after_sha256 = Some("e".repeat(64)),
+                8 => {
+                    let after = invalid.after_observation.as_mut().unwrap();
+                    after.context_state = ContextState::Reset;
+                    after.context_tokens = None;
+                }
+                9 => invalid.after_observation.as_mut().unwrap().context_tokens = Some(0),
+                _ => invalid.after_observation.as_mut().unwrap().context_tokens = Some(1000),
+            }
+            assert!(
+                recent_applied_from(&[invalid], &selected).is_empty(),
+                "unqualified history mode {mode}"
+            );
+        }
+        assert_eq!(
+            recent_applied_from(&[valid.clone(), valid.clone()], &selected),
+            [(1000, 20)],
+            "one repeated low-yield observation must not become repeated history"
+        );
+        for conflict in [
+            event(&selected, 1000, 975, "a"),
+            event(&selected, 1000, 1000, "a"),
+            {
+                let mut changed = valid.clone();
+                changed.after_observation.as_mut().unwrap().source_sha256 = "e".repeat(64);
+                changed
+            },
+        ] {
+            assert!(
+                recent_applied_from(&[valid.clone(), conflict, valid.clone()], &selected,)
+                    .is_empty()
+            );
+        }
+        let history = [
+            valid.clone(),
+            event(&selected, 2000, 1960, "b"),
+            event(&selected, 3000, 2940, "c"),
+            event(&selected, 4000, 3920, "d"),
+            valid.clone(),
+        ];
+        assert_eq!(
+            recent_applied_from(&history, &selected),
+            [(4000, 80), (3000, 60), (2000, 40)],
+            "newest three distinct measurements; replay cannot refresh an old pair"
+        );
+        fs::remove_file(&selected.path).unwrap();
+        assert!(recent_applied_from(&[valid], &selected).is_empty());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn retention_rollup_requires_exact_evidence_and_rejects_conflicting_duplicates() {
+        use gobstopper_core::events::TokenObservation;
+        use gobstopper_core::model::{ContextState, LifetimeScope};
+        let observation = |source: &str, manifest: &str| TokenObservation {
+            source_sha256: source.repeat(64),
+            source_identity_sha256: "a".repeat(64),
+            snapshot_manifest_sha256: Some(manifest.repeat(64)),
+            context_state: ContextState::Absent,
+            context_tokens: None,
+            estimated_context_tokens: 1,
+            lifetime_scope: LifetimeScope::Absent,
+            lifetime_input_tokens: None,
+            lifetime_cached_tokens: None,
+        };
+        let mut event = CompactionEvent::new(
+            Provider::Codex,
+            "session",
+            "elide",
+            "transcript_compact",
+            "applied",
+            10,
+            20,
+            5,
+            1,
+            1,
+            None,
+        );
+        event.source_identity_sha256 = Some("a".repeat(64));
+        event.snapshot_before_sha256 = Some("b".repeat(64));
+        event.snapshot_after_sha256 = Some("c".repeat(64));
+        event.before_observation = Some(observation("d", "b"));
+        event.after_observation = Some(observation("e", "c"));
+        event.retention_total = Some(2);
+        event.retention_retained = Some(1);
+        event.retention_lexical = Some(2);
+        // Byte-bound retention is independent of missing provider usage.
+        assert_eq!(
+            qualified_retention(&[event.clone(), event.clone()]).len(),
+            1
+        );
+        let mut conflicting = event.clone();
+        conflicting.retention_lexical = Some(0);
+        assert!(qualified_retention(&[event.clone(), conflicting, event.clone()]).is_empty());
+        for mode in 0..7 {
+            let mut invalid = event.clone();
+            match mode {
+                0 => invalid.before_observation = None,
+                1 => {
+                    invalid
+                        .after_observation
+                        .as_mut()
+                        .unwrap()
+                        .source_identity_sha256 = "f".repeat(64)
+                }
+                2 => invalid.snapshot_before_sha256 = Some("f".repeat(64)),
+                3 => invalid.error_code = Some("unresolved_context".into()),
+                4 => invalid.outcome = "failed".into(),
+                5 => invalid.retention_retained = Some(3),
+                _ => invalid.action = "none".into(),
+            }
+            assert!(qualified_retention(&[invalid]).is_empty(), "mode {mode}");
+        }
+    }
+
+    #[test]
+    fn snapshot_prefix_selection_rejects_collisions_and_empty_selectors() {
+        let entry = |sha: String| vault::VaultEntry {
+            ts: 1,
+            sha256: sha,
+            path: PathBuf::from("/synthetic/source"),
+            session_id: "synthetic".into(),
+            provider: Provider::Codex,
+            bytes: 0,
+            strategy: None,
+            record_count: 0,
+            source_sha256: "0".repeat(64),
+        };
+        let first = entry(format!("{}{}", "a".repeat(16), "0".repeat(48)));
+        let second = entry(format!("{}{}", "a".repeat(16), "1".repeat(48)));
+        let entries = [first.clone(), second, first.clone()];
+        assert!(resolve_snapshot_sha(&entries, &"a".repeat(16)).is_err());
+        assert!(resolve_snapshot_sha(&entries, "").is_err());
+        assert!(resolve_snapshot_sha(&entries, "../outside").is_err());
+        assert_eq!(
+            resolve_snapshot_sha(&entries, &first.sha256.to_uppercase()).unwrap(),
+            first.sha256
+        );
+    }
     use std::fs;
 
     #[test]
@@ -5486,6 +5884,8 @@ mod tests {
                 lifetime_input_tokens: 50_000,
                 lifetime_cached_tokens: 0,
                 model_context_window: Some(1_000_000),
+                context_state: gobstopper_core::model::ContextState::Reported,
+                lifetime_scope: gobstopper_core::model::LifetimeScope::Full,
             },
         }
     }
@@ -5679,7 +6079,7 @@ mod tests {
         state.holddown.insert("k".to_string(), now + 3600);
         state.delegated_ctx.insert("k".to_string(), 300_000);
         save_watch_state(&path, &state).unwrap();
-        let loaded = load_watch_state(&path);
+        let loaded = load_watch_state(&path).unwrap();
         assert_eq!(loaded.settled.get("k").map(String::as_str), Some("fp"));
         assert_eq!(loaded.settle_pass.get("k").map(String::as_str), Some("fp"));
         assert_eq!(loaded.holddown.get("k"), Some(&(now + 3600)));
@@ -5691,11 +6091,11 @@ mod tests {
         assert!(epoch_to_instant(now - 200_000, now).is_none());
         assert!(epoch_to_instant(0, now).is_none());
         assert!(epoch_to_instant(now + 60, now).is_none());
-        // Corrupt or missing state falls back to empty, never fails.
+        // Damaged state requires repair; an absent state has no prior operations.
         fs::write(&path, "{not json").unwrap();
-        assert!(load_watch_state(&path).settled.is_empty());
+        assert!(load_watch_state(&path).is_err());
         fs::remove_file(&path).unwrap();
-        assert!(load_watch_state(&path).settled.is_empty());
+        assert!(load_watch_state(&path).unwrap().settled.is_empty());
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -5766,6 +6166,27 @@ mod tests {
             codex_failure_hold_secs("provider outcome unknown awaiting dispatch response"),
             3600
         );
+    }
+
+    #[test]
+    fn codex_terminal_order_duplicates_and_ambiguity_are_explicit() {
+        for thread in ["terminal-first-thread", "duplicate-terminal-thread"] {
+            let dir = tempdir("codex-terminal-order");
+            let terminal = codex_compact(&stub_codex(), thread, Some(&dir), 1_000).unwrap();
+            assert_eq!(terminal.session_id, thread);
+            assert_eq!(terminal.turn_id.as_deref(), Some("compact-turn"));
+            assert_eq!(terminal.item_id.as_deref(), Some("compact-item"));
+            fs::remove_dir_all(&dir).unwrap();
+        }
+        for thread in [
+            "conflicting-terminal-thread",
+            "duplicate-key-thread",
+            "control-id-thread",
+        ] {
+            let dir = tempdir("codex-terminal-ambiguity");
+            assert!(codex_compact(&stub_codex(), thread, Some(&dir), 1_000).is_err());
+            fs::remove_dir_all(&dir).unwrap();
+        }
     }
 
     /// Touch a file's mtime without changing its length.

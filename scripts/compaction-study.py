@@ -1,9 +1,12 @@
 import argparse
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path
 import signal
+import select
+import sys
 import subprocess
 import time
 
@@ -22,29 +25,79 @@ def save(path, value):
 
 
 def command(argv, output, error, environment, timeout=240, stdin=None, cwd=None):
+    if not all(hasattr(os, name) for name in ("waitid", "WNOWAIT", "WNOHANG", "P_PID", "WEXITED")):
+        raise RuntimeError('process_custody_unavailable')
     if time.monotonic() >= DEADLINE:
         raise RuntimeError('study_timeout')
     with output.open('xb') as stdout, error.open('xb') as stderr:
-        child = subprocess.Popen(argv, stdin=stdin if stdin is not None else subprocess.DEVNULL, stdout=stdout,
-                                 stderr=stderr, env=environment, cwd=cwd, start_new_session=True)
+        child = subprocess.Popen(argv, stdin=stdin if stdin is not None else subprocess.DEVNULL,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 env=environment, cwd=cwd, start_new_session=True)
+        streams = {child.stdout: stdout, child.stderr: stderr}
+        for stream in streams:
+            os.set_blocking(stream.fileno(), False)
         deadline = min(DEADLINE, time.monotonic() + timeout)
+        total = 0
+        limited = False
+        exited = False
+        eof = set()
+        def drain_once():
+            nonlocal total, limited
+            progress = False
+            for stream, target in streams.items():
+                if stream in eof:
+                    continue
+                try:
+                    data = os.read(stream.fileno(), 8192)
+                except BlockingIOError:
+                    continue
+                if not data:
+                    eof.add(stream)
+                    continue
+                progress = True
+                accepted = data[:max(0, LIMIT - total)]
+                target.write(accepted)
+                total += len(data)
+                limited |= total > LIMIT
+            return progress
+        # WNOWAIT preserves the owned leader identity until group cleanup.
         try:
-            while child.poll() is None:
+            while True:
+                drain_once()
+                exited = os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+                if limited or exited:
+                    break
                 if time.monotonic() >= deadline:
                     raise RuntimeError('command_timeout')
-                if os.fstat(stdout.fileno()).st_size + os.fstat(stderr.fileno()).st_size > LIMIT:
-                    raise RuntimeError('output_limit')
-                time.sleep(.05)
-            if os.fstat(stdout.fileno()).st_size + os.fstat(stderr.fileno()).st_size > LIMIT:
-                raise RuntimeError('output_limit')
-            return child.returncode
+                select.select([stream for stream in streams if stream not in eof], [], [], .01)
         finally:
-            if child.poll() is None:
-                try:
-                    os.killpg(child.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-                child.wait()
+            cleanup_error = None
+            try:
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError as failure:
+                cleanup_error = failure
+            try:
+                child.wait(timeout=1)
+                # Bounded drain even after the output cap, to establish EOF.
+                for _ in range(64):
+                    if not drain_once():
+                        break
+            finally:
+                for stream in streams:
+                    stream.close()
+            # Darwin returns EPERM for a zombie-only group. This exception
+            # requires observed exit AND EOF on both nonblocking pipes. Pinned
+            # trusted binaries must not privilege-change or detach descendants;
+            # this runner is not a sandbox for arbitrary executables.
+            benign = (cleanup_error is not None and cleanup_error.errno == errno.EPERM
+                      and sys.platform == 'darwin' and exited and len(eof) == len(streams))
+            if cleanup_error is not None and not benign:
+                raise cleanup_error
+        if limited:
+            raise RuntimeError('output_limit')
+        return child.returncode
 
 
 def summarize(path):
@@ -99,6 +152,10 @@ def main():
         'rounds': args.rounds, 'trigger_tokens': 1, 'floor_tokens': args.floor,
         'keep_recent_tool_outputs': 8, 'label_source': 'heuristic',
         'candidate_rule': 'At most 16 complete lines per kind; elidable records first, then source order. No outcome-dependent selection.',
+        'arms': ['no_compaction', 'observation_masking', 'typed_masking', 'typed_digest'],
+        'registered_unexecuted_arms': ['tuned_provider_native', 'provider_native_plus_masking'],
+        'measurement_units': {'context': 'estimated_tokens', 'retention': 'source_bound_checks', 'latency': 'milliseconds'},
+        'interval': 'Wilson95 descriptive checks; not independent tasks or population inference',
         'provider_calls': 0, 'limitations': ['Static replay, not interleaved agent work.', 'Heuristic labels are not audited truth.', 'No provider compaction, semantic summary, task-success or billed-savings measurement.'],
     }
     save(output / 'registration.json', registration)
@@ -129,7 +186,7 @@ def main():
     save(output / 'cases.json', cases)
     results = []
     for case in cases:
-        result = dict(case)
+        result = dict(case, success=False, execution_state='incomplete')
         if case['prepared']:
             root = output / f'case-{case["case"]}'
             source = root / 'source.jsonl'
@@ -143,6 +200,7 @@ def main():
                 if code != 0:
                     raise RuntimeError('study_failed')
                 report = json.loads((root / 'report.json').read_text())
+                result['execution_state'] = 'completed'
                 result['checkpoints'] = [row for row in report['rows'] if row['round'] in (1, 5, 10)]
                 result['source_unchanged'] = sha(source.read_bytes()) == case['source_sha256']
                 result['manifest_unchanged'] = sha(manifest.read_bytes()) == case['manifest_sha256']
@@ -154,7 +212,9 @@ def main():
                 result['failure'] = str(error) if isinstance(error, RuntimeError) else 'invalid_result'
         results.append(result)
     save(output / 'results.json', {'registration': registration, 'cases': results,
-         'binary_unchanged': sha(binary.read_bytes()) == registration['binary_sha256']})
+         'binary_unchanged': sha(binary.read_bytes()) == registration['binary_sha256'],
+         'unexecuted_arms': registration['registered_unexecuted_arms'],
+         'semantic_equivalence': None, 'task_success': None, 'charged_tokens': None, 'cache_hits': None, 'refetches': None})
     print(json.dumps({'cases': len(cases), 'completed': sum(r.get('success', False) for r in results),
                       'provider_calls': 0, 'results': str(output / 'results.json')}))
     return 0 if all(r.get('success') for r in results) else 1

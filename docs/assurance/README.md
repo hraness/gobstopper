@@ -1,77 +1,96 @@
-# Assurance inventory
+# Assurance case
 
-This is the C1 contract inventory for the correctness foundation. It records
-obligations and bounded evidence; it does not certify whole-system correctness.
-Its source-review baseline is `ffc71480564f0d0077f27e59a04df3174d5335ef`
-([PR 88](https://github.com/hraness/gobstopper/pull/88)). C1 privacy corrections
-are identified separately from that immutable baseline.
+This inventory records the current correctness foundation, its assumptions and
+bounded evidence. It does not certify whole-system correctness. The immutable
+baseline is `ffc71480564f0d0077f27e59a04df3174d5335ef`
+([PR 88](https://github.com/hraness/gobstopper/pull/88)); foundation delivery is
+tracked in [PR 90](https://github.com/hraness/gobstopper/pull/90).
 
-- [ledger.json](ledger.json): state ownership, trusted assumptions, invariants,
-  all audit coverage rows, evidence, schema compatibility and activation gates.
-- [effects.json](effects.json): all CLI variants, advertised MCP tools, hook
-  callbacks, production scripts, and a conservative public-callable index.
-- [claims.json](claims.json): bounded replacements for public safety,
-  verification, read-only and savings language.
-- [codeql-triage.json](codeql-triage.json): individual source/sink/authorization
-  review of all 21 open alerts at the baseline. No alert is dismissed or rule
-  suppressed by these files. A source repair is not a fresh scanner result.
+- [ledger.json](ledger.json): state ownership, assumptions, invariant obligations,
+  audit coverage, evidence, schema compatibility and activation gates.
+- [effects.json](effects.json): CLI, MCP, hooks, production Python and conservative
+  Rust public-callable effects, including trusted external execution.
+- [claims.json](claims.json): the scope and limits of public assertions.
+- [codeql-triage.json](codeql-triage.json): all 21 baseline alerts with individual
+  authorization/source/sink review. These records do not dismiss or suppress a
+  scanner finding. Source repair and a fresh scan are different evidence.
+- [qualification.json](qualification.json): provider/platform/mode matrix. No live
+  native cell is qualified; released CLI native dispatch is guarded, including
+  configurations that previously opted in to automatic closed-session compaction.
+- [operations.md](operations.md): copies, settings bundles, durable uncertainty,
+  reconciliation, recovery and downgrade limits.
+
+## What each layer establishes
+
+Production Rust [Kani harnesses](../../verify/core/README.md) check selected scalar
+admission, arithmetic and usage kernels over their declared numeric domains, plus
+explicitly bounded index/edit sequences. [Lean laws](../../verify/transcript/README.md)
+prove structural list properties for arbitrary finite lists; independent emitted
+vectors test finite correspondence with the actual three Rust dialect adapters.
+Neither is a theorem about all Rust parsing or all future task answers.
+
+The [vault/publication](../../verify/vault/README.md) and
+[native dispatch](../../verify/watch/README.md) TLA+ models exhaust specified finite
+state graphs. Required semantic mutants and reachability witnesses detect disabled
+behavior and broken safety conditions. A parser/compiler failure, timeout or wrong
+assertion does not count as a successful negative control. The models assume atomic
+durable abstract actions, stable cooperating custody and no fairness; correspondence
+tables are reviewed arguments, not machine-checked whole-program refinements.
+
+Storage fault injection, killed-process fixtures, protocol scripts and longer
+command sequences test implementation behavior separately. Synthetic data does not
+qualify a proprietary provider/version/account, physical power-loss recovery or
+network filesystem semantics. Registered retention controls distinguish literal
+presence, judge estimates, task-specific labels, missing data and incomplete arms.
+Recorded occupancy reduction is not billed savings.
+
+## Structural admission
 
 Run `python3 scripts/check_assurance.py` and
-`python3 -m unittest discover -s scripts -p test_assurance.py -v` from the
-repository root. The first command has no network, provider, build or mutation
-effects. Tests use in-memory mutated ledgers and temporary synthetic sources.
-The unsupported-claim fixture must fail admission.
+`python3 -m unittest discover -s scripts -p test_assurance.py -v`.
+The checker has no network/provider/build/mutation effects. Its negative fixtures
+reject missing surfaces, unsupported assertions, unknown effects and damaged evidence.
+It requires explicit owners, assumptions, bounds, exclusions and next gates, and
+compares CLI/MCP/hooks, production Python files and public Rust declarations with
+source. It checks current receipt source hashes and reviewed case inventories, and checks
+the TLC jar against its repository pin. Native tool fingerprints are recorded
+receipt evidence; raw logs and artifacts are reviewed separately, not authenticated
+by this structural checker.
+Historical baseline evidence remains explicitly historical.
 
-The structural check requires coverage and referential integrity, explicit
-owners, assumptions, bounds, exclusions and next gates. It compares CLI variants,
-MCP tools, hooks, scripts and public callable declarations with current source.
-The callable scan is deliberately conservative: it includes crate-visible
-helpers and constructors, and is not a Rust effect analyzer. An unchanged symbol
-can acquire a new effect without this check noticing; code review must update
-its classification. Private implementations, trait methods and external code
-are accounted for by their enclosing effect profiles, not mechanically proved.
-New profiles must name every written state and delegated authority. Empty write
-lists mean no direct durable writes in that profile, not a sandbox guarantee.
+The callable scan includes crate-visible declarations and test-only helpers
+conservatively. It is not a Rust effect analyzer: unchanged symbols can acquire new
+effects, and private implementations, trait methods and external code require review
+of enclosing profiles. Empty write lists state direct effects, not sandboxing.
+A summarized receipt preserves its raw receipt SHA and exact inputs; complete logs
+remain local or in the associated CI artifact. Receipts are evidence, never permission
+to skip a required final integration, release or installation gate.
 
-The state model distinguishes original provider bytes, canonical exports,
-effective context, provider memory, immutable archive objects, mutable indexes,
-recovery receipts, telemetry, watcher decisions, model caches, configuration,
-credentials, private experiment outputs and observable output. A canonical export
-is not the live database; a manifest hash is not its reconstructed source hash;
-a provider acknowledgement is not terminal evidence; a token estimate is not a
-billing receipt. Recovery data may itself contain private transcript content.
+## Trust and compatibility
 
-Trust currently includes the Rust toolchain/dependencies, OS and filesystem,
-cryptographic primitives, provider implementations, configured executable paths,
-trusted plugins and scorer commands, and the user-selected account/home. Unix
-directory `flock` protects cooperating vault participants; it does not lock a
-provider session or a Python reader using a different protocol. Atomic rename
-does not prevent a concurrent provider append. Native control still needs a
-qualified ownership/correlation contract. The finite TLA+ vault result assumes
-atomic durable abstract actions. It includes process termination releasing
-custody, but excludes production refinement, filesystem crash ordering,
-power-loss recovery, unbounded fairness, and semantic preservation.
+The Rust/Lean/Kani/TLC toolchains, dependencies, kernel, filesystem, hashes, trusted
+executables and provider implementations remain in the trusted boundary. Parent
+directories and executable paths must remain stable and owner-controlled. Directory
+`flock` coordinates cooperating vault readers/writers, including the Python retention
+reader; it does not lock provider memory or hostile processes. Plugins and explicitly
+admitted model/scorer commands run with user authority, without an OS sandbox.
+Apple bridge identity cannot attest opaque model weights.
 
-Inspection may reveal exactly requested session IDs, digests or transcript
-content. Background diagnostics and authentication output have a narrower
-required contract: no raw session identity, provider response, or credential
-fragments. C1 repairs the seven named baseline sinks, not every diagnostic;
-session-prefix, path, working-directory and raw-error surfaces remain C8/C10
-privacy work and must not be described as globally sanitized.
-Requested output can still be captured by a caller; authorization is field- and
-operation-specific, not evidence that an identifier is universally nonsensitive.
-MCP content-tool opt-in does not sandbox trusted planning extensions.
+Disclosure is field- and operation-specific. Requested IDs, digests, exports and
+transcript records may be sensitive. Background output and credential diagnostics
+use narrower closed categories. MCP transcript-content permission does not authorize
+external effects; MCP has no external-execution opt-in. Recovery objects and settings bundles can contain private
+content and require the same care as their sources.
 
-Compatibility rows distinguish a documented contract from actual reader
-behavior. There is no blanket upgrade/downgrade promise: unknown receipt and
-manifest versions may be refused, watch state currently tolerates future
-generations, and stable CLI JSON is additive by repository policy rather than a
-version-negotiated schema. Preserve original state and rollback artifacts; never
-delete a receipt or regenerate provider data merely to make an older reader work.
+Compatibility is explicit: copy receipts write version 2 and conservatively inspect
+legacy records; watch state writes generation 9; native journals use version 1.
+Unknown or damaged state refuses rather than becoming empty success. Pins do not
+expire automatically. Older binaries that ignore the journal cannot safely restart
+watchers against unresolved new state. Preserve the old artifact, configuration and
+state; never delete evidence to force a downgrade or retry.
 
-Artifact admission requires the current integration gates and independent
-review. Live provider qualification records exact binary/version, home/account,
-fixture population, custody, outcomes and recovery separately. Publishing guarded
-source is not permission to install a binary or restart a watcher into an
-unqualified mutation mode. Later phases update this inventory with evidence for
-their exact revision and environment; historical receipts are not reusable gates.
+Artifact admission permits a checked guarded installation. It does not activate an
+unqualified native/provider-store path. Any later activation requires exact provider,
+mode, version, custody/correlation, bounded outcome and continuation evidence plus a
+reviewed guard change. The [phase plan](../correctness-plan.md) records implementation,
+review, validation and delivery status separately.

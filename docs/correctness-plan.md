@@ -125,7 +125,7 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
 
 ## C2: Provider custody and target-safe restoration
 
-- **Status:** Not started
+- **Status:** Complete — implemented and independently reviewed; delivery gates remain in C15
 - **Depends on:** C1
 - **Objective:** an operator cannot authorize one session and mutate another, or
   race a newly opening provider through an idle heuristic.
@@ -155,7 +155,7 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
 
 ## C3: Storage publication, recovery pins, pruning, and crashes
 
-- **Status:** Not started
+- **Status:** Complete — implemented and independently reviewed; delivery gates remain in C15
 - **Depends on:** C1
 - **Objective:** every admitted recovery promise survives concurrent operations
   and each declared crash boundary, or produces explicit recovery-required state.
@@ -186,7 +186,7 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
 
 ## C4: Durable native dispatch and watch-state model
 
-- **Status:** Not started
+- **Status:** Complete — implemented and independently reviewed; delivery gates remain in C15
 - **Depends on:** C1, C2
 - **Objective:** dispatch exactly the intended operation, classify outcomes
   honestly, and reconcile uncertain progress across process restarts.
@@ -218,7 +218,7 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
 
 ## C5: Supported dialects and independent verifier oracles
 
-- **Status:** Not started
+- **Status:** Complete — implemented and independently reviewed; delivery gates remain in C15
 - **Depends on:** C1
 - **Objective:** parser, rewrite anchor, effective-context projection and verifier
   agree for each documented supported provider version.
@@ -233,13 +233,20 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
   mixed system/reasoning/tool blocks, Unicode and truncated writes. Unknown shapes
   are unavailable or rejected, never assumed safely elidable. Verification scope
   is stated separately from provider resume acceptance.
+- **Evidence:** frozen hand-authored corpus for all three providers, deterministic
+  adversarial runner (512 cases per declared seed), 20 named dialect regressions,
+  26 Hegel properties and five checker failure tests. Root review also identified
+  and closed metadata FIFO/size gaps, duplicate effective tool identities and
+  unknown output fields. Invalid generator graphs were retained as named negative
+  regressions; valid-graph generators were repaired rather than weakening checks.
+  Corpus provenance is synthetic and explicitly not provider qualification.
 - **Validation:** `cargo test -p gobstopper-adapters --locked`;
   bounded fuzz commands and corpus checks added with this phase; every discovered
   failure has a deterministic replay independent of the fuzzer seed database.
 
 ## C6: Small proofs over production Rust
 
-- **Status:** Not started
+- **Status:** Complete — implemented and independently reviewed; delivery gates remain in C15
 - **Depends on:** C1, C5
 - **Objective:** prove high-value total predicates used by the shipped program.
 - **Scope:** core policy bounds, edit eligibility, index uniqueness/protection,
@@ -261,7 +268,7 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
 
 ## C7: Lean transcript algebra and Rust correspondence
 
-- **Status:** Not started
+- **Status:** Complete — implemented and independently reviewed; delivery gates remain in C15
 - **Depends on:** C5, C6
 - **Objective:** establish unbounded structural laws where they provide value
   beyond bounded Rust checks.
@@ -287,7 +294,7 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
 
 ## C8: Plugins and read-only inspection
 
-- **Status:** Not started
+- **Status:** Complete — implemented and independently reviewed; delivery gates remain in C15
 - **Depends on:** C1
 - **Objective:** a read-only call cannot silently execute broader capabilities,
   allocate unbounded input, or cross session/content scope.
@@ -310,7 +317,7 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
 
 ## C9: Hooks and settings updates
 
-- **Status:** Not started
+- **Status:** Complete — implemented and independently reviewed; delivery gates remain in C15
 - **Depends on:** C1, C2, C4
 - **Objective:** hooks install idempotently without clobbering concurrent settings
   and correlate recovery evidence to the actual compaction.
@@ -324,19 +331,28 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
   retain recovery; concurrent installers cannot lose updates; a post-hook cannot
   attribute an unrelated compaction as this tool's success. Hook timeout or
   telemetry failure does not corrupt provider behavior.
+- **Implementation decision:** no compatible provider/editor settings custody API
+  is available. Direct settings mutation is disabled, including missing files;
+  `--output <new-file>` publishes an inert private bundle with original bytes,
+  source/candidate hashes and exact command ownership. Provider-owned application
+  remains outside this artifact. Callbacks have no operation identifier, so they
+  record unattributed observations and never fabricate causal before/after pairs
+  or count a provider hook as this tool's applied result.
 - **Validation:** `cargo test -p gobstopper --locked hooks::tests`; isolated
   multi-process settings and provider-hook fixtures. Admit the guarded artifact
   here; C13 separately decides live activation against pinned providers.
 
 ## C10: Scorer and digest boundaries
 
-- **Status:** Not started
+- **Status:** Complete — implemented and independently reviewed; delivery gates remain in C15
 - **Depends on:** C1
 - **Objective:** optional inference cannot violate admission, privacy, caching or
   resource invariants when a provider misbehaves or changes.
 - **Scope:** Apple/Jev/LLM scoring, digest drivers, secrets and caches.
 - **Out of scope:** proving semantic summaries universally faithful.
-- **Approach:** bind cache identity to model/version/prompt/schema/source/task;
+- **Approach:** bind cache identity to available model/client identity, prompt,
+  schema and the exact submitted bounded source/task projection; omitted raw
+  source context and opaque model weight changes are outside that identity. Use
   bounded privacy-approved inputs and strict outputs; conservative fallback with
   explicit provenance. Exercise stale, malformed, duplicated, partial and missing
   responses and cross-process cache publication.
@@ -350,7 +366,7 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
 
 ## C11: Measurements and semantic confidence
 
-- **Status:** Not started
+- **Status:** Measurement foundation complete — held-out/blinded semantic qualification remains unavailable
 - **Depends on:** C1, C5
 - **Objective:** every metric carries units, provenance, missingness and a defensible
   interpretation; every quality claim has an appropriate study.
@@ -374,7 +390,7 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
 
 ## C12: Reproducible verification admission
 
-- **Status:** Not started
+- **Status:** Implemented — final exact-tree local and Linux integration gates tracked in C15
 - **Depends on:** C3, C4, C6, C7, C8
 - **Objective:** proof/test evidence is reproducible for the exact integrated tree.
 - **Scope:** CI, pinned proof tools, artifact checksums, schema for receipts,
@@ -393,7 +409,7 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
 
 ## C13: Provider and platform activation matrix
 
-- **Status:** Not started
+- **Status:** Guarded artifact complete — no live provider cell qualified; activation remains disabled
 - **Depends on:** C2–C6, C8–C12
 - **Objective:** permit only operational modes with relevant current evidence.
 - **Scope:** synthetic provider sessions and exact artifact/environment receipts.
@@ -412,7 +428,7 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
 
 ## C14: Adversarial operation and soak
 
-- **Status:** Not started
+- **Status:** Implemented and independently reviewed — final bounded receipt and delivery gates tracked in C15
 - **Depends on:** C3, C4, C8, C9, C12
 - **Objective:** reveal long-sequence failures that finite models and happy paths miss.
 - **Scope:** isolated stores/watchers, monitor fixtures and stress harnesses.
@@ -430,7 +446,7 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
 
 ## C15: Assurance case and delivery
 
-- **Status:** Not started
+- **Status:** Implementation and independent review complete — exact-head CI, merge and guarded-install evidence are tracked in [PR 90](https://github.com/hraness/gobstopper/pull/90)
 - **Depends on:** C1–C14
 - **Objective:** ship a foundation whose claims and limitations can be independently
   checked, with a maintained process for preserving them.
@@ -463,21 +479,32 @@ python3 -m unittest discover -s scripts -p 'test_*.py' -v
 python3 verify/vault/check.py --java "$JAVA" --tlc-jar "$TLC_JAR" --output "$EVIDENCE"
 ```
 
-Future Lean/Kani/watch-model/fuzz commands become required only after they exist,
-are proven to fail correctly, and have explicit budgets. Site gates apply when
-public site files change. A missing local MSRV toolchain is reported and may be
+The implemented formal gates are also required, each with a fresh output directory:
+
+```sh
+python3 verify/watch/check.py --java "$JAVA" --tlc-jar "$TLC_JAR" --output "$WATCH_EVIDENCE"
+python3 verify/core/check.py --kani "$KANI" --output "$CORE_EVIDENCE"
+python3 verify/transcript/check.py --lake "$LAKE" --output "$LEAN_EVIDENCE"
+python3 verify/stress/check.py --output "$STRESS_EVIDENCE"
+python3 scripts/check-dialects.py --cases 512 --seed 78422376057123
+```
+
+CI independently reproduces the proof gates with checksum-pinned tools. Python
+negative tests for each runner are included. Site gates apply when public site
+files change (`bun run check` from `site/`). A missing local MSRV toolchain is reported and may be
 covered by the required exact-head CI MSRV check; it is not silently called passed.
 
-## Open decisions and stopping conditions
+## Decisions, remaining qualification, and stopping conditions
 
-| Decision | Resolver | Evidence needed |
+| Topic | Current decision | Evidence required to expand it |
 |---|---|---|
-| Retained provider lock/custody mechanism or disable direct-write mode | integrator + provider contract owner | pinned provider behavior, two-process race test, safe failure path |
-| Abandoned operation-pin retention and operator recovery policy | storage owner | recoverability requirements, model and crash tests; no automatic deletion assumption |
-| Lean versus Verus after first theorem | integrator | production correspondence, proof runtime, maintenance/change cost |
-| Supported filesystem/OS matrix | release owner | sync/lock/link semantics and fixture evidence; explicit unsupported results |
-| Critical semantic facts and acceptable study uncertainty | product owner | domain-specific task corpus and registered evaluation criteria |
-| Dispatch reconciliation without provider idempotency | native control owner | operation/turn query capabilities and no-replay invariant |
+| Provider custody and correlation | Direct store writes disabled; released native dispatch guarded | Pinned provider lifetime ownership/correlation, isolated continuation and critical-constraint task |
+| Recovery-pin retirement | No automatic expiry; preserve unresolved and completed recovery evidence | Reviewed recovery/retention policy, model and crash tests before deletion |
+| Proof tools | TLA+ for finite protocols, Kani for selected production kernels, Lean for list algebra plus finite Rust correspondence | Further production refinement and maintenance evidence before wider proof claims; Verus remains an option, not an unfulfilled prerequisite |
+| Filesystems and platforms | Local macOS fixtures; Linux exact-head CI required; Windows mutation and network filesystems unqualified | Exact platform sync/lock/link and process-lifecycle evidence |
+| Semantic retention | Registered synthetic tasks and explicit incomplete native arms; no universal semantic or billing claim | Domain-specific held-out tasks, reviewed labels, accepted uncertainty and qualified provider continuation |
+| Uncertain dispatch | Durable no-replay blocking; reconciliation only from recorded matching evidence | Provider idempotency or authoritative operation/turn query contract before broader recovery |
+
 
 Only missing authority/credentials, unavoidable interactive authentication,
 material product decisions, unsafe out-of-scope destruction or an unresolvable
@@ -501,3 +528,102 @@ resolve or an honest bounded claim; do not weaken the property just to turn gree
   plus one built-runtime test, with the existing image lint warning. Independent
   review verified scanner excerpts, identities and model hashes, and approved
   C1. No scanner closure, live qualification or whole-system theorem is claimed.
+- 2026-09-23: C1 checkpoint `497afb3`; C2, C3 and C8 implementation admitted
+  in disjoint lanes. Root owns CLI/shared interfaces, plan and inventory updates.
+- 2026-09-23, C2: Disabled direct provider writes and removed SQL/file mutation
+  implementations; retained bounded byte transforms and no-clobber publication.
+  Independent review found and repaired blocked-event projected savings. Focused
+  gates passed Devin32, eval11, study6, compacted8, audit20, custody2, CLI replay6,
+  benchmark compile, and all 26 Hegel properties (the fork property was updated
+  for C3 exact-operation idempotency and rerun). Synthetic two-process and foreign
+  store/graph tests leave source/WAL/SHM state unchanged. Native activation remains
+  separately unqualified. Adapter receipts: `gobstopper-audit-evidence/2026-09-23/c2`.
+- 2026-09-23, C8: Deterministic MCP inspection rejects external authority before
+  planning, bounds/validates frames and arguments, and binds vault lookup scope.
+  Plugin execution captures declared hash-bound artifacts and uses a bounded
+  nonblocking reactor with owned-group cleanup. MCP integration4, plugin11,
+  MCP unit12 and config7 pass; independent source review accepted the lane.
+  Trusted interpreters/loaders/explicit external paths remain outside the
+  capability check; this is not an OS sandbox. C4 and C5 implementation admitted.
+- 2026-09-23, C3: Durable v2 receipts pin exact recovery and candidate bytes;
+  recovery never reruns a transform. Added strict root decoding, Reader custody,
+  scoped append-order retention, truthful publication errors, and native recovery
+  pins. Independent review repaired duplicate-field admission and unintended
+  existing-directory permission changes. Storage15, fork9, vault14, recovery10,
+  Python reader7 and earlier study10 focused tests pass. The eleven-case model
+  receipt is `gobstopper-audit-evidence/2026-09-23/c3-model-qualified/receipt.json`:
+  custody25,810 and publication28,082 distinct states, exhausted safe queues,
+  nine intended counterexample/witness checks. SQL commit fault injection is
+  inapplicable because C2 removed direct SQL mutation. Process death and returned
+  I/O faults establish their declared boundaries, not power-loss guarantees.
+
+- 2026-09-23, C4/C9: Durable version 1 native journal, exact canonical target
+  locks and generation 9 conservative watcher state are implemented. Unresolved
+  dispatch never expires or falls back to surgery. Codex matches session/turn/item
+  while first-item association remains an explicit protocol assumption. Hook
+  settings now export private no-clobber candidate bundles only; callbacks archive
+  exact bounded input and report unattributed zero-savings observations. Independent
+  reviews accepted both lanes. Native journal9, watch24, hooks24 and custody4
+  focused fixtures passed. The 13-case final model receipt is
+  `gobstopper-audit-evidence/2026-09-23/c15-watch/receipt.json`: 32,251 exact-contract
+  and 24,609 assumption-only distinct safe states; five mutants and six witnesses.
+- 2026-09-23, C6/C7: Implemented production Kani kernels (15 harnesses, 159
+  assertions, 46 satisfied covers and exact boundary mutant) and 27 Lean theorems
+  with fresh kernel replay/axiom audit. Independent Lean vectors exercise 69 actual
+  Rust steps across three dialects and kill both oracle and Rust lowering mutants.
+  Integration owner reviewed the proof bodies and mutation admission. These prove
+  their stated kernels/list algebra and finite correspondence, not semantic
+  equivalence or proprietary provider behavior. Exact-source receipts are refreshed
+  after C14 event-log hardening; earlier passing receipts remain historical.
+- 2026-09-23, C12/C13: Added pinned Java/TLC/Kani/Lean archives, bounded download
+  and proof runners, expected-failure admission and retained CI evidence. Independent
+  runner review found and repaired a trickle-read deadline gap. No live native
+  cell is qualified. The reviewed release guard blocks all CLI native dispatch,
+  including old auto_compact_closed configurations, before provider execution.
+  Standalone native apply also refuses before fork/snapshot effects; watchers may
+  preserve a recovery snapshot before guard admission. Exact isolated debug
+  fixtures are the only development exception.
+  qualification.json preserves future continuation/custody/critical-task criteria.
+  Guarded artifact admission does not silently complete those live criteria.
+- 2026-09-23, C14: A fixed 64-step snapshot/copy/prune/recover sequence with
+  16 corruption/restore cycles found read-only vault listings silently skipped
+  damaged history. Strict index admission now rejects those reads; the repaired
+  sequence passed in 28.31 seconds, peaking at 402 files and 334,635 bytes (limits:
+  90 seconds between steps, 1,200 files, 16 MiB). Returned write/sync failures cover
+  all seven native journal states; they are not physical power-loss evidence.
+  Wider review found event-log FIFO/growing-input hazards and monitor foreign-store
+  joins; bounded repairs and final stress receipt are in progress.
+- 2026-09-23, C15: Reconciled current source effects, compatibility and public
+  claims; added exact-source summarized proof receipts with raw receipt identities.
+  Structural admission now checks production proof-tool helpers and rejects stale
+  source hashes, failed/duplicate cases and changed input receipts. Public docs/site
+  explain disabled mutation and qualification limits. Final aggregate, independent
+  whole-feature review, Linux CI, merge and guarded installation remain delivery gates.
+
+- 2026-09-23, independent final review: Repaired reused-object durability
+  confirmation before vault references; bounded Devin locks/database admission,
+  Claude liveness metadata, configuration and direct-path sniffing; bound undo
+  snapshot bytes to the selected session/hash/size before effects. Replay rejects
+  raw SQLite archive images while preserving archive bytes. Evaluation freezes
+  database exports, validates policy overrides and retains failed benchmark rows;
+  benchmark artifacts are private and no-clobber. Monitor/CLI retention requires
+  exact non-conflicting pairs and qualified actions. Receipt admission now checks
+  complete stage/tool/input inventories, exact mutants, Kani coverage counts and
+  stress resource envelopes. Final review and local receipts are retained under
+  `gobstopper-audit-evidence/2026-09-23/`; current normalized proof receipts are in
+  `docs/assurance/receipts/`. CI includes all six required gates and weekly bounded
+  stress. No receipt authorizes live provider activation or proves whole-system
+  semantic correctness.
+- 2026-09-23, final adaptive-history review: Past-yield tuning now requires
+  exact canonical store identity and valid paired context observations, uses
+  measured positive reduction, and excludes replay/conflicts, legacy estimates,
+  unknown/error/reset usage and foreign same-ID stores. The isolated regression
+  covers all admission and ordering branches. This remains a heuristic, not a
+  billing or semantic-success measurement.
+- 2026-09-23, final local admission: All 504 Rust tests and doctests passed
+  without ignored tests, along with formatting, Clippy and the Rust 1.85.0
+  compatibility check. All current TLA+/Kani/Lean source receipts are refreshed;
+  the site aggregate passed. Required CI independently reproduces admission on
+  the published integration candidate. Final branch/head, merge and guarded
+  artifact-install outcomes are recorded in PR 90 and the retained delivery
+  receipt, rather than predicted by this source document.

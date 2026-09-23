@@ -1,50 +1,21 @@
-//! Resume-validity checker for provider transcript files.
+//! Structural checks for the frozen, synthetic transcript dialects.
 //!
-//! `verify`/`verify_path` scan a raw JSONL transcript and report structural
-//! findings that would break or degrade a provider resume — without ever
-//! surfacing transcript content. Finding messages carry only counts and
-//! line indexes: no payload text, paths, or uuids.
+//! Findings describe JSON validity, unambiguous identity/linkage, supported
+//! rewrite shapes, and ordered tool pairing within the effective context.
+//! They contain closed messages and physical line indexes, never source content.
+//! Passing these checks is not provider resume qualification or a proof that a
+//! summary preserves the conversation's meaning.
 //!
-//! Dialects checked (matching what `claude`/`codex` actually parse):
+//! Claude and Devin graph parents must precede children; duplicate identities,
+//! missing heads and cycles make context unavailable. Tool pairing considers
+//! the selected live branch. Codex pairing considers only the newest compacted
+//! replacement history and subsequent response items, including subrecord order.
+//! Codex supports call_id, tool_call_id, then id identity aliases in that order;
+//! Devin accepts exact IDs or one unambiguous trailing-# nonce namespace.
 //!
-//! Claude Code (`Provider::ClaudeCode`):
-//!   - `broken_parent_chain` (Error): a uuid-bearing record's `parentUuid`
-//!     string does not match any `uuid` on an earlier line. Records without
-//!     a `uuid` field are exempt (attachments/system lines lack uuids).
-//!     Sidechain records (`isSidechain: true`) need no special scope: a
-//!     sidechain's first message legitimately parents onto any earlier
-//!     uuid, and the check accepts any earlier uuid in the file.
-//!   - `orphaned_tool_use` (Error): a `tool_use` block `id` inside an
-//!     assistant `message.content[]` with no `tool_result` block carrying
-//!     a matching `tool_use_id` in a *later* record.
-//!   - `orphaned_tool_result` (Warning): a `tool_result` `tool_use_id`
-//!     with no matching assistant `tool_use` on an earlier line.
-//!
-//! Codex (`Provider::Codex`):
-//!   - `malformed_compacted` (Error): a top-level `type == "compacted"`
-//!     record whose `payload.replacement_history` is missing or not an
-//!     array (the adapter reads live context out of that array).
-//!   - `non_monotonic_ordinal` (Warning): a top-level numeric `ordinal`
-//!     lower than the previous ordinal-bearing record's.
-//!   - `unpaired_tool_call` (Warning): a `response_item` payload of type
-//!     `function_call`/`custom_tool_call`/`local_shell_call` whose
-//!     `call_id` never appears on a `function_call_output`/
-//!     `custom_tool_call_output` anywhere in the file. Items inside a
-//!     compacted record's `replacement_history` participate in pairing.
-//!     Item `id` fields (e.g. `fc_…`) are intentionally not used: outputs
-//!     pair on `call_id` only, so calls without a `call_id` cannot be
-//!     verified and are skipped rather than guessed at.
-//!
-//! Both dialects share the generic line checks: unparseable non-blank
-//! lines are `invalid_json` errors, except when the *only* failure is the
-//! final line — a torn tail write on a live session — which is downgraded
-//! to the `partial_tail` warning. Whitespace-only lines are `blank_line`
-//! warnings, and an empty file yields a single `empty` warning.
-//!
-//! Not expressible against the dialect fields, and therefore omitted:
-//! Claude sidechain-internal ordering beyond the earlier-uuid rule, and
-//! Codex call/output *ordering* (outputs may legitimately precede calls in
-//! reconstructed `replacement_history` context).
+//! Invalid nonblank JSON is an error except a sole torn final line, which is a
+//! partial_tail warning. Duplicate object keys remain errors even at EOF. Depth,
+//! byte and record limits are checked; unknown shapes are not elision authority.
 
 use gobstopper_core::Provider;
 use serde_json::Value;
@@ -93,6 +64,13 @@ fn warning(line_index: Option<usize>, code: &'static str, message: &str) -> Veri
 
 /// Verify a transcript held in memory. Pure: no I/O, no provider calls.
 pub fn verify(provider: Provider, bytes: &[u8]) -> Vec<VerifyFinding> {
+    if bytes.len() as u64 > crate::transaction::max_transcript_bytes() {
+        return vec![error(
+            None,
+            "transcript_limit",
+            "transcript exceeds byte limit",
+        )];
+    }
     let Ok(text) = std::str::from_utf8(bytes) else {
         return vec![error(
             None,
@@ -100,7 +78,17 @@ pub fn verify(provider: Provider, bytes: &[u8]) -> Vec<VerifyFinding> {
             "transcript contains invalid UTF-8",
         )];
     };
-    let lines: Vec<&str> = text.lines().collect();
+    let lines: Vec<&str> = text
+        .lines()
+        .take(gobstopper_core::validation::MAX_ITEMS + 1)
+        .collect();
+    if lines.len() > gobstopper_core::validation::MAX_ITEMS {
+        return vec![error(
+            None,
+            "transcript_limit",
+            "transcript exceeds record limit",
+        )];
+    }
     if lines.is_empty() {
         return vec![warning(None, "empty", "file is empty")];
     }
@@ -114,7 +102,7 @@ pub fn verify(provider: Provider, bytes: &[u8]) -> Vec<VerifyFinding> {
             records.push(None);
             continue;
         }
-        match serde_json::from_str::<Value>(line) {
+        match crate::payload::decode_record(line) {
             Ok(v) => {
                 if !v.is_object() || !v.get("type").is_some_and(Value::is_string) {
                     findings.push(error(
@@ -125,8 +113,16 @@ pub fn verify(provider: Provider, bytes: &[u8]) -> Vec<VerifyFinding> {
                 }
                 records.push(Some(v));
             }
-            Err(_) => {
-                bad_lines.push(i);
+            Err(error) => {
+                if error.classify() == serde_json::error::Category::Data {
+                    findings.push(crate::verify::error(
+                        Some(i),
+                        "ambiguous_json",
+                        "record contains duplicate JSON keys",
+                    ));
+                } else {
+                    bad_lines.push(i);
+                }
                 records.push(None);
             }
         }
@@ -177,6 +173,45 @@ fn verify_claude(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
     for (i, record) in records.iter().enumerate() {
         let Some(record) = record else { continue };
 
+        if record.get("uuid").is_some() {
+            if !record
+                .get("uuid")
+                .and_then(Value::as_str)
+                .is_some_and(|id| {
+                    !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
+                })
+            {
+                findings.push(error(
+                    Some(i),
+                    "invalid_uuid",
+                    "uuid must be a bounded nonempty string",
+                ));
+            }
+            if !record.get("parentUuid").is_none_or(|v| {
+                v.is_null()
+                    || v.as_str().is_some_and(|id| {
+                        !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
+                    })
+            }) {
+                findings.push(error(
+                    Some(i),
+                    "invalid_parent_uuid",
+                    "parentUuid must be null or a bounded nonempty string",
+                ));
+            }
+        }
+        if record.get("type").and_then(Value::as_str) == Some("last-prompt")
+            && !record
+                .get("leafUuid")
+                .and_then(Value::as_str)
+                .is_some_and(|id| !id.is_empty())
+        {
+            findings.push(error(
+                Some(i),
+                "invalid_chain_head",
+                "last-prompt requires a nonempty leafUuid",
+            ));
+        }
         // Chain check — only records that carry a uuid participate.
         if let Some(uuid) = record.get("uuid").and_then(Value::as_str) {
             if let Some(parent) = record.get("parentUuid").and_then(Value::as_str) {
@@ -188,10 +223,19 @@ fn verify_claude(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
                     ));
                 }
             }
-            seen_uuids.insert(uuid);
+            if !seen_uuids.insert(uuid) {
+                findings.push(error(
+                    Some(i),
+                    "duplicate_uuid",
+                    "uuid already appears on an earlier record",
+                ));
+            }
         }
 
-        let is_assistant = record.get("type").and_then(Value::as_str) == Some("assistant");
+        let is_assistant = record.get("type").and_then(Value::as_str) == Some("assistant")
+            && record.pointer("/message/role").and_then(Value::as_str) == Some("assistant");
+        let is_user = record.get("type").and_then(Value::as_str) == Some("user")
+            && record.pointer("/message/role").and_then(Value::as_str) == Some("user");
         let Some(blocks) = record
             .get("message")
             .and_then(|m| m.get("content"))
@@ -206,9 +250,8 @@ fn verify_claude(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
                         tool_uses.push((id, i));
                     }
                 }
-                // tool_result blocks live in user lines, but accept them on
-                // any record so pairing never misses a valid match.
-                Some("tool_result") => {
+                // Only the supported user envelope can answer a tool use.
+                Some("tool_result") if is_user => {
                     if let Some(id) = block.get("tool_use_id").and_then(Value::as_str) {
                         tool_results.push((id, i));
                     }
@@ -218,10 +261,67 @@ fn verify_claude(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
         }
     }
 
+    let links: Vec<_> = records
+        .iter()
+        .enumerate()
+        .filter_map(|(line, record)| {
+            let r = record.as_ref()?;
+            Some((
+                line,
+                r.get("uuid")?.as_str()?.to_string(),
+                r.get("parentUuid")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            ))
+        })
+        .collect();
+    let explicit = records.iter().enumerate().rev().find_map(|(line, r)| {
+        let r = r.as_ref()?;
+        (r.get("type").and_then(Value::as_str) == Some("last-prompt"))
+            .then(|| {
+                r.get("leafUuid")
+                    .and_then(Value::as_str)
+                    .map(|id| (line, id))
+            })
+            .flatten()
+    });
+    if let Some((line, id)) = explicit {
+        if !seen_uuids.contains(id) {
+            findings.push(error(
+                Some(line),
+                "missing_chain_head",
+                "last-prompt names an absent leafUuid",
+            ));
+        }
+    }
+    let leaf = explicit.map(|(_, id)| id).or_else(|| {
+        records.iter().rev().find_map(|r| {
+            let r = r.as_ref()?;
+            matches!(
+                r.get("type").and_then(Value::as_str),
+                Some("user" | "assistant" | "attachment")
+            )
+            .then(|| r.get("uuid").and_then(Value::as_str))
+            .flatten()
+        })
+    });
+    if let Some(leaf) = leaf {
+        let live = crate::claude::live_branch(&links, leaf);
+        if !live.is_empty() {
+            tool_uses.retain(|(_, line)| live.contains(line));
+            tool_results.retain(|(_, line)| live.contains(line));
+        }
+    }
     let mut first_use: HashMap<&str, usize> = HashMap::new();
     let mut last_result: HashMap<&str, usize> = HashMap::new();
     for &(id, line) in &tool_uses {
-        first_use.entry(id).or_insert(line);
+        if first_use.insert(id, line).is_some() {
+            findings.push(error(
+                Some(line),
+                "duplicate_tool_call_id",
+                "tool call ID is duplicated in effective context",
+            ));
+        }
     }
     for &(id, line) in &tool_results {
         last_result.insert(id, line);
@@ -258,6 +358,9 @@ fn verify_claude(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
 fn verify_devin(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
     let mut seen_nodes: HashSet<i64> = HashSet::new();
     let mut saw_meta = false;
+    let mut head = None;
+    let mut parents = HashMap::new();
+    let mut node_lines = HashMap::new();
     // (call id, line_index) for assistant calls; tool nodes likewise.
     let mut calls: Vec<(&str, usize)> = Vec::new();
     let mut results: Vec<(&str, usize)> = Vec::new();
@@ -266,7 +369,25 @@ fn verify_devin(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
         let Some(record) = record else { continue };
         match record.get("type").and_then(Value::as_str) {
             Some("session_meta") => {
+                if saw_meta {
+                    findings.push(error(
+                        Some(i),
+                        "duplicate_session_meta",
+                        "export repeats session metadata",
+                    ));
+                }
                 saw_meta = true;
+                head = record.get("main_chain_id").and_then(Value::as_i64);
+                if record
+                    .get("main_chain_id")
+                    .is_some_and(|v| !v.is_null() && v.as_i64().is_none_or(|id| id < 0))
+                {
+                    findings.push(error(
+                        Some(i),
+                        "invalid_chain_head",
+                        "main_chain_id must be null or a nonnegative integer",
+                    ));
+                }
                 if i != 0 {
                     findings.push(warning(
                         Some(i),
@@ -291,11 +412,11 @@ fn verify_devin(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
                     ));
                     continue;
                 };
-                if !seen_nodes.insert(node_id) {
+                if node_id < 0 {
                     findings.push(error(
                         Some(i),
-                        "duplicate_node_id",
-                        "node_id already appears on an earlier record",
+                        "invalid_node_id",
+                        "node_id must be nonnegative",
                     ));
                 }
                 if let Some(parent) = record.get("parent_node_id").and_then(Value::as_i64) {
@@ -306,7 +427,25 @@ fn verify_devin(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
                             "parent_node_id does not match any earlier node_id",
                         ));
                     }
+                } else if !record.get("parent_node_id").is_some_and(Value::is_null) {
+                    findings.push(error(
+                        Some(i),
+                        "invalid_parent_id",
+                        "parent_node_id must be null or an integer",
+                    ));
                 }
+                if !seen_nodes.insert(node_id) {
+                    findings.push(error(
+                        Some(i),
+                        "duplicate_node_id",
+                        "node_id already appears on an earlier record",
+                    ));
+                }
+                parents.insert(
+                    node_id,
+                    record.get("parent_node_id").and_then(Value::as_i64),
+                );
+                node_lines.insert(node_id, i);
                 match record.get("chat_message") {
                     Some(msg) if msg.is_object() => match msg.get("role").and_then(Value::as_str) {
                         Some("assistant") => {
@@ -343,122 +482,205 @@ fn verify_devin(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
         ));
     }
 
-    // Devin call ids sometimes end in a bare `#` while the answering tool
-    // node's `tool_call_id` carries the full `#<nonce>` suffix — pairing is
-    // `result == call || result.starts_with(call)`, not strict equality.
-    let mut first_call: Vec<(&str, usize)> = Vec::new();
-    for &(id, line) in &calls {
-        if !first_call.iter().any(|&(c, _)| c == id) {
-            first_call.push((id, line));
-        }
+    if head.is_some_and(|id| !seen_nodes.contains(&id)) {
+        findings.push(error(
+            Some(0),
+            "missing_chain_head",
+            "main_chain_id names an absent node",
+        ));
     }
+    let mut live = HashSet::new();
+    let mut cursor = head;
+    let mut resolved = true;
+    while let Some(id) = cursor {
+        let Some(parent) = parents.get(&id) else {
+            resolved = false;
+            break;
+        };
+        if !live.insert(node_lines[&id]) {
+            resolved = false;
+            break;
+        }
+        cursor = *parent;
+    }
+    if resolved && !live.is_empty() {
+        calls.retain(|(_, line)| live.contains(line));
+        results.retain(|(_, line)| live.contains(line));
+    }
+    let mut by_id: HashMap<String, Vec<usize>> = HashMap::new();
     for &(id, line) in &calls {
-        let answered = results
-            .iter()
-            .any(|&(rid, rline)| rline > line && (rid == id || rid.starts_with(id)));
-        if !answered {
+        if !crate::devin::valid_tool_id(id) {
             findings.push(error(
                 Some(line),
-                "orphaned_tool_call",
-                "tool_calls entry has no matching tool node in a later record",
+                "invalid_tool_id",
+                "tool call has an invalid identifier",
+            ));
+            continue;
+        }
+        let entries = by_id.entry(id.to_string()).or_default();
+        if !entries.is_empty() {
+            findings.push(error(
+                Some(line),
+                "duplicate_tool_call_id",
+                "tool call ID is duplicated in effective context",
             ));
         }
+        entries.push(line);
     }
+    let mut answered = HashSet::new();
     for &(id, line) in &results {
-        let preceded = first_call
-            .iter()
-            .any(|&(cid, cline)| cline < line && (id == cid || id.starts_with(cid)));
-        if !preceded {
+        let resolved = crate::devin::matching_tool_call(&by_id, id)
+            .and_then(|key| by_id.get(key).map(|lines| (key, lines)))
+            .filter(|(_, lines)| lines.len() == 1 && lines[0] < line);
+        if let Some((key, _)) = resolved {
+            answered.insert(key);
+        } else {
             findings.push(warning(
                 Some(line),
                 "orphaned_tool_result",
-                "tool node has no matching assistant tool_calls entry in an earlier record",
+                "tool node does not resolve uniquely to an earlier assistant call",
+            ));
+        }
+    }
+    for &(id, line) in &calls {
+        if !answered.contains(id) {
+            findings.push(error(
+                Some(line),
+                "orphaned_tool_call",
+                "tool_calls entry has no uniquely matching tool node in a later record",
             ));
         }
     }
 }
 
-/// Collect a call/output `call_id` from one Codex response item payload —
-/// either a `response_item` record's `payload` or an item inside a
-/// compacted record's `replacement_history`.
-fn collect_codex_item<'a>(
-    payload: &'a Value,
-    line: usize,
-    calls: &mut Vec<(&'a str, usize)>,
-    outputs: &mut HashSet<&'a str>,
-) {
-    match payload.get("type").and_then(Value::as_str) {
-        Some("function_call") | Some("custom_tool_call") | Some("local_shell_call") => {
-            if let Some(id) = payload.get("call_id").and_then(Value::as_str) {
-                calls.push((id, line));
-            }
-        }
-        Some("function_call_output") | Some("custom_tool_call_output") => {
-            if let Some(id) = payload.get("call_id").and_then(Value::as_str) {
-                outputs.insert(id);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// Codex dialect checks: compacted-record shape, `ordinal` monotonicity,
-/// and `call_id` pairing between calls and outputs.
+/// Codex checks the latest replacement window plus its later records. Pair
+/// order includes positions inside one replacement_history record; an earlier
+/// output or an output in a superseded window cannot answer a live call.
 fn verify_codex(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
-    let mut last_ordinal: Option<i64> = None;
-    let mut calls: Vec<(&str, usize)> = Vec::new();
-    let mut outputs: HashSet<&str> = HashSet::new();
-
-    for (i, record) in records.iter().enumerate() {
-        let Some(record) = record else { continue };
-        let rtype = record.get("type").and_then(Value::as_str).unwrap_or("");
-
-        if let Some(ordinal) = record.get("ordinal").and_then(Value::as_i64) {
-            if let Some(prev) = last_ordinal {
-                if ordinal < prev {
+    let mut last_ordinal = None;
+    let mut effective = Vec::new();
+    for (line, record) in records.iter().enumerate() {
+        let Some(record) = record else {
+            continue;
+        };
+        if let Some(value) = record.get("ordinal") {
+            if let Some(ordinal) = value.as_u64() {
+                if last_ordinal.is_some_and(|previous| ordinal < previous) {
                     findings.push(warning(
-                        Some(i),
+                        Some(line),
                         "non_monotonic_ordinal",
                         "ordinal is lower than the previous ordinal-bearing record",
                     ));
                 }
+                last_ordinal = Some(ordinal);
+            } else {
+                findings.push(error(
+                    Some(line),
+                    "invalid_ordinal",
+                    "ordinal must be a nonnegative u64 integer",
+                ));
             }
-            last_ordinal = Some(ordinal);
         }
-
-        match rtype {
-            "compacted" => {
-                let history = record
-                    .get("payload")
-                    .and_then(|p| p.get("replacement_history"));
-                if !history.map(Value::is_array).unwrap_or(false) {
-                    findings.push(error(
-                        Some(i),
+        match record.get("type").and_then(Value::as_str) {
+            Some("compacted") => {
+                effective.clear();
+                match record
+                    .pointer("/payload/replacement_history")
+                    .and_then(Value::as_array)
+                {
+                    Some(items) => {
+                        if items.len() > gobstopper_core::validation::MAX_ITEMS {
+                            findings.push(error(
+                                Some(line),
+                                "transcript_limit",
+                                "replacement history exceeds item limit",
+                            ));
+                        } else {
+                            effective.extend(items.iter().map(|item| (line, item)));
+                        }
+                    }
+                    None => findings.push(error(
+                        Some(line),
                         "malformed_compacted",
                         "compacted record lacks a replacement_history array",
-                    ));
-                }
-                if let Some(items) = history.and_then(Value::as_array) {
-                    for item in items {
-                        collect_codex_item(item, i, &mut calls, &mut outputs);
-                    }
+                    )),
                 }
             }
-            "response_item" => {
-                if let Some(payload) = record.get("payload") {
-                    collect_codex_item(payload, i, &mut calls, &mut outputs);
+            Some("response_item") => {
+                if let Some(item) = record.get("payload").filter(|v| v.is_object()) {
+                    effective.push((line, item));
+                } else {
+                    findings.push(error(
+                        Some(line),
+                        "invalid_response_item",
+                        "response_item payload must be an object",
+                    ));
+                }
+            }
+            _ => {}
+        }
+        if effective.len() > gobstopper_core::validation::MAX_ITEMS {
+            findings.push(error(
+                Some(line),
+                "transcript_limit",
+                "effective context exceeds item limit",
+            ));
+            return;
+        }
+    }
+    let mut calls = std::collections::BTreeMap::new();
+    let mut answered = HashSet::new();
+    let mut outputs = HashSet::new();
+    for (position, (line, item)) in effective.iter().enumerate() {
+        let kind = item.get("type").and_then(Value::as_str);
+        if !crate::codex::supported_item(item) {
+            findings.push(warning(
+                Some(*line),
+                "unsupported_response_item",
+                "response item is outside the frozen supported shape",
+            ));
+        }
+        let Some(id) = crate::codex::record_call_id(item) else {
+            continue;
+        };
+        match kind {
+            Some("function_call" | "custom_tool_call" | "local_shell_call") => {
+                answered.remove(id);
+                if calls.insert(id, (position, *line)).is_some() {
+                    findings.push(error(
+                        Some(*line),
+                        "duplicate_tool_call_id",
+                        "tool call ID is duplicated in effective context",
+                    ));
+                }
+            }
+            Some("function_call_output" | "custom_tool_call_output") => {
+                if calls.get(id).is_some_and(|(call, _)| *call < position) {
+                    answered.insert(id);
+                } else {
+                    findings.push(warning(
+                        Some(*line),
+                        "orphaned_tool_result",
+                        "tool output has no preceding call in effective context",
+                    ));
+                }
+                if !outputs.insert(id) {
+                    findings.push(warning(
+                        Some(*line),
+                        "duplicate_tool_result",
+                        "tool result ID is duplicated in effective context",
+                    ));
                 }
             }
             _ => {}
         }
     }
-
-    for &(id, line) in &calls {
-        if !outputs.contains(id) {
+    for (id, (_, line)) in calls {
+        if !answered.contains(id) {
             findings.push(warning(
                 Some(line),
                 "unpaired_tool_call",
-                "tool call has no matching output record",
+                "tool call has no matching later output in effective context",
             ));
         }
     }

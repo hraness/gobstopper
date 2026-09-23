@@ -12,7 +12,7 @@ use gobstopper_core::Provider;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fs;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -40,7 +40,12 @@ impl Custody {
         }
         #[cfg(unix)]
         {
-            let file = fs::File::open(root).context("open vault custody directory")?;
+            use std::os::unix::fs::OpenOptionsExt;
+            let file = fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_NONBLOCK)
+                .open(root)
+                .context("open vault custody directory")?;
             if exclusive {
                 fs2::FileExt::lock_exclusive(&file)?;
             } else {
@@ -59,12 +64,55 @@ impl Custody {
     }
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct NativePin {
+    schema_version: u32,
+    manifest_sha256: String,
+}
+
+/// Retain a verified recovery object for a provider operation indefinitely.
+/// Callers must release shared Readers before acquiring this exclusive custody.
+pub fn retain_operation_snapshot(
+    operation_sha256: &str,
+    manifest_sha256: &str,
+    root: &Path,
+) -> anyhow::Result<()> {
+    if operation_sha256.len() != 64
+        || !is_hex(operation_sha256)
+        || manifest_sha256.len() != 64
+        || !is_hex(manifest_sha256)
+    {
+        bail!("invalid recovery pin digest");
+    }
+    crate::transaction::private_dir(root)?;
+    let _custody = Custody::exclusive(root)?;
+    read_object_locked(manifest_sha256, root)?;
+    let pins = root.join("pins");
+    crate::transaction::private_dir(&pins)?;
+    let path = pins.join(format!("native-{operation_sha256}.json"));
+    let bytes = serde_json::to_vec(&NativePin {
+        schema_version: 1,
+        manifest_sha256: manifest_sha256.into(),
+    })?;
+    if path.try_exists()? {
+        if crate::transaction::read_with_limit(&path, 1024)? != bytes {
+            bail!("conflicting recovery pin; repair required");
+        }
+        crate::transaction::confirm_publication(&path, &sha256_hex(&bytes))?;
+    } else {
+        crate::transaction::publish_new(&path, &bytes)?;
+    }
+    Ok(())
+}
+
 /// One snapshot record in the vault index.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct VaultEntry {
     /// Unix seconds when the snapshot was taken.
     pub ts: u64,
-    /// Hex sha256 of the snapshotted bytes; also the object file name.
+    /// Manifest digest (or full-byte object digest for legacy snapshots).
     pub sha256: String,
     /// Original absolute path of the snapshotted file.
     pub path: PathBuf,
@@ -92,6 +140,21 @@ pub fn default_root() -> PathBuf {
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share")))
         .unwrap_or_default();
     base.join("gobstopper").join("vault")
+}
+
+fn exists_no_follow(path: &Path) -> std::io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+fn check_object_directory(path: &Path) -> anyhow::Result<()> {
+    if exists_no_follow(path)? && !fs::symlink_metadata(path)?.is_dir() {
+        bail!("vault object directory is invalid; repair required");
+    }
+    Ok(())
 }
 
 fn objects_dir(root: &Path) -> PathBuf {
@@ -138,82 +201,150 @@ fn is_hex(s: &str) -> bool {
     !s.is_empty() && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-/// Read the append-only ledger in append (oldest-first) order. A missing
-/// index is an empty vault; blank and unparseable lines are skipped so a
-/// torn write can never wedge restore.
-fn read_index(root: &Path) -> anyhow::Result<Vec<VaultEntry>> {
-    let index = index_path(root);
-    let file = match fs::File::open(&index) {
-        Ok(f) => {
-            if f.metadata()?.len() > MAX_INDEX_BYTES {
-                bail!("vault index exceeds byte limit");
-            }
-            fs2::FileExt::lock_shared(&f)?;
-            f
-        }
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(e).with_context(|| format!("open {}", index.display())),
-    };
+fn valid_entry(entry: &VaultEntry) -> bool {
+    entry.sha256.len() == 64
+        && is_hex(&entry.sha256)
+        && (entry.source_sha256.is_empty()
+            || entry.source_sha256.len() == 64 && is_hex(&entry.source_sha256))
+        && !entry.session_id.is_empty()
+        && entry.session_id.len() <= 256
+        && entry.strategy.as_ref().is_none_or(|s| s.len() <= 128)
+        && entry.bytes <= crate::transaction::max_transcript_bytes()
+        && entry.record_count <= gobstopper_core::validation::MAX_ITEMS as u64
+}
+
+fn parse_index(bytes: &[u8]) -> anyhow::Result<Vec<VaultEntry>> {
+    if bytes.len() as u64 > MAX_INDEX_BYTES {
+        bail!("vault index exceeds byte limit");
+    }
+    if !bytes.is_empty() && bytes.last() != Some(&b'\n') {
+        bail!("vault index has an incomplete tail; repair required");
+    }
     let mut entries = Vec::new();
-    for line in BufReader::new(file).lines() {
-        let Ok(line) = line else { continue };
-        if line.trim().is_empty() || line.len() > MAX_INDEX_LINE_BYTES {
-            continue;
-        }
-        if let Ok(entry) = serde_json::from_str::<VaultEntry>(&line) {
-            if entry.sha256.len() == 64
-                && is_hex(&entry.sha256)
-                && (entry.source_sha256.is_empty()
-                    || entry.source_sha256.len() == 64 && is_hex(&entry.source_sha256))
-                && entry.session_id.len() <= 256
-                && entry
-                    .strategy
-                    .as_ref()
-                    .is_none_or(|value| value.len() <= 128)
-                && entry.bytes <= crate::transaction::max_transcript_bytes()
-                && entry.record_count <= gobstopper_core::validation::MAX_ITEMS as u64
-            {
-                entries.push(entry);
+    for line in bytes
+        .strip_suffix(b"\n")
+        .unwrap_or(bytes)
+        .split(|b| *b == b'\n')
+        .filter(|_| !bytes.is_empty())
+    {
+        let entry = if !line.is_empty() && line.len() <= MAX_INDEX_LINE_BYTES {
+            serde_json::from_slice::<VaultEntry>(line)
+                .ok()
+                .filter(valid_entry)
+        } else {
+            None
+        };
+        match entry {
+            Some(entry) => entries.push(entry),
+            None => {
+                bail!("vault index contains an unknown or invalid root; repair required")
             }
         }
     }
     Ok(entries)
 }
 
-fn append_index(root: &Path, entry: &VaultEntry) -> anyhow::Result<()> {
-    crate::transaction::private_dir(root)?;
-    let index = index_path(root);
-    if fs::symlink_metadata(&index).is_ok_and(|m| !m.is_file()) {
+fn read_index_file(file: &mut fs::File) -> anyhow::Result<Vec<u8>> {
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || metadata.len() > MAX_INDEX_BYTES {
+        bail!("invalid or oversized vault index");
+    }
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    file.take(MAX_INDEX_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_INDEX_BYTES {
+        bail!("vault index exceeds byte limit");
+    }
+    Ok(bytes)
+}
+
+fn index_bytes_locked(root: &Path) -> anyhow::Result<Vec<u8>> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let mut file = match options.open(index_path(root)) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) => return Err(e.into()),
+    };
+    if !file.metadata()?.is_file() {
         bail!("vault index must be a regular file");
     }
+    fs2::FileExt::lock_shared(&file)?;
+    read_index_file(&mut file)
+}
+
+/// Inspection and mutation both reject incomplete indexes. A partial view must
+/// never masquerade as a complete empty history or authorize a recovery choice.
+pub(crate) fn entries_locked(root: &Path) -> anyhow::Result<Vec<VaultEntry>> {
+    parse_index(&index_bytes_locked(root)?)
+}
+
+fn read_index(root: &Path) -> anyhow::Result<Vec<VaultEntry>> {
+    if !exists_no_follow(root)? {
+        return Ok(Vec::new());
+    }
+    let _custody = Custody::shared(root)?;
+    parse_index(&index_bytes_locked(root)?)
+}
+
+fn append_index(root: &Path, entry: &VaultEntry) -> anyhow::Result<()> {
+    if !valid_entry(entry) {
+        bail!("invalid snapshot index entry");
+    }
+    let index = index_path(root);
     let mut options = fs::OpenOptions::new();
     options.create(true).append(true).read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     let mut file = options.open(&index).context("open vault index")?;
+    if !file.metadata()?.is_file() {
+        bail!("vault index must be a regular file");
+    }
     fs2::FileExt::lock_exclusive(&file)?;
-    let mut line = serde_json::to_string(entry).context("serialize vault entry")?;
-    line.push('\n');
+    let original = read_index_file(&mut file)?;
+    parse_index(&original)?;
+    let mut line = serde_json::to_vec(entry)?;
+    line.push(b'\n');
     if line.len() > MAX_INDEX_LINE_BYTES
-        || file.metadata()?.len().saturating_add(line.len() as u64 + 1) > MAX_INDEX_BYTES
+        || original.len() as u64 + line.len() as u64 > MAX_INDEX_BYTES
     {
         bail!("vault index capacity exceeded");
     }
-    use std::io::{Read, Seek, SeekFrom};
-    if file.metadata()?.len() > 0 {
-        file.seek(SeekFrom::End(-1))?;
-        let mut last = [0];
-        file.read_exact(&mut last)?;
-        if last[0] != b'\n' {
-            file.write_all(b"\n")?;
-        }
-    }
-    file.write_all(line.as_bytes())?;
-    file.sync_all()?;
-    crate::transaction::sync_dir(root)?;
+    let mut expected = original;
+    expected.extend_from_slice(&line);
+    crate::transaction::write_all(&mut file, &line, &index).map_err(|e| {
+        crate::transaction::publication_error(
+            &index,
+            &expected,
+            "index_append",
+            crate::transaction::Visibility::Unknown,
+            crate::transaction::Durability::Unconfirmed,
+            e,
+        )
+    })?;
+    crate::transaction::sync_file(&file, &index)
+        .and_then(|_| crate::transaction::sync_dir(root))
+        .map_err(|e| {
+            crate::transaction::publication_error(
+                &index,
+                &expected,
+                "index_sync",
+                crate::transaction::Visibility::Published,
+                crate::transaction::Durability::Unconfirmed,
+                e,
+            )
+        })?;
+    crate::transaction::checkpoint("index_appended", &index, true)?;
     Ok(())
 }
 
@@ -275,53 +406,8 @@ pub fn snapshot_data(
         bail!("transcript exceeds vault record limit");
     }
 
-    crate::transaction::private_dir(root)?;
-    let chunks = chunks_dir(root);
-    let manifests = manifests_dir(root);
-    crate::transaction::private_dir(&chunks)?;
-    crate::transaction::private_dir(&manifests)?;
-
-    let mut chunk_hashes = Vec::with_capacity(data.len().div_ceil(CHUNK_BYTES));
-    for chunk in data.chunks(CHUNK_BYTES) {
-        let chunk_sha = sha256_hex(chunk);
-        let chunk_path = chunks.join(&chunk_sha);
-        if fs::symlink_metadata(&chunk_path).is_err() {
-            match crate::transaction::publish_new(&chunk_path, chunk) {
-                Ok(()) => {}
-                Err(crate::AdapterError::Io { source, .. })
-                    if source.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(e) => return Err(e.into()),
-            }
-        }
-        if crate::transaction::read(&chunk_path)? != chunk {
-            bail!("vault chunk {chunk_sha} failed integrity verification");
-        }
-        chunk_hashes.push(chunk_sha);
-    }
-
-    let manifest = serde_json::json!({
-        "schema_version": 3,
-        "source_sha256": source_sha256.clone(),
-        "bytes": data.len(),
-        "chunks": chunk_hashes,
-    });
-    let manifest_bytes = serde_json::to_vec(&manifest)?;
-    let manifest_sha = sha256_hex(&manifest_bytes);
-    let manifest_path = manifests.join(&manifest_sha);
-    if fs::symlink_metadata(&manifest_path).is_err() {
-        match crate::transaction::publish_new(&manifest_path, &manifest_bytes) {
-            Ok(()) => {}
-            Err(crate::AdapterError::Io { source, .. })
-                if source.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(e) => return Err(e.into()),
-        }
-    }
-    if crate::transaction::read(&manifest_path)? != manifest_bytes {
-        bail!("manifest object {manifest_sha} failed integrity verification");
-    }
-    if reconstruct_manifest(&manifest_bytes, root)? != data {
-        bail!("vault manifest does not reconstruct the source exactly");
-    }
+    parse_index(&index_bytes_locked(root)?)?;
+    let manifest_sha = store_object_locked(&data, root)?;
 
     let entry = VaultEntry {
         ts: now_secs(),
@@ -338,6 +424,82 @@ pub fn snapshot_data(
     Ok(entry)
 }
 
+/// Store a verified immutable object without inventing an index entry. Callers
+/// must publish a durable recovery pin before releasing custody if they rely on it.
+pub(crate) fn store_object_locked(data: &[u8], root: &Path) -> anyhow::Result<String> {
+    if data.len() as u64 > crate::transaction::max_transcript_bytes() {
+        bail!("object exceeds byte limit");
+    }
+    crate::transaction::private_dir(root)?;
+    let chunks = chunks_dir(root);
+    let manifests = manifests_dir(root);
+    crate::transaction::private_dir(&chunks)?;
+    crate::transaction::private_dir(&manifests)?;
+
+    let mut chunk_hashes = Vec::with_capacity(data.len().div_ceil(CHUNK_BYTES));
+    for chunk in data.chunks(CHUNK_BYTES) {
+        let chunk_sha = sha256_hex(chunk);
+        let chunk_path = chunks.join(&chunk_sha);
+        let published = if fs::symlink_metadata(&chunk_path).is_err() {
+            match crate::transaction::publish_new(&chunk_path, chunk) {
+                Ok(()) => true,
+                Err(crate::AdapterError::Io { source, .. })
+                    if source.kind() == std::io::ErrorKind::AlreadyExists =>
+                {
+                    false
+                }
+                Err(e) => return Err(e.into()),
+            }
+        } else {
+            false
+        };
+        if crate::transaction::read(&chunk_path)? != chunk {
+            bail!("vault chunk {chunk_sha} failed integrity verification");
+        }
+        if !published {
+            // Shared writers may observe a peer's hard link before its directory
+            // sync succeeds. Byte equality alone cannot authorize a durable
+            // reference: reconfirm the existing inode and its namespace here.
+            crate::transaction::confirm_publication(&chunk_path, &chunk_sha)?;
+        }
+        chunk_hashes.push(chunk_sha);
+    }
+
+    let manifest = serde_json::json!({
+        "schema_version": 3,
+        "source_sha256": sha256_hex(data),
+        "bytes": data.len(),
+        "chunks": chunk_hashes,
+    });
+    let manifest_bytes = serde_json::to_vec(&manifest)?;
+    let manifest_sha = sha256_hex(&manifest_bytes);
+    let manifest_path = manifests.join(&manifest_sha);
+    let published = if fs::symlink_metadata(&manifest_path).is_err() {
+        match crate::transaction::publish_new(&manifest_path, &manifest_bytes) {
+            Ok(()) => true,
+            Err(crate::AdapterError::Io { source, .. })
+                if source.kind() == std::io::ErrorKind::AlreadyExists =>
+            {
+                false
+            }
+            Err(e) => return Err(e.into()),
+        }
+    } else {
+        false
+    };
+    if crate::transaction::read(&manifest_path)? != manifest_bytes {
+        bail!("manifest object {manifest_sha} failed integrity verification");
+    }
+    if !published {
+        crate::transaction::confirm_publication(&manifest_path, &manifest_sha)?;
+    }
+    if reconstruct_manifest(&manifest_bytes, root)? != data {
+        bail!("vault manifest does not reconstruct the source exactly");
+    }
+
+    Ok(manifest_sha)
+}
+
 /// Restore the snapshotted bytes for `sha256` over `target`, atomically:
 /// write `<target>.gobstopper-restore-<pid>` then rename.
 ///
@@ -345,6 +507,9 @@ pub fn snapshot_data(
 /// concatenation. Legacy record-addressed and full-byte objects remain
 /// supported.
 pub fn restore(sha256: &str, target: &Path, root: &Path) -> anyhow::Result<VaultEntry> {
+    if fs::symlink_metadata(target).is_ok() {
+        return Err(crate::AdapterError::DirectMutationDisabled.into());
+    }
     if !is_hex(sha256) {
         bail!("invalid sha256 digest: {sha256:?}");
     }
@@ -364,22 +529,23 @@ pub fn restore(sha256: &str, target: &Path, root: &Path) -> anyhow::Result<Vault
         bail!("vault snapshot does not match its index binding");
     }
 
-    if target.exists() {
-        let before = crate::transaction::read(target)?;
-        crate::transaction::replace(target, &before, &data)?;
-    } else {
-        crate::transaction::publish_new(target, &data)?;
+    if fs::symlink_metadata(target).is_ok() {
+        return Err(crate::AdapterError::DirectMutationDisabled.into());
     }
+    crate::transaction::publish_new(target, &data)?;
     Ok(entry)
 }
 
 /// Read a manifest and concatenate its chunks or records back into the
 /// original transcript bytes.
 fn reconstruct_manifest(manifest_bytes: &[u8], root: &Path) -> anyhow::Result<Vec<u8>> {
-    let manifest: serde_json::Value = serde_json::from_slice(manifest_bytes)?;
+    let manifest = crate::payload::decode_record(std::str::from_utf8(manifest_bytes)?)?;
     let version = manifest
         .get("schema_version")
         .and_then(serde_json::Value::as_u64);
+    if manifest.get("schema_version").is_some() && version.is_none() {
+        bail!("invalid vault manifest version");
+    }
     if version == Some(3) {
         let chunks = manifest
             .get("chunks")
@@ -403,7 +569,10 @@ fn reconstruct_manifest(manifest_bytes: &[u8], root: &Path) -> anyhow::Result<Ve
             if sha.len() != 64 || !is_hex(sha) {
                 bail!("invalid chunk hash in manifest");
             }
-            let chunk = crate::transaction::read(&chunks_dir(root).join(sha))?;
+            let chunk = crate::transaction::read_with_limit(
+                &chunks_dir(root).join(sha),
+                CHUNK_BYTES as u64,
+            )?;
             if chunk.len() > CHUNK_BYTES || sha256_hex(&chunk) != sha {
                 bail!("vault chunk failed integrity verification");
             }
@@ -440,6 +609,21 @@ fn reconstruct_manifest(manifest_bytes: &[u8], root: &Path) -> anyhow::Result<Ve
         .with_context(|| "missing records in manifest")?;
     if records.len() > gobstopper_core::validation::MAX_ITEMS {
         bail!("vault manifest exceeds record limit");
+    }
+    if manifest
+        .get("trailing_newline")
+        .is_some_and(|v| !v.is_boolean())
+    {
+        bail!("invalid legacy newline flag");
+    }
+    if manifest
+        .get("source_sha256")
+        .is_some_and(|v| !v.is_string())
+    {
+        bail!("invalid legacy source digest");
+    }
+    if manifest.get("bytes").is_some_and(|v| v.as_u64().is_none()) {
+        bail!("invalid legacy byte count");
     }
     let trailing = manifest
         .get("trailing_newline")
@@ -478,6 +662,13 @@ fn reconstruct_manifest(manifest_bytes: &[u8], root: &Path) -> anyhow::Result<Ve
             out.push(b'\n');
         }
     }
+    if manifest
+        .get("bytes")
+        .and_then(|v| v.as_u64())
+        .is_some_and(|n| n != out.len() as u64)
+    {
+        bail!("legacy byte count mismatch");
+    }
     if expected_source.is_some_and(|sha| sha256_hex(&out) != sha) {
         bail!("vault manifest source digest mismatch");
     }
@@ -485,31 +676,83 @@ fn reconstruct_manifest(manifest_bytes: &[u8], root: &Path) -> anyhow::Result<Ve
 }
 
 /// The most recent snapshot taken of `path`, matching its canonical form
-/// when available. Among entries sharing a timestamp the last-appended wins.
+/// when available. Append order, not wall time, defines recency.
 pub fn latest_for(path: &Path, root: &Path) -> anyhow::Result<Option<VaultEntry>> {
     let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     Ok(read_index(root)?
         .into_iter()
-        .filter(|e| e.path == path || e.path == canonical)
-        .max_by_key(|e| e.ts))
+        .rev()
+        .find(|e| e.path == path || e.path == canonical))
 }
 
-/// Every parseable index entry, newest first. Corrupt lines are skipped.
+/// Every index entry, newest first. Damaged or ambiguous input is rejected.
 pub fn list(root: &Path) -> anyhow::Result<Vec<VaultEntry>> {
     let mut entries = read_index(root)?;
-    // Reverse first so equal timestamps still order newest-append first
-    // under the stable sort.
+    // Append order is authoritative even when the wall clock moves backward.
     entries.reverse();
-    entries.sort_by_key(|e| std::cmp::Reverse(e.ts));
     Ok(entries)
 }
 
-pub fn read_object(sha256: &str, root: &Path) -> anyhow::Result<Vec<u8>> {
-    let _custody = Custody::shared(root)?;
-    read_object_locked(sha256, root)
+/// Shared custody across a caller's selection and all dependent object reads.
+pub struct Reader {
+    root: PathBuf,
+    _custody: Option<Custody>,
+}
+impl Reader {
+    pub fn open(root: &Path) -> anyhow::Result<Self> {
+        let custody = match fs::symlink_metadata(root) {
+            Ok(_) => Some(Custody::shared(root)?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(e.into()),
+        };
+        Ok(Self {
+            root: root.into(),
+            _custody: custody,
+        })
+    }
+    pub fn entries(&self) -> anyhow::Result<Vec<VaultEntry>> {
+        if self._custody.is_none() {
+            return Ok(Vec::new());
+        }
+        let mut entries = parse_index(&index_bytes_locked(&self.root)?)?;
+        entries.reverse();
+        Ok(entries)
+    }
+    pub fn diff(&self, sha1: &str, sha2: &str) -> anyhow::Result<DiffSummary> {
+        if self._custody.is_none() {
+            bail!("vault does not exist");
+        }
+        diff_locked(sha1, sha2, &self.root)
+    }
+    pub fn read_object(&self, sha: &str) -> anyhow::Result<Vec<u8>> {
+        if self._custody.is_none() {
+            bail!("vault does not exist");
+        }
+        read_object_locked(sha, &self.root)
+    }
+    pub fn recall_entries(
+        &self,
+        entries: &[VaultEntry],
+        query: Option<&str>,
+    ) -> anyhow::Result<Vec<RecallDigest>> {
+        if self._custody.is_none() {
+            if entries.is_empty() {
+                return Ok(Vec::new());
+            }
+            bail!("vault does not exist");
+        }
+        recall_entries_locked(entries.to_vec(), query, &self.root)
+    }
 }
 
-fn read_object_locked(sha256: &str, root: &Path) -> anyhow::Result<Vec<u8>> {
+pub fn read_object(sha256: &str, root: &Path) -> anyhow::Result<Vec<u8>> {
+    Reader::open(root)?.read_object(sha256)
+}
+
+pub(crate) fn read_object_locked(sha256: &str, root: &Path) -> anyhow::Result<Vec<u8>> {
+    for name in ["manifests", "chunks", "records", "objects"] {
+        check_object_directory(&root.join(name))?;
+    }
     if sha256.len() != 64 || !is_hex(sha256) {
         bail!("invalid snapshot digest");
     }
@@ -577,8 +820,40 @@ pub struct PruneReport {
 /// retained. `index.jsonl` is rewritten before unreachable objects are
 /// unlinked, so a crash mid-delete leaves only orphans. `dry_run`
 /// computes the same plan without changing stored data.
+#[derive(Debug, thiserror::Error)]
+#[error("prune cleanup incomplete during {stage}; index retirement may be visible, durability unconfirmed: {source}")]
+pub struct PruneIncomplete {
+    pub report: PruneReport,
+    pub stage: &'static str,
+    #[source]
+    pub source: std::io::Error,
+}
+
+fn object_names(directory: &Path) -> anyhow::Result<std::collections::BTreeSet<String>> {
+    let mut names = std::collections::BTreeSet::new();
+    if !exists_no_follow(directory)? {
+        return Ok(names);
+    }
+    if !fs::symlink_metadata(directory)?.is_dir() {
+        bail!("vault object directory is invalid; repair required");
+    }
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("unknown vault object name; repair required"))?;
+        if !entry.file_type()?.is_file() || name.len() != 64 || !is_hex(&name) {
+            bail!("unknown vault object or abandoned temporary; repair required");
+        }
+        names.insert(name);
+    }
+    Ok(names)
+}
+
 pub fn prune(root: &Path, keep: usize, dry_run: bool) -> anyhow::Result<PruneReport> {
-    if !root.try_exists()? {
+    use std::collections::{BTreeMap, BTreeSet, HashSet};
+    if !exists_no_follow(root)? {
         return Ok(PruneReport {
             streams: 0,
             kept_entries: 0,
@@ -590,196 +865,231 @@ pub fn prune(root: &Path, keep: usize, dry_run: bool) -> anyhow::Result<PruneRep
         });
     }
     let _custody = Custody::exclusive(root)?;
-    let index_path = root.join("index.jsonl");
-    let original_index = if index_path.exists() {
-        crate::transaction::read(&index_path)?
-    } else {
-        Vec::new()
-    };
-    let entries = list(root)?;
-
-    // Drop decisions are per index ENTRY, not per manifest — several
-    // index entries can reference one manifest (identical bytes under
-    // different streams), so a sha-keyed drop would wrongly remove a
-    // kept entry in another stream.
-    let mut groups: std::collections::BTreeMap<(String, String), Vec<(usize, &VaultEntry)>> =
-        std::collections::BTreeMap::new();
-    for (idx, e) in entries.iter().enumerate() {
+    let index = index_path(root);
+    let original_index = index_bytes_locked(root)?;
+    let entries = parse_index(&original_index)?;
+    let mut groups = BTreeMap::<(String, PathBuf, String), Vec<usize>>::new();
+    for (i, entry) in entries.iter().enumerate() {
         groups
-            .entry((e.provider.as_str().to_string(), e.session_id.clone()))
+            .entry((
+                entry.provider.as_str().into(),
+                entry.path.clone(),
+                entry.session_id.clone(),
+            ))
             .or_default()
-            .push((idx, e));
+            .push(i);
     }
-    let mut drop_idx = std::collections::HashSet::new();
-    // list() is newest-first, including reverse append order for equal
-    // timestamps. Keep that order: a hash tie-breaker can discard the
-    // newest snapshot created within the same second.
+    let mut retained = HashSet::new();
     for group in groups.values() {
-        for (idx, _) in group.iter().skip(keep) {
-            drop_idx.insert(*idx);
-        }
+        retained.extend(group.iter().rev().take(keep).copied());
     }
-    let kept_entries: Vec<&VaultEntry> = entries
+    let mut roots: BTreeSet<_> = entries
         .iter()
         .enumerate()
-        .filter(|(i, _)| !drop_idx.contains(i))
-        .map(|(_, e)| e)
+        .filter(|(i, _)| retained.contains(i))
+        .map(|(_, entry)| entry.sha256.clone())
         .collect();
-    let mut kept_shas: std::collections::HashSet<String> =
-        kept_entries.iter().map(|e| e.sha256.clone()).collect();
     let operations = root.join("operations");
-    if operations.exists() {
+    if exists_no_follow(&operations)? {
+        if !fs::symlink_metadata(&operations)?.is_dir() {
+            bail!("invalid operations directory; repair required");
+        }
         for entry in fs::read_dir(&operations)? {
-            let path = entry?.path();
-            if path.extension().is_none_or(|ext| ext != "json") {
-                continue;
+            let entry = entry?;
+            let path = entry.path();
+            let identity = path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .context("invalid operation name; repair required")?;
+            if !entry.file_type()?.is_file() || identity.len() != 64 || !is_hex(identity) {
+                bail!("unknown operation artifact; repair required");
             }
-            let bytes = crate::transaction::read(&path)?;
-            let receipt: serde_json::Value = serde_json::from_slice(&bytes)
-                .context("invalid operation receipt; cannot safely prune recovery data")?;
-            if let Some(sha) = receipt.get("snapshot_manifest_sha256") {
-                let sha = sha.as_str().context("invalid receipt snapshot digest")?;
-                // Verify every pinned object before changing the index.
-                read_object_locked(sha, root)?;
-                kept_shas.insert(sha.to_string());
-            } else if let Some(source) = receipt.get("snapshot_sha256") {
-                // Older receipts bind full source bytes, not manifests.
-                let source = source.as_str().context("invalid receipt source digest")?;
-                if source.len() != 64 || !is_hex(source) {
-                    bail!("invalid receipt source digest");
+            match path.extension().and_then(|s| s.to_str()) {
+                Some("lock") => {}
+                Some("json") => {
+                    let raw = crate::transaction::read_with_limit(&path, 64 * 1024)?;
+                    roots.extend(crate::copy::recovery_roots_locked(
+                        &raw, identity, &entries, root,
+                    )?);
                 }
-                kept_shas.extend(
-                    entries
-                        .iter()
-                        .filter(|entry| entry.source_sha256 == source || entry.sha256 == source)
-                        .map(|entry| entry.sha256.clone()),
-                );
-            } else {
-                bail!("operation receipt has no recovery snapshot binding");
+                _ => bail!("unknown operation artifact; repair required"),
             }
         }
     }
-    for sha in &kept_shas {
-        read_object_locked(sha, root)
-            .context("retained snapshot is unreadable; cannot safely prune")?;
+    let pins = root.join("pins");
+    if exists_no_follow(&pins)? {
+        if !fs::symlink_metadata(&pins)?.is_dir() {
+            bail!("invalid pin directory; repair required");
+        }
+        for entry in fs::read_dir(&pins)? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let identity = name
+                .to_str()
+                .and_then(|s| s.strip_prefix("native-"))
+                .and_then(|s| s.strip_suffix(".json"))
+                .context("unknown recovery pin; repair required")?;
+            if !entry.file_type()?.is_file() || identity.len() != 64 || !is_hex(identity) {
+                bail!("invalid recovery pin; repair required");
+            }
+            let pin: NativePin =
+                serde_json::from_slice(&crate::transaction::read_with_limit(&entry.path(), 1024)?)?;
+            if pin.schema_version != 1
+                || pin.manifest_sha256.len() != 64
+                || !is_hex(&pin.manifest_sha256)
+            {
+                bail!("unsupported recovery pin; repair required");
+            }
+            roots.insert(pin.manifest_sha256);
+        }
     }
-    let manifests_remove: std::collections::HashSet<String> = entries
+    for sha in &roots {
+        read_object_locked(sha, root)
+            .context("retained snapshot is unreadable; repair required")?;
+    }
+    let manifests = manifests_dir(root);
+    let manifests_on_disk = object_names(&manifests)?;
+    let chunks = chunks_dir(root);
+    let chunks_on_disk = object_names(&chunks)?;
+    // Unknown legacy roots are also damage, even though this phase never
+    // collects legacy record/full-byte objects.
+    object_names(&objects_dir(root))?;
+    object_names(&records_dir(root))?;
+    let remove_manifests: BTreeSet<_> = entries
         .iter()
         .enumerate()
-        .filter(|(i, _)| drop_idx.contains(i))
+        .filter(|(i, e)| {
+            !retained.contains(i)
+                && !roots.contains(&e.sha256)
+                && manifests_on_disk.contains(&e.sha256)
+        })
         .map(|(_, e)| e.sha256.clone())
-        .filter(|sha| !kept_shas.contains(sha.as_str()))
         .collect();
-
-    // Chunks survive iff a manifest remaining on disk reaches them —
-    // computed over ALL manifests minus the removals so index-orphaned
-    // manifests can't be left dangling.
-    let mut manifests_on_disk = std::collections::HashSet::new();
-    let manifests = manifests_dir(root);
-    if manifests.exists() {
-        for ent in fs::read_dir(&manifests)? {
-            manifests_on_disk.insert(ent?.file_name().to_string_lossy().to_string());
-        }
-    }
-    let mut keep_chunks = std::collections::HashSet::new();
-    for sha in manifests_on_disk
-        .iter()
-        .filter(|s| !manifests_remove.contains(*s))
-    {
-        // A failed read/parse may hide a live chunk reference. Never
-        // turn corruption or uncertainty into destructive collection.
-        let bytes = crate::transaction::read(&manifests.join(sha))?;
+    let mut keep_chunks = BTreeSet::new();
+    // Validate all manifests before mutation, including retired ones. Orphans
+    // are conservatively retained; we never guess which crash created them.
+    for sha in &manifests_on_disk {
+        let bytes = crate::transaction::read_with_limit(&manifests.join(sha), 16 * 1024 * 1024)?;
         if sha256_hex(&bytes) != *sha {
-            bail!("retained manifest failed integrity verification");
+            bail!("manifest integrity failure; repair required");
         }
         reconstruct_manifest(&bytes, root)?;
-        let doc: serde_json::Value = serde_json::from_slice(&bytes)?;
-        if let Some(chunks) = doc.get("chunks").and_then(|c| c.as_array()) {
-            for c in chunks {
-                if let Some(s) = c.as_str() {
-                    keep_chunks.insert(s.to_string());
+        if !remove_manifests.contains(sha) {
+            let doc = crate::payload::decode_record(std::str::from_utf8(&bytes)?)?;
+            if let Some(values) = doc.get("chunks").and_then(|v| v.as_array()) {
+                for value in values {
+                    keep_chunks.insert(value.as_str().context("invalid chunk digest")?.to_string());
                 }
             }
         }
     }
-    let chunks = chunks_dir(root);
-    let mut chunks_remove = Vec::new();
-    if chunks.exists() {
-        for ent in fs::read_dir(&chunks)? {
-            let ent = ent?;
-            if !keep_chunks.contains(&ent.file_name().to_string_lossy().to_string()) {
-                chunks_remove.push(ent.path());
-            }
-        }
+    let remove_chunks: Vec<_> = chunks_on_disk
+        .difference(&keep_chunks)
+        .map(|sha| chunks.join(sha))
+        .collect();
+    let mut planned_bytes = 0u64;
+    for path in &remove_chunks {
+        planned_bytes = planned_bytes
+            .checked_add(fs::metadata(path)?.len())
+            .context("prune byte count overflow")?;
     }
-    let mut reclaimed = 0u64;
-    for p in &chunks_remove {
-        reclaimed += fs::metadata(p).map(|m| m.len()).unwrap_or(0);
-    }
-
-    let report = PruneReport {
+    let mut report = PruneReport {
         streams: groups.len(),
-        kept_entries: entries.len() - drop_idx.len(),
-        dropped_entries: drop_idx.len(),
-        manifests_removed: manifests_remove.len(),
-        chunks_removed: chunks_remove.len(),
-        bytes_reclaimed: reclaimed,
+        kept_entries: retained.len(),
+        dropped_entries: entries.len() - retained.len(),
+        manifests_removed: 0,
+        chunks_removed: 0,
+        bytes_reclaimed: 0,
         dry_run,
     };
-
     if dry_run {
+        report.manifests_removed = remove_manifests.len();
+        report.chunks_removed = remove_chunks.len();
+        report.bytes_reclaimed = planned_bytes;
         return Ok(report);
     }
-
-    // Rewrite the index while exclusive vault custody is still held.
-    // Kept lines are matched by their exact serialized entry (index
-    // lines were written by serializing VaultEntry) with a multiset so
-    // duplicate identical lines survive independently. Unparseable
-    // lines are always preserved — never destroy what can't classify.
-    let mut kept_lines: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
-    for e in &kept_entries {
-        if let Ok(line) = serde_json::to_string(e) {
-            *kept_lines.entry(line).or_default() += 1;
-        }
-    }
-    let mut new_index = Vec::with_capacity(original_index.len());
-    for line in original_index.split(|b| *b == b'\n') {
-        if line.is_empty() {
-            continue;
-        }
-        let normalized = serde_json::from_slice::<VaultEntry>(line)
-            .ok()
-            .and_then(|e| serde_json::to_string(&e).ok());
-        let keep_line = match normalized {
-            None => true,
-            Some(key) => match kept_lines.get_mut(&key) {
-                Some(remaining) if *remaining > 0 => {
-                    *remaining -= 1;
-                    true
-                }
-                _ => false,
-            },
-        };
-        if keep_line {
+    let mut new_index = Vec::new();
+    // Preserve exact metadata bytes and order for each retained entry.
+    for (i, line) in original_index
+        .strip_suffix(b"\n")
+        .unwrap_or(&original_index)
+        .split(|b| *b == b'\n')
+        .filter(|_| !original_index.is_empty())
+        .enumerate()
+    {
+        if retained.contains(&i) {
             new_index.extend_from_slice(line);
             new_index.push(b'\n');
         }
     }
-    if index_path.exists() {
-        crate::transaction::replace(&index_path, &original_index, &new_index)?;
+    if index.try_exists()? {
+        crate::transaction::replace(&index, &original_index, &new_index)?;
     }
-    for sha in &manifests_remove {
-        let _ = fs::remove_file(manifests.join(sha));
+    crate::transaction::checkpoint("prune_index_replaced", &index, true)?;
+    for sha in &remove_manifests {
+        let path = manifests.join(sha);
+        let result = crate::transaction::remove_file(&path);
+        if result.is_ok()
+            || fs::symlink_metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        {
+            report.manifests_removed += 1;
+        }
+        if let Err(source) = result {
+            return Err(PruneIncomplete {
+                report,
+                stage: "manifest removal",
+                source,
+            }
+            .into());
+        }
     }
-    for p in &chunks_remove {
-        let _ = fs::remove_file(p);
+    if manifests.try_exists()? {
+        if let Err(source) = crate::transaction::sync_dir(&manifests) {
+            return Err(PruneIncomplete {
+                report,
+                stage: "manifest sync",
+                source,
+            }
+            .into());
+        }
+    }
+    // Manifest removal and its directory sync must finish before any chunk
+    // removal. A failed unlink cannot leave a dangling manifest.
+    for path in remove_chunks {
+        let bytes = fs::metadata(&path)?.len();
+        let result = crate::transaction::remove_file(&path);
+        if result.is_ok()
+            || fs::symlink_metadata(&path).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        {
+            report.chunks_removed += 1;
+            report.bytes_reclaimed += bytes;
+        }
+        if let Err(source) = result {
+            return Err(PruneIncomplete {
+                report,
+                stage: "chunk removal",
+                source,
+            }
+            .into());
+        }
+    }
+    if chunks.try_exists()? {
+        if let Err(source) = crate::transaction::sync_dir(&chunks) {
+            return Err(PruneIncomplete {
+                report,
+                stage: "chunk sync",
+                source,
+            }
+            .into());
+        }
     }
     Ok(report)
 }
 
 fn record_type(record: &[u8]) -> String {
-    serde_json::from_slice::<serde_json::Value>(record)
+    std::str::from_utf8(record)
         .ok()
+        .and_then(|raw| crate::payload::decode_record(raw).ok())
         .and_then(|v| v.get("type").and_then(|t| t.as_str().map(str::to_string)))
         .unwrap_or_else(|| "unknown".to_string())
 }
@@ -790,39 +1100,16 @@ fn record_type(record: &[u8]) -> String {
 /// type for each side. New chunk manifests are reconstructed within the
 /// transcript byte bound; legacy record manifests use their hash lists.
 pub fn diff(sha1: &str, sha2: &str, root: &Path) -> anyhow::Result<DiffSummary> {
+    Reader::open(root)?.diff(sha1, sha2)
+}
+
+fn diff_locked(sha1: &str, sha2: &str, root: &Path) -> anyhow::Result<DiffSummary> {
     if !is_hex(sha1) || !is_hex(sha2) {
         bail!("invalid sha256 digest");
     }
 
     fn load_records(sha: &str, root: &Path) -> anyhow::Result<Vec<(String, Vec<u8>)>> {
-        let manifest_path = manifests_dir(root).join(sha);
-        if manifest_path.exists() {
-            let manifest_bytes = crate::transaction::read(&manifest_path)?;
-            if sha256_hex(&manifest_bytes) != sha {
-                bail!("manifest {sha} failed integrity verification");
-            }
-            let manifest: serde_json::Value = serde_json::from_slice(&manifest_bytes)?;
-            if let Some(records) = manifest
-                .get("records")
-                .and_then(serde_json::Value::as_array)
-            {
-                if records.len() > gobstopper_core::validation::MAX_ITEMS {
-                    bail!("vault manifest exceeds record limit");
-                }
-                return records
-                    .iter()
-                    .map(|value| {
-                        let hash = value
-                            .as_str()
-                            .context("record hash is not a string")?
-                            .to_string();
-                        let bytes = read_record(&hash, root)?;
-                        Ok((hash, bytes))
-                    })
-                    .collect();
-            }
-        }
-        let data = read_object(sha, root)?;
+        let data = read_object_locked(sha, root)?;
         let trailing = data.last() == Some(&b'\n');
         let mut records: Vec<&[u8]> = if data.is_empty() {
             Vec::new()
@@ -879,7 +1166,9 @@ pub fn diff(sha1: &str, sha2: &str, root: &Path) -> anyhow::Result<DiffSummary> 
 
 /// Read a single record object by hash.
 pub fn read_record(sha: &str, root: &Path) -> anyhow::Result<Vec<u8>> {
-    if !is_hex(sha) {
+    let _custody = Custody::shared(root)?;
+    check_object_directory(&records_dir(root))?;
+    if sha.len() != 64 || !is_hex(sha) {
         bail!("invalid record digest");
     }
     let p = records_dir(root).join(sha);
@@ -930,16 +1219,27 @@ pub fn recall(
     sha: Option<&str>,
     root: &Path,
 ) -> anyhow::Result<Vec<RecallDigest>> {
-    let mut entries = list(root)?;
+    if !exists_no_follow(root)? {
+        return Ok(Vec::new());
+    }
+    let reader = Reader::open(root)?;
+    let mut entries = reader.entries()?;
     if let Some(prefix) = sha {
         entries.retain(|e| e.sha256.starts_with(prefix));
-    } else if session != "*" && !session.is_empty() {
+    }
+    if session != "*" && !session.is_empty() {
         entries.retain(|e| {
             e.session_id.starts_with(session) || e.path.to_string_lossy().contains(session)
         });
     }
-    entries.sort_by_key(|b| std::cmp::Reverse(b.ts));
+    reader.recall_entries(&entries, query)
+}
 
+fn recall_entries_locked(
+    entries: Vec<VaultEntry>,
+    query: Option<&str>,
+    root: &Path,
+) -> anyhow::Result<Vec<RecallDigest>> {
     // The same manifest may be indexed more than once under different
     // strategy labels (e.g. "compacted" and "gobstopper-compacted").
     let mut seen = std::collections::HashSet::new();
@@ -954,7 +1254,7 @@ pub fn recall(
     let needle = query.map(|q| q.to_lowercase());
     let mut out = Vec::new();
     for entry in entries {
-        let data = read_object(&entry.sha256, root)?;
+        let data = read_object_locked(&entry.sha256, root)?;
         for (idx, line) in data.split(|&b| b == b'\n').enumerate() {
             if line.is_empty() {
                 continue;
@@ -1002,7 +1302,7 @@ pub fn recall(
 /// a portable user response message or the first replacement-history item
 /// of an experimental `compacted` record. Card text is untrusted history.
 fn extract_digest_text(line: &[u8]) -> Option<String> {
-    let record: serde_json::Value = serde_json::from_slice(line).ok()?;
+    let record = crate::payload::decode_record(std::str::from_utf8(line).ok()?).ok()?;
 
     // The default portable Codex writer appends a user response message.
     // Do not accept lookalike markers in assistant messages or tool outputs.
@@ -1070,6 +1370,7 @@ fn extract_digest_text(line: &[u8]) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -1111,9 +1412,12 @@ mod tests {
 
         // Simulate a compaction edit clobbering the transcript.
         fs::write(&src, b"{\"compacted\":true}\n").unwrap();
-        let restored = restore(&entry.sha256, &src, &root).unwrap();
+        assert!(restore(&entry.sha256, &src, &root).is_err());
+        let target = dir.0.join("restored.jsonl");
+        let restored = restore(&entry.sha256, &target, &root).unwrap();
         assert_eq!(restored.sha256, entry.sha256);
-        assert_eq!(fs::read(&src).unwrap(), original);
+        assert_eq!(fs::read(&target).unwrap(), original);
+        assert_eq!(fs::read(&src).unwrap(), b"{\"compacted\":true}\n");
 
         // No temp file left behind.
         let tmp = PathBuf::from(format!(
@@ -1194,7 +1498,7 @@ mod tests {
     }
 
     #[test]
-    fn list_is_newest_first_and_skips_bad_lines() {
+    fn list_is_newest_first_and_rejects_incomplete_history() {
         let dir = TestDir::new();
         let root = dir.0.join("vault");
         let src = dir.0.join("s.jsonl");
@@ -1203,7 +1507,12 @@ mod tests {
         fs::write(&src, b"two!").unwrap();
         snapshot(&src, Provider::Codex, "second", None, &root).unwrap();
 
-        // A torn write mid-index must not wedge listing.
+        let entries = list(&root).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].session_id, "second");
+        assert_eq!(entries[1].session_id, "first");
+
+        // A damaged history must never look like a complete partial history.
         let mut f = fs::OpenOptions::new()
             .append(true)
             .open(index_path(&root))
@@ -1212,13 +1521,14 @@ mod tests {
         drop(f);
 
         fs::write(&src, b"three").unwrap();
-        snapshot(&src, Provider::Codex, "third", None, &root).unwrap();
+        let damaged = fs::read(index_path(&root)).unwrap();
+        assert!(snapshot(&src, Provider::Codex, "third", None, &root).is_err());
+        assert!(prune(&root, 0, false).is_err());
+        assert_eq!(fs::read(index_path(&root)).unwrap(), damaged);
 
-        let entries = list(&root).unwrap();
-        assert_eq!(entries.len(), 3);
-        assert_eq!(entries[0].session_id, "third");
-        assert_eq!(entries[1].session_id, "second");
-        assert_eq!(entries[2].session_id, "first");
+        assert!(list(&root).is_err());
+        assert!(Reader::open(&root).unwrap().entries().is_err());
+        assert_eq!(fs::read(index_path(&root)).unwrap(), damaged);
     }
 
     #[test]

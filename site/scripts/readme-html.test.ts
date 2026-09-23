@@ -39,8 +39,8 @@ test("extracts the landing block between the shared Hraness markers", async () =
   expect(source.indexOf(LANDING_END)).toBeGreaterThan(source.indexOf(LANDING_START));
   const landing = readmeLanding(source);
   expect(landing.title).toBe("gobstopper");
-  expect(landing.lead).toContain("compacts Claude Code, Codex, and Devin sessions");
-  expect(landing.markdown).toContain("picked for that session");
+  expect(landing.lead).toContain("inspects Claude Code, Codex, and Devin sessions");
+  expect(landing.markdown).toContain("Released CLI native dispatch is blocked");
 });
 
 test("rejects unsafe README link targets", () => {

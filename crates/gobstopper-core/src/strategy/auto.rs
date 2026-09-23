@@ -68,7 +68,7 @@ fn prefix_tokens(transcript: &Transcript, plan: &CompactionPlan) -> u64 {
         .iter()
         .filter(|i| i.line_index < first)
         .map(|i| i.est_tokens)
-        .sum()
+        .fold(0u64, crate::estimate::add_tokens)
 }
 
 /// Shared ranking heuristic for file-surgery plans: estimated savings
@@ -225,6 +225,7 @@ mod tests {
             items,
             usage: crate::model::UsageSample {
                 context_tokens,
+                context_state: crate::model::ContextState::Reported,
                 ..Default::default()
             },
         }

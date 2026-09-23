@@ -1,0 +1,317 @@
+{
+  "schema": "gobstopper.stress-suites.v1",
+  "suites": [
+    {
+      "name": "sequence",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "gobstopper-adapters",
+        "--locked",
+        "--test",
+        "sequence",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "source": "crates/gobstopper-adapters/tests/sequence.rs",
+      "tests": [
+        "bounded_snapshot_copy_prune_corruption_and_recovery_sequence"
+      ],
+      "seconds": 150
+    },
+    {
+      "name": "storage",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "gobstopper-adapters",
+        "--locked",
+        "--lib",
+        "storage_tests::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "source": "crates/gobstopper-adapters/src/storage_tests.rs",
+      "tests": [
+        "storage_tests::publication_faults_preserve_actual_visibility_and_io_cause",
+        "storage_tests::reused_objects_require_publication_confirmation_before_index_reference",
+        "storage_tests::prepared_output_recovers_exactly_after_source_changes_and_index_retirement",
+        "storage_tests::completed_publication_does_not_overwrite_conflicting_output",
+        "storage_tests::damaged_roots_never_authorize_deletion_or_append",
+        "storage_tests::duplicate_recovery_fields_never_authorize_deletion",
+        "storage_tests::private_directory_creation_preserves_existing_modes",
+        "storage_tests::failed_manifest_unlink_never_collects_its_chunks",
+        "storage_tests::retention_uses_append_order_and_exact_store_identity",
+        "storage_tests::storage_child",
+        "storage_tests::process_death_releases_custody_and_preserves_pins_or_requires_repair",
+        "storage_tests::bounded_read_refuses_special_files_and_overflowing_configuration",
+        "storage_tests::torn_index_append_reports_unknown_effect_and_blocks_collection",
+        "storage_tests::native_recovery_pin_is_idempotent_and_never_automatically_retired",
+        "storage_tests::legacy_completed_receipt_reconciles_after_source_change_and_pruning",
+        "storage_tests::independent_reader_process_excludes_prune_until_collected"
+      ],
+      "seconds": 180
+    },
+    {
+      "name": "journal",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "gobstopper",
+        "--locked",
+        "--bin",
+        "gobstopper",
+        "native_operations::tests::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "source": "crates/gobstopper-cli/src/native_operations.rs",
+      "tests": [
+        "native_operations::tests::journal_accepts_terminal_history_but_rejects_uncertain_replay",
+        "native_operations::tests::persistence_faults_at_every_record_state_leave_old_complete_or_repair_state",
+        "native_operations::tests::failed_dispatch_persistence_never_authorizes_a_provider_call",
+        "native_operations::tests::journal_rejects_fabricated_success_reconciliation_and_identity_changes",
+        "native_operations::tests::torn_duplicate_and_oversized_journals_need_repair",
+        "native_operations::tests::registry_preserves_target_binding_after_rename_or_missing_file",
+        "native_operations::tests::journal_rejects_unknown_provider_contract_or_relative_identity",
+        "native_operations::tests::independent_openers_share_custody_until_owner_releases",
+        "native_operations::tests::symlinks_and_special_files_are_not_state"
+      ],
+      "seconds": 180
+    },
+    {
+      "name": "watch",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "gobstopper",
+        "--locked",
+        "--test",
+        "watch",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "source": "crates/gobstopper-cli/tests/watch.rs",
+      "tests": [
+        "fixture_roots_remain_isolated_when_clock_ticks_repeat",
+        "unqualified_native_activation_never_runs_a_provider_or_creates_a_journal",
+        "unqualified_standalone_native_apply_refuses_before_fork_or_snapshot",
+        "owner_delegation_is_skipped_without_savings_or_transcript_mutation",
+        "unreadable_telemetry_does_not_become_a_zero_count_report",
+        "codex_native_compact_runs_before_plan_evaluation",
+        "dry_run_once_does_not_write_events_or_forks",
+        "native_noop_has_snapshot_evidence_and_retries_after_cooldown_expiry",
+        "native_usage_reset_is_unmeasured_and_missing_post_state_is_not_savings",
+        "native_reduction_uses_observed_context_and_not_the_elision_projection",
+        "native_dispatch_checkpoints_unknown_outcome_before_starting_provider",
+        "native_dispatch_requires_identity_from_the_retained_snapshot_bytes",
+        "failed_watch_state_write_aborts_before_native_dispatch",
+        "native_provider_errors_do_not_echo_private_provider_output",
+        "unknown_native_outcome_survives_state_removal_policy_change_and_other_watch_lane",
+        "two_watchers_and_process_death_cannot_replay_dispatched_operation",
+        "legacy_uncertainty_and_malformed_watch_state_fail_closed",
+        "legacy_native_uncertainty_crosses_watch_lane_boundaries",
+        "native_operation_inspection_of_missing_root_is_effect_free",
+        "reconciliation_uses_recorded_terminal_evidence_and_never_guesses",
+        "malformed_operation_journal_cannot_be_cleared_by_watch_or_reconciliation",
+        "claude_native_dispatch_precedes_planning_and_persists_clean_first_pass",
+        "policy_change_invalidates_unchanged_session_decisions",
+        "standalone_native_noop_and_failure_never_credit_the_projected_floor"
+      ],
+      "seconds": 180
+    },
+    {
+      "name": "claude-process",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "gobstopper-adapters",
+        "--locked",
+        "--test",
+        "native_process",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "source": "crates/gobstopper-adapters/tests/native_process.rs",
+      "tests": [
+        "claude_owned_group_cleanup_covers_normal_exit_and_timeout",
+        "invalid_native_identity_or_deadline_never_starts_provider"
+      ],
+      "seconds": 60
+    },
+    {
+      "name": "acp-process",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "gobstopper-adapters",
+        "--locked",
+        "--lib",
+        "devin::tests::acp_",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "source": "crates/gobstopper-adapters/src/devin.rs",
+      "tests": [
+        "devin::tests::acp_compact_accepts_completion_before_ack",
+        "devin::tests::acp_compact_rejects_foreign_or_display_text_completion",
+        "devin::tests::acp_compact_never_echoes_private_error_payloads",
+        "devin::tests::acp_compact_refuses_malformed_or_locked_load_before_prompt",
+        "devin::tests::acp_compact_bounds_requests_before_spawn_and_bounds_response_frames",
+        "devin::tests::acp_compact_drains_history_bursts_through_bounded_queue",
+        "devin::tests::acp_compact_terminates_descendants_on_completion_and_timeout",
+        "devin::tests::acp_request_write_observes_deadline_when_bridge_stops_reading",
+        "devin::tests::acp_compact_loads_session_and_sends_compact",
+        "devin::tests::acp_compact_times_out_and_handles_bridge_death"
+      ],
+      "seconds": 90
+    },
+    {
+      "name": "codex-process",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "gobstopper",
+        "--locked",
+        "--bin",
+        "gobstopper",
+        "tests::codex_",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "source": "crates/gobstopper-cli/src/main.rs",
+      "tests": [
+        "tests::codex_compact_initializes_resumes_then_compacts",
+        "tests::codex_compact_reports_failed_turn_as_error",
+        "tests::codex_compact_propagates_request_errors",
+        "tests::codex_compact_observes_completion_before_dispatch_ack",
+        "tests::codex_compact_requires_the_compaction_items_terminal_turn",
+        "tests::codex_compact_bounds_frames_and_treats_lost_ack_as_unknown",
+        "tests::codex_compact_classifies_structural_failures_without_echoing_provider_text",
+        "tests::codex_compact_collects_descendant_pipe_holders",
+        "tests::codex_compact_cancels_reader_when_descendant_escapes_process_group",
+        "tests::codex_failure_classes_map_to_cooldowns",
+        "tests::codex_terminal_order_duplicates_and_ambiguity_are_explicit"
+      ],
+      "seconds": 90
+    },
+    {
+      "name": "plugins",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "gobstopper-adapters",
+        "--locked",
+        "--test",
+        "plugin_contract",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "source": "crates/gobstopper-adapters/tests/plugin_contract.rs",
+      "tests": [
+        "exact_trust_and_source_binding_are_required",
+        "undeclared_content_and_bundle_files_are_rejected",
+        "child_timeout_and_output_overflow_fail_closed",
+        "userspace_provider_inspection_is_read_only_and_bounded",
+        "unknown_protocol_fields_are_not_ignored",
+        "aggregate_projection_and_undeclared_summary_content_fail_closed",
+        "strategy_cannot_return_provider_controls_or_unrequested_inspection",
+        "captured_bundle_uses_declared_relative_dependencies_and_cleans_up",
+        "normal_exit_still_collects_owned_background_descendants",
+        "blocked_stdin_and_stderr_flood_share_the_deadline_and_output_budget",
+        "inherited_pipe_outside_group_cannot_hold_runner_threads"
+      ],
+      "seconds": 90
+    },
+    {
+      "name": "events",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "gobstopper-core",
+        "--locked",
+        "--lib",
+        "events::tests::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "source": "crates/gobstopper-core/src/events.rs",
+      "tests": [
+        "events::tests::event_reader_caps_actual_bytes_after_admission",
+        "events::tests::event_reader_refuses_fifo_without_waiting_for_a_writer",
+        "events::tests::event_reader_rejects_symlink_and_unsafe_rotated_generation",
+        "events::tests::event_append_refuses_fifo_without_effects_or_waiting",
+        "events::tests::event_append_rejects_redirected_rotation_without_effects",
+        "events::tests::event_rotation_refuses_a_replaced_admitted_inode",
+        "events::tests::context_reduction_requires_complete_positive_same_source_evidence",
+        "events::tests::retention_counts_and_observations_reject_invalid_denominators",
+        "events::tests::event_json_round_trip",
+        "events::tests::evidence_fields_are_additive_and_backward_compatible",
+        "events::tests::append_and_read_events_jsonl",
+        "events::tests::oversize_log_rotates_and_read_events_stitches_generations"
+      ],
+      "seconds": 60
+    },
+    {
+      "name": "monitor",
+      "argv": [
+        "python3",
+        "scripts/test_monitor.py",
+        "-v"
+      ],
+      "source": "scripts/test_monitor.py",
+      "tests": [
+        "MonitorTests.test_successful_children_have_bounded_numeric_resource_deltas",
+        "MonitorTests.test_timeout_child_is_reaped_and_unstarted_watch_has_no_resources",
+        "MonitorTests.test_resource_read_failure_preserves_result_and_timeout_cleanup",
+        "MonitorTests.test_unavailable_resource_module_does_not_hide_success",
+        "MonitorTests.test_resource_counter_validation_rejects_invalid_and_regressing_values",
+        "MonitorTests.test_realistic_samples_are_private_allowlisted_and_nonmutating",
+        "MonitorTests.test_context_samples_respect_allowlist_and_provider_opt_in",
+        "MonitorTests.test_unavailable_fields_and_compaction_boundary_are_not_zero_savings",
+        "MonitorTests.test_closed_session_compact_passthrough",
+        "MonitorTests.test_retention_summary_counts_allowlisted_events_and_flags_lossy",
+        "MonitorTests.test_retention_rejects_missing_boolean_and_impossible_measurements",
+        "MonitorTests.test_retention_read_is_bounded_and_invalid_utf8_is_unavailable",
+        "MonitorTests.test_reported_zero_and_foreign_source_are_not_context_savings",
+        "MonitorTests.test_legacy_or_foreign_retention_pairs_are_unqualified",
+        "MonitorTests.test_retention_matches_selected_store_rejects_errors_and_deduplicates_pairs",
+        "MonitorTests.test_retention_strict_duplicates_and_torn_tail_never_gain_credit",
+        "MonitorTests.test_retention_refuses_symlink_fifo_and_directory_without_blocking",
+        "MonitorTests.test_observe_retention_uses_same_xdg_root_and_exact_report_identity",
+        "MonitorTests.test_counter_reset_is_unknown_delta",
+        "MonitorTests.test_ambiguous_plan_prefix_is_unavailable",
+        "MonitorTests.test_invalid_report_persists_only_error_class_and_unavailable_rows",
+        "MonitorTests.test_watch_exit_zero_with_evaluation_failure_is_unavailable",
+        "MonitorTests.test_sigterm_kills_and_reaps_owned_child_before_monitor_exits",
+        "MonitorTests.test_output_symlink_and_nonprivate_directory_are_refused",
+        "MonitorTests.test_existing_output_fifo_is_refused_before_read_or_child_dispatch",
+        "MonitorTests.test_single_owned_lock_prevents_overlapping_samples",
+        "MonitorTests.test_rotation_retains_at_most_two_bounded_logs",
+        "MonitorTests.test_child_timeout_and_capture_limit_are_bounded",
+        "MonitorTests.test_success_collects_silent_owned_descendants_before_reaping_leader",
+        "MonitorTests.test_success_drains_trailing_output_before_return",
+        "MonitorTests.test_escaped_pipe_holder_has_bounded_incomplete_cleanup"
+      ],
+      "seconds": 90
+    }
+  ]
+}

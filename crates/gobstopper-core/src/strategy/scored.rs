@@ -293,12 +293,11 @@ impl ScoredStrategy {
             .items
             .iter()
             .enumerate()
-            .filter(|(_, i)| i.elidable_bytes.is_some())
+            .filter(|(_, i)| i.is_elidable())
             .map(|(idx, _)| idx)
             .collect();
-        let keep_from = elidable
-            .len()
-            .saturating_sub(policy.keep_recent_tool_outputs);
+        let keep_from =
+            crate::admission::unprotected_len(elidable.len(), policy.keep_recent_tool_outputs);
         elidable[..keep_from.min(elidable.len())].to_vec()
     }
 
@@ -549,6 +548,7 @@ mod tests {
             items,
             usage: crate::model::UsageSample {
                 context_tokens,
+                context_state: crate::model::ContextState::Reported,
                 ..Default::default()
             },
         }

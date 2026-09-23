@@ -29,8 +29,52 @@ fn value_len(v: &Value) -> usize {
     }
 }
 
+/// Only documented text and result blocks are eligible in this synthetic
+/// dialect. A mixed unknown block makes the complete rewrite anchor unavailable.
+fn supported_result_message(message: &Value) -> bool {
+    message.get("role").and_then(Value::as_str) == Some("user")
+        && message
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(|blocks| {
+                blocks
+                    .iter()
+                    .all(|block| match block.get("type").and_then(Value::as_str) {
+                        Some("text") => {
+                            crate::payload::supported_content(&Value::Array(vec![block.clone()]))
+                        }
+                        Some("tool_result") => {
+                            block
+                                .get("tool_use_id")
+                                .and_then(Value::as_str)
+                                .is_some_and(|id| {
+                                    !id.is_empty()
+                                        && id.len() <= 256
+                                        && !id.chars().any(char::is_control)
+                                })
+                                && block
+                                    .get("content")
+                                    .is_some_and(crate::payload::supported_content)
+                                && block.as_object().is_some_and(|o| {
+                                    o.keys().all(|key| {
+                                        matches!(
+                                            key.as_str(),
+                                            "type" | "tool_use_id" | "content" | "is_error"
+                                        )
+                                    })
+                                })
+                                && block.get("is_error").is_none_or(Value::is_boolean)
+                        }
+                        _ => false,
+                    })
+            })
+}
+
 /// Sum of elidable bytes across a user line's tool_result blocks.
 fn tool_result_bytes(message: &Value) -> u64 {
+    if !supported_result_message(message) {
+        return 0;
+    }
     message
         .get("content")
         .and_then(Value::as_array)
@@ -212,38 +256,51 @@ fn tool_result_metadata(
     (parts, ids, label, payload_sha256)
 }
 
-fn context_usage(line: &Value) -> Option<u64> {
+fn usage_parts(line: &Value) -> Option<(u64, u64, u64)> {
     if line.get("type").and_then(Value::as_str) != Some("assistant") {
         return None;
     }
-    let usage = line.pointer("/message/usage")?;
-    let get = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
-    let input = get("input_tokens")
-        .saturating_add(get("cache_read_input_tokens"))
-        .saturating_add(get("cache_creation_input_tokens"));
-    let context = input.saturating_add(get("output_tokens"));
-    (context > 0).then_some(context)
+    let usage = line.pointer("/message/usage")?.as_object()?;
+    let component = |key: &str| match usage.get(key) {
+        None => Some(0),
+        Some(value) => value.as_u64(),
+    };
+    let input = usage
+        .get("input_tokens")?
+        .as_u64()?
+        .saturating_add(component("cache_read_input_tokens")?)
+        .saturating_add(component("cache_creation_input_tokens")?);
+    Some((
+        input,
+        component("cache_read_input_tokens")?,
+        input.saturating_add(component("output_tokens")?),
+    ))
+}
+
+fn context_usage(line: &Value) -> Option<u64> {
+    usage_parts(line).map(|(_, _, context)| context)
 }
 
 fn absorb_usage(line: &Value, sample: &mut UsageSample) {
+    use gobstopper_core::model::{ContextState, LifetimeScope};
     if line.get("type").and_then(Value::as_str) != Some("assistant") {
         return;
     }
-    let Some(usage) = line.pointer("/message/usage") else {
+    let Some((input, cached, context)) = usage_parts(line) else {
+        sample.lifetime_scope = LifetimeScope::Partial;
+        sample.invalidate_context();
         return;
     };
-    let get = |key: &str| usage.get(key).and_then(Value::as_u64).unwrap_or(0);
-    let input = get("input_tokens")
-        .saturating_add(get("cache_read_input_tokens"))
-        .saturating_add(get("cache_creation_input_tokens"));
-    let context = input.saturating_add(get("output_tokens"));
-    if context > 0 {
-        sample.context_tokens = context;
-    }
+    sample.context_tokens = context;
+    sample.context_state = ContextState::Reported;
     sample.lifetime_input_tokens = sample.lifetime_input_tokens.saturating_add(input);
     sample.lifetime_cached_tokens = sample
         .lifetime_cached_tokens
-        .saturating_add(get("cache_read_input_tokens"));
+        .saturating_add(cached)
+        .min(sample.lifetime_input_tokens);
+    if sample.lifetime_scope != LifetimeScope::Partial {
+        sample.lifetime_scope = LifetimeScope::Full;
+    }
 }
 
 /// Parse a full session file into a normalized transcript.
@@ -264,9 +321,11 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
     let mut usage = UsageSample::default();
     let mut links: Vec<(usize, String, Option<String>)> = Vec::new();
     let mut context_samples = Vec::new();
+    let mut context_resets = Vec::new();
     let mut last_prompt_leaf = None;
     let mut fallback_leaf = None;
     let mut tool_uses = std::collections::HashMap::new();
+    let mut ambiguous = false;
     for (line_index, line) in BufReader::new(std::io::Cursor::new(bytes))
         .lines()
         .enumerate()
@@ -278,12 +337,31 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
             path: handle.path.clone(),
             source: e,
         })?;
-        let Ok(record) = serde_json::from_str::<Value>(&line) else {
+        let Ok(record) = crate::payload::decode_record(&line) else {
+            ambiguous |= !line.trim().is_empty();
             continue;
         };
+        ambiguous |= !record.is_object();
         absorb_usage(&record, &mut usage);
-        if let Some(context) = context_usage(&record) {
-            context_samples.push((line_index, context));
+        if record.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
+            context_resets.push(line_index);
+        }
+        if record.get("type").and_then(Value::as_str) == Some("assistant") {
+            context_samples.push((line_index, context_usage(&record)));
+        }
+        if record.get("uuid").is_some() {
+            ambiguous |= !record
+                .get("uuid")
+                .and_then(Value::as_str)
+                .is_some_and(|id| {
+                    !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
+                });
+            ambiguous |= !record.get("parentUuid").is_none_or(|v| {
+                v.is_null()
+                    || v.as_str().is_some_and(|id| {
+                        !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
+                    })
+            });
         }
         if let Some(uuid) = record.get("uuid").and_then(Value::as_str) {
             links.push((
@@ -302,24 +380,54 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
             }
         }
         if record.get("type").and_then(Value::as_str) == Some("last-prompt") {
-            if let Some(uuid) = record.get("leafUuid").and_then(Value::as_str) {
+            if let Some(uuid) = record
+                .get("leafUuid")
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+            {
                 last_prompt_leaf = Some(uuid.to_string());
+            } else {
+                ambiguous = true;
             }
         }
-        collect_tool_uses(&record, &mut tool_uses);
     }
     let leaf_uuid = last_prompt_leaf.or(fallback_leaf);
     let live = leaf_uuid
         .as_deref()
+        .filter(|_| !ambiguous)
         .map(|leaf| live_branch(&links, leaf))
         .unwrap_or_default();
-    if !live.is_empty() {
-        usage.context_tokens = context_samples
-            .iter()
-            .rev()
-            .find(|(line, _)| live.contains(line))
-            .map(|(_, context)| *context)
-            .unwrap_or(usage.context_tokens);
+    usage.context_tokens = 0;
+    usage.context_state = gobstopper_core::model::ContextState::Absent;
+    if live.is_empty() && (!links.is_empty() || ambiguous) {
+        usage.invalidate_context();
+        usage.lifetime_scope = gobstopper_core::model::LifetimeScope::Partial;
+    } else if let Some((_, context)) = context_samples
+        .iter()
+        .rev()
+        .find(|(line, _)| live.contains(line))
+    {
+        match context {
+            Some(context) => {
+                usage.context_tokens = *context;
+                usage.context_state = gobstopper_core::model::ContextState::Reported;
+            }
+            None => usage.invalidate_context(),
+        }
+    }
+    let newest_live_sample = context_samples
+        .iter()
+        .rev()
+        .find(|(line, _)| live.contains(line))
+        .map(|(line, _)| *line);
+    if context_resets
+        .iter()
+        .any(|line| live.contains(line) && newest_live_sample.is_none_or(|sample| *line > sample))
+    {
+        usage.reset_context();
+    }
+    if ambiguous {
+        usage.lifetime_scope = gobstopper_core::model::LifetimeScope::Partial;
     }
 
     let mut items = Vec::new();
@@ -334,9 +442,12 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
             path: handle.path.clone(),
             source: e,
         })?;
-        let Ok(record) = serde_json::from_str::<Value>(&line) else {
+        let Ok(record) = crate::payload::decode_record(&line) else {
             continue;
         };
+        if live.contains(&line_index) {
+            collect_tool_uses(&record, &mut tool_uses);
+        }
         let ltype = record.get("type").and_then(Value::as_str).unwrap_or("");
         let (kind, elidable) = match ltype {
             "user" => {
@@ -396,17 +507,28 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
     // Only uuid-bearing lines can be proven dead; lines without linkage
     // (attachments, system notices) stay conservatively live.
     let linked: std::collections::HashSet<usize> = links.iter().map(|(l, _, _)| *l).collect();
+    let ambiguous_calls = crate::verify::verify(Provider::ClaudeCode, bytes)
+        .iter()
+        .any(|f| f.code == "duplicate_tool_call_id");
+    if ambiguous_calls {
+        usage.invalidate_context();
+    }
     for item in &mut items {
-        let provably_dead = linked.contains(&item.line_index)
-            && !live.is_empty()
-            && !live.contains(&item.line_index);
-        if provably_dead {
+        let unavailable = ambiguous_calls
+            || live.is_empty()
+            || linked.contains(&item.line_index) && !live.contains(&item.line_index)
+            || item.elidable_bytes.is_some() && !linked.contains(&item.line_index);
+        if unavailable {
             item.est_tokens = 0;
             item.elidable_bytes = None;
             item.elidable_parts = 0;
             item.tool_use_ids.clear();
             item.payload_sha256 = None;
-            item.label.push_str(" (dead branch)");
+            item.label.push_str(if live.is_empty() {
+                " (unresolved branch)"
+            } else {
+                " (dead branch)"
+            });
         }
     }
     Ok(Transcript {
@@ -417,36 +539,49 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
 }
 
 /// Line indexes on the branch from the named leaf back to the root.
-fn live_branch(
+pub(crate) fn live_branch(
     links: &[(usize, String, Option<String>)],
     leaf: &str,
 ) -> std::collections::HashSet<usize> {
     use std::collections::{HashMap, HashSet};
-    let parent_of: HashMap<&str, Option<&str>> = links
-        .iter()
-        .map(|(_, u, p)| (u.as_str(), p.as_deref()))
-        .collect();
-    let line_of: HashMap<&str, usize> = links.iter().map(|(l, u, _)| (u.as_str(), *l)).collect();
+    let mut by_id = HashMap::new();
+    for (line, id, parent) in links {
+        if id.is_empty()
+            || by_id
+                .insert(id.as_str(), (*line, parent.as_deref()))
+                .is_some()
+        {
+            return HashSet::new();
+        }
+    }
     let mut live = HashSet::new();
     let mut cursor = Some(leaf);
-    let mut steps = 0usize;
     while let Some(uuid) = cursor {
-        if let Some(&line) = line_of.get(uuid) {
-            live.insert(line);
+        let Some(&(line, parent)) = by_id.get(uuid) else {
+            return HashSet::new();
+        };
+        if !live.insert(line) {
+            return HashSet::new();
         }
-        cursor = parent_of.get(uuid).copied().flatten();
-        steps += 1;
-        if steps > links.len() {
-            break; // cycle guard
+        if parent.is_some_and(|id| {
+            by_id
+                .get(id)
+                .is_none_or(|(parent_line, _)| *parent_line >= line)
+        }) {
+            return HashSet::new();
         }
+        cursor = parent;
     }
     live
 }
 
 /// Cheap usage pass for `detect`: read only the tail of the file.
 pub fn scan_usage(path: &Path) -> UsageSample {
-    let records = crate::tail_records(path, TAIL_SCAN_BYTES);
     let mut sample = UsageSample::default();
+    let Some((records, complete)) = crate::tail_records(path, TAIL_SCAN_BYTES) else {
+        sample.invalidate_context();
+        return sample;
+    };
     let mut links = Vec::new();
     for (line, record) in records.iter().enumerate() {
         absorb_usage(record, &mut sample);
@@ -476,30 +611,47 @@ pub fn scan_usage(path: &Path) -> UsageSample {
                 .flatten()
             })
         });
+    sample.context_tokens = 0;
+    sample.context_state = gobstopper_core::model::ContextState::Absent;
+    if !complete && sample.lifetime_scope != gobstopper_core::model::LifetimeScope::Absent {
+        sample.lifetime_scope = gobstopper_core::model::LifetimeScope::Partial;
+    }
     if let Some(leaf) = leaf {
         let live = live_branch(&links, leaf);
-        sample.context_tokens = records
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(line, record)| live.contains(line) && context_usage(record).is_some())
-            .and_then(|(_, record)| context_usage(record))
-            .unwrap_or(sample.context_tokens);
+        if live.is_empty() {
+            sample.invalidate_context();
+            sample.lifetime_scope = gobstopper_core::model::LifetimeScope::Partial;
+        } else if let Some((_, record)) = records.iter().enumerate().rev().find(|(line, record)| {
+            live.contains(line) && record.get("type").and_then(Value::as_str) == Some("assistant")
+        }) {
+            if let Some(context) = context_usage(record) {
+                sample.context_tokens = context;
+                sample.context_state = gobstopper_core::model::ContextState::Reported;
+            } else {
+                sample.invalidate_context();
+            }
+        }
     }
+    if let Some(leaf) = leaf {
+        let live = live_branch(&links, leaf);
+        if let Some((_, latest)) = records.iter().enumerate().rev().find(|(line, record)| {
+            live.contains(line)
+                && (record.get("type").and_then(Value::as_str) == Some("assistant")
+                    || record.get("subtype").and_then(Value::as_str) == Some("compact_boundary"))
+        }) {
+            if latest.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
+                sample.reset_context();
+            }
+        }
+    }
+
     sample
 }
 
 /// Read session identity from any line that carries it.
 pub fn scan_meta(path: &Path) -> (Option<String>, Option<PathBuf>) {
-    let Ok(file) = fs::File::open(path) else {
-        return (None, None);
-    };
     let (mut id, mut cwd) = (None, None);
-    for line in BufReader::new(file).lines().take(64) {
-        let Ok(line) = line else { break };
-        let Ok(record) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
+    for record in crate::payload::head_records(path, 64) {
         if id.is_none() {
             id = record
                 .get("sessionId")
@@ -527,9 +679,14 @@ fn stub_for(template: &str, bytes: u64, kind: &str) -> String {
 /// for the elided block content. `stub_override` is complete stub text
 /// (e.g. a model-written digest) that bypasses `{bytes}` substitution.
 fn elide_line(line: &str, stub_template: &str, stub_override: Option<&str>) -> (String, u64) {
-    let Ok(mut record) = serde_json::from_str::<Value>(line) else {
+    let Ok(mut record) = crate::payload::decode_record(line) else {
         return (line.to_string(), 0);
     };
+    if record.get("type").and_then(Value::as_str) != Some("user")
+        || !supported_result_message(&record["message"])
+    {
+        return (line.to_string(), 0);
+    }
     let Some(blocks) = record
         .get_mut("message")
         .and_then(|m| m.get_mut("content"))
@@ -562,11 +719,10 @@ fn elide_line(line: &str, stub_template: &str, stub_override: Option<&str>) -> (
 
 fn apply_elide(
     raw: &str,
-    line_indexes: &[usize],
+    targets: &std::collections::HashSet<usize>,
     stub_template: &str,
     per_item_stubs: &std::collections::BTreeMap<usize, String>,
 ) -> (String, u64) {
-    let targets: std::collections::HashSet<usize> = line_indexes.iter().copied().collect();
     let mut reclaimed = 0u64;
     let mut out = String::with_capacity(raw.len());
     for (idx, line) in raw.split_inclusive('\n').enumerate() {
@@ -624,11 +780,20 @@ fn digest_text(digest: &DigestBlock) -> String {
     s
 }
 
-/// Execute a plan's edits against a session file. `ProviderCompact` is a
-/// no-op here — the CLI routes it to the provider instead.
-pub fn apply(path: &Path, edits: &[Edit]) -> Result<u64, AdapterError> {
-    crate::transaction::apply(Provider::ClaudeCode, path, |candidate| {
-        apply_inner(candidate, edits)
+/// Direct provider-file mutation is disabled: an arbitrary path and an idle
+/// observation cannot establish compatible lifetime custody. Use [`transform`]
+/// to prepare bytes for an independently admitted, no-clobber copy.
+pub fn apply(_path: &Path, _edits: &[Edit]) -> Result<u64, AdapterError> {
+    Err(AdapterError::DirectMutationDisabled)
+}
+
+/// Transform detached transcript bytes without reading or writing any file.
+/// Provider-control edits retain their no-op lowering here; dispatch belongs
+/// to the session owner. Generated digest identities need not be deterministic.
+pub fn transform(original: &[u8], edits: &[Edit]) -> Result<Vec<u8>, AdapterError> {
+    crate::payload::check_edit_bounds(edits)?;
+    crate::transaction::prepare(Provider::ClaudeCode, original, |text| {
+        apply_inner(text, edits)
     })
 }
 
@@ -640,7 +805,11 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
                 line_indexes,
                 stub_template,
                 per_item_stubs,
-            } => raw = apply_elide(&raw, line_indexes, stub_template, per_item_stubs).0,
+            } => {
+                let targets =
+                    crate::payload::elision_targets(Provider::ClaudeCode, &raw, line_indexes)?;
+                raw = apply_elide(&raw, &targets, stub_template, per_item_stubs).0;
+            }
             Edit::InjectDigest { digest } => {
                 // Append the digest as a synthetic user line and follow it
                 // with a fresh `last-prompt`/`mode` tail. Claude's resume
@@ -650,7 +819,7 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
                 let text = digest_text(digest);
                 let parsed: Vec<Value> = raw
                     .lines()
-                    .filter_map(|line| serde_json::from_str(line).ok())
+                    .filter_map(|line| crate::payload::decode_record(line).ok())
                     .collect();
                 let canonical_leaf = parsed
                     .iter()
@@ -667,6 +836,26 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
                             .flatten()
                         })
                     });
+                let links: Vec<_> = parsed
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(line, r)| {
+                        r.get("uuid").and_then(Value::as_str).map(|id| {
+                            (
+                                line,
+                                id.to_string(),
+                                r.get("parentUuid")
+                                    .and_then(Value::as_str)
+                                    .map(str::to_string),
+                            )
+                        })
+                    })
+                    .collect();
+                if canonical_leaf.is_some_and(|leaf| live_branch(&links, leaf).is_empty()) {
+                    return Err(AdapterError::InvalidEdit(
+                        "Claude digest attachment has ambiguous or broken linkage",
+                    ));
+                }
                 let last_leaf = canonical_leaf.and_then(|leaf| {
                     parsed
                         .iter()
@@ -748,10 +937,10 @@ pub fn provider() -> Provider {
 
 /// Claude Code writes `~/.claude/sessions/<pid>.json` for each running
 /// process — `{pid, sessionId, status}` where status is `busy`/`idle`.
-/// That is authoritative liveness: a session open-but-quiet in a TUI is
-/// still owned, while its transcript file may sit untouched for minutes
-/// (file mtime alone misreads that as idle and was the source of the
-/// ChangedDuringWrite apply races).
+/// A valid record with a live pid is a conservative liveness hint: a session
+/// open-but-quiet in a TUI may have no recent transcript write. This does not
+/// prove process/session ownership, authorize mutation, or establish that an
+/// absent/invalid record describes an idle session.
 ///
 /// Returns session_id → status for every session claimed by a *live*
 /// pid; stale records from dead processes are ignored.
@@ -765,23 +954,32 @@ pub fn live_sessions(claude_home: &Path) -> std::collections::HashMap<String, St
         if path.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        let Ok(text) = fs::read_to_string(&path) else {
+        let Ok(bytes) = crate::transaction::read_with_limit(&path, 64 * 1024) else {
             continue;
         };
-        let Ok(v) = serde_json::from_str::<Value>(&text) else {
+        let Some(v) = std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(|text| crate::payload::decode_record(text).ok())
+        else {
             continue;
         };
         let (Some(pid), Some(session_id)) = (
-            v.get("pid").and_then(Value::as_u64),
-            v.get("sessionId").and_then(Value::as_str),
+            v.get("pid")
+                .and_then(Value::as_u64)
+                .and_then(|pid| i32::try_from(pid).ok())
+                .filter(|pid| *pid > 0),
+            v.get("sessionId").and_then(Value::as_str).filter(|id| {
+                !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
+            }),
         ) else {
             continue;
         };
-        if pid_alive(pid as i32) {
+        if pid_alive(pid) {
             live.insert(
                 session_id.to_string(),
                 v.get("status")
                     .and_then(Value::as_str)
+                    .filter(|status| status.len() <= 128 && !status.chars().any(char::is_control))
                     .unwrap_or("")
                     .to_string(),
             );
@@ -792,14 +990,13 @@ pub fn live_sessions(claude_home: &Path) -> std::collections::HashMap<String, St
 
 #[cfg(unix)]
 fn pid_alive(pid: i32) -> bool {
-    std::process::Command::new("/bin/kill")
-        .args(["-0", "--", &pid.to_string()])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .map(|s| s.success())
-        .unwrap_or(false)
+    if pid <= 0 {
+        return false;
+    }
+    // SAFETY: signal zero only probes one positive PID; it delivers no signal
+    // and never targets a process group. A denied/unknown probe remains live.
+    (unsafe { libc::kill(pid, 0) == 0 })
+        || std::io::Error::last_os_error().raw_os_error() != Some(libc::ESRCH)
 }
 
 #[cfg(not(unix))]
@@ -819,6 +1016,53 @@ fn pid_alive(_pid: i32) -> bool {
 /// Safe only when no live process claims the session: resuming a
 /// session open in a TUI would fork it. Callers must check
 /// `live_sessions` first. Bounded wait; the child is killed on timeout.
+struct NativeClaudeChild(std::process::Child);
+
+impl NativeClaudeChild {
+    fn exit_success(&mut self) -> std::io::Result<Option<bool>> {
+        #[cfg(unix)]
+        {
+            // SAFETY: this is our unreaped child. WNOWAIT reserves its identity
+            // until Drop cleans the process group and then reaps the leader.
+            let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+            let rc = unsafe {
+                libc::waitid(
+                    libc::P_PID,
+                    self.0.id() as libc::id_t,
+                    &mut info,
+                    libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+                )
+            };
+            if rc == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            if unsafe { info.si_pid() } == 0 {
+                return Ok(None);
+            }
+            Ok(Some(
+                info.si_code == libc::CLD_EXITED && unsafe { info.si_status() } == 0,
+            ))
+        }
+        #[cfg(not(unix))]
+        self.0
+            .try_wait()
+            .map(|status| status.map(|status| status.success()))
+    }
+}
+
+impl Drop for NativeClaudeChild {
+    fn drop(&mut self) {
+        #[cfg(unix)]
+        // SAFETY: the private process group was created at spawn. Its leader
+        // remains unreaped, so this signal cannot target a reused process ID.
+        unsafe {
+            libc::kill(-(self.0.id() as libc::pid_t), libc::SIGKILL);
+        }
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 pub fn headless_compact(
     claude_bin: &Path,
     session_id: &str,
@@ -842,7 +1086,11 @@ pub fn headless_compact_in_home(
     };
     // Session ids are provider UUIDs; reject anything that could read as
     // a flag to the claude CLI.
-    if session_id.is_empty()
+    if !cfg!(unix)
+        || timeout_secs == 0
+        || timeout_secs > 3600
+        || session_id.is_empty()
+        || session_id.len() > 256
         || session_id.starts_with('-')
         || !session_id
             .chars()
@@ -850,7 +1098,8 @@ pub fn headless_compact_in_home(
     {
         return Err(io_err(
             std::io::ErrorKind::InvalidInput,
-            format!("refusing unusual session id for --resume: {session_id:?}"),
+            "unsupported platform, session identity, or deadline for native Claude operation"
+                .to_string(),
         ));
     }
     // ETXTBSY can surface briefly when the binary was just (re)installed
@@ -867,8 +1116,13 @@ pub fn headless_compact_in_home(
             if let Some(home) = claude_home {
                 command.env("CLAUDE_CONFIG_DIR", home);
             }
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                command.process_group(0);
+            }
             match command.spawn() {
-                Ok(c) => break c,
+                Ok(c) => break NativeClaudeChild(c),
                 Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy && attempt < 5 => {
                     attempt += 1;
                     std::thread::sleep(std::time::Duration::from_millis(50 * attempt as u64));
@@ -884,17 +1138,15 @@ pub fn headless_compact_in_home(
     };
     let deadline = Instant::now() + Duration::from_secs(timeout_secs);
     loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Ok(()),
-            Ok(Some(status)) => {
+        match child.exit_success() {
+            Ok(Some(true)) => return Ok(()),
+            Ok(Some(false)) => {
                 return Err(io_err(
                     std::io::ErrorKind::Other,
-                    format!("claude --resume -p /compact exited {status}"),
+                    "claude native process exited unsuccessfully; outcome unresolved".to_string(),
                 ))
             }
             Ok(None) if Instant::now() >= deadline => {
-                let _ = child.kill();
-                let _ = child.wait();
                 return Err(io_err(
                     std::io::ErrorKind::TimedOut,
                     "claude --resume -p /compact timed out".to_string(),
@@ -955,6 +1207,31 @@ mod ownership_tests {
         // Malformed and non-json records are ignored.
         write(&sessions.join("junk.json"), "not json");
         write(&sessions.join("notes.txt"), "{}");
+        write(
+            &sessions.join("duplicate.json"),
+            &format!(r#"{{"pid":99999999,"pid":{me},"sessionId":"duplicate"}}"#),
+        );
+        for pid in [0, u64::from(me) + (1_u64 << 32), u64::MAX] {
+            write(
+                &sessions.join(format!("invalid-{pid}.json")),
+                &format!(r#"{{"pid":{pid},"sessionId":"invalid-pid"}}"#),
+            );
+        }
+        write(
+            &sessions.join("oversized.json"),
+            &format!(
+                r#"{{"pid":{me},"sessionId":"oversized","padding":"{}"}}"#,
+                "x".repeat(64 * 1024),
+            ),
+        );
+        let outside = home.join("linked-record");
+        write(&outside, &format!(r#"{{"pid":{me},"sessionId":"linked"}}"#));
+        std::os::unix::fs::symlink(&outside, sessions.join("linked.json")).unwrap();
+        let fifo = sessions.join("pipe.json");
+        use std::os::unix::ffi::OsStrExt;
+        let raw = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+        // SAFETY: a fresh isolated fixture pathname; no process is signaled.
+        assert_eq!(unsafe { libc::mkfifo(raw.as_ptr(), 0o600) }, 0);
         let live = live_sessions(&home);
         assert_eq!(live.get("live-sess").map(String::as_str), Some("idle"));
         assert!(!live.contains_key("dead-sess"));

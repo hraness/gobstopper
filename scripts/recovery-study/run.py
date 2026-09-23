@@ -16,6 +16,7 @@ HERE=Path(__file__).resolve().parent
 COMMANDS=0
 TIMINGS=[]
 DEADLINE=float('inf')
+PROGRESS={}
 
 class Failure(Exception):pass
 def require(ok,reason):
@@ -105,7 +106,7 @@ def result_payload(response):
     return json.loads(response['result']['content'][0]['text'])
 
 def main():
-    global DEADLINE
+    global DEADLINE, PROGRESS
     os.umask(0o077)
     require(len(sys.argv)==2,'candidate_path_required')
     require(not (HERE/'started.json').exists(),'study_already_started')
@@ -128,6 +129,10 @@ def main():
                 'remote_model_calls':0,'local_model_calls':0}
     save(HERE/'started.json',provenance)
     outcomes=[];start=time.monotonic();DEADLINE=start+600
+    PROGRESS={'schema':'gobstopper-public-synthetic-recovery-result-v1','provenance':provenance,
+              'execution_complete':False,'sample_count':len(samples),'cases':outcomes,
+              'semantic_equivalence':None,'continuation_task_success':None,'no_provider_calls':True}
+    save(HERE/'progress.json',PROGRESS)
     def check(name,fn,sample=None):
         row={'check':name,'sample':sample,'passed':False}
         try:
@@ -135,6 +140,7 @@ def main():
         except Failure as e:row['failure_kind']=str(e)
         except (KeyError,TypeError,ValueError,UnicodeError):row['failure_kind']='invalid_result_schema'
         outcomes.append(row)
+        save(HERE/'progress.json',PROGRESS)
     capabilities={}
     for command_name,args in [('search-snapshot',['--query','PUBLIC_TOOL_TAG','--json']),('read-snapshot',['--record','0','--json'])]:
         code,raw,stderr=command([str(baseline),command_name,samples[0]['snapshot_sha256'],*args])
@@ -231,6 +237,9 @@ def main():
     totals=collections.Counter(o['check'] for o in outcomes);passed=collections.Counter(o['check'] for o in outcomes if o['passed'])
     report={'schema':'gobstopper-public-synthetic-recovery-result-v1','provenance':provenance,
         'sample_count':len(samples),'baseline_recovery_capabilities':capabilities,'recall_counts':dict(recall_counts),
+        'measurement_basis':'known_query_exact_retrieval_mechanics_not_semantics_or_task_success',
+        'execution_complete':True,'semantic_equivalence':None,'continuation_task_success':None,
+        'charged_tokens':None,'cache_hits':None,'refetches':None,
         'checks':[{'check':k,'total':v,'passed':passed[k],'failed':v-passed[k]} for k,v in sorted(totals.items())],
         'total_checks':len(outcomes),'failed_checks':sum(not o['passed'] for o in outcomes),
         'commands':COMMANDS,'wall_seconds':round(time.monotonic()-start,3),
@@ -241,9 +250,13 @@ def main():
     print(json.dumps({k:report[k] for k in ['sample_count','total_checks','failed_checks','commands','wall_seconds']}),flush=True)
     return 0 if report['failed_checks']==0 else 1
 
+def record_incomplete(reason):
+    if PROGRESS and not (HERE/'results.json').exists():
+        save(HERE/'results.json',{**PROGRESS,'failure':reason,'commands':COMMANDS})
+
 if __name__=='__main__':
     signal.signal(signal.SIGTERM,lambda *_:(_ for _ in ()).throw(KeyboardInterrupt()))
     try:raise SystemExit(main())
-    except Failure as error:print(json.dumps({'study_failed':str(error)}));raise SystemExit(1)
-    except (OSError,ValueError,KeyError,TypeError,UnicodeError):print(json.dumps({'study_failed':'unavailable_or_invalid_input'}));raise SystemExit(1)
-    except KeyboardInterrupt:print(json.dumps({'study_failed':'interrupted'}));raise SystemExit(130)
+    except Failure as error:record_incomplete(str(error));print(json.dumps({'study_failed':str(error)}));raise SystemExit(1)
+    except (OSError,ValueError,KeyError,TypeError,UnicodeError):record_incomplete('unavailable_or_invalid_input');print(json.dumps({'study_failed':'unavailable_or_invalid_input'}));raise SystemExit(1)
+    except KeyboardInterrupt:record_incomplete('interrupted');print(json.dumps({'study_failed':'interrupted'}));raise SystemExit(130)

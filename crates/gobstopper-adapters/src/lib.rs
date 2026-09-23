@@ -31,6 +31,18 @@ use std::path::PathBuf;
 
 #[derive(Debug, thiserror::Error)]
 pub enum AdapterError {
+    #[error("direct provider mutation is disabled; use a verified copy or provider-owned control")]
+    DirectMutationDisabled,
+    #[error("publication failed during {stage}: visibility={visibility:?}, durability={durability:?}: {source}")]
+    Publication {
+        path: PathBuf,
+        expected_sha256: String,
+        stage: &'static str,
+        visibility: transaction::Visibility,
+        durability: transaction::Durability,
+        #[source]
+        source: std::io::Error,
+    },
     #[error("io error on {path}: {source}")]
     Io {
         path: PathBuf,
@@ -60,23 +72,40 @@ pub(crate) fn write_if_unchanged(
     transaction::replace(path, original, new_content.as_bytes())
 }
 
-pub(crate) fn tail_records(path: &std::path::Path, limit: u64) -> Vec<serde_json::Value> {
+/// A bounded tail plus whether it contains the complete file. `None` is an
+/// unavailable/invalid read, distinct from a valid empty file.
+pub(crate) fn tail_records(
+    path: &std::path::Path,
+    limit: u64,
+) -> Option<(Vec<serde_json::Value>, bool)> {
     use std::io::{Read, Seek, SeekFrom};
-    let Ok(mut file) = std::fs::File::open(path) else {
-        return Vec::new();
-    };
-    let Ok(meta) = file.metadata() else {
-        return Vec::new();
-    };
-    let start = meta.len().saturating_sub(limit);
-    if file.seek(SeekFrom::Start(start)).is_err() {
-        return Vec::new();
+    if limit == 0 || limit > transaction::max_transcript_bytes() {
+        return None;
     }
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(not(unix))]
+    if !std::fs::symlink_metadata(path).is_ok_and(|m| m.is_file()) {
+        return None;
+    }
+    let mut file = options.open(path).ok()?;
+    let meta = file.metadata().ok()?;
+    if !meta.is_file() {
+        return None;
+    }
+    let offset = meta.len().saturating_sub(limit);
+    file.seek(SeekFrom::Start(offset)).ok()?;
     let mut bytes = Vec::new();
-    if file.take(limit).read_to_end(&mut bytes).is_err() {
-        return Vec::new();
-    }
-    let start = if start == 0 {
+    (&mut file).take(limit).read_to_end(&mut bytes).ok()?;
+    let complete = offset == 0
+        && bytes.len() as u64 == meta.len()
+        && file.metadata().ok()?.len() == meta.len();
+    let start = if offset == 0 {
         0
     } else {
         bytes
@@ -85,10 +114,19 @@ pub(crate) fn tail_records(path: &std::path::Path, limit: u64) -> Vec<serde_json
             .map(|i| i + 1)
             .unwrap_or(bytes.len())
     };
-    bytes[start..]
-        .split(|b| *b == b'\n')
-        .filter_map(|line| serde_json::from_slice(line).ok())
-        .collect()
+    let mut records = Vec::new();
+    for line in bytes[start..].split(|b| *b == b'\n') {
+        let raw = std::str::from_utf8(line).ok()?;
+        if raw.trim().is_empty() {
+            continue;
+        }
+        let record = payload::decode_record(raw).ok()?;
+        if !record.is_object() || records.len() >= gobstopper_core::validation::MAX_ITEMS {
+            return None;
+        }
+        records.push(record);
+    }
+    Some((records, complete))
 }
 
 #[cfg(test)]
@@ -138,3 +176,6 @@ mod tests {
         assert!(!path.with_extension("jsonl.gobstopper-tmp").exists());
     }
 }
+
+#[cfg(test)]
+mod storage_tests;

@@ -7,11 +7,10 @@
 //! than parsing free text from a small model. Only sanitized labels and
 //! summaries are sent — full tool output never reaches the model.
 //!
-//! Requests are serialized through one persistent bridge process: the
-//! on-device model is serial anyway, so batches queue in-process rather
-//! than fanning out. The bridge is reused across scoring rounds (model
-//! warm-up paid once), killed and respawned on timeout, and items the
-//! model leaves unanswered keep their deterministic heuristic score.
+//! Each uncached request uses one owned, bounded --once bridge invocation.
+//! Requests serialize in-process; warming may repeat, but cancellation collects
+//! the process and every owned pipe. Missing/invalid answers keep the heuristic
+//! score. No semantic reliability claim follows from the protocol fixtures.
 //!
 //! Request economy: identical candidate lines in one pass are scored
 //! once and the answer fans out to every item that produced the line,
@@ -20,7 +19,7 @@
 //! Configuration (all optional, defaults listed):
 //!   GOBSTOPPER_APPLE_BRIDGE      - env → sibling of the gobstopper binary →
 //!                                  ~/.local/share/gobstopper/apple-bridge
-//!                                  (auto-built via swiftc when absent)
+//!                                  (must already be installed)
 //!   GOBSTOPPER_APPLE_TIMEOUT_MS  - 180000 (100..600000; first request warms)
 //!   GOBSTOPPER_APPLE_MAX_CANDIDATES - 64 (0..256)
 //!   GOBSTOPPER_APPLE_BATCH_SIZE  - 32 (1..64; max 8 with content)
@@ -133,12 +132,9 @@ impl AppleScorer {
             .filter_map(|(_, idx, _)| transcript.items.get(*idx).map(|i| i.line_index))
             .collect();
         let total = self.cfg.content_bytes.saturating_mul(inputs.len());
-        let Ok(excerpts) = apple::read_excerpts(
-            &transcript.session.path,
-            &line_indexes,
-            self.cfg.content_bytes,
-            total,
-        ) else {
+        let Ok(excerpts) =
+            apple::read_excerpts(transcript, &line_indexes, self.cfg.content_bytes, total)
+        else {
             return inputs;
         };
         let by_line: std::collections::HashMap<usize, String> = excerpts.into_iter().collect();
@@ -192,7 +188,7 @@ impl ScoreDriver for AppleScorer {
                     .collect();
                 let schema = score_schema(&batch);
                 let attempt = score_batch(
-                    bridge,
+                    &bridge,
                     &ctx.goal,
                     &ctx.tail,
                     &batch,
@@ -208,9 +204,9 @@ impl ScoreDriver for AppleScorer {
                     Ok(scores) => {
                         answers.extend(llm_scorer::fan_out_answers(&inputs, &uniques, &scores))
                     }
-                    Err(e) => {
+                    Err(_) => {
                         failed += 1;
-                        eprintln!("apple scorer batch failed: {e:#}");
+                        eprintln!("apple scorer: response_unavailable; retaining heuristic scores");
                     }
                 }
             }
@@ -262,12 +258,20 @@ fn parse_scores(
         .get("scores")
         .and_then(Value::as_object)
         .ok_or_else(|| anyhow::anyhow!("apple response missing `scores` object"))?;
+    anyhow::ensure!(
+        scores.len() == batch.len()
+            && scores
+                .keys()
+                .all(|key| batch.iter().any(|(id, _, _)| *key == format!("p_{id}"))),
+        "apple_scores_invalid"
+    );
     batch
         .iter()
         .map(|(local, _, _)| {
             scores
                 .get(&format!("p_{local}"))
                 .and_then(Value::as_f64)
+                .filter(|probability| llm_scorer::valid_probability(*probability))
                 .map(|probability| (*local, probability))
                 .ok_or_else(|| anyhow::anyhow!("apple response missing score p_{local}"))
         })
@@ -301,7 +305,7 @@ fn batch_prompt(
 }
 
 fn score_batch(
-    bridge: &apple_foundation::Bridge,
+    bridge: &apple::Bridge,
     goal: &str,
     tail: &str,
     batch: &[(usize, usize, String)],
@@ -309,33 +313,36 @@ fn score_batch(
     content_on: bool,
 ) -> BatchAttempt {
     let prompt = batch_prompt(goal, tail, batch, content_on);
-    let (value, cached) = match apple::cache_get(&prompt, schema) {
+    let request = score_request(prompt, schema);
+    let (value, cached) = match apple::cache_get(bridge, "score-v2", &request) {
         Some(value) => (value, true),
-        None => match bridge.request(&apple_foundation::Request {
-            prompt: prompt.clone(),
-            instructions: Some(
-                "Set every required p_<id> score field. Probabilities are numbers from 0.0 to 1.0."
-                    .into(),
-            ),
-            schema: Some(schema.clone()),
-            expect_json: false,
-            max_output_bytes: Some(8192),
-        }) {
-            Ok(value) => {
-                apple::cache_put(&prompt, schema, &value);
-                (value, false)
-            }
+        None => match bridge.request(&request) {
+            Ok(value) => (value, false),
             Err(error) => {
                 return BatchAttempt {
-                    answers: Err(error.into()),
+                    answers: Err(error),
                     cached: false,
-                };
+                }
             }
         },
     };
-    BatchAttempt {
-        answers: parse_scores(&value, batch),
-        cached,
+    let answers = parse_scores(&value, batch);
+    if answers.is_ok() && !cached {
+        apple::cache_put(bridge, "score-v2", &request, &value);
+    }
+    BatchAttempt { answers, cached }
+}
+
+fn score_request(prompt: String, schema: &Value) -> apple_foundation::Request {
+    apple_foundation::Request {
+        prompt,
+        instructions: Some(
+            "Set every required p_<id> score field. Probabilities are numbers from 0.0 to 1.0."
+                .into(),
+        ),
+        schema: Some(schema.clone()),
+        expect_json: false,
+        max_output_bytes: Some(8192),
     }
 }
 
@@ -473,13 +480,14 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn score_batch_reports_cache_hit_without_spawning_bridge() {
-        let bridge = apple_foundation::Bridge::new(&["must-not-spawn".to_string()]).unwrap();
+        let bridge = apple::test_bridge();
         let batch = vec![input(0, 4, "[0] exec = cargo test: pass")];
         let schema = score_schema(&batch);
         let prompt = batch_prompt("goal-cache-test", "tail-cache-test", &batch, false);
         apple::cache_put(
-            &prompt,
-            &schema,
+            &bridge,
+            "score-v2",
+            &score_request(prompt, &schema),
             &serde_json::json!({"scores": {"p_0": 0.81}}),
         );
         let scored = score_batch(
@@ -506,14 +514,57 @@ mod tests {
         };
         let scorer = AppleScorer::new(cfg);
         assert!(scorer.last_run_summary().is_none());
-        // The summary is recorded whether or not a bridge resolves — the
-        // shared bridge is a process OnceLock, so specific call counts
-        // would be environment-dependent.
+        // Unavailable inference still records a summary and preserves the
+        // mechanical score without spawning a child.
         let transcript = test_transcript(vec![test_item(0, "exec", "cargo test: pass")]);
         let scores = scorer.score(&transcript, &[0]);
         assert_eq!(scores.len(), 1);
         assert!(scorer
             .last_run_summary()
             .is_some_and(|s| s.starts_with("apple: 1 candidates")));
+    }
+
+    #[test]
+    fn invalid_generation_never_populates_score_cache() {
+        let fixture =
+            apple::BridgeFixture::reply(r#"{"id":1,"ok":true,"value":{"scores":{"p_0":-1}}}"#);
+        let batch = vec![input(0, 0, "[0] synthetic")];
+        let schema = score_schema(&batch);
+        for _ in 0..2 {
+            let result = score_batch(
+                &fixture.bridge,
+                "unique-invalid-goal",
+                "tail",
+                &batch,
+                &schema,
+                false,
+            );
+            assert!(result.answers.is_err());
+            assert!(!result.cached);
+        }
+        let fixture =
+            apple::BridgeFixture::reply(r#"{"id":1,"ok":true,"value":{"scores":{"p_0":0.7}}}"#);
+        assert!(
+            !score_batch(
+                &fixture.bridge,
+                "unique-valid-goal",
+                "tail",
+                &batch,
+                &schema,
+                false
+            )
+            .cached
+        );
+        assert!(
+            score_batch(
+                &fixture.bridge,
+                "unique-valid-goal",
+                "tail",
+                &batch,
+                &schema,
+                false
+            )
+            .cached
+        );
     }
 }

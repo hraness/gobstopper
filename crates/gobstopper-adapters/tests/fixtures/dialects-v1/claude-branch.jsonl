@@ -1,0 +1,10 @@
+{"type":"user","uuid":"u","parentUuid":null,"sessionId":"fixture","message":{"role":"user","content":"Goal."}}
+{"type":"assistant","uuid":"a","parentUuid":"u","message":{"role":"assistant","content":[{"type":"tool_use","id":"call","name":"Read","input":{}}]}}
+{"type":"user","uuid":"dead","parentUuid":"a","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"call","content":"DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"}]}}
+{"type":"user","uuid":"live","parentUuid":"a","message":{"role":"user","content":[{"type":"text","text":"Preserve user instruction."},{"type":"tool_result","tool_use_id":"call","content":[{"type":"text","text":"éééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééééé"},{"type":"text","text":"tail"}]}]}}
+{"type":"assistant","uuid":"dead-a","parentUuid":"dead","message":{"role":"assistant","content":"Abandoned.","usage":{"input_tokens":9000,"output_tokens":7}}}
+{"type":"assistant","uuid":"live-a","parentUuid":"live","message":{"role":"assistant","content":"Live.","usage":{"input_tokens":100,"cache_read_input_tokens":10,"output_tokens":2}}}
+{"type":"last-prompt","leafUuid":"live-a"}
+{"type":"system","content":"Protected unlinked system notice."}
+{"type":"attachment","attachment":{"files":1}}
+{"type":"summary","summary":"Bookkeeping."}

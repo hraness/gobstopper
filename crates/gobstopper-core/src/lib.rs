@@ -7,6 +7,7 @@
 //! JSONL dialects, file watching, or provider CLIs. [`events`] is the one
 //! exception: it appends numeric-only compaction telemetry records.
 
+pub mod admission;
 pub mod estimate;
 pub mod events;
 pub mod model;
@@ -60,6 +61,7 @@ mod tests {
             items,
             usage: UsageSample {
                 context_tokens,
+                context_state: crate::model::ContextState::Reported,
                 ..Default::default()
             },
         }

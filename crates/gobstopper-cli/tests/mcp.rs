@@ -73,6 +73,7 @@ impl Fixture {
             .arg(self.root.join("claude"))
             .arg("--devin-home")
             .arg(self.root.join("devin"))
+            .env("HOME", self.root.join("home"))
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_DATA_HOME", self.root.join("data"));
         cmd
@@ -109,6 +110,156 @@ impl Fixture {
         );
         assert!(!self.root.join("data/gobstopper/events.jsonl").exists());
     }
+}
+
+fn rpc(mut command: Command, name: &str, arguments: Value) -> Value {
+    let mut child = command
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    writeln!(child.stdin.take().unwrap(), "{}", json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}})).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{:?}", output);
+    assert!(
+        output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+fn content(response: &Value) -> Value {
+    assert!(response["error"].is_null(), "{response}");
+    assert_ne!(response["result"]["isError"], true, "{response}");
+    serde_json::from_str(response["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
+}
+
+#[test]
+fn show_and_recall_bind_provider_session_and_store_after_prefix_resolution() {
+    let fixture = Fixture::new();
+    let root = fixture.root.join("data/gobstopper/vault");
+    let db = devin::db_path(&fixture.root.join("devin"))
+        .canonicalize()
+        .unwrap();
+    let foreign = fixture.root.join("foreign/sessions.db");
+    let mut selected = String::new();
+    for (provider, session, path, summary) in [
+        (Provider::Devin, SELECTED, &db, "SELECTED_SUMMARY"),
+        (
+            Provider::Devin,
+            "selected-session-archived",
+            &db,
+            "ARCHIVED_SECRET_SENTINEL",
+        ),
+        (Provider::Codex, SELECTED, &db, "PROVIDER_SECRET_SENTINEL"),
+        (Provider::Devin, SELECTED, &foreign, "STORE_SECRET_SENTINEL"),
+        (Provider::Devin, OTHER, &db, "UNRELATED_SECRET_SENTINEL"),
+    ] {
+        let bytes = format!(
+            "{}\n",
+            json!({"type":"user","message":{"role":"user","content":format!("[gobstopper state card]\nsummary: {summary}")}})
+        );
+        let entry = vault::snapshot_data(
+            bytes.as_bytes(),
+            path,
+            provider,
+            session,
+            Some("fixture"),
+            &root,
+        )
+        .unwrap();
+        if summary == "SELECTED_SUMMARY" {
+            selected = entry.sha256;
+        }
+    }
+    let shown = content(&rpc(
+        fixture.command(),
+        "show",
+        json!({"target":"selected"}),
+    ));
+    assert_eq!(shown["sha256"], selected);
+    assert_eq!(shown["session_id"], SELECTED);
+    let recalled = content(&rpc(
+        fixture.command(),
+        "recall",
+        json!({"session":"selected"}),
+    ));
+    assert_eq!(recalled["count"], 1);
+    assert_eq!(recalled["digests"][0]["summary"], "SELECTED_SUMMARY");
+    assert!(!recalled.to_string().contains("SECRET_SENTINEL"));
+    fixture.assert_unchanged();
+}
+
+#[cfg(unix)]
+#[test]
+fn inspection_disables_external_strategies_models_and_bridge_writes() {
+    use std::os::unix::fs::PermissionsExt;
+    let fixture = Fixture::new();
+    fs::create_dir_all(fixture.root.join("codex/sessions")).unwrap();
+    fs::create_dir_all(fixture.root.join("config/gobstopper")).unwrap();
+    fs::create_dir_all(fixture.root.join("bin")).unwrap();
+    let marker = fixture.root.join("external-executed");
+    let script = "#!/bin/sh\nprintf called >> \"$MCP_MARKER\"\nexit 1\n";
+    for name in ["forbidden", "curl", "swiftc"] {
+        let path = fixture.root.join("bin").join(name);
+        fs::write(&path, script).unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let source = fixture.root.join("codex/sessions/rollout-inspection.jsonl");
+    let original = [
+        json!({"type":"session_meta","payload":{"id":"inspection-session"}}),
+        json!({"type":"response_item","payload":{"type":"function_call","name":"exec","call_id":"c","arguments":"{}"}}),
+        json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"c","output":"fixture-output ".repeat(2000)}}),
+        json!({"type":"token_usage_record","payload":{"usage":{"input_tokens":10000},"thread_token_usage":{"input_tokens":10000}}}),
+    ].iter().map(|row| format!("{row}\n")).collect::<String>();
+    fs::write(&source, &original).unwrap();
+    let config = "[policy]\nstrategy='scored'\ntrigger_tokens=1000\nfloor_tokens=100\nkeep_recent_tool_outputs=0\nmin_savings_tokens=0\n";
+    let config_path = fixture.root.join("config/gobstopper/config.toml");
+    fs::write(&config_path, config).unwrap();
+    let command = |scorer: &str| {
+        let mut cmd = fixture.command();
+        cmd.env("PATH", fixture.root.join("bin"))
+            .env("MCP_MARKER", &marker)
+            .env("GOBSTOPPER_SCORER", scorer)
+            .env("GOBSTOPPER_DIGEST", "apple")
+            .env(
+                "GOBSTOPPER_APPLE_BRIDGE",
+                fixture.root.join("bin/forbidden"),
+            )
+            .env("AI_GATEWAY_API_KEY", "synthetic-test-key")
+            .env("TYPESAFE_API_KEY", "synthetic-test-key");
+        cmd
+    };
+    let mut expected = None;
+    for scorer in ["apple", "jev", "llm"] {
+        let value = content(&rpc(command(scorer), "plan", json!({"session":source})));
+        assert!(
+            value["plan"].is_object(),
+            "fixture must exercise an admitted plan: {value}"
+        );
+        if let Some(previous) = &expected {
+            assert_eq!(&value, previous);
+        } else {
+            expected = Some(value);
+        }
+        assert!(!marker.exists());
+    }
+    let external = format!(
+        "{config}command={}\ntrusted_legacy_command=true\n",
+        serde_json::to_string(&fixture.root.join("bin/forbidden")).unwrap()
+    );
+    fs::write(&config_path, &external).unwrap();
+    let response = rpc(command("apple"), "plan", json!({"session":source}));
+    assert_eq!(response["result"]["isError"], true);
+    assert!(!marker.exists());
+    assert_eq!(fs::read_to_string(&config_path).unwrap(), external);
+    assert_eq!(fs::read_to_string(&source).unwrap(), original);
+    assert!(!fixture.root.join("data").exists());
+    assert!(!fixture.root.join("home").exists());
+    fixture.assert_unchanged();
 }
 
 impl Drop for Fixture {

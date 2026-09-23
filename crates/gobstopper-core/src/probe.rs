@@ -4,8 +4,8 @@
 //! transcript — a path, a command, a decision phrase, an error
 //! signature, a file name, or a long identifier. Scoring checks which
 //! probes still appear verbatim in the rewritten text: a cheap,
-//! deterministic proxy for "did the compaction destroy what the session
-//! still needs". Pure text in, score out — no I/O, no provider parsing,
+//! measurement of textual retention. It does not establish whether an
+//! instruction is obeyed, a fact is true, or a continuation task succeeds. Pure text in, score out — no I/O, no provider parsing,
 //! no model calls.
 //!
 //! Callers own the policy: which raw transcript lines count as live
@@ -118,6 +118,31 @@ pub struct KindTally {
     pub recalled: usize,
 }
 
+/// Interpretation of a probe score. A model judgment is an unqualified
+/// estimate, not independently established semantic equivalence or task success.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ScoreBasis {
+    #[default]
+    Literal,
+    ModelJudgment,
+    LiteralAndModelJudgment,
+}
+
+/// Wilson 95% interval for the recorded binary tally. This descriptive
+/// binomial interval does not correct heuristic selection or correlated probes.
+pub fn wilson_interval(successes: u64, total: u64) -> Option<[f64; 2]> {
+    if total == 0 || successes > total {
+        return None;
+    }
+    let n = total as f64;
+    let p = successes as f64 / n;
+    let z2 = 3.841458820694124;
+    let center = (p + z2 / (2.0 * n)) / (1.0 + z2 / n);
+    let margin = 1.959963984540054 * ((p * (1.0 - p) + z2 / (4.0 * n)) / n).sqrt() / (1.0 + z2 / n);
+    Some([(center - margin).max(0.0), (center + margin).min(1.0)])
+}
+
 /// Quality score of a rewritten transcript against the probe set
 /// extracted from the source: counts and ratios plus a bounded sample
 /// of missed probe strings (≤ [`MAX_MISSED`] entries, each already ≤
@@ -129,15 +154,25 @@ pub struct ProbeScore {
     pub probes_total: usize,
     /// Probes still present verbatim in the rewritten text.
     pub probes_recalled: usize,
-    /// `probes_recalled / probes_total`; 1.0 when there were no probes.
+    /// `probes_recalled / probes_total`; legacy numeric slot is zero when
+    /// unavailable. Consumers must check `recall_available`.
     pub recall: f64,
+    #[serde(default)]
+    pub basis: ScoreBasis,
+    #[serde(default)]
+    pub probes_requested: usize,
+    #[serde(default)]
+    pub complete: bool,
+    #[serde(default)]
+    pub recall_available: bool,
+    #[serde(default)]
+    pub recall_wilson95: Option<[f64; 2]>,
     /// Probes whose line falls in the protected tail.
     pub tail_probes_total: usize,
     /// Tail probes still present verbatim.
     pub tail_probes_recalled: usize,
-    /// Every tail probe survived — the recent context the strategy
-    /// promises to keep is verbatim-intact. Vacuously true when the
-    /// tail carried no probes.
+    /// All requested tail probes were evaluated and survived, and at least
+    /// one tail probe exists. This says nothing about unprobed tail content.
     pub tail_intact: bool,
     /// Bounded sample of missed probe strings, in transcript order.
     pub missed_probes: Vec<String>,
@@ -438,43 +473,67 @@ pub fn extract_probes(text: &str) -> Vec<Probe> {
 /// the protected tail (probes with `line_index >= tail_start_line`).
 /// Pass `usize::MAX` for `tail_start_line` when nothing is protected.
 pub fn score_probes(probes: &[Probe], post_text: &str, tail_start_line: usize) -> ProbeScore {
-    let mut recalled = 0usize;
-    let mut tail_total = 0usize;
-    let mut tail_recalled = 0usize;
-    let mut missed_probes = Vec::new();
-    let mut kind_total = [0usize; 6];
-    let mut kind_recalled = [0usize; 6];
+    score_observations(probes, tail_start_line, ScoreBasis::Literal, |_, probe| {
+        Some(post_text.contains(&probe.text))
+    })
+}
 
-    for p in probes {
-        let k = p.kind as usize;
+fn score_observations(
+    probes: &[Probe],
+    tail_start_line: usize,
+    basis: ScoreBasis,
+    observe: impl Fn(usize, &Probe) -> Option<bool>,
+) -> ProbeScore {
+    let mut recalled = 0;
+    let mut total = 0;
+    let mut tail_total = 0;
+    let mut tail_recalled = 0;
+    let mut tail_complete = true;
+    let mut missed_probes = Vec::new();
+    let mut kind_total = [0; 6];
+    let mut kind_recalled = [0; 6];
+    for (index, probe) in probes.iter().take(MAX_PROBES).enumerate() {
+        let in_tail = probe.line_index >= tail_start_line;
+        let observed = (!probe.text.is_empty() && probe.text.len() <= MAX_PROBE_LEN)
+            .then(|| observe(index, probe))
+            .flatten();
+        let Some(survived) = observed else {
+            tail_complete &= !in_tail;
+            continue;
+        };
+        total += 1;
+        let k = probe.kind as usize;
         kind_total[k] += 1;
-        let in_tail = p.line_index >= tail_start_line;
         if in_tail {
             tail_total += 1;
         }
-        if post_text.contains(p.text.as_str()) {
+        if survived {
             recalled += 1;
             kind_recalled[k] += 1;
             if in_tail {
                 tail_recalled += 1;
             }
         } else if missed_probes.len() < MAX_MISSED {
-            missed_probes.push(p.text.clone());
+            missed_probes.push(probe.text.clone());
         }
     }
-
-    let probes_total = probes.len();
+    let complete = total == probes.len();
     ProbeScore {
-        probes_total,
+        probes_total: total,
         probes_recalled: recalled,
-        recall: if probes_total == 0 {
-            1.0
+        recall: if total == 0 {
+            0.0
         } else {
-            recalled as f64 / probes_total as f64
+            recalled as f64 / total as f64
         },
+        basis,
+        probes_requested: probes.len(),
+        complete,
+        recall_available: total > 0,
+        recall_wilson95: wilson_interval(recalled as u64, total as u64),
         tail_probes_total: tail_total,
         tail_probes_recalled: tail_recalled,
-        tail_intact: tail_recalled == tail_total,
+        tail_intact: tail_complete && complete && tail_total > 0 && tail_recalled == tail_total,
         missed_probes,
         by_kind: ProbeKind::ALL
             .iter()
@@ -503,7 +562,7 @@ pub fn score_text(pre_text: &str, post_text: &str, tail_start_line: usize) -> Pr
 pub trait ProbeJudge {
     /// Per-probe survival probability in `post_text`, covering a prefix
     /// of `probes` — a bounded judge may answer fewer than it was given.
-    /// Values outside [0, 1] are clamped by the caller.
+    /// Invalid/nonfinite values are unavailable, never clamped into success.
     fn score(&self, probes: &[Probe], post_text: &str) -> Option<Vec<f64>>;
 }
 
@@ -517,56 +576,17 @@ pub fn score_from_probabilities(
     probs: &[f64],
     tail_start_line: usize,
 ) -> ProbeScore {
-    let mut recalled = 0usize;
-    let mut tail_total = 0usize;
-    let mut tail_recalled = 0usize;
-    let mut missed_probes = Vec::new();
-    let mut kind_total = [0usize; 6];
-    let mut kind_recalled = [0usize; 6];
-
-    let judged = probes.len().min(probs.len());
-    for (i, p) in probes[..judged].iter().enumerate() {
-        let k = p.kind as usize;
-        kind_total[k] += 1;
-        let in_tail = p.line_index >= tail_start_line;
-        if in_tail {
-            tail_total += 1;
-        }
-        let survived = probs[i].clamp(0.0, 1.0) >= 0.5;
-        if survived {
-            recalled += 1;
-            kind_recalled[k] += 1;
-            if in_tail {
-                tail_recalled += 1;
-            }
-        } else if missed_probes.len() < MAX_MISSED {
-            missed_probes.push(p.text.clone());
-        }
-    }
-
-    let probes_total = judged;
-    ProbeScore {
-        probes_total,
-        probes_recalled: recalled,
-        recall: if probes_total == 0 {
-            1.0
-        } else {
-            recalled as f64 / probes_total as f64
+    score_observations(
+        probes,
+        tail_start_line,
+        ScoreBasis::ModelJudgment,
+        |index, _| {
+            probs
+                .get(index)
+                .filter(|p| p.is_finite() && (0.0..=1.0).contains(*p))
+                .map(|p| *p >= 0.5)
         },
-        tail_probes_total: tail_total,
-        tail_probes_recalled: tail_recalled,
-        tail_intact: tail_recalled == tail_total,
-        missed_probes,
-        by_kind: ProbeKind::ALL
-            .iter()
-            .enumerate()
-            .map(|(i, kind)| KindTally {
-                kind: *kind,
-                total: kind_total[i],
-                recalled: kind_recalled[i],
-            })
-            .collect(),
-    }
+    )
 }
 
 #[cfg(test)]
@@ -703,15 +723,17 @@ mod tests {
             .any(|m| m.contains("eval_transcript")));
         assert!(score.recall < 1.0 && score.recall > 0.0);
         assert_eq!(score.tail_probes_total, 0);
-        assert!(score.tail_intact); // vacuous: no tail probes
+        assert!(!score.tail_intact); // no observation of a protected tail
     }
 
     #[test]
-    fn empty_text_scores_perfect() {
+    fn empty_text_has_no_recall_measurement() {
         let score = score_text("", "", 0);
         assert_eq!(score.probes_total, 0);
-        assert_eq!(score.recall, 1.0);
-        assert!(score.tail_intact);
+        assert_eq!(score.recall, 0.0);
+        assert!(!score.recall_available);
+        assert_eq!(score.recall_wilson95, None);
+        assert!(!score.tail_intact);
         assert!(score.missed_probes.is_empty());
     }
 
@@ -730,6 +752,37 @@ mod tests {
 #[cfg(test)]
 mod probability_tests {
     use super::*;
+
+    #[test]
+    fn invalid_and_missing_judgments_are_incomplete_not_failures_or_successes() {
+        let probes = vec![probe(ProbeKind::Path, "file.rs", 1); 5];
+        let score = score_from_probabilities(&probes, &[1.0, f64::NAN, f64::INFINITY, -1.0], 0);
+        assert_eq!(score.probes_requested, 5);
+        assert_eq!(score.probes_total, 1);
+        assert_eq!(score.probes_recalled, 1);
+        assert!(!score.complete);
+        assert!(!score.tail_intact);
+        assert_eq!(score.basis, ScoreBasis::ModelJudgment);
+        let interval = score.recall_wilson95.unwrap();
+        assert!(interval[0] > 0.0 && interval[0] < 0.5 && interval[1] == 1.0);
+        assert_eq!(wilson_interval(1, 0), None);
+        assert_eq!(wilson_interval(2, 1), None);
+    }
+
+    #[test]
+    fn direct_probe_api_bounds_external_inputs_and_does_not_establish_obedience() {
+        let empty = probe(ProbeKind::Decision, "", 0);
+        let oversized = probe(ProbeKind::Decision, &"x".repeat(MAX_PROBE_LEN + 1), 0);
+        let score = score_probes(&[empty, oversized], "", 0);
+        assert_eq!(score.probes_total, 0);
+        assert!(!score.recall_available);
+        assert!(!score.complete);
+        let many = vec![probe(ProbeKind::Decision, "delete production", 0); MAX_PROBES + 1];
+        let score = score_probes(&many, "Do NOT delete production", 0);
+        assert_eq!(score.probes_recalled, MAX_PROBES);
+        assert!(!score.complete);
+        assert_eq!(score.basis, ScoreBasis::Literal); // substring presence is not permission
+    }
 
     fn probe(kind: ProbeKind, text: &str, line: usize) -> Probe {
         Probe {
@@ -756,9 +809,11 @@ mod probability_tests {
         assert_eq!(score.tail_probes_recalled, 1);
         assert!(!score.tail_intact);
         assert_eq!(score.missed_probes.len(), 2);
-        // Out-of-range probs are clamped, not trusted.
+        // Out-of-range probabilities are unavailable, never promoted to success.
         let clamped = score_from_probabilities(&probes[..1], &[7.0], usize::MAX);
-        assert_eq!(clamped.probes_recalled, 1);
+        assert_eq!(clamped.probes_recalled, 0);
+        assert!(!clamped.complete);
+        assert!(!clamped.recall_available);
     }
 
     #[test]
@@ -773,9 +828,12 @@ mod probability_tests {
         assert_eq!(score.probes_total, 1);
         assert_eq!(score.probes_recalled, 1);
         assert_eq!(score.recall, 1.0);
-        // And no probes at all scores perfect-vacuous.
+        assert!(!score.complete);
+        assert_eq!(score.probes_requested, 3);
+        // No judge answers is unavailable, not perfect retention.
         let empty = score_from_probabilities(&probes, &[], usize::MAX);
         assert_eq!(empty.probes_total, 0);
-        assert_eq!(empty.recall, 1.0);
+        assert_eq!(empty.recall, 0.0);
+        assert!(!empty.recall_available);
     }
 }

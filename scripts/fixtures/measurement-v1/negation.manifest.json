@@ -1,0 +1,17 @@
+{
+  "checks": [
+    {
+      "end_byte": 50,
+      "id": "negation",
+      "kind": "constraint",
+      "pointer": "/payload/output",
+      "record_index": 3,
+      "sha256": "c8b48a03bbe8028e772594e5b4d6f0740e29d9192e02c4e95c4592ec3d1e0201",
+      "start_byte": 0
+    }
+  ],
+  "growth": [],
+  "label_source": "synthetic",
+  "schema": "gobstopper-retention-v1",
+  "source_sha256": "a377111030b6e658f6b0cf3e96dbc893d05714c4391e7e81f7d814ecd6ce3f1e"
+}

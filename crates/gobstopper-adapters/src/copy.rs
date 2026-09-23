@@ -1,4 +1,4 @@
-use crate::{claude, codex, codex_compact, devin, fork, transaction, vault, verify};
+use crate::{claude, codex, codex_compact, fork, transaction, vault};
 use anyhow::{bail, Context};
 use gobstopper_core::plan::DigestBlock;
 use gobstopper_core::{CompactionPlan, Edit, Provider, SessionHandle, Transcript};
@@ -33,6 +33,33 @@ pub fn load_bound(handle: SessionHandle) -> anyhow::Result<(Transcript, String)>
     Ok((transcript, sha256(&bytes)))
 }
 
+/// Version 2 binds the exact prepared output, not a recipe to rerun.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OperationIdentity {
+    pub revision: u32,
+    pub kind: String,
+    pub provider: Provider,
+    pub source_path: PathBuf,
+    pub source_session_id: String,
+    pub source_sha256: String,
+    pub inputs_sha256: String,
+    pub output_session_id: String,
+}
+impl OperationIdentity {
+    fn id(&self) -> anyhow::Result<String> {
+        Ok(sha256(&serde_json::to_vec(self)?))
+    }
+    fn target(&self) -> PathBuf {
+        fork::target_path_bound(
+            self.provider,
+            &self.source_path,
+            &self.source_session_id,
+            &self.output_session_id,
+        )
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CopyReceipt {
@@ -44,27 +71,519 @@ pub struct CopyReceipt {
     pub bytes_before: u64,
     pub bytes_after: u64,
     pub reclaimed_bytes: u64,
+    /// Legacy meaning: raw source-byte digest, never a manifest digest.
     pub snapshot_sha256: String,
-    /// Vault object identity for bounded recovery. The older snapshot_sha256
-    /// field remains the source-byte digest for compatibility with receipts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_manifest_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub output_manifest_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operation: Option<OperationIdentity>,
     pub completed: bool,
 }
 
-fn verify_snapshot_reference(receipt: &CopyReceipt, root: &Path) -> anyhow::Result<()> {
-    if let Some(snapshot) = &receipt.snapshot_manifest_sha256 {
-        let original = vault::read_object(snapshot, root)?;
-        if sha256(&original) != receipt.source_sha256 {
-            bail!("copy receipt recovery snapshot does not match source");
+fn digest_valid(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn validate_receipt(receipt: &CopyReceipt, operation_id: &str) -> anyhow::Result<()> {
+    if !digest_valid(operation_id)
+        || !digest_valid(&receipt.source_sha256)
+        || !digest_valid(&receipt.output_sha256)
+        || receipt.snapshot_sha256 != receipt.source_sha256
+        || receipt.bytes_before > transaction::max_transcript_bytes()
+        || receipt.bytes_after > transaction::max_transcript_bytes()
+        || receipt.reclaimed_bytes != receipt.bytes_before.saturating_sub(receipt.bytes_after)
+        || !receipt.path.is_absolute()
+    {
+        bail!("invalid copy receipt; repair required");
+    }
+    fork::validate_session_id(&receipt.session_id)?;
+    match receipt.schema_version {
+        1 if receipt.operation.is_none() && receipt.output_manifest_sha256.is_none() => {}
+        2 => {
+            let op = receipt
+                .operation
+                .as_ref()
+                .context("missing operation identity; repair required")?;
+            if op.revision != 2
+                || !matches!(
+                    op.kind.as_str(),
+                    "compact" | "compacted" | "fork" | "restore"
+                )
+                || op.provider == Provider::Devin
+                || !op.source_path.is_absolute()
+                || op.source_session_id.is_empty()
+                || op.source_session_id.len() > 256
+                || !digest_valid(&op.inputs_sha256)
+                || op.source_sha256 != receipt.source_sha256
+                || op.output_session_id != receipt.session_id
+                || op.target() != receipt.path
+                || op.id()? != operation_id
+                || receipt.snapshot_manifest_sha256.is_none()
+                || receipt.output_manifest_sha256.is_none()
+            {
+                bail!("copy receipt identity mismatch; repair required");
+            }
         }
+        _ => bail!("unsupported operation receipt version; repair required"),
     }
     Ok(())
 }
 
-/// Receipt for an in-place Devin session-store compaction: the vault
-/// snapshot of the canonical export is the recovery object, and
-/// `export_sha256` pins the committed post-write state.
+fn source_roots(
+    source: &str,
+    manifest: Option<&str>,
+    entries: &[vault::VaultEntry],
+    root: &Path,
+) -> anyhow::Result<Vec<String>> {
+    if !digest_valid(source) {
+        bail!("invalid receipt source digest; repair required");
+    }
+    let mut roots = if let Some(manifest) = manifest {
+        if !digest_valid(manifest) {
+            bail!("invalid receipt manifest digest; repair required");
+        }
+        vec![manifest.to_string()]
+    } else {
+        let mut roots: Vec<_> = entries
+            .iter()
+            .filter(|e| e.source_sha256 == source || e.sha256 == source)
+            .map(|e| e.sha256.clone())
+            .collect();
+        if root.join("objects").join(source).try_exists()? {
+            roots.push(source.to_string());
+        }
+        roots.sort();
+        roots.dedup();
+        roots
+    };
+    if roots.is_empty() && manifest.is_none() {
+        // A prior prune may have retired the legacy index row. Resolve its raw
+        // source digest against verified immutable manifests, never filename guesses.
+        let directory = root.join("manifests");
+        if directory.try_exists()? {
+            for entry in fs::read_dir(directory)? {
+                let entry = entry?;
+                let name = entry
+                    .file_name()
+                    .into_string()
+                    .map_err(|_| anyhow::anyhow!("unknown legacy root; repair required"))?;
+                if !entry.file_type()?.is_file() || !digest_valid(&name) {
+                    bail!("unknown legacy root; repair required");
+                }
+                let raw = transaction::read_with_limit(&entry.path(), 16 * 1024 * 1024)?;
+                if sha256(&raw) != name {
+                    bail!("legacy root integrity failure; repair required");
+                }
+                let doc = crate::payload::decode_record(std::str::from_utf8(&raw)?)?;
+                if (doc.get("source_sha256").is_none()
+                    || doc.get("source_sha256").and_then(|v| v.as_str()) == Some(source))
+                    && sha256(&vault::read_object_locked(&name, root)?) == source
+                {
+                    roots.push(name);
+                }
+            }
+        }
+    }
+    if roots.is_empty() {
+        bail!("legacy receipt recovery root is unresolved; repair required");
+    }
+    for digest in &roots {
+        if sha256(&vault::read_object_locked(digest, root)?) != source {
+            bail!("copy receipt recovery snapshot does not match source");
+        }
+    }
+    roots.sort();
+    roots.dedup();
+    Ok(roots)
+}
+
+/// Strict operation-root decoder shared by recovery and collection. Every pin
+/// is verified before deletion admission. Pins have no automatic expiry.
+pub(crate) fn recovery_roots_locked(
+    raw: &[u8],
+    operation_id: &str,
+    entries: &[vault::VaultEntry],
+    root: &Path,
+) -> anyhow::Result<Vec<String>> {
+    let value = crate::payload::decode_record(std::str::from_utf8(raw)?)
+        .context("invalid operation receipt; repair required")?;
+    if value.get("export_sha256").is_some() {
+        let receipt: DevinStoreReceipt = serde_json::from_slice(raw)?;
+        if receipt.schema_version != 1
+            || !digest_valid(operation_id)
+            || !digest_valid(&receipt.export_sha256)
+            || receipt.snapshot_sha256 != receipt.source_sha256
+            || receipt.session_id.is_empty()
+            || receipt.session_id.len() > 256
+        {
+            bail!("invalid legacy store receipt; repair required");
+        }
+        return source_roots(
+            &receipt.source_sha256,
+            receipt.snapshot_manifest_sha256.as_deref(),
+            entries,
+            root,
+        );
+    }
+    let receipt: CopyReceipt = serde_json::from_slice(raw)?;
+    validate_receipt(&receipt, operation_id)?;
+    let mut roots = source_roots(
+        &receipt.source_sha256,
+        receipt.snapshot_manifest_sha256.as_deref(),
+        entries,
+        root,
+    )?;
+    if vault::read_object_locked(&roots[0], root)?.len() as u64 != receipt.bytes_before {
+        bail!("recovery snapshot byte count mismatch; repair required");
+    }
+    if let Some(output) = &receipt.output_manifest_sha256 {
+        let bytes = vault::read_object_locked(output, root)?;
+        if sha256(&bytes) != receipt.output_sha256 || bytes.len() as u64 != receipt.bytes_after {
+            bail!("prepared output pin mismatch; repair required");
+        }
+        roots.push(output.clone());
+    }
+    Ok(roots)
+}
+
+fn lock_operation(root: &Path, identity: &str) -> anyhow::Result<fs::File> {
+    transaction::private_dir(&root.join("operations"))?;
+    let path = root.join("operations").join(format!("{identity}.lock"));
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        bail!("invalid operation lock");
+    }
+    fs2::FileExt::try_lock_exclusive(&file).context("copy operation is already running")?;
+    Ok(file)
+}
+
+fn reconcile_locked(identity: &str, root: &Path) -> anyhow::Result<CopyReceipt> {
+    let path = root.join("operations").join(format!("{identity}.json"));
+    let raw = transaction::read_with_limit(&path, 64 * 1024)?;
+    let mut receipt: CopyReceipt = serde_json::from_slice(&raw)?;
+    validate_receipt(&receipt, identity)?;
+    let entries = vault::entries_locked(root)?;
+    recovery_roots_locked(&raw, identity, &entries, root)?;
+    match transaction::read(&receipt.path) {
+        Ok(bytes)
+            if sha256(&bytes) == receipt.output_sha256
+                && bytes.len() as u64 == receipt.bytes_after => {}
+        Err(crate::AdapterError::Io { source, .. })
+            if source.kind() == std::io::ErrorKind::NotFound =>
+        {
+            if receipt.completed {
+                bail!("completed copy output is missing; repair required");
+            }
+            let output = receipt
+                .output_manifest_sha256
+                .as_deref()
+                .context("legacy pending operation lacks exact prepared bytes; repair required")?;
+            let bytes = vault::read_object_locked(output, root)?;
+            transaction::publish_new(&receipt.path, &bytes)?;
+        }
+        _ => bail!("conflicting or unreadable copy output; repair required"),
+    }
+    if !receipt.completed {
+        // A prior call may have linked the target but failed directory sync.
+        // Reconfirm the bytes and sync before claiming durable completion.
+        transaction::confirm_publication(&receipt.path, &receipt.output_sha256)?;
+        transaction::checkpoint("output_published", &receipt.path, true)?;
+        receipt.completed = true;
+        transaction::replace(&path, &raw, &serde_json::to_vec(&receipt)?)?;
+        transaction::checkpoint("receipt_completed", &path, true)?;
+    }
+    Ok(receipt)
+}
+
+/// Resume one recorded operation without rereading or modifying its source.
+/// Missing or conflicting state requires repair; no transform is rerun.
+pub fn recover_operation(identity: &str, root: &Path) -> anyhow::Result<CopyReceipt> {
+    if !digest_valid(identity) {
+        bail!("invalid operation identity");
+    }
+    let _custody = vault::Custody::shared(root)?;
+    let _operation = lock_operation(root, identity)?;
+    reconcile_locked(identity, root)
+}
+
+fn session_id(identity: &str) -> String {
+    format!(
+        "{}-{}-4{}-a{}-{}",
+        &identity[..8],
+        &identity[8..12],
+        &identity[13..16],
+        &identity[17..20],
+        &identity[20..32]
+    )
+}
+
+pub(crate) fn publish_prepared(
+    op: OperationIdentity,
+    original: &[u8],
+    output: &[u8],
+    strategy: Option<&str>,
+    root: &Path,
+) -> anyhow::Result<CopyReceipt> {
+    transaction::private_dir(root)?;
+    let _custody = vault::Custody::shared(root)?;
+    let identity = op.id()?;
+    let _operation = lock_operation(root, &identity)?;
+    let path = root.join("operations").join(format!("{identity}.json"));
+    if path.try_exists()? {
+        let recorded: CopyReceipt =
+            serde_json::from_slice(&transaction::read_with_limit(&path, 64 * 1024)?)?;
+        if recorded.schema_version != 2 {
+            bail!("unexpected legacy receipt identity; repair required");
+        }
+        return reconcile_locked(&identity, root);
+    }
+    if fs::symlink_metadata(op.target()).is_ok() {
+        bail!("copy target already exists; no-clobber publication refused");
+    }
+    if sha256(original) != op.source_sha256 {
+        bail!("prepared source binding mismatch");
+    }
+    if output.len() as u64 > transaction::max_transcript_bytes() {
+        bail!("prepared output exceeds byte limit");
+    }
+    let snapshot = vault::snapshot_data(
+        original,
+        &op.source_path,
+        op.provider,
+        &op.source_session_id,
+        strategy,
+        root,
+    )?;
+    let output_manifest = vault::store_object_locked(output, root)?;
+    let receipt = CopyReceipt {
+        schema_version: 2,
+        source_sha256: op.source_sha256.clone(),
+        output_sha256: sha256(output),
+        session_id: op.output_session_id.clone(),
+        path: op.target(),
+        bytes_before: original.len() as u64,
+        bytes_after: output.len() as u64,
+        reclaimed_bytes: original.len().saturating_sub(output.len()) as u64,
+        snapshot_sha256: snapshot.source_sha256,
+        snapshot_manifest_sha256: Some(snapshot.sha256),
+        output_manifest_sha256: Some(output_manifest),
+        operation: Some(op),
+        completed: false,
+    };
+    validate_receipt(&receipt, &identity)?;
+    transaction::publish_new(&path, &serde_json::to_vec(&receipt)?)?;
+    transaction::checkpoint("intent_prepared", &path, true)?;
+    reconcile_locked(&identity, root)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compact_common<F>(
+    handle: &SessionHandle,
+    source: &str,
+    plan: &CompactionPlan,
+    kind: &str,
+    effective: &[u8],
+    legacy_identity: &str,
+    root: &Path,
+    transform: F,
+) -> anyhow::Result<CopyReceipt>
+where
+    F: FnOnce(&[u8]) -> anyhow::Result<Vec<u8>>,
+{
+    if handle.provider == Provider::Devin {
+        return Err(crate::AdapterError::DirectMutationDisabled.into());
+    }
+    if !digest_valid(source) {
+        bail!("invalid source digest");
+    }
+    if plan
+        .edits
+        .iter()
+        .any(|e| matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
+    {
+        bail!("copy plans cannot contain provider controls");
+    }
+    let source_path = handle.path.canonicalize()?;
+    transaction::private_dir(root)?;
+    let _custody = vault::Custody::shared(root)?;
+    // Legacy filenames are checked explicitly; unsupported pending receipts are
+    // never silently replaced with a newly computed candidate.
+    if root
+        .join("operations")
+        .join(format!("{legacy_identity}.json"))
+        .try_exists()?
+    {
+        let _operation = lock_operation(root, legacy_identity)?;
+        let raw = transaction::read_with_limit(
+            &root
+                .join("operations")
+                .join(format!("{legacy_identity}.json")),
+            64 * 1024,
+        )?;
+        let receipt: CopyReceipt = serde_json::from_slice(&raw)?;
+        validate_receipt(&receipt, legacy_identity)?;
+        if receipt.source_sha256 != source
+            || receipt.session_id != session_id(legacy_identity)
+            || receipt.path
+                != fork::target_path_bound(
+                    handle.provider,
+                    &source_path,
+                    &handle.session_id,
+                    &receipt.session_id,
+                )
+        {
+            bail!("legacy copy receipt identity mismatch");
+        }
+        return reconcile_locked(legacy_identity, root);
+    }
+    let inputs_sha256 = sha256(effective);
+    let seed = sha256(&serde_json::to_vec(&(
+        2,
+        kind,
+        handle.provider,
+        &source_path,
+        &handle.session_id,
+        source,
+        &inputs_sha256,
+    ))?);
+    let op = OperationIdentity {
+        revision: 2,
+        kind: kind.into(),
+        provider: handle.provider,
+        source_path,
+        source_session_id: handle.session_id.clone(),
+        source_sha256: source.into(),
+        inputs_sha256,
+        output_session_id: session_id(&seed),
+    };
+    let identity = op.id()?;
+    if root
+        .join("operations")
+        .join(format!("{identity}.json"))
+        .try_exists()?
+    {
+        let _operation = lock_operation(root, &identity)?;
+        let recorded: CopyReceipt = serde_json::from_slice(&transaction::read_with_limit(
+            &root.join("operations").join(format!("{identity}.json")),
+            64 * 1024,
+        )?)?;
+        if recorded.schema_version != 2 {
+            bail!("unexpected legacy receipt identity; repair required");
+        }
+        return reconcile_locked(&identity, root);
+    }
+    let original = transaction::read(&handle.path)?;
+    if sha256(&original) != source {
+        bail!("source changed since planning");
+    }
+    if fork::source_session_id(handle.provider, &original)? != handle.session_id {
+        bail!("source metadata does not match the selected session");
+    }
+    let candidate = transform(&original)?;
+    let output = transaction::prepare(handle.provider, &original, |_| {
+        Ok(fork::rewrite_identity(
+            handle.provider,
+            std::str::from_utf8(&candidate)
+                .map_err(|_| crate::AdapterError::InvalidEdit("candidate is not UTF-8"))?,
+            &op.output_session_id,
+        ))
+    })?;
+    if kind == "compact" && output.len() >= original.len() {
+        bail!("compaction must reduce actual transcript bytes");
+    }
+    if transaction::read(&handle.path)? != original {
+        bail!("source changed before publication");
+    }
+    publish_prepared(op, &original, &output, Some(&plan.strategy), root)
+}
+
+pub fn compact(
+    handle: &SessionHandle,
+    source_sha256: &str,
+    plan: &CompactionPlan,
+    vault_root: &Path,
+) -> anyhow::Result<CopyReceipt> {
+    if handle.provider == Provider::Devin {
+        return Err(crate::AdapterError::DirectMutationDisabled.into());
+    }
+    let source_path = handle.path.canonicalize()?;
+    let legacy = sha256(&serde_json::to_vec(&(
+        handle.provider,
+        &source_path,
+        source_sha256,
+        &plan.edits,
+    ))?);
+    compact_common(
+        handle,
+        source_sha256,
+        plan,
+        "compact",
+        &serde_json::to_vec(&plan.edits)?,
+        &legacy,
+        vault_root,
+        |bytes| {
+            Ok(match handle.provider {
+                Provider::Codex => codex::transform(bytes, &plan.edits)?,
+                Provider::ClaudeCode => claude::transform(bytes, &plan.edits)?,
+                Provider::Devin => unreachable!(),
+            })
+        },
+    )
+}
+
+pub fn compact_via_compacted(
+    handle: &SessionHandle,
+    source_sha256: &str,
+    plan: &CompactionPlan,
+    digest: &DigestBlock,
+    keep_tail: usize,
+    vault_root: &Path,
+) -> anyhow::Result<CopyReceipt> {
+    if handle.provider != Provider::Codex {
+        bail!("custom compacted records are only defined for Codex rollouts");
+    }
+    let source_path = handle.path.canonicalize()?;
+    let legacy = sha256(&serde_json::to_vec(&(
+        handle.provider,
+        &source_path,
+        source_sha256,
+        &plan.edits,
+        digest,
+        keep_tail,
+        "compacted",
+    ))?);
+    compact_common(
+        handle,
+        source_sha256,
+        plan,
+        "compacted",
+        &serde_json::to_vec(&(&plan.edits, digest, keep_tail))?,
+        &legacy,
+        vault_root,
+        |bytes| {
+            let edits: Vec<_> = plan
+                .edits
+                .iter()
+                .filter(|e| !matches!(e, Edit::InjectDigest { .. }))
+                .cloned()
+                .collect();
+            let candidate = codex::transform(bytes, &edits)?;
+            Ok(codex_compact::transform_with_digest(&candidate, digest, keep_tail)?.0)
+        },
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DevinStoreReceipt {
@@ -83,419 +602,13 @@ pub struct DevinStoreReceipt {
     pub resume_hint: String,
 }
 
-/// In-place Devin compaction: snapshot the canonical export into the
-/// vault, then rewrite `message_nodes` payloads inside one SQLite
-/// transaction guarded by the provider lock probe, a source-identity
-/// check, and conditional writes. Live sessions are refused inside
-/// `devin::apply_store`.
+/// Direct store mutation remains disabled until provider custody is qualified.
 pub fn compact_devin_store(
-    handle: &SessionHandle,
-    source_sha256: &str,
-    plan: &CompactionPlan,
-    vault_root: &Path,
-    devin_root: &Path,
+    _handle: &SessionHandle,
+    _source_sha256: &str,
+    _plan: &CompactionPlan,
+    _vault_root: &Path,
+    _devin_root: &Path,
 ) -> anyhow::Result<DevinStoreReceipt> {
-    if handle.provider != Provider::Devin {
-        bail!("compact_devin_store only applies to devin sessions");
-    }
-    let source_path = handle.path.canonicalize()?;
-    let target_path = devin::db_path(devin_root).canonicalize()?;
-    if source_path != target_path {
-        bail!("Devin store target differs from the planned source database");
-    }
-    transaction::private_dir(vault_root)?;
-    let _custody = vault::Custody::shared(vault_root)?;
-    let file_edits: Vec<Edit> = plan
-        .edits
-        .iter()
-        .filter(|e| !matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
-        .cloned()
-        .collect();
-    if file_edits.is_empty() {
-        bail!("plan contains no store edits");
-    }
-    let export =
-        devin::export_bytes(&handle.path, &handle.session_id).map_err(|e| anyhow::anyhow!(e))?;
-    if sha256(&export) != source_sha256 {
-        bail!("session changed since planning; re-plan before applying");
-    }
-    // Ops lock: one in-flight store apply per (session, source, edits).
-    let identity = sha256(&serde_json::to_vec(&(
-        handle.provider,
-        &source_path,
-        &handle.session_id,
-        source_sha256,
-        &plan.edits,
-        "devin-store",
-    ))?);
-    let operations = vault_root.join("operations");
-    transaction::private_dir(vault_root)?;
-    transaction::private_dir(&operations)?;
-    let lock_path = operations.join(format!("{identity}.lock"));
-    let mut options = fs::OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    let lock = options.open(&lock_path)?;
-    fs2::FileExt::try_lock_exclusive(&lock).context("devin store apply is already running")?;
-    let snapshot = vault::snapshot_data(
-        &export,
-        &source_path,
-        handle.provider,
-        &handle.session_id,
-        Some(&plan.strategy),
-        vault_root,
-    )?;
-    if snapshot.source_sha256 != source_sha256 {
-        bail!("source changed before snapshot");
-    }
-    let report = devin::apply_store(devin_root, &handle.session_id, source_sha256, &file_edits)
-        .map_err(|e| anyhow::anyhow!(e))?;
-    let receipt = DevinStoreReceipt {
-        schema_version: 1,
-        source_sha256: source_sha256.into(),
-        export_sha256: report.export_sha256,
-        session_id: handle.session_id.clone(),
-        nodes_rewritten: report.nodes_rewritten,
-        digest_node_id: report.digest_node_id,
-        reclaimed_bytes: report.reclaimed_bytes,
-        snapshot_sha256: snapshot.source_sha256,
-        snapshot_manifest_sha256: Some(snapshot.sha256),
-        resume_hint: report.resume_hint.clone(),
-    };
-    transaction::publish_new(
-        &operations.join(format!("{identity}.json")),
-        &serde_json::to_vec(&receipt)?,
-    )?;
-    Ok(receipt)
-}
-
-pub fn compact(
-    handle: &SessionHandle,
-    source_sha256: &str,
-    plan: &CompactionPlan,
-    vault_root: &Path,
-) -> anyhow::Result<CopyReceipt> {
-    // Devin sessions live inside a shared SQLite store: a file fork is
-    // meaningless to the provider. In-place writes go through
-    // `compact_devin_store`; bail before any read touches `handle.path`.
-    if handle.provider == Provider::Devin {
-        bail!("devin sessions compact in place via the store path, not by fork");
-    }
-    transaction::private_dir(vault_root)?;
-    let _custody = vault::Custody::shared(vault_root)?;
-    if plan
-        .edits
-        .iter()
-        .any(|e| matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
-    {
-        bail!("copy plans cannot contain provider controls");
-    }
-    let original = transaction::read(&handle.path)?;
-    if sha256(&original) != source_sha256 {
-        bail!("source changed since planning");
-    }
-    let source_path = handle.path.canonicalize()?;
-    let identity = sha256(&serde_json::to_vec(&(
-        handle.provider,
-        &source_path,
-        source_sha256,
-        &plan.edits,
-    ))?);
-    let id = format!(
-        "{}-{}-4{}-a{}-{}",
-        &identity[..8],
-        &identity[8..12],
-        &identity[13..16],
-        &identity[17..20],
-        &identity[20..32]
-    );
-    let operations = vault_root.join("operations");
-    transaction::private_dir(vault_root)?;
-    transaction::private_dir(&operations)?;
-    let lock_path = operations.join(format!("{identity}.lock"));
-    let mut options = fs::OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    if fs::symlink_metadata(&lock_path).is_ok_and(|m| !m.is_file()) {
-        bail!("invalid operation lock");
-    }
-    let lock = options.open(&lock_path)?;
-    fs2::FileExt::try_lock_exclusive(&lock).context("copy operation is already running")?;
-    let receipt_path = operations.join(format!("{identity}.json"));
-    let mut existing_intent = None;
-    if receipt_path.exists() {
-        let raw = transaction::read(&receipt_path)?;
-        let mut receipt: CopyReceipt = serde_json::from_slice(&raw)?;
-        if receipt.schema_version != 1
-            || receipt.source_sha256 != source_sha256
-            || receipt.session_id != id
-            || receipt.path != fork::target_path(handle.provider, &source_path, &id)
-            || receipt.snapshot_sha256 != source_sha256
-            || receipt.reclaimed_bytes != receipt.bytes_before.saturating_sub(receipt.bytes_after)
-        {
-            bail!("copy receipt identity mismatch");
-        }
-        verify_snapshot_reference(&receipt, vault_root)?;
-        if transaction::read(&receipt.path)
-            .map(|b| sha256(&b) == receipt.output_sha256)
-            .unwrap_or(false)
-        {
-            if !receipt.completed {
-                receipt.completed = true;
-                transaction::replace(&receipt_path, &raw, &serde_json::to_vec(&receipt)?)?;
-            }
-            return Ok(receipt);
-        }
-        if receipt.completed || fs::symlink_metadata(&receipt.path).is_ok() {
-            bail!("completed or conflicting copy output requires operator recovery");
-        }
-        existing_intent = Some(raw);
-    }
-    let snapshot = vault::snapshot(
-        &handle.path,
-        handle.provider,
-        &handle.session_id,
-        Some(&plan.strategy),
-        vault_root,
-    )?;
-    if snapshot.source_sha256 != source_sha256 {
-        bail!("source changed before snapshot");
-    }
-    let parent = source_path.parent().unwrap_or_else(|| Path::new("."));
-    let temp = transaction::Temporary::new(parent, &original)?;
-    match handle.provider {
-        Provider::Codex => codex::apply(&temp.path, &plan.edits)?,
-        Provider::ClaudeCode => claude::apply(&temp.path, &plan.edits)?,
-        Provider::Devin => bail!("devin session-store writes are not implemented"),
-    };
-    let candidate = transaction::read(&temp.path)?;
-    if candidate.len() >= original.len() {
-        bail!("compaction must reduce actual transcript bytes");
-    }
-    let source_findings = verify::verify(handle.provider, &original);
-    let candidate_findings = verify::verify(handle.provider, &candidate);
-    if candidate_findings
-        .iter()
-        .any(|finding| !source_findings.contains(finding))
-    {
-        bail!("candidate introduces structural findings");
-    }
-    let output = fork::rewrite_identity(handle.provider, std::str::from_utf8(&candidate)?, &id);
-    if verify::verify(handle.provider, output.as_bytes())
-        .iter()
-        .any(|finding| !source_findings.contains(finding))
-    {
-        bail!("fork identity rewrite introduces structural findings");
-    }
-    let path = fork::target_path(handle.provider, &source_path, &id);
-    let bytes_after = output.len() as u64;
-    if bytes_after >= original.len() as u64 {
-        bail!("fork identity overhead exceeds savings");
-    }
-    let mut receipt = CopyReceipt {
-        schema_version: 1,
-        source_sha256: source_sha256.into(),
-        output_sha256: sha256(output.as_bytes()),
-        session_id: id,
-        path,
-        bytes_before: original.len() as u64,
-        bytes_after,
-        reclaimed_bytes: original.len() as u64 - bytes_after,
-        snapshot_sha256: snapshot.source_sha256,
-        snapshot_manifest_sha256: Some(snapshot.sha256),
-        completed: false,
-    };
-    let intent = serde_json::to_vec(&receipt)?;
-    if let Some(previous) = existing_intent {
-        transaction::replace(&receipt_path, &previous, &intent)?;
-    } else {
-        transaction::publish_new(&receipt_path, &intent)?;
-    }
-    if transaction::read(&handle.path)? != original {
-        bail!("source changed before publication");
-    }
-    transaction::publish_new(&receipt.path, output.as_bytes())?;
-    receipt.completed = true;
-    transaction::replace(&receipt_path, &intent, &serde_json::to_vec(&receipt)?)?;
-    Ok(receipt)
-}
-
-/// Codex-only experimental path: a plan carrying an `InjectDigest` edit is
-/// lowered to a real `compacted` record whose `replacement_history` is the
-/// digest plus the newest `keep_tail` verbatim response items. On resume the
-/// provider swaps that history in — the file-level savings are therefore the
-/// superseded window, not appended bytes, so this fork may be *larger* than
-/// the source. The receipt still records exact file bytes for audit; context
-/// savings live in the plan's token fields.
-///
-/// Any `Elide` edits in the same plan still apply to the pre-compaction
-/// lines first — they shrink the file and cannot hurt the provider's view,
-/// which is the `replacement_history` plus post-record lines.
-pub fn compact_via_compacted(
-    handle: &SessionHandle,
-    source_sha256: &str,
-    plan: &CompactionPlan,
-    digest: &DigestBlock,
-    keep_tail: usize,
-    vault_root: &Path,
-) -> anyhow::Result<CopyReceipt> {
-    if handle.provider != Provider::Codex {
-        bail!("custom compacted records are only defined for Codex rollouts");
-    }
-    transaction::private_dir(vault_root)?;
-    let _custody = vault::Custody::shared(vault_root)?;
-    if plan
-        .edits
-        .iter()
-        .any(|e| matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
-    {
-        bail!("compacted-record plans cannot contain provider controls");
-    }
-    let file_edits: Vec<Edit> = plan
-        .edits
-        .iter()
-        .filter(|e| !matches!(e, Edit::InjectDigest { .. }))
-        .cloned()
-        .collect();
-    let original = transaction::read(&handle.path)?;
-    if sha256(&original) != source_sha256 {
-        bail!("source changed since planning");
-    }
-    let source_path = handle.path.canonicalize()?;
-    let identity = sha256(&serde_json::to_vec(&(
-        handle.provider,
-        &source_path,
-        source_sha256,
-        &plan.edits,
-        digest,
-        keep_tail,
-        "compacted",
-    ))?);
-    let id = format!(
-        "{}-{}-4{}-a{}-{}",
-        &identity[..8],
-        &identity[8..12],
-        &identity[13..16],
-        &identity[17..20],
-        &identity[20..32]
-    );
-    let operations = vault_root.join("operations");
-    transaction::private_dir(vault_root)?;
-    transaction::private_dir(&operations)?;
-    let lock_path = operations.join(format!("{identity}.lock"));
-    let mut options = fs::OpenOptions::new();
-    options.read(true).write(true).create(true).truncate(false);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    if fs::symlink_metadata(&lock_path).is_ok_and(|m| !m.is_file()) {
-        bail!("invalid operation lock");
-    }
-    let lock = options.open(&lock_path)?;
-    fs2::FileExt::try_lock_exclusive(&lock).context("copy operation is already running")?;
-    let receipt_path = operations.join(format!("{identity}.json"));
-    let target = fork::target_path(handle.provider, &source_path, &id);
-    let mut existing_intent = None;
-    if receipt_path.exists() {
-        let raw = transaction::read(&receipt_path)?;
-        let mut receipt: CopyReceipt = serde_json::from_slice(&raw)?;
-        if receipt.schema_version != 1
-            || receipt.source_sha256 != source_sha256
-            || receipt.session_id != id
-            || receipt.path != target
-            || receipt.snapshot_sha256 != source_sha256
-        {
-            bail!("copy receipt identity mismatch");
-        }
-        verify_snapshot_reference(&receipt, vault_root)?;
-        if transaction::read(&receipt.path)
-            .map(|b| sha256(&b) == receipt.output_sha256)
-            .unwrap_or(false)
-        {
-            if !receipt.completed {
-                receipt.completed = true;
-                transaction::replace(&receipt_path, &raw, &serde_json::to_vec(&receipt)?)?;
-            }
-            return Ok(receipt);
-        }
-        if receipt.completed || fs::symlink_metadata(&receipt.path).is_ok() {
-            bail!("completed or conflicting copy output requires operator recovery");
-        }
-        existing_intent = Some(raw);
-    }
-    let snapshot = vault::snapshot(
-        &handle.path,
-        handle.provider,
-        &handle.session_id,
-        Some(&plan.strategy),
-        vault_root,
-    )?;
-    if snapshot.source_sha256 != source_sha256 {
-        bail!("source changed before snapshot");
-    }
-    let parent = source_path.parent().unwrap_or_else(|| Path::new("."));
-    let temp = transaction::Temporary::new(parent, &original)?;
-    if !file_edits.is_empty() {
-        codex::apply(&temp.path, &file_edits)?;
-    }
-    // Build and append the compacted record against the post-edit temp so
-    // `ordinal` is the appended line index and the tail carried into
-    // `replacement_history` reflects the same bytes the fork ships.
-    let lines = codex_compact::read_rollout_lines(&temp.path)?;
-    let tail = codex_compact::tail_response_items(&lines, keep_tail);
-    let history = codex_compact::digest_to_replacement_history(digest, &tail);
-    let record_line = codex_compact::build_compacted_record(&lines, history)?;
-    codex_compact::append_compacted(&temp.path, &record_line)?;
-    let candidate = transaction::read(&temp.path)?;
-    let source_findings = verify::verify(handle.provider, &original);
-    if verify::verify(handle.provider, &candidate)
-        .iter()
-        .any(|finding| !source_findings.contains(finding))
-    {
-        bail!("candidate introduces structural findings");
-    }
-    let output = fork::rewrite_identity(handle.provider, std::str::from_utf8(&candidate)?, &id);
-    if verify::verify(handle.provider, output.as_bytes())
-        .iter()
-        .any(|finding| !source_findings.contains(finding))
-    {
-        bail!("fork identity rewrite introduces structural findings");
-    }
-    let bytes_after = output.len() as u64;
-    let mut receipt = CopyReceipt {
-        schema_version: 1,
-        source_sha256: source_sha256.into(),
-        output_sha256: sha256(output.as_bytes()),
-        session_id: id,
-        path: target,
-        bytes_before: original.len() as u64,
-        bytes_after,
-        reclaimed_bytes: original.len().saturating_sub(output.len() as usize) as u64,
-        snapshot_sha256: snapshot.source_sha256,
-        snapshot_manifest_sha256: Some(snapshot.sha256),
-        completed: false,
-    };
-    let intent = serde_json::to_vec(&receipt)?;
-    if let Some(previous) = existing_intent {
-        transaction::replace(&receipt_path, &previous, &intent)?;
-    } else {
-        transaction::publish_new(&receipt_path, &intent)?;
-    }
-    if transaction::read(&handle.path)? != original {
-        bail!("source changed before publication");
-    }
-    transaction::publish_new(&receipt.path, output.as_bytes())?;
-    receipt.completed = true;
-    transaction::replace(&receipt_path, &intent, &serde_json::to_vec(&receipt)?)?;
-    Ok(receipt)
+    Err(crate::AdapterError::DirectMutationDisabled.into())
 }

@@ -33,7 +33,7 @@ test("every public route has one optional support footer without product signup"
 test("the homepage leads with the README identity and the verified install command", () => {
   const html = renderToStaticMarkup(<Home />);
   expect(html.match(/<h1\b/gu)).toHaveLength(1);
-  expect(html).toContain("Compact coding-agent sessions early, with a way back.");
+  expect(html).toContain("Prepare smaller coding-agent sessions, with a way back.");
   if (publishedRelease === null) {
     expect(html).toContain("No release yet");
     expect(html).not.toContain("--tag v");

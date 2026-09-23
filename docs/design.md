@@ -2,9 +2,10 @@
 
 ## Thesis
 
-Provider auto-compaction fires at ~90% of the context window — too late.
-Every turn before that point pays the full context size as input tokens,
-and every turn in the tail pays for degraded recall ("context rot").
+Long sessions retain stale output alongside constraints and unfinished work.
+Earlier compaction is a policy hypothesis to measure, not a guarantee of lower
+bills or better recall. Provider caching, summary costs and retrieval work can
+change the result.
 
 gobstopper treats compaction as a *policy + strategy* problem:
 
@@ -14,7 +15,16 @@ gobstopper treats compaction as a *policy + strategy* problem:
   digest, agentic editing)
 - **where** to apply it (provider control plane vs. transcript file)
 
-## Research basis
+The current artifact supports inspection and separate Codex/Claude copy
+preparation. Released CLI native dispatch is blocked pending qualification;
+direct provider-file/store writes are disabled. The
+[activation matrix](assurance/qualification.json) and
+[recovery runbook](assurance/operations.md) are authoritative for enabled modes.
+
+## Historical research motivation
+
+These notes motivated the strategies; they are not correctness or current
+provider-qualification evidence for this implementation.
 
 - **Context rot** (Anthropic, "Effective context engineering"): recall
   degrades as token count grows. Context is a finite attention budget.
@@ -78,8 +88,8 @@ enum Edit {
 
 `Elide` and `InjectDigest` are file-candidate operations. `ProviderCompact`
 and `CacheEdit` are control-plane proposals and cannot be mixed with file
-edits. Rewrites never remove source records; Claude `parentUuid` chains and
-Codex ordinal/window/tool-pair invariants are verified before a candidate is
+edits. Payload transforms retain source record order; supported Claude parent
+links and Codex ordinal/window/tool-pair findings are checked before a candidate is
 published as a separate fork. `per_item_stubs` optionally carries complete
 one-line stub text per line index (e.g. a model-written breadcrumb); absent
 entries render `stub_template` with `{bytes}`/`{kind}` substitution as
@@ -108,19 +118,16 @@ numeric, not textual:
 
 - `gobstopper policy-check --provider <p> --context-tokens <n>
   --session-active --json` → `{action, strategy, control}`.
-  Pure function of resolved config + two numbers.
-- oompa executes `provider_compact` itself on its own connections
-  (`thread/compact/start` for Codex; `--autocompact` argv for Claude at
-  spawn; `/compact` injection if the stream-json dialect ever admits it).
-- Transcript-path strategies apply to *idle* sessions (resume-time
-  context swap) and to non-managed sessions oompa doesn't own.
+  Deterministic evaluation of resolved policy and explicit numeric inputs.
+- The session owner must separately qualify and execute any proposed provider
+  operation on its own connection. A policy response performs no compaction.
+- File strategies prepare separate candidates. Idleness does not authorize
+  replacing a provider file, including a non-managed session.
 
-The deeper integration on the roadmap: gobstopper emits a `compacted`
-record with a custom `replacement_history` — the provider's own
-resume mechanism performing a fully custom compaction. Fields are
-understood (`window_id`, `first/previous_window_id`, `guardian_history`,
-`latest_token_usage_record`); correctness requires replaying the window
-chain faithfully, so it is gated as experimental until validated.
+Experimental copy preparation can emit a synthetic Codex `compacted` record
+with `replacement_history`; ordinary copies use the portable digest form.
+Structural tests cover supported window and pair shapes. Acceptance of either
+candidate by a particular provider version still requires resume qualification.
 
 See `docs/roadmap.md` for the full phased plan: transcript surgery +
 undo vault, the oompa `session.compact` effect path, XCB's native
@@ -142,75 +149,97 @@ effects. Legacy `preset.command` remains available only with
 
 ## Failure and safety posture
 
-- Standalone JSONL `apply` and `undo` are copy-only by default; retired in-place
-  and no-backup CLI flags fail visibly. Devin `undo` instead restores selected
-  payloads to its session store after the idle check; it shares the unresolved
-  ownership and current-state binding limits described in the audit.
-  Watch's provider-scoped exceptions are
-  opt-in: `[provider.devin] auto_apply_store` lets `watch --provider devin`
-  run the guarded SQLite write on idle sessions, and
-  `[provider.claude_code] auto_apply_inplace` lets `watch --provider
-  claude_code` rewrite an observed-idle transcript in place. These direct-write
-  modes still have an ownership gap: a provider can begin writing after an idle
-  check, and a final reread followed by rename is not compare-and-swap. Opening
-  the transcript per write does not remove that race. See the
-  [correctness audit](correctness-audit.md) and its custody remediation. Watch auto-apply
-  respects `[rollout]` cohorts — control sessions are logged and skipped —
-  and a per-session fingerprint suppresses re-evaluation of unchanged
-  sources; Claude writes also require the fingerprint to be stable across
-  two consecutive passes before mutating. A successful in-place mutation
-  additionally holds the session out for `apply_hold_secs` (default 1800)
-  so append-over-trigger churn cannot re-apply every interval, and each
-  watch pass services sessions in ascending size order so one giant
-  apply cannot starve the rest. Suppression fingerprints, settle state,
-  and rate-limit clocks persist per-provider to `watch-state-*.json`
-  after each pass, so a daemon restart resumes rather than re-planning
-  every session once.
+- Codex/Claude file `apply` and `undo` publish copies. Direct Devin store
+  apply/restore, arbitrary-path rewrite APIs and legacy in-place watch modes
+  refuse mutation: an idle check and reread-before-rename do not establish
+  compatible lifetime custody. Existing configuration flags remain accepted,
+  but cannot enable those effects. Byte transforms remain available for owned
+  in-memory data; fork publication requires an explicit vault root.
+- Released CLI native dispatch refuses with `native_unqualified`, including
+  existing `auto_compact_closed` opt-ins and standalone native-fork requests.
+  Lower-level protocol adapters remain explicit caller-owned primitives, not
+  qualified unattended entry points. A non-dry watch pass can archive source
+  bytes before reaching that guard. Snapshot failure aborts any admitted
+  dispatch; failure or uncertainty never falls through to file mutation.
 - Claude liveness also checks provider markers rather than only mtime: records in
   `~/.claude/sessions/<pid>.json` map live pids to session ids, so a
   session open-but-quiet in a TUI is detected as provider-owned and excluded
   from surgery. This observation is not a lifetime ownership lock.
-  With `[provider.claude_code] auto_compact_closed`, a settled
-  over-trigger session with *no* live owner is instead compacted by the
-  provider itself — `claude --resume <id> -p /compact` — which runs
-  Claude's own summarization and fires the `PreCompact` hook where the
-  vault snapshot lands. A failed or uncertain native attempt must not fall
-  through to direct file mutation. The
-  prompt-policy hook adds a last-rung `block_tokens` ceiling (default 0
+  The guarded Claude adapter uses `claude --resume <id> -p /compact`;
+  marker absence alone cannot qualify concurrent startup or provider ownership.
+  The prompt-policy hook adds a last-rung `block_tokens` ceiling (default 0
   = off): at/above it, treatment sessions get `decision: "block"` until
   `/compact` runs. Slash-command prompts are never advised or blocked —
   they are provider UI control, including the headless `/compact` run.
 - Before publication, exact source bytes are stored as verified, deduplicated
   1 MiB chunks in the content-addressed vault.
-- Participating Rust snapshot/copy/`read_object` operations share custody of the vault directory inode;
-  prune holds exclusive custody through reachability analysis, index publication
-  and deletion. Legacy multi-object inspection and independent-reader paths
-  still require the C3 custody audit. Operation receipts pin their recovery objects. The bounded
-  [TLA+ model](../verify/vault/README.md) checks this concurrency protocol and
-  negative controls, with explicit exclusions for Rust refinement and filesystem
-  crash durability. Current custody support is Unix-only and fails closed on
-  other platforms.
-- Copy operations bind canonical source path, source hash, provider, and edits
-  into a durable intent receipt. Existing targets are never overwritten, and
-  incomplete receipts reconcile only against an exact output hash.
-- Candidate writes use same-directory private temporary files, compare the
-  source again before atomic publication, preserve restrictive permissions,
-  sync data/directories, and reject newly introduced verification findings.
+- Rust multi-object readers and the independent retention reader hold shared
+  custody of the vault directory inode. Prune holds exclusive custody through
+  strict root decoding, index publication and deletion. Corrupt indexes,
+  ambiguous roots and failed manifest unlink stop collection. Custody support
+  is Unix-only and fails closed elsewhere.
+- Version 2 intents bind exact source and candidate bytes, canonical identity
+  and effective inputs before output publication. Retries use retained bytes,
+  not a newly computed transform. Pins have no automatic retirement policy.
+  Existing targets are never overwritten; reconciliation requires exact bytes.
+- New outputs use private files, no-clobber publication and file/directory sync.
+  A publication error distinguishes visibility from confirmed durability;
+  an already visible output is not reported as an effect-free failure. Stable
+  owner-controlled parents and filesystem sync behavior remain assumptions.
 - Files are capped at 512 MiB (override via `GOBSTOPPER_MAX_TRANSCRIPT_BYTES`,
   a byte count) and 100,000 records; plugin inputs, outputs,
   manifests, bundles, deadlines, and discovery counts are independently
   bounded.
 - Watch mode rate-limits per session (`min_interval_secs`), and plans below
   `min_savings_tokens` are treated as no-ops.
-- Native controls delegate writes to the provider. A liveness observation alone
-  cannot prove exclusive session ownership; version-specific qualification and
-  the remaining direct-write exceptions are tracked in the correctness plan.
+- Native journals retain canonical home/store/session identity and durable
+  pre-dispatch intent. Dispatched or unknown work never expires into automatic
+  retry. Reconciliation requires already recorded matching Codex terminal IDs.
+- Hook settings installation/removal exports private, no-clobber candidate
+  bundles only. Callbacks archive an exact local source but lack operation
+  correlation, so they record unattributed observations rather than applied work
+  or paired retention. MCP inspection never invokes configured executable
+  strategies or model scoring; explicit plugin commands remain trusted code.
 
-## Measured findings (realized audit, offline)
+The [vault TLA+ models](../verify/vault/README.md),
+[native dispatch model](../verify/watch/README.md),
+[production Rust proof kernels](../verify/core/README.md), and
+[Lean transcript algebra](../verify/transcript/README.md) state their own bounds,
+assumptions and correspondence obligations. The
+[bounded synthetic stress suite](../verify/stress/README.md), process-death
+fixtures and negative controls add executable evidence. None proves arbitrary filesystem power loss,
+proprietary provider behavior or semantic fidelity of all summaries.
+
+## Inference and measurement boundaries
+
+Scorers are opt-in and preserve mechanical scores for unavailable answers.
+Remote scorers receive bounded transcript-derived labels and summaries, with
+additional excerpts separately opt-in; those fields are not redacted metadata.
+Model output must satisfy finite probability, identity and size checks. Apple
+inference resolves only an installed bridge and uses one owned bounded process
+per uncached request. Cache keys bind the exact submitted bounded projection,
+task and available model/bridge identity. They cannot detect changes to omitted
+source context or opaque proprietary weight revisions. Model output cannot bypass
+host edit admission or digest budgets.
+
+Usage observations distinguish reported, absent, unknown and reset context and
+full versus partial lifetime scope. Snapshot-bound source identity is required
+to count a recorded reduction; estimates and unknown values are not zero-cost
+observations. Literal retention, lexical token coverage and optional model
+judgment have separate meanings and explicit coverage. Neither model judgment
+nor a Wilson interval over sampled checks establishes task success.
+Evaluation freezes one canonical source image per session, including a
+per-session export for Devin stores. Benchmark output retains discovered
+evaluation failures and distinguishes provider proposals from detached
+transforms. The retention study includes an unchanged baseline; its other
+arms do not stand in for unexecuted provider-native experiments.
+
+## Historical measured findings (realized audit, offline)
 
 Evidence from `scripts/retention-audit.py` over vault snapshot pairs plus
 `scripts/provider-retention-probe.py` synthetic runs. Retention = text
-presence in live records, not semantic equivalence.
+presence in live records, not semantic equivalence. These earlier cohorts are
+not live qualification of the current artifact or a general retention bound.
 
 - Three provider compaction shapes: Codex rewrites history verbatim
   (`replacement_history`), Claude writes a `compact_boundary` plus paraphrased

@@ -3,6 +3,7 @@
 
 import argparse
 import datetime
+import errno
 import fcntl
 import hashlib
 import json
@@ -14,6 +15,7 @@ import selectors
 import signal
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -27,7 +29,7 @@ SCHEMA = "gobstopper/local-monitor-v1"
 LOG_BYTES = 10 * 1024 * 1024
 CAPTURE_BYTES = 8 * 1024 * 1024
 EVENTS_LOG_BYTES = 16 * 1024 * 1024
-EVENTS_LOG = Path.home() / ".local" / "share" / "gobstopper" / "events.jsonl"
+EVENT_RECORD_BYTES = 64 * 1024
 TIMEOUT_SECONDS = 45
 SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 PLAN_LINE = re.compile(rb"^\[dry-run\] codex ([A-Za-z0-9_-]{1,12}): ")
@@ -96,7 +98,9 @@ def private_file(fd):
 
 
 def open_file(directory, name, flags):
-    fd = os.open(name, flags | os.O_NOFOLLOW, 0o600, dir_fd=directory)
+    # Validate the opened leaf before use. A FIFO must not block this open
+    # before private_file can reject its kind; ordinary files are unaffected.
+    fd = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600, dir_fd=directory)
     try:
         private_file(fd)
     except Exception:
@@ -149,11 +153,38 @@ def binary_hash(path):
 
 def run_command(arguments, environment, deadline):
     started = time.monotonic()
-    result = {"exit_code": None, "duration_ms": 0, "error": None, "resources": None}
+    result = {"exit_code": None, "duration_ms": 0, "error": None, "resources": None,
+              "cleanup_complete": None}
     output = [bytearray(), bytearray()]
     child = None
     resources_before = None
+    streams = ()
+    eof = set()
+    exited = False
+    limited = False
+
+    def drain_once():
+        nonlocal limited
+        progress = False
+        for index, stream in enumerate(streams):
+            if stream in eof:
+                continue
+            try:
+                chunk = os.read(stream.fileno(), 65536)
+            except BlockingIOError:
+                continue
+            if not chunk:
+                eof.add(stream)
+                continue
+            progress = True
+            left = max(0, CAPTURE_BYTES - sum(map(len, output)))
+            output[index].extend(chunk[:left])
+            limited |= len(chunk) > left
+        return progress
+
     try:
+        if not all(hasattr(os, name) for name in ("waitid", "WNOWAIT", "WNOHANG", "P_PID", "WEXITED")):
+            raise MonitorError("process_custody_unavailable")
         if started >= deadline:
             raise MonitorError("timeout")
         resources_before = child_resources()
@@ -162,25 +193,30 @@ def run_command(arguments, environment, deadline):
         child = subprocess.Popen(arguments, env=environment, stdin=subprocess.DEVNULL,
                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                  start_new_session=True)
+        streams = (child.stdout, child.stderr)
         with selectors.DefaultSelector() as selector:
-            for index, stream in enumerate((child.stdout, child.stderr)):
+            for index, stream in enumerate(streams):
                 os.set_blocking(stream.fileno(), False)
                 selector.register(stream, selectors.EVENT_READ, index)
-            while selector.get_map():
+            while True:
+                drain_once()
+                if limited:
+                    raise MonitorError("output_limit")
+                # Do not reap yet: the leader PID protects group identity until
+                # cleanup. Successful leaders may still have live descendants.
+                exited = os.waitid(os.P_PID, child.pid,
+                                   os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+                if exited:
+                    break
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise MonitorError("timeout")
-                for key, _ in selector.select(min(remaining, 0.2)):
-                    chunk = os.read(key.fd, 65536)
-                    if not chunk:
-                        selector.unregister(key.fileobj)
-                        continue
-                    if sum(map(len, output)) + len(chunk) > CAPTURE_BYTES:
-                        raise MonitorError("output_limit")
-                    output[key.data].extend(chunk)
-        result["exit_code"] = child.wait(timeout=max(0.001, deadline - time.monotonic()))
-        if result["exit_code"] != 0:
-            result["error"] = "command_failed"
+                for stream in eof:
+                    try:
+                        selector.unregister(stream)
+                    except KeyError:
+                        pass
+                selector.select(min(remaining, 0.01))
     except (MonitorError, subprocess.TimeoutExpired) as error:
         result["error"] = str(error) if isinstance(error, MonitorError) else "timeout"
     except OSError:
@@ -190,17 +226,48 @@ def run_command(arguments, environment, deadline):
         raise
     finally:
         if child is not None:
-            if result["error"] is not None:
-                # The child owns this new process group; never signal another session.
-                try:
-                    os.killpg(child.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            child.wait()
-            child.stdout.close()
-            child.stderr.close()
-            # Sample only after reaping, including timeout-killed children.
-            result["resources"] = resource_delta(resources_before, child_resources())
+            cleanup_error = None
+            reaped = False
+            try:
+                # The leader has not been reaped. Only this owned group may be
+                # signaled, including on normal successful completion.
+                os.killpg(child.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            except OSError as failure:
+                cleanup_error = failure
+            try:
+                child.wait(timeout=1)
+                reaped = True
+                if exited:
+                    result["exit_code"] = child.returncode
+                # Drain all accepted trailing bytes, with a cleanup deadline
+                # even when an escaped descendant keeps an inherited pipe open.
+                drain_deadline = time.monotonic() + 0.25
+                while len(eof) < len(streams) and time.monotonic() < drain_deadline:
+                    if not drain_once():
+                        time.sleep(0.001)
+            except (OSError, subprocess.TimeoutExpired):
+                if result["error"] is None:
+                    result["error"] = "cleanup_failed"
+            finally:
+                for stream in streams:
+                    stream.close()
+            # Darwin may refuse signaling an exited zombie-only group. Only
+            # observed exit plus both EOFs admits that platform exception.
+            benign = (cleanup_error is not None and cleanup_error.errno == errno.EPERM
+                      and sys.platform == "darwin" and exited and len(eof) == len(streams))
+            complete = reaped and len(eof) == len(streams) and (cleanup_error is None or benign)
+            result["cleanup_complete"] = complete
+            if not complete and result["error"] is None:
+                result["error"] = "cleanup_failed"
+            if limited and result["error"] is None:
+                result["error"] = "output_limit"
+            if result["exit_code"] not in (None, 0) and result["error"] is None:
+                result["error"] = "command_failed"
+            if reaped:
+                # Sample only after reaping, including timeout-killed children.
+                result["resources"] = resource_delta(resources_before, child_resources())
         result["duration_ms"] = round((time.monotonic() - started) * 1000)
     return result, bytes(output[0]), bytes(output[1])
 
@@ -213,12 +280,77 @@ def previous_observation(directory):
     with os.fdopen(fd, "rb") as source:
         raw = source.read(1024 * 1024 + 1)
     try:
-        value = json.loads(raw) if len(raw) <= 1024 * 1024 else None
-    except (ValueError, UnicodeError):
+        value = strict_json(raw) if len(raw) <= 1024 * 1024 else None
+    except (ValueError, UnicodeError, RecursionError):
         value = None
     if not isinstance(value, dict) or value.get("schema") != SCHEMA:
         raise MonitorError("invalid_previous_observation")
     return value
+
+
+def digest(value):
+    return value if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) else None
+
+
+def strict_json(raw):
+    def object_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError("duplicate_json_key")
+            result[key] = value
+        return result
+
+    def invalid_constant(_value):
+        raise ValueError("invalid_json_constant")
+
+    return json.loads(raw, object_pairs_hook=object_pairs, parse_constant=invalid_constant)
+
+
+def event_log_path(environment):
+    base = environment.get("XDG_DATA_HOME")
+    if not base:
+        base = str(Path(environment.get("HOME", ".")) / ".local" / "share")
+    return Path(base) / "gobstopper" / "events.jsonl"
+
+
+def accounting_fields(value):
+    state = value.get("contextState")
+    state = state if state in ("absent", "unknown", "reported", "reset") else "absent"
+    scope = value.get("lifetimeScope")
+    scope = scope if scope in ("absent", "partial", "full") else "absent"
+    return {
+        "source_identity_sha256": digest(value.get("sourceIdentitySha256")),
+        "context_state": state,
+        "context_tokens": number(value.get("reportedContextTokens")) if state == "reported" else None,
+        "lifetime_scope": scope,
+        "lifetime_input_tokens": number(value.get("lifetimeInputTokens")) if scope == "full" else None,
+        "lifetime_cached_tokens": number(value.get("lifetimeCachedTokens")) if scope == "full" else None,
+    }
+
+
+def paired_evidence(event):
+    identity = digest(event.get("source_identity_sha256"))
+    provider = event.get("provider")
+    session = event.get("session_id")
+    if (identity is None or provider not in ("codex", "claude_code", "devin")
+            or not isinstance(session, str) or not SESSION_ID.fullmatch(session)
+            or event.get("schema") != "gobstopper/compaction-events-v1"
+            or event.get("outcome") != "applied"
+            or event.get("action") not in ("provider_compact", "transcript_compact")
+            or "error_code" not in event or event["error_code"] is not None):
+        return None
+    pair = []
+    for side in ("before", "after"):
+        snapshot = digest(event.get(f"snapshot_{side}_sha256"))
+        observation = event.get(f"{side}_observation")
+        if (snapshot is None or not isinstance(observation, dict)
+                or observation.get("source_identity_sha256") != identity
+                or observation.get("snapshot_manifest_sha256") != snapshot
+                or digest(observation.get("source_sha256")) is None):
+            return None
+        pair.append(snapshot)
+    return (provider, session, identity), tuple(pair)
 
 
 def session_rows(report, sessions, previous):
@@ -234,27 +366,28 @@ def session_rows(report, sessions, previous):
         compact = current.get("compactions", {})
         compact = compact if isinstance(compact, dict) else {}
         before = old.get(session, {})
-        # A zero is also emitted while provider usage is unknown immediately
-        # after compaction. It cannot establish a measured drop to zero.
-        context = number(current.get("contextTokens")) or None
+        accounting = accounting_fields(current)
+        context = accounting["context_tokens"]
         native = number(compact.get("nativeHookApplied"))
         old_context = number(before.get("context_tokens"))
         old_native = number(before.get("native_hook_applied"))
-        comparable = bool(before.get("available")) and bool(current)
+        comparable = (bool(before.get("available")) and bool(current)
+                      and accounting["source_identity_sha256"] is not None
+                      and before.get("source_identity_sha256") == accounting["source_identity_sha256"])
         rows.append({
             "session_id": session,
             "available": bool(current),
             "provider": "codex",
-            "context_tokens": context,
+            **accounting,
             "model_context_window": number(current.get("modelContextWindow")) or None,
-            "lifetime_input_tokens": number(current.get("lifetimeInputTokens")),
-            "lifetime_cached_tokens": number(current.get("lifetimeCachedTokens")),
             "last_activity_ms": number(current.get("lastActivityMs")),
             "closed_session_compact": (current.get("closedSessionCompact")
                                        if current.get("closedSessionCompact") in
-                                       ("available", "unavailable:sub-agent") else None),
+                                       ("available", "unqualified", "unavailable:sub-agent") else None),
             "context_drop_tokens": (max(0, old_context - context) if comparable
-                                    and old_context is not None and context is not None else None),
+                                    and before.get("context_state") == "reported"
+                                    and old_context is not None and context is not None
+                                    and old_context > 0 and context > 0 else None),
             "native_hook_applied": native,
             "native_hook_applied_delta": (native - old_native if comparable
                                           and native is not None and old_native is not None
@@ -287,10 +420,7 @@ def context_samples(report, sessions, providers):
         samples.append({
             "provider": provider,
             "session_id": session,
-            # A zero is emitted while provider usage is unknown; it is not
-            # a measured drop to zero, so record it as absent.
-            "context_tokens": number(gobstopper.get("contextTokens")) or None,
-            "lifetime_input_tokens": number(gobstopper.get("lifetimeInputTokens")),
+            **accounting_fields(gobstopper),
         })
         if len(samples) >= 256:
             break
@@ -338,35 +468,55 @@ def save_observation(directory, observation):
             pass
 
 
-def retention_summary(log_path, allowlist):
-    """Aggregate measured-retention events for allowlisted sessions.
+def retention_summary(log_path, selected):
+    """Count distinct error-free evidence pairs for exact selected sources.
 
-    Counts and flagged session ids only — event payload fields beyond the
-    numeric retention triple never cross the boundary. A "lossy" flag marks
-    compactions whose lexical coverage fell below half the bound checks.
+    Counts and flagged native IDs only. Duplicate records do not multiply a
+    measurement; conflicting tallies for one exact pair exclude that pair.
+    This reads one bounded local generation, not a lifetime retention total.
     """
     out = {"measured": 0, "checks": 0, "literal": 0, "lexical": 0,
-           "lossy_sessions": []}
+           "lossy_sessions": [], "available": False, "error": None,
+           "invalid_records": 0, "conflicting_pairs": 0}
     try:
-        with log_path.open("rb") as log:
+        fd = os.open(log_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as log:
+            info = os.fstat(log.fileno())
+            if not stat.S_ISREG(info.st_mode):
+                out["error"] = "event_log_not_regular"
+                return out
+            if info.st_size > EVENTS_LOG_BYTES:
+                out["error"] = "event_log_limit"
+                return out
             data = log.read(EVENTS_LOG_BYTES + 1)
         if len(data) > EVENTS_LOG_BYTES:
+            out["error"] = "event_log_limit"
+            return out
+        if data and not data.endswith(b"\n"):
+            out["error"] = "event_log_incomplete"
             return out
         lines = data.decode("utf-8").splitlines()
-    except (OSError, UnicodeError):
+    except FileNotFoundError:
+        out["error"] = "event_log_absent"
         return out
-    seen_lossy = set()
+    except (OSError, UnicodeError):
+        out["error"] = "event_log_unavailable"
+        return out
+    out["available"] = True
+    pairs = {}
     for line in lines:
-        if "retention_total" not in line:
-            continue
         try:
-            event = json.loads(line)
-        except ValueError:
+            if len(line.encode("utf-8")) > EVENT_RECORD_BYTES:
+                raise ValueError("event_record_limit")
+            event = strict_json(line)
+        except (ValueError, RecursionError):
+            out["invalid_records"] += 1
             continue
         if not isinstance(event, dict):
+            out["invalid_records"] += 1
             continue
-        session = event.get("session_id")
-        if not isinstance(session, str) or session not in allowlist:
+        evidence = paired_evidence(event)
+        if evidence is None or evidence[0] not in selected:
             continue
         total, literal = event.get("retention_total"), event.get("retention_retained")
         lexical = event.get("retention_lexical")
@@ -375,12 +525,26 @@ def retention_summary(log_path, allowlist):
             continue
         if literal > total or lexical > total:
             continue
+        # A manifest identifies one exact byte sequence. Conflicting source
+        # hashes for the same manifests invalidate the pair, not a new sample.
+        values += (event["before_observation"]["source_sha256"],
+                   event["after_observation"]["source_sha256"])
+        if evidence in pairs and pairs[evidence] != values:
+            pairs[evidence] = None
+        else:
+            pairs[evidence] = values
+    seen_lossy = set()
+    for (identity, _pair), values in pairs.items():
+        if values is None:
+            out["conflicting_pairs"] += 1
+            continue
+        total, literal, lexical = values[:3]
         out["measured"] += 1
         out["checks"] += total
         out["literal"] += literal
         out["lexical"] += lexical
-        if total and lexical * 2 < total \
-                and session not in seen_lossy:
+        session = identity[1]
+        if total and lexical * 2 < total and session not in seen_lossy:
             seen_lossy.add(session)
             out["lossy_sessions"].append(session)
     return out
@@ -414,12 +578,12 @@ def observe(binary, output_dir, sessions, providers=()):
             report = {}
             if report_status["error"] is None:
                 try:
-                    report = json.loads(stdout)
+                    report = strict_json(stdout)
                     if (not isinstance(report, dict) or report.get("schemaVersion") != 1
                             or report.get("profile") != "session-observations-v1"
                             or not isinstance(report.get("sessions"), list)):
                         raise ValueError()
-                except (ValueError, UnicodeError):
+                except (ValueError, UnicodeError, RecursionError):
                     report = {}
                     report_status["error"] = "invalid_report"
             watch_status, _, stderr = run_command(
@@ -454,9 +618,10 @@ def observe(binary, output_dir, sessions, providers=()):
                                             and report_status["available"] and not ambiguous_plan else None),
                              "scope": "allowlisted_sessions", "policy": "built_in_defaults"})
         samples = context_samples(report, sessions, providers)
-        # Retention events for allowlisted sessions plus provider-opt-in
-        # samples — the same privacy boundary as context_samples.
-        allowlist = set(sessions) | {s["session_id"] for s in samples}
+        # Retention uses the selected report's exact provider/store/session
+        # identity, not a native ID that a foreign store can also contain.
+        selected = {(s["provider"], s["session_id"], s["source_identity_sha256"])
+                    for s in samples if s["source_identity_sha256"] is not None}
         observation = {
             "schema": SCHEMA,
             "observed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -466,7 +631,7 @@ def observe(binary, output_dir, sessions, providers=()):
             "watch": watch_status,
             "sessions": session_rows(report, sessions, previous),
             "context_samples": samples,
-            "retention": retention_summary(EVENTS_LOG, allowlist),
+            "retention": retention_summary(event_log_path(environment), selected),
         }
         save_observation(directory, observation)
         return observation

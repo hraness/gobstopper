@@ -44,6 +44,14 @@ class StudyRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'command_timeout'):
             RUNNER.command([sys.executable, '-c', 'import time; time.sleep(30)'], self.root/'out', self.root/'err', dict(os.environ), timeout=.03)
 
+    def test_exited_leader_descendants_are_cleaned_before_reap(self):
+        marker = self.root / 'late-write'
+        descendant = f'import time; from pathlib import Path; time.sleep(.2); Path({str(marker)!r}).write_text("late")'
+        parent = f'import subprocess,sys; subprocess.Popen([sys.executable,"-c",{descendant!r}])'
+        self.assertEqual(RUNNER.command([sys.executable, '-c', parent], self.root/'out', self.root/'err', dict(os.environ)), 0)
+        time.sleep(.3)
+        self.assertFalse(marker.exists())
+
     def test_existing_output_is_never_clobbered_or_executed(self):
         path = self.root/'out'
         path.write_text('keep')

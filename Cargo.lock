@@ -299,6 +299,7 @@ dependencies = [
 name = "gobstopper-core"
 version = "0.2.1"
 dependencies = [
+ "libc",
  "serde",
  "serde_json",
  "thiserror",

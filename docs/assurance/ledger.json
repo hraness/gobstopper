@@ -1,21 +1,21 @@
 {
   "schema": "gobstopper.assurance.v1",
-  "phase": "C1",
+  "phase": "C15",
   "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
   "observed_date": "2026-09-23",
-  "scope": "Contract and effect inventory, not a completed proof or current execution receipt.",
+  "scope": "Current reviewed contracts and bounded evidence for the correctness foundation; immutable baseline records remain historical. No whole-system theorem or live native qualification.",
   "states": [
     {
       "id": "source_file",
       "meaning": "Provider-owned JSONL bytes and record identity",
-      "owner": "provider; adapters only with admitted target/custody",
-      "boundary": "A copy target is a separate source identity; a reread is not retained custody."
+      "owner": "provider; Gobstopper publishes separate fresh files only",
+      "boundary": "Direct replacement disabled; frozen input, exact candidate and fresh no-clobber identity are separate objects."
     },
     {
       "id": "provider_store",
       "meaning": "Devin SQLite rows, active graph and provider metadata",
-      "owner": "provider; direct store adapters",
-      "boundary": "SQLite transaction serialization does not exclude loaded provider memory."
+      "owner": "provider; Gobstopper read-only export",
+      "boundary": "Direct Devin apply/restore disabled; SQL transaction alone does not exclude provider memory."
     },
     {
       "id": "effective_context",
@@ -49,9 +49,9 @@
     },
     {
       "id": "operation_receipts",
-      "meaning": "Copy/store intent, binding, completion and recovery pins",
+      "meaning": "Copy v2 intent, exact retained candidate, completion and operation recovery pins",
       "owner": "adapters::copy",
-      "boundary": "Current pin retention has no abandonment lifecycle; completion may follow output commit."
+      "boundary": "All prepared/completed pins retained; no automatic retirement. Recovery never reruns the transform."
     },
     {
       "id": "event_log",
@@ -61,21 +61,21 @@
     },
     {
       "id": "watch_state",
-      "meaning": "Settlement fingerprints, holddowns and clocks",
+      "meaning": "Generation 9 bounded settlement cache and conservative legacy uncertainty",
       "owner": "CLI watcher",
-      "boundary": "Current generation and cooldown are not a durable reconciled operation journal."
+      "boundary": "Separate durable target journal governs native uncertainty; time or config changes cannot clear it."
     },
     {
       "id": "cache",
-      "meaning": "Discovery and model-response caches; generated Apple bridge binary",
+      "meaning": "Discovery and validated model-response caches",
       "owner": "CLI/model library",
-      "boundary": "Memory and local filesystem caches have distinct lifetime and trust."
+      "boundary": "Apple is memory-only and installed-bridge-only; Jev disk cache is private, bounded and atomically replaced."
     },
     {
       "id": "config",
       "meaning": "Provider hook settings and gobstopper policy/trust configuration",
-      "owner": "user; CLI hook installer",
-      "boundary": "Settings replacement needs concurrency/rollback contract; loading config can select trusted code."
+      "owner": "user/provider; Gobstopper emits inert settings bundles",
+      "boundary": "Original provider settings unchanged; external planning and transcript disclosure have separate authority."
     },
     {
       "id": "credential_store",
@@ -100,73 +100,79 @@
       "meaning": "stdout/stderr/MCP responses and requested content",
       "owner": "caller-visible contract",
       "boundary": "Requested content/identity must be separated from background diagnostics."
+    },
+    {
+      "id": "native_journal",
+      "meaning": "Version 1 durable native target registry, stable locks and append-only operation records",
+      "owner": "CLI native_operations",
+      "boundary": "Registered missing/damaged journals refuse; unresolved work blocks replay indefinitely. Provider custody and qualification remain separate."
     }
   ],
   "assumptions": [
     {
       "id": "A-OS",
       "statement": "OS, kernel, Rust dependencies and hardware implement documented APIs; memory safety outside reviewed code is trusted.",
-      "next_gate": "C12",
+      "next_gate": "C15",
       "explicit_model_or_evidence_limit": false
     },
     {
       "id": "A-FS",
       "statement": "Vault root inode stays stable; cooperating Unix participants honor directory flock. Rename/hard-link/fsync semantics depend on filesystem; network mounts and power-loss behavior are not qualified.",
-      "next_gate": "C3",
+      "next_gate": "C15",
       "explicit_model_or_evidence_limit": false
     },
     {
       "id": "A-HASH",
       "statement": "SHA-256 collision resistance and implementation correctness are assumed, not proved here.",
-      "next_gate": "C12",
+      "next_gate": "C15",
       "explicit_model_or_evidence_limit": false
     },
     {
       "id": "A-PROVIDER",
-      "statement": "Provider dialect/version, native command semantics and account/home authority require exact qualification; age/probe heuristics do not establish exclusive session ownership.",
-      "next_gate": "C13",
+      "statement": "All released CLI native dispatch remains guarded unqualified. A provider binary/version/hash, observed session ID or first compaction item on a private connection does not establish exclusive custody or a provider-attested operation binding.",
+      "next_gate": "C15",
       "explicit_model_or_evidence_limit": false
     },
     {
       "id": "A-EXT",
-      "statement": "Configured trusted plugins, legacy commands, model bridges and scorers execute with user authority; hash admission is not sandboxing.",
-      "next_gate": "C8",
+      "statement": "Explicitly admitted plugins, model bridges and scorers execute with user authority; bundle/hash admission and process-group cleanup are not an OS sandbox. Model weights behind stable endpoints may change.",
+      "next_gate": "C15",
       "explicit_model_or_evidence_limit": false
     },
     {
       "id": "A-IDENTITY",
-      "statement": "Explicit roots, canonical paths, exact session/store identity and source hashes must agree through each operation; symlink/mount/TOCTOU adversaries need separate admission.",
-      "next_gate": "C2",
+      "statement": "Canonical provider/home/store/session identity and frozen source/candidate hashes must agree. Stable owner-controlled ancestors and executable paths are trusted; hostile same-user replacement, mounts and loader races remain excluded.",
+      "next_gate": "C15",
       "explicit_model_or_evidence_limit": false
     },
     {
       "id": "A-CLOCK",
-      "statement": "Wall-clock changes, downtime and uncertainty expiry affect watcher suppression; current clocks are not an exactly-once protocol.",
-      "next_gate": "C4",
+      "statement": "Clocks govern scheduling only; restart, clock movement, cooldown and effective configuration changes cannot release unresolved durable native work.",
+      "next_gate": "C15",
       "explicit_model_or_evidence_limit": false
     },
     {
       "id": "A-MODEL",
-      "statement": "TLA+ actions are finite, atomic and durable; process termination is modeled but no production refinement, filesystem crash ordering, fairness or proprietary-provider theorem follows.",
-      "next_gate": "C3",
+      "statement": "TLA+ models explore declared finite actor domains with atomic durable abstract actions and no fairness. Lean list laws are unbounded at the algebra layer; Rust correspondence is finite. Kani proves selected production scalar kernels over full domains and explicitly bounded sequences. No whole-program refinement follows.",
+      "next_gate": "C15",
       "explicit_model_or_evidence_limit": true
     },
     {
       "id": "A-SEMANTIC",
       "statement": "Lossy content replacement has empirical task-dependent retention; literal/lexical scores are proxies and do not establish semantic equivalence.",
-      "next_gate": "C14",
+      "next_gate": "C15",
       "explicit_model_or_evidence_limit": false
     },
     {
       "id": "A-AUTH",
       "statement": "A caller may request exact identity/content output; configured credentials and provider home choose real external authority. Background logs have narrower disclosure authority.",
-      "next_gate": "C8",
+      "next_gate": "C15",
       "explicit_model_or_evidence_limit": false
     },
     {
       "id": "A-RECEIPT",
       "statement": "Historical receipts establish only their recorded tree, command, tools, environment and bounds; they are not reusable integration or activation gates.",
-      "next_gate": "C12",
+      "next_gate": "C15",
       "explicit_model_or_evidence_limit": true
     }
   ],
@@ -337,6 +343,135 @@
         "Closed scanner alerts before rescan",
         "Whole-program noninterference"
       ]
+    },
+    {
+      "id": "E-FOUNDATION-SOURCE",
+      "kind": "source_review",
+      "revision": "current-source; delivery revision recorded by PR 90",
+      "scope": "C2\u2013C14 implementation and independent phase reviews recorded in the plan; public effect classifications track current source.",
+      "bounds": "Source review and test definitions do not replace a fresh exact-candidate aggregate gate or provider qualification.",
+      "references": [
+        {
+          "path": "docs/correctness-plan.md",
+          "anchor": "## Implementation log"
+        },
+        {
+          "path": "docs/assurance/operations.md"
+        },
+        {
+          "path": "docs/assurance/qualification.json"
+        }
+      ],
+      "exclusions": [
+        "Whole-program theorem",
+        "Unrecorded execution receipts",
+        "Live provider compatibility"
+      ]
+    },
+    {
+      "id": "E-VAULT-CURRENT",
+      "kind": "verification_receipt",
+      "revision": "source_sha256 map in receipt",
+      "scope": "Finite custody and publication model; 11 safety/control/witness configurations.",
+      "bounds": "Two publishers/one reader/one prune in custody; one publisher/one reader/two prune cycles/one restart in publication; 256 MiB JVM, 45 seconds per case, 32 MiB logs.",
+      "exclusions": [
+        "No production refinement",
+        "No power-loss or network filesystem theorem",
+        "No fairness or unbounded actor theorem"
+      ],
+      "references": [
+        {
+          "path": "verify/vault/README.md"
+        }
+      ],
+      "receipt": {
+        "path": "docs/assurance/receipts/2026-09-23-vault.json",
+        "sha256": "1b4ad4b49ace20be2265a7270214bbc033b764215ff964aee3c3269a7ae88bb7"
+      }
+    },
+    {
+      "id": "E-WATCH-CURRENT",
+      "kind": "verification_receipt",
+      "revision": "source_sha256 map in receipt",
+      "scope": "Finite native dispatch model; 13 safety/control/witness configurations.",
+      "bounds": "Two watchers, one target, two operations, four records per operation, one generation change; no fairness; 256 MiB JVM, 45 seconds per case, 32 MiB logs.",
+      "exclusions": [
+        "No provider-attested operation association",
+        "No production/filesystem refinement",
+        "No eventual progress guarantee"
+      ],
+      "references": [
+        {
+          "path": "verify/watch/README.md"
+        }
+      ],
+      "receipt": {
+        "path": "docs/assurance/receipts/2026-09-23-watch.json",
+        "sha256": "f1039fa3600b554a8c863d24168a27c69e8703ce538c86b1e6f9249a38fe83ba"
+      }
+    },
+    {
+      "id": "E-CORE-CURRENT",
+      "kind": "verification_receipt",
+      "revision": "source_sha256 map in receipt",
+      "scope": "Selected production Rust admission, arithmetic and usage kernels under Kani.",
+      "bounds": "Full scalar numeric domains; index lengths 0/1/2/4 and four-edit sequence; production limits unchanged.",
+      "exclusions": [
+        "No parsing/OS/allocation theorem",
+        "No whole-core or whole-system proof",
+        "Unsupported paths must be shown unreachable"
+      ],
+      "references": [
+        {
+          "path": "verify/core/README.md"
+        }
+      ],
+      "receipt": {
+        "path": "docs/assurance/receipts/2026-09-23-core.json",
+        "sha256": "4ff69000d57d99a03b4e4852c19647a06aa8666620f4d4362c44e62b871dc991"
+      }
+    },
+    {
+      "id": "E-TRANSCRIPT-CURRENT",
+      "kind": "verification_receipt",
+      "revision": "source_sha256 map in receipt",
+      "scope": "Unbounded Lean structural list laws plus finite actual Rust dialect correspondence.",
+      "bounds": "27 theorems, 20 synthetic cases, 23 steps per provider; kernel replay and both exact intended mutants.",
+      "exclusions": [
+        "No universal Rust refinement",
+        "No branching/unknown-wire dialect theorem",
+        "No semantic equivalence of lossy output"
+      ],
+      "references": [
+        {
+          "path": "verify/transcript/README.md"
+        }
+      ],
+      "receipt": {
+        "path": "docs/assurance/receipts/2026-09-23-transcript.json",
+        "sha256": "8f8e785e5464e0aa0c4af795e9ad739e7a28370bd9cd91b0e1af8b4153fd62fc"
+      }
+    },
+    {
+      "id": "E-STRESS-CURRENT",
+      "kind": "verification_receipt",
+      "revision": "source_sha256 map in receipt",
+      "scope": "Bounded synthetic operation, process and fault suites.",
+      "bounds": "See retained exact suite inventory and receipt bounds; fixed sequence seed and finite capacities.",
+      "exclusions": [
+        "No physical power-loss or real full-volume qualification",
+        "No whole-process-tree RSS theorem",
+        "No live provider acceptance"
+      ],
+      "references": [
+        {
+          "path": "verify/stress/README.md"
+        }
+      ],
+      "receipt": {
+        "path": "docs/assurance/receipts/2026-09-23-stress.json",
+        "sha256": "4709dbd31737c91efc2a4a793a11b7de10bfdc2389c19e334b51d8a3e489fe24"
+      }
     }
   ],
   "invariants": [
@@ -353,14 +488,15 @@
       "evidence": [
         "E-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-PLAN"
+        "E-PLAN",
+        "E-FOUNDATION-SOURCE"
       ],
       "negative_control": "Foreign store/session and changed-input fixtures; generated identity laws.",
       "exclusions": [
         "Universal correctness",
         "Unqualified provider/platform behavior"
       ],
-      "next_gate": "C2",
+      "next_gate": "C15",
       "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
     },
     {
@@ -377,14 +513,15 @@
       "evidence": [
         "E-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-PLAN"
+        "E-PLAN",
+        "E-FOUNDATION-SOURCE"
       ],
       "negative_control": "Two-process provider/mutator exclusion and fail-closed unsupported-mode tests.",
       "exclusions": [
         "Universal correctness",
         "Unqualified provider/platform behavior"
       ],
-      "next_gate": "C2",
+      "next_gate": "C15",
       "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
     },
     {
@@ -400,14 +537,15 @@
       "evidence": [
         "E-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-PLAN"
+        "E-PLAN",
+        "E-FOUNDATION-SOURCE"
       ],
       "negative_control": "Fault injection at every publication boundary plus source-byte comparisons.",
       "exclusions": [
         "Universal correctness",
         "Unqualified provider/platform behavior"
       ],
-      "next_gate": "C3",
+      "next_gate": "C15",
       "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
     },
     {
@@ -425,14 +563,15 @@
         "E-SOURCE",
         "E-TEST-DEFINITIONS",
         "E-PLAN",
-        "E-VAULT-TLC"
+        "E-VAULT-TLC",
+        "E-FOUNDATION-SOURCE"
       ],
       "negative_control": "Real storage sequences and model/production correspondence; missing/corrupt-root controls.",
       "exclusions": [
         "Universal correctness",
         "Unqualified provider/platform behavior"
       ],
-      "next_gate": "C3",
+      "next_gate": "C15",
       "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
     },
     {
@@ -448,14 +587,15 @@
       "evidence": [
         "E-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-PLAN"
+        "E-PLAN",
+        "E-FOUNDATION-SOURCE"
       ],
       "negative_control": "Process-death/syscall fault matrix including publication succeeded but sync failed.",
       "exclusions": [
         "Universal correctness",
         "Unqualified provider/platform behavior"
       ],
-      "next_gate": "C3",
+      "next_gate": "C15",
       "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
     },
     {
@@ -470,14 +610,15 @@
       "evidence": [
         "E-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-PLAN"
+        "E-PLAN",
+        "E-FOUNDATION-SOURCE"
       ],
       "negative_control": "Production predicate proofs plus independent dialect oracle and invalid-plan controls.",
       "exclusions": [
         "Universal correctness",
         "Unqualified provider/platform behavior"
       ],
-      "next_gate": "C6",
+      "next_gate": "C15",
       "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
     },
     {
@@ -493,14 +634,15 @@
       "evidence": [
         "E-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-PLAN"
+        "E-PLAN",
+        "E-FOUNDATION-SOURCE"
       ],
       "negative_control": "Arithmetic/loop-bound proofs and generated repeated-operation laws; native behavior separate.",
       "exclusions": [
         "Universal correctness",
         "Unqualified provider/platform behavior"
       ],
-      "next_gate": "C6",
+      "next_gate": "C15",
       "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
     },
     {
@@ -515,14 +657,15 @@
       "evidence": [
         "E-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-PLAN"
+        "E-PLAN",
+        "E-FOUNDATION-SOURCE"
       ],
       "negative_control": "Frozen versioned independent fixtures, malformed-input fuzz and continuation qualification.",
       "exclusions": [
         "Universal correctness",
         "Unqualified provider/platform behavior"
       ],
-      "next_gate": "C5",
+      "next_gate": "C15",
       "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
     },
     {
@@ -537,14 +680,15 @@
       "evidence": [
         "E-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-PLAN"
+        "E-PLAN",
+        "E-FOUNDATION-SOURCE"
       ],
       "negative_control": "All-order protocol model and bounded unrelated/duplicate/pre-ack fixtures.",
       "exclusions": [
         "Universal correctness",
         "Unqualified provider/platform behavior"
       ],
-      "next_gate": "C4",
+      "next_gate": "C15",
       "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
     },
     {
@@ -560,14 +704,15 @@
       "evidence": [
         "E-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-PLAN"
+        "E-PLAN",
+        "E-FOUNDATION-SOURCE"
       ],
       "negative_control": "Crash/restart/two-watcher model and uncertainty-expiry negative controls.",
       "exclusions": [
         "Universal correctness",
         "Unqualified provider/platform behavior"
       ],
-      "next_gate": "C4",
+      "next_gate": "C15",
       "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
     },
     {
@@ -583,14 +728,15 @@
       "evidence": [
         "E-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-PLAN"
+        "E-PLAN",
+        "E-FOUNDATION-SOURCE"
       ],
       "negative_control": "Sentinel/noninterference tests over every sink, plus per-alert scanner triage.",
       "exclusions": [
         "Universal correctness",
         "Unqualified provider/platform behavior"
       ],
-      "next_gate": "C8",
+      "next_gate": "C15",
       "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
     },
     {
@@ -606,14 +752,15 @@
       "evidence": [
         "E-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-PLAN"
+        "E-PLAN",
+        "E-FOUNDATION-SOURCE"
       ],
       "negative_control": "Strict inspection mode and process/filesystem/network fixtures.",
       "exclusions": [
         "Universal correctness",
         "Unqualified provider/platform behavior"
       ],
-      "next_gate": "C8",
+      "next_gate": "C15",
       "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
     },
     {
@@ -629,14 +776,15 @@
       "evidence": [
         "E-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-PLAN"
+        "E-PLAN",
+        "E-FOUNDATION-SOURCE"
       ],
       "negative_control": "Boundary/stress receipts and process-custody accounting; blocked pipes and descendants.",
       "exclusions": [
         "Universal correctness",
         "Unqualified provider/platform behavior"
       ],
-      "next_gate": "C14",
+      "next_gate": "C15",
       "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
     },
     {
@@ -652,14 +800,15 @@
       "evidence": [
         "E-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-PLAN"
+        "E-PLAN",
+        "E-FOUNDATION-SOURCE"
       ],
       "negative_control": "Generated counter/reset laws and source-bound independent measurement fixtures.",
       "exclusions": [
         "Universal correctness",
         "Unqualified provider/platform behavior"
       ],
-      "next_gate": "C11",
+      "next_gate": "C15",
       "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
     },
     {
@@ -675,14 +824,15 @@
       "evidence": [
         "E-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-PLAN"
+        "E-PLAN",
+        "E-FOUNDATION-SOURCE"
       ],
       "negative_control": "Held-out/blinded task outcomes and adversarial semantic counterexamples.",
       "exclusions": [
         "Universal correctness",
         "Unqualified provider/platform behavior"
       ],
-      "next_gate": "C14",
+      "next_gate": "C15",
       "review_trigger": "Any change to relevant identity, data representation, effect boundary, dependency or provider version."
     },
     {
@@ -698,7 +848,8 @@
       "evidence": [
         "E-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-PLAN"
+        "E-PLAN",
+        "E-FOUNDATION-SOURCE"
       ],
       "negative_control": "Pinned tools/provenance and exact candidate gates, then separately recorded qualified activation.",
       "exclusions": [
@@ -728,20 +879,20 @@
       ],
       "status": "source_reviewed",
       "evidence": [
-        "E-SOURCE",
+        "E-FOUNDATION-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-BASELINE-CI"
+        "E-CORE-CURRENT"
       ],
       "assumptions": [
         "A-OS",
         "A-RECEIPT",
         "A-PROVIDER"
       ],
-      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "bounds": "Selected production arithmetic and UsageSample kernels have explicit Kani harnesses; absent, reported zero, reset, partial and full lifetime states remain distinct.",
       "exclusions": [
-        "Saturating arithmetic, missing/reset usage and byte/token estimation are not established for all inputs."
+        "Parsing, provider meaning, allocations and all core behavior are not proved."
       ],
-      "next_gate": "C6"
+      "next_gate": "C15"
     },
     {
       "name": "Plan IR and admission",
@@ -759,24 +910,27 @@
         },
         {
           "path": "crates/gobstopper-cli/src/main.rs"
+        },
+        {
+          "path": "crates/gobstopper-core/src/admission.rs"
         }
       ],
       "status": "source_reviewed",
       "evidence": [
-        "E-SOURCE",
+        "E-FOUNDATION-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-BASELINE-CI"
+        "E-CORE-CURRENT"
       ],
       "assumptions": [
         "A-OS",
         "A-RECEIPT",
         "A-PROVIDER"
       ],
-      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "bounds": "One production scalar admission kernel controls plan/edit/target bounds and rejection atomicity; Kani covers scalar domains and declared bounded sequences.",
       "exclusions": [
-        "No proof that every public adapter entry uses one authoritative contract."
+        "No whole-adapter theorem; callback and serialization behavior remains separately tested."
       ],
-      "next_gate": "C6"
+      "next_gate": "C15"
     },
     {
       "name": "Strategy selection, protected tail, ranking",
@@ -793,20 +947,19 @@
       ],
       "status": "source_reviewed",
       "evidence": [
-        "E-SOURCE",
-        "E-TEST-DEFINITIONS",
-        "E-BASELINE-CI"
+        "E-FOUNDATION-SOURCE",
+        "E-TEST-DEFINITIONS"
       ],
       "assumptions": [
         "A-OS",
         "A-RECEIPT",
         "A-PROVIDER"
       ],
-      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "bounds": "Shared admission, conservative suffix and explicit protected/unknown payload rules; production strategy regressions and fixed dialect corpus.",
       "exclusions": [
-        "All-strategy validity, convergence and semantic quality need independent properties."
+        "Choice quality and retention are empirical; all future task semantics are outside the proof."
       ],
-      "next_gate": "C6"
+      "next_gate": "C15"
     },
     {
       "name": "Provider discovery and active context",
@@ -832,20 +985,19 @@
       ],
       "status": "source_reviewed",
       "evidence": [
-        "E-SOURCE",
-        "E-TEST-DEFINITIONS",
-        "E-BASELINE-CI"
+        "E-FOUNDATION-SOURCE",
+        "E-TEST-DEFINITIONS"
       ],
       "assumptions": [
         "A-OS",
         "A-RECEIPT",
         "A-PROVIDER"
       ],
-      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "bounds": "Strict duplicate-aware frozen byte parsing and synthetic supported dialect oracles; bounded regular-file prefix discovery.",
       "exclusions": [
-        "Schema drift, missing data and liveness heuristics are not ownership proof."
+        "Schema/version drift and provider memory are unqualified; liveness is not custody."
       ],
-      "next_gate": "C5"
+      "next_gate": "C15"
     },
     {
       "name": "Structural verification",
@@ -861,20 +1013,20 @@
       ],
       "status": "source_reviewed",
       "evidence": [
-        "E-SOURCE",
+        "E-FOUNDATION-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-BASELINE-CI"
+        "E-TRANSCRIPT-CURRENT"
       ],
       "assumptions": [
         "A-OS",
         "A-RECEIPT",
         "A-PROVIDER"
       ],
-      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "bounds": "Independent synthetic expected validity/projections and finite Lean-to-Rust correspondence cover three supported dialects.",
       "exclusions": [
-        "A clean report is relative to implemented checks, not provider resume or semantic proof."
+        "A clean structural report is not proprietary provider resume acceptance or semantic equivalence."
       ],
-      "next_gate": "C5"
+      "next_gate": "C15"
     },
     {
       "name": "Copy/fork transaction and retry receipts",
@@ -897,20 +1049,20 @@
       ],
       "status": "source_reviewed",
       "evidence": [
-        "E-SOURCE",
+        "E-FOUNDATION-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-BASELINE-CI"
+        "E-VAULT-CURRENT"
       ],
       "assumptions": [
         "A-OS",
         "A-RECEIPT",
         "A-PROVIDER"
       ],
-      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "bounds": "All participating copies retain source and exact candidate before no-clobber output. Version 2 receipts reconcile exact bytes without rerunning a strategy; visibility and durability are distinct.",
       "exclusions": [
-        "Final reread/rename race, syscall uncertainty and receipt reconciliation remain."
+        "Owner-controlled stable ancestors and cooperating locks assumed; operation pins grow indefinitely; no physical power-loss theorem."
       ],
-      "next_gate": "C3"
+      "next_gate": "C15"
     },
     {
       "name": "Vault, recovery, pruning",
@@ -930,21 +1082,20 @@
       ],
       "status": "source_reviewed",
       "evidence": [
-        "E-SOURCE",
+        "E-FOUNDATION-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-BASELINE-CI",
-        "E-VAULT-TLC"
+        "E-VAULT-CURRENT"
       ],
       "assumptions": [
         "A-OS",
         "A-RECEIPT",
         "A-PROVIDER"
       ],
-      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "bounds": "Strict bounded roots and history, shared readers/exclusive prune, retained intent pins and fail-closed unlink ordering. Finite custody/publication models plus injected storage failures and operation sequences.",
       "exclusions": [
-        "Finite custody pilot includes process termination but excludes filesystem crash ordering and noncooperating readers; root/pin lifecycle incomplete."
+        "Finite abstract actions do not establish real filesystem durability or unbounded refinement; no abandoned-pin retirement."
       ],
-      "next_gate": "C3"
+      "next_gate": "C15"
     },
     {
       "name": "Devin SQLite mutation/restore",
@@ -961,20 +1112,19 @@
       ],
       "status": "source_reviewed",
       "evidence": [
-        "E-SOURCE",
-        "E-TEST-DEFINITIONS",
-        "E-BASELINE-CI"
+        "E-FOUNDATION-SOURCE",
+        "E-TEST-DEFINITIONS"
       ],
       "assumptions": [
         "A-OS",
         "A-RECEIPT",
         "A-PROVIDER"
       ],
-      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "bounds": "Direct store writes and restore refuse before effects; canonical export and pure byte transformation remain available.",
       "exclusions": [
-        "Released flock probe and SQL transaction do not retain provider-compatible custody."
+        "No qualified direct mutation custody exists; disabled is not a proof of hypothetical store mutation."
       ],
-      "next_gate": "C2"
+      "next_gate": "C15"
     },
     {
       "name": "Native compaction and watch state",
@@ -995,24 +1145,27 @@
         },
         {
           "path": "crates/gobstopper-adapters/src/claude.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/native_operations.rs"
         }
       ],
       "status": "source_reviewed",
       "evidence": [
-        "E-SOURCE",
+        "E-FOUNDATION-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-BASELINE-CI"
+        "E-WATCH-CURRENT"
       ],
       "assumptions": [
         "A-OS",
         "A-RECEIPT",
         "A-PROVIDER"
       ],
-      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "bounds": "Version 1 durable journal and generation 9 conservative watch cache, exact target locks, durable dispatch-before-call and permanent unknown suppression. Release native dispatch guarded.",
       "exclusions": [
-        "Session-only ACP correlation, unknown expiry, multiple watchers and Claude lifecycle remain."
+        "No live cells qualified; Codex first-item association and weaker ACP session correlation remain assumptions; fixture evidence only."
       ],
-      "next_gate": "C4"
+      "next_gate": "C15"
     },
     {
       "name": "Hooks and settings",
@@ -1029,20 +1182,19 @@
       ],
       "status": "source_reviewed",
       "evidence": [
-        "E-SOURCE",
-        "E-TEST-DEFINITIONS",
-        "E-BASELINE-CI"
+        "E-FOUNDATION-SOURCE",
+        "E-TEST-DEFINITIONS"
       ],
       "assumptions": [
         "A-OS",
         "A-RECEIPT",
         "A-PROVIDER"
       ],
-      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "bounds": "Exact settings ownership and inert private bundles; bounded strict callback input, exact frozen source identity and unpaired zero-savings observations.",
       "exclusions": [
-        "Settings races, backup identity and exact pre/post native operation correlation remain."
+        "Provider-owned settings activation and exact callback operation correlation are unqualified."
       ],
-      "next_gate": "C9"
+      "next_gate": "C15"
     },
     {
       "name": "Configuration and plugins",
@@ -1062,20 +1214,19 @@
       ],
       "status": "source_reviewed",
       "evidence": [
-        "E-SOURCE",
-        "E-TEST-DEFINITIONS",
-        "E-BASELINE-CI"
+        "E-FOUNDATION-SOURCE",
+        "E-TEST-DEFINITIONS"
       ],
       "assumptions": [
         "A-OS",
         "A-RECEIPT",
         "A-EXT"
       ],
-      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "bounds": "MCP refuses configured extensions before effects and skips inference. CLI trusted execution uses hash-declared bundles, bounded dual streams/deadlines and owned process groups.",
       "exclusions": [
-        "Trusted extensions are unsandboxed; aggregate input and effect boundaries need gates."
+        "Trusted executable can perform arbitrary user-authority I/O; no sandbox or escaped-descendant theorem."
       ],
-      "next_gate": "C8"
+      "next_gate": "C15"
     },
     {
       "name": "Model scorers/digests",
@@ -1102,20 +1253,19 @@
       ],
       "status": "source_reviewed",
       "evidence": [
-        "E-SOURCE",
-        "E-TEST-DEFINITIONS",
-        "E-BASELINE-CI"
+        "E-FOUNDATION-SOURCE",
+        "E-TEST-DEFINITIONS"
       ],
       "assumptions": [
         "A-OS",
         "A-RECEIPT",
         "A-EXT"
       ],
-      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "bounds": "Installed Apple bridge only; cache identity covers exact submitted bounded source/task projection, schema and available model/client identity. Strict complete results and bounded owned inference preserve heuristic fallback.",
       "exclusions": [
-        "Caches/model drift/remote privacy and unsupported rationale remain separate obligations."
+        "Omitted full-source context, opaque model weights and future task correctness are not attested; ambient loaders/environment and stable owner-controlled parents remain trusted; no live Apple/keychain/provider qualification."
       ],
-      "next_gate": "C10"
+      "next_gate": "C15"
     },
     {
       "name": "MCP and CLI inspection",
@@ -1136,20 +1286,19 @@
       ],
       "status": "source_reviewed",
       "evidence": [
-        "E-SOURCE",
-        "E-TEST-DEFINITIONS",
-        "E-BASELINE-CI"
+        "E-FOUNDATION-SOURCE",
+        "E-TEST-DEFINITIONS"
       ],
       "assumptions": [
         "A-OS",
         "A-RECEIPT",
         "A-EXT"
       ],
-      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "bounds": "64 KiB strict JSON-RPC frames, supported protocol versions, closed diagnostics and explicit recovery-content opt-in; MCP planning has no external-execution opt-in.",
       "exclusions": [
-        "MCP framing currently unbounded; plan can invoke trusted code/models; requested content still sensitive."
+        "Explicitly authorized outputs may be sensitive; admitted external planning code is trusted."
       ],
-      "next_gate": "C8"
+      "next_gate": "C15"
     },
     {
       "name": "Evaluation, retention, reporting",
@@ -1178,20 +1327,19 @@
       ],
       "status": "source_reviewed",
       "evidence": [
-        "E-SOURCE",
-        "E-TEST-DEFINITIONS",
-        "E-BASELINE-CI"
+        "E-FOUNDATION-SOURCE",
+        "E-TEST-DEFINITIONS"
       ],
       "assumptions": [
         "A-OS",
         "A-RECEIPT",
         "A-PROVIDER"
       ],
-      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "bounds": "Source-hashed usage provenance, reported/missing/reset distinctions, deduplicated exact evidence pairs, incomplete coverage reporting and registered four-arm synthetic controls.",
       "exclusions": [
-        "Proxies, selection bias, annotation authority and counter resets need stronger independent oracles."
+        "Recorded occupancy reduction is not billed savings; lexical/judge retention is not future-task success."
       ],
-      "next_gate": "C11"
+      "next_gate": "C15"
     },
     {
       "name": "Monitor and experiments",
@@ -1218,20 +1366,20 @@
       ],
       "status": "source_reviewed",
       "evidence": [
-        "E-SOURCE",
+        "E-FOUNDATION-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-BASELINE-CI"
+        "E-STRESS-CURRENT"
       ],
       "assumptions": [
         "A-OS",
         "A-RECEIPT",
         "A-PROVIDER"
       ],
-      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "bounds": "Private isolated outputs, bounded owned subprocesses, read-only monitor and shared-custody retention reader; provider study requires explicit opt-in.",
       "exclusions": [
-        "Independent Python vault reader lacks Rust custody; real accounts require explicit qualification."
+        "No real account/provider qualification from offline fixtures; no aggregate all-process resource theorem."
       ],
-      "next_gate": "C14"
+      "next_gate": "C15"
     },
     {
       "name": "Build, supply chain, public claims",
@@ -1256,20 +1404,19 @@
       ],
       "status": "source_reviewed",
       "evidence": [
-        "E-SOURCE",
-        "E-TEST-DEFINITIONS",
-        "E-BASELINE-CI"
+        "E-FOUNDATION-SOURCE",
+        "E-TEST-DEFINITIONS"
       ],
       "assumptions": [
         "A-OS",
         "A-RECEIPT",
         "A-PROVIDER"
       ],
-      "bounds": "Reviewed baseline source and linked synthetic regression definitions; historical execution evidence only.",
+      "bounds": "Pinned proof tools, expected-failure mutants, exact input hashes and required Linux proof/test jobs; complete immutable baseline scanner triage.",
       "exclusions": [
-        "No whole-system theorem or universal provider/platform/install qualification; scan success leaves baseline alerts."
+        "Integration/installation evidence recorded separately; no alert-free security theorem or universal platform qualification."
       ],
-      "next_gate": "C12"
+      "next_gate": "C15"
     }
   ],
   "compatibility": [
@@ -1284,7 +1431,7 @@
       ],
       "read_write_behavior": "Additive optional/defaulted fields; enum vocabulary and validation are closed. Malformed/unsupported entries must not be interpreted as successful operations.",
       "upgrade_downgrade": "No destructive migration. Older readers may ignore additive fields; new action/outcome vocabulary requires explicit compatibility tests.",
-      "next_gate": "C11"
+      "next_gate": "C15"
     },
     {
       "id": "vault-manifest",
@@ -1295,35 +1442,35 @@
           "anchor": "fn reconstruct_manifest"
         }
       ],
-      "read_write_behavior": "Version 3 chunk reconstruction checks hashes/size/source hash; unsupported numbered manifest versions refuse. Index optional fields default for old records.",
+      "read_write_behavior": "Version 3 chunk reconstruction checks hashes/size/source hash; unsupported numbered manifest versions refuse. Index optional fields default for old records. Raw Devin SQLite objects remain archived but replay refuses them; replay requires a canonical single-session export and does not materialize a raw store.",
       "upgrade_downgrade": "Manifest digest differs from reconstructed source digest. Older binaries may not read v3; preserve old artifact/state, never down-convert by overwriting originals.",
-      "next_gate": "C3"
+      "next_gate": "C15"
     },
     {
       "id": "copy-receipt",
-      "version": "schema_version=1; CopyReceipt and DevinStoreReceipt",
+      "version": "write schema_version=2; explicit legacy version 1 reader",
       "source": [
         {
           "path": "crates/gobstopper-adapters/src/copy.rs",
           "anchor": "pub struct CopyReceipt"
         }
       ],
-      "read_write_behavior": "CopyReceipt readers use deny_unknown_fields and exact version checks before reuse; optional snapshot pin field admits earlier shapes. DevinStoreReceipt is a strict serialized type, but direct store operations do not implement receipt-based retry. The prune pin reader extracts references from generic JSON.",
-      "upgrade_downgrade": "Unknown CopyReceipt fields/versions refuse reuse. No implicit receipt downgrade, deletion or abandonment policy; no store retry protocol inferred. Pending/completed pins remain retained.",
-      "next_gate": "C3"
+      "read_write_behavior": "Strict closed fields and source/provider/identity/hash bindings. V2 retains before and exact candidate objects; pending legacy receipt without candidate refuses recovery. Prune validates every operation root.",
+      "upgrade_downgrade": "Never rewrite/drop unsupported receipts or pins. A completed legacy receipt is checked against its exact output; ambiguous/missing output remains blocked. No automatic pin retirement.",
+      "next_gate": "C15"
     },
     {
       "id": "watch-state",
-      "version": "generation=8",
+      "version": "generation=9; native journal version=1",
       "source": [
         {
           "path": "crates/gobstopper-cli/src/main.rs",
           "anchor": "WATCH_STATE_GENERATION"
         }
       ],
-      "read_write_behavior": "Missing fields default; old generations discard settlement arms. Current >= check accepts future generations; corrupt/unreadable state currently defaults empty. Clocks older than one day drop.",
-      "upgrade_downgrade": "Not an exact-version journal. Downgrading across future generations or losing state can lose unresolved-operation knowledge; durable migration/reconciliation required.",
-      "next_gate": "C4"
+      "read_write_behavior": "Bounded strict exact-version state; conservative migration of older uncertainty. Missing registered journal, torn content or future version refuses; time expiry never clears native unknown.",
+      "upgrade_downgrade": "Older binaries ignore the durable journal and cannot safely resume watchers against unresolved new state. Preserve binary/config/state; rollback requires isolated read-only operation or reviewed reconciliation.",
+      "next_gate": "C15"
     },
     {
       "id": "plugin",
@@ -1334,9 +1481,9 @@
           "anchor": "pub struct Manifest"
         }
       ],
-      "read_write_behavior": "Strict manifest/request/response fields, closed capabilities, binary SHA trust. Commands may run with host authority.",
+      "read_write_behavior": "Strict manifest/request/response fields, closed capabilities, executable plus declared bundle SHA. Commands execute with user authority under bounded host streams and deadlines.",
       "upgrade_downgrade": "Version mismatch refused; no sandbox or forward schema negotiation. Requalify binary hash, capabilities and all effective inputs.",
-      "next_gate": "C8"
+      "next_gate": "C15"
     },
     {
       "id": "retention",
@@ -1349,7 +1496,7 @@
       ],
       "read_write_behavior": "Manifest source SHA and annotation schema bind the study source; typed labels do not establish label truth.",
       "upgrade_downgrade": "Version/source mismatch refused; independent reviewed labels and held-out evaluation required for semantic claims.",
-      "next_gate": "C11"
+      "next_gate": "C15"
     },
     {
       "id": "report",
@@ -1360,9 +1507,9 @@
           "anchor": "pub const SCHEMA_VERSION"
         }
       ],
-      "read_write_behavior": "--strict controls gobstopper extension emission. Stable normalized metrics need missingness/provenance preservation.",
+      "read_write_behavior": "Additive provenance, measurement basis, qualificationStatus and nativeActivation fields. Full lifetime totals only; missing/reset context is not zero, replay reduction is not measured billing.",
       "upgrade_downgrade": "Additive evolution under same profile only with compatibility tests; a new meaning/unit needs new version.",
-      "next_gate": "C11"
+      "next_gate": "C15"
     },
     {
       "id": "stable-cli-json",
@@ -1375,7 +1522,7 @@
       ],
       "read_write_behavior": "Repository policy promises additive fields, not wire negotiation. policy-check --session reads provider state despite numeric form being pure.",
       "upgrade_downgrade": "No blanket downgrade promise; semantic changes require explicit contract fixtures and versioned shape where necessary.",
-      "next_gate": "C1"
+      "next_gate": "C15"
     },
     {
       "id": "mcp",
@@ -1386,9 +1533,9 @@
           "anchor": "const PROTOCOL_VERSION"
         }
       ],
-      "read_write_behavior": "Initialize echoes requested protocolVersion without an explicit supported-version gate. Content tools require --allow-transcript-content; planning extensions remain trusted.",
-      "upgrade_downgrade": "Protocol negotiation/version rejection and bounded request framing remain C8 work; no mutating tool advertised.",
-      "next_gate": "C8"
+      "read_write_behavior": "Strict duplicate-free JSON-RPC 2.0, bounded 64 KiB newline frames and supported-version negotiation. MCP rejects configured extension strategies and skips model/scorer/digest execution; content opt-in changes only explicit recovery disclosure.",
+      "upgrade_downgrade": "Unsupported versions/shape refuse; no mutating or external-execution tool/flag advertised.",
+      "next_gate": "C15"
     },
     {
       "id": "assurance",
@@ -1401,7 +1548,7 @@
       ],
       "read_write_behavior": "Versioned repository evidence inventory; source markers and structural cross-checks, no proof inference.",
       "upgrade_downgrade": "Unknown ledger versions reject; update validator and negative fixtures together on schema changes.",
-      "next_gate": "C12"
+      "next_gate": "C15"
     }
   ],
   "activation_gates": [
@@ -1413,13 +1560,13 @@
         "Independent review and source/scanner triage",
         "Exact tree/tool/lockfile receipts"
       ],
-      "permits": "Publish reviewed guarded source/artifact after repository admission.",
+      "permits": "Publish and install the reviewed guarded artifact after required current-candidate checks and installation/recovery verification.",
       "does_not_permit": [
-        "Unqualified provider mutation",
-        "Installing/restarting live watchers",
-        "Reusing historical receipts as current gates"
+        "Activating unqualified native/provider-store modes",
+        "Restarting an older watcher that ignores unresolved journal state",
+        "Reusing historical receipts as current required gates"
       ],
-      "next_gate": "C12"
+      "next_gate": "C15"
     },
     {
       "id": "native",
@@ -1435,7 +1582,7 @@
         "Treating acknowledgement or timeout as completion",
         "Fallback to direct surgery after uncertain native dispatch"
       ],
-      "next_gate": "C13"
+      "next_gate": "C15"
     },
     {
       "id": "direct-write",
@@ -1451,7 +1598,7 @@
         "Unsafe rename after final reread",
         "Deleting source or receipt state to recover"
       ],
-      "next_gate": "C2"
+      "next_gate": "C15"
     },
     {
       "id": "provider-study",
@@ -1467,7 +1614,7 @@
         "Live user session mutation",
         "Population-wide savings/retention claims from a convenience case"
       ],
-      "next_gate": "C13"
+      "next_gate": "C15"
     }
   ]
 }

@@ -178,13 +178,14 @@ fn default_codex_writer_cards_are_recalled_in_every_field() {
         context: Some("context-key".into()),
         covers_items: 9,
     };
-    codex::apply(
-        &path,
+    let candidate = codex::transform(
+        &fs::read(&path).unwrap(),
         &[Edit::InjectDigest {
             digest: digest.clone(),
         }],
     )
     .unwrap();
+    fs::write(&path, candidate).unwrap();
     let snap = vault::snapshot(&path, Provider::Codex, "synthetic", None, &f.root()).unwrap();
     for query in [
         "goal-key",
@@ -220,6 +221,26 @@ fn lookalike_tool_and_assistant_cards_are_not_recalled() {
 }
 
 #[test]
+fn ambiguous_records_are_unsearchable_and_never_recalled_as_cards() {
+    let f = Fixture::new();
+    let raw = r#"{"type":"response_item","payload":{"type":"message","role":"assistant","role":"user","content":[{"type":"input_text","text":"[gobstopper state card]\ngoal: needle\n"}]}}"#;
+    let snapshot = f.snapshot(raw.as_bytes());
+    let search = recovery::search_snapshot(&snapshot.sha256, "needle", 1, &f.root()).unwrap();
+    assert_eq!(search.unsearchable_records, 1);
+    assert_eq!(search.matched_records, 0);
+    assert!(vault::recall("*", None, None, &f.root())
+        .unwrap()
+        .is_empty());
+    // Explicit raw reading still recovers the original evidence exactly.
+    assert_eq!(
+        recovery::read_snapshot_record(&snapshot.sha256, 0, 0, 4096, &f.root())
+            .unwrap()
+            .content,
+        raw
+    );
+}
+
+#[test]
 fn legacy_snapshot_with_excess_records_is_rejected_before_expansion() {
     let f = Fixture::new();
     let root = f.root();
@@ -235,4 +256,54 @@ fn legacy_snapshot_with_excess_records_is_rejected_before_expansion() {
         .unwrap_err()
         .to_string()
         .contains("record limit"));
+}
+
+#[test]
+#[cfg(unix)]
+fn independent_python_reader_matches_rust_for_current_and_legacy_snapshots() {
+    let f = Fixture::new();
+    let bytes = b"{\"text\":\"first\"}\n{\"text\":\"second\"}";
+    let current = f.snapshot(bytes);
+    let root = f.root();
+    fs::create_dir_all(root.join("records")).unwrap();
+    fs::create_dir_all(root.join("objects")).unwrap();
+    let records: Vec<_> = bytes
+        .split(|b| *b == b'\n')
+        .map(|record| {
+            let sha = copy::sha256(record);
+            fs::write(root.join("records").join(&sha), record).unwrap();
+            sha
+        })
+        .collect();
+    let manifest = serde_json::to_vec(&json!({"schema_version":2,"records":records,
+        "trailing_newline":false,"source_sha256":copy::sha256(bytes)}))
+    .unwrap();
+    let legacy = copy::sha256(&manifest);
+    fs::write(root.join("manifests").join(&legacy), manifest).unwrap();
+    let full = copy::sha256(bytes);
+    fs::write(root.join("objects").join(&full), bytes).unwrap();
+    for sha in [&current.sha256, &legacy, &full] {
+        assert_eq!(vault::read_object(sha, &root).unwrap(), bytes);
+    }
+    let script = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/retention-audit.py");
+    let program = "import importlib.util,sys,hashlib\ns=importlib.util.spec_from_file_location('audit',sys.argv[1]);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)\nwith m.vault_reader(sys.argv[2]) as read:\n for sha in sys.argv[3:]: print(hashlib.sha256(read(sha)).hexdigest())\n";
+    let output = std::process::Command::new("python3")
+        .args(["-c", program])
+        .arg(script)
+        .arg(&root)
+        .args([&current.sha256, &legacy, &full])
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(output.stdout)
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        vec![full.as_str(); 3]
+    );
 }

@@ -21,7 +21,15 @@ const CURL_BEARER_ENV: &str = "GOBSTOPPER_CURL_BEARER";
 /// output that could disclose the expanded value.
 pub(crate) fn configure_curl_bearer(command: &mut Command, key: &str) -> anyhow::Result<()> {
     if !safe_bearer_key(key) {
-        anyhow::bail!("invalid API key format");
+        anyhow::bail!("api_key_invalid");
+    }
+    for name in [
+        "AI_GATEWAY_API_KEY",
+        "GOBSTOPPER_LLM_API_KEY",
+        "TYPESAFE_API_KEY",
+        "GOBSTOPPER_JEV_API_KEY",
+    ] {
+        command.env_remove(name);
     }
     command
         .arg("-q")
@@ -43,21 +51,22 @@ pub fn jev_key() -> Option<String> {
 
 /// Store a key in the OS credential store.
 pub fn store_jev_key(key: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(safe_bearer_key(key), "api_key_invalid");
     let entry = keyring::Entry::new(JEV_SERVICE, JEV_ACCOUNT)
-        .map_err(|e| anyhow::anyhow!("keychain unavailable: {e}"))?;
+        .map_err(|_| anyhow::anyhow!("keychain_unavailable"))?;
     entry
         .set_password(key)
-        .map_err(|e| anyhow::anyhow!("keychain store failed: {e}"))
+        .map_err(|_| anyhow::anyhow!("keychain_store_failed"))
 }
 
 /// Remove the stored key. Ok(true) = a credential was deleted.
 pub fn delete_jev_key() -> anyhow::Result<bool> {
     let entry = keyring::Entry::new(JEV_SERVICE, JEV_ACCOUNT)
-        .map_err(|e| anyhow::anyhow!("keychain unavailable: {e}"))?;
+        .map_err(|_| anyhow::anyhow!("keychain_unavailable"))?;
     match entry.delete_credential() {
         Ok(()) => Ok(true),
         Err(keyring::Error::NoEntry) => Ok(false),
-        Err(e) => Err(anyhow::anyhow!("keychain delete failed: {e}")),
+        Err(_) => Err(anyhow::anyhow!("keychain_delete_failed")),
     }
 }
 
@@ -91,7 +100,7 @@ pub fn clipboard_secret() -> Option<String> {
 }
 
 fn safe_bearer_key(s: &str) -> bool {
-    let n = s.chars().count();
+    let n = s.len();
     (1..=4096).contains(&n)
         && !s.contains(char::is_whitespace)
         && s.chars().all(|c| !c.is_control())

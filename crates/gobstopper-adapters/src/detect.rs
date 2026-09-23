@@ -258,13 +258,7 @@ pub fn discover_cached(
 /// can start after session_meta or contain usage records alone. Claude
 /// lines carry `sessionId`/`uuid`. Returns `None` when neither matches.
 pub fn sniff_provider(path: &Path) -> Option<Provider> {
-    use std::io::{BufRead, BufReader};
-    let file = fs::File::open(path).ok()?;
-    for line in BufReader::new(file).lines().take(24) {
-        let Ok(line) = line else { break };
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
-            continue;
-        };
+    for v in crate::payload::head_records(path, 24) {
         let ty = v.get("type").and_then(serde_json::Value::as_str);
         if v.get("payload").is_some()
             && (v.get("ordinal").is_some()

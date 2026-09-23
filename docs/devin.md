@@ -2,10 +2,12 @@
 
 Gobstopper integrates with Devin through its local session store and documented
 control-plane surfaces. It reads Devin's session database for inspection and
-planning and can delegate compaction to Devin's `/compact`. Legacy direct-store
-writes are transactional but lack proven lifetime provider custody. Their
-ownership and restore-identity gaps are tracked in the
-[correctness audit](correctness-audit.md); observed idleness is not a lock.
+planning. Policy can recommend `/compact` to the existing session owner, but
+released CLI native dispatch is blocked pending qualification, even with
+`auto_compact_closed = true`. Direct-store apply and restore are disabled:
+observed idleness and a SQLite transaction do not establish lifetime provider
+custody. See the [activation matrix](assurance/qualification.json) and
+[recovery runbook](assurance/operations.md).
 
 ## Session discovery
 
@@ -30,6 +32,7 @@ active receive native-delegation plans.
 gobstopper detect --json
 gobstopper plan <session-id> --json
 gobstopper verify <session-id> --json
+gobstopper eval <session-id> --json
 gobstopper export <session-id> > session.jsonl
 ```
 
@@ -38,83 +41,40 @@ followed by `message_node` records for the session's main conversation chain.
 The export is what `verify` checks (chain linkage, tool-call pairing) and what
 `eval` consumes — hashing or snapshotting the shared database itself would mix
 unrelated sessions, so the canonical per-session bytes are the unit of record.
+`eval` and `bench` capture that export once and run every strategy against the
+same bytes, with an exact source hash. Neither command changes the database.
+Benchmark rows preserve failed discovered sessions with an explicit failure
+category and unavailable measurements; they do not silently remove those
+sessions from coverage.
 
-For an **active** session, `plan` returns `provider_compact` with control
-`devin: /compact`; `apply` refuses file surgery while the provider holds the
-session lock. For an **idle** session, custom strategies (`auto`, `middle`, …)
-produce elision plans, and `apply` performs the guarded store write below.
-`compact`/`fork` still refuse store-backed sessions: a detached copy is not a
-resumable Devin artifact. Detached export files can be processed and evaluated
-directly.
+For an **active** session, `plan` returns a native control proposal. Idle
+sessions may still produce detached elision plans for evaluation, but direct
+`apply` and `undo` refuse before snapshots, confirmation or database writes.
+`compact`/`fork` also refuse store-backed sessions: a detached canonical export
+is not a resumable Devin artifact. Export bytes remain available to pure
+transforms, structural verification and isolated evaluation.
 
-## Legacy store mutation and unresolved custody
+## Provider custody and compatibility
 
-`gobstopper apply <session-id>` on an idle Devin session rewrites the session
-in place:
+The old direct-store path released its flock probe before starting its SQL
+transaction. A provider could load the session between those steps; same-ID
+foreign stores and changed graphs also weakened restoration identity. No
+qualified provider-compatible lifetime lock was established, so direct writes
+are disabled rather than relying on those checks.
 
-1. The canonical per-session export is snapshot into the vault (the shared
-   database file is never the snapshot unit — unrelated sessions live in it).
-2. The session lock is probed and immediately released; an observed locked
-   session aborts. This leaves a race with a subsequently starting provider.
-3. One SQLite transaction updates elided `chat_message` payloads with
-   conditional identity checks, inserts a Gobstopper digest node on the main
-   chain, and moves `sessions.main_chain_id` to it.
-4. The post-write canonical export is re-derived and verified (chain linkage,
-   tool-call pairing) before commit is considered final.
+Existing `auto_apply_store` and `auto_apply_inplace` configuration fields remain
+accepted for compatibility. They cannot enable direct mutation. A matching
+watch attempt is blocked with `custody_unavailable`; existing configuration is
+preserved. Native compaction has its own opt-in and qualification obligations,
+and a failed or uncertain native attempt never falls back to file surgery.
 
-`gobstopper undo` restores the snapshot: original message payloads and chain
-head are written back and Gobstopper-injected digest nodes are deleted. Undo
-checks for appended foreign nodes, but same-ID foreign stores, graph identity
-and changed current values are not completely bound. These checks do not
-establish safe restoration under concurrent or mismatched state.
+Watch suppression and native outcome reconciliation are documented in the
+[recovery runbook](assurance/operations.md). A liveness marker, unchanged fingerprint,
+or elapsed cooldown alone does not establish ownership or prove that an earlier
+remote operation did nothing.
 
-`watch` can perform this write automatically for idle Devin sessions that
-cross the trigger, but only when the operator opts in:
-
-```toml
-[provider.devin]
-auto_apply_store = true
-```
-
-and only under a provider-scoped watch (`gobstopper watch --provider devin`)
-so Codex/Claude fork preparation is unaffected. Live sessions still defer to
-`/compact` regardless of the flag. When a `[rollout]` entry exists for the
-provider, only the treatment cohort is auto-applied; control sessions log a
-`watch-apply:control` skipped event per content version so the experiment
-keeps its denominator.
-
-Watch caches a per-session fingerprint (chain head + node count for Devin,
-file length+mtime for JSONL, plus the live/idle bit) after every terminal
-decision — apply, terminal plan failure, provider delegation, or no-plan —
-and skips the transcript load while it is unchanged. This matters because
-store-reported context stays stale after a Gobstopper write; without the
-fingerprint every pass would re-plan an unchanged session. Claude in-place
-rewrites additionally require the fingerprint to hold across two
-consecutive passes before writing. That filters ongoing activity but cannot
-close the check-to-write race or protect an already open append descriptor.
-Sessions that are still live skip the transcript load entirely: `auto`
-delegates to the provider for active sessions unconditionally, so the
-loop emits the delegation decision straight from the cheap usage read.
-Two further bounds keep the loop cheap and fair: a successful in-place
-mutation holds the session out of evaluation for `apply_hold_secs`
-(default 1800 — a session that re-appends and re-triggers inside the
-window is churning, not accumulating), and each pass services sessions
-in ascending size order so one multi-minute apply cannot delay every
-session behind it.
-
-The suppression fingerprints, settle arms, and rate-limit clocks persist
-to `~/.local/share/gobstopper/watch-state-<provider>.json` after every
-pass (atomic write, clocks as epoch seconds, entries older than a day
-dropped on load), so restarting the daemon does not re-plan every
-session once. Per-provider state files mean concurrent `--provider`
-watches never share a file. Delegation decisions log only when the
-session's context actually moved — a live session appended to every
-pass would otherwise emit an identical `provider_compact/skipped`
-record each interval.
-
-Long-running sessions can exceed the default 512 MiB transcript bound —
-raise it with `GOBSTOPPER_MAX_TRANSCRIPT_BYTES` (bytes) in the watch
-environment when needed; oversized sessions are skipped, never truncated.
+Large exports default to a 512 MiB bound, configurable with
+`GOBSTOPPER_MAX_TRANSCRIPT_BYTES`. Oversized input is refused without truncation.
 
 ## Native compaction policy
 
@@ -144,8 +104,7 @@ substring — the same resolution `detect`/`plan` use, so
 working directory: it intersects the store's `working_directory` with the
 flock-held `session_locks/*.lock` set and prefers the longest matching
 directory, then the most recently active. It refuses to guess when locked
-sessions are ambiguous — this is what the in-agent rule (below) and TUI
-hook rely on:
+sessions are ambiguous:
 
 ```sh
 gobstopper policy-check --provider devin --session current --json
@@ -176,95 +135,67 @@ min_savings_tokens = 4_096
 `floor_tokens` and `min_savings_tokens` remain useful shared policy metadata,
 but Devin controls the actual post-compaction result.
 
-## Prompt hook
+## Hook settings candidates
 
-Devin's `UserPromptSubmit` hook can advise compaction before each turn.
-`gobstopper install-hooks` registers a native callback —
+`install-hooks` and `uninstall-hooks` export inert settings bundles; they do
+not change Devin or Claude settings. The destination must be a new file in an
+existing directory:
 
-```json
-{
-  "UserPromptSubmit": [
-    {
-      "matcher": "",
-      "hooks": [
-        {
-          "type": "command",
-          "command": "gobstopper hook prompt-policy:devin",
-          "timeout": 10
-        }
-      ]
-    }
-  ]
-}
+```sh
+gobstopper install-hooks --output ./hook-candidates.json
+gobstopper uninstall-hooks --output ./hook-removal-candidates.json
 ```
 
-— into `~/.config/devin/config.json` under the `"hooks"` key (Devin's
-documented user-level location; the flat `hooks.v1.json` shape is project
-level, `.devin/hooks.v1.json`). The handler resolves the session by ID
-directly against the store, runs the shared policy, and emits
-`hookSpecificOutput.additionalContext` telling the model that `/compact`
-is host-level and to surface a compaction recommendation to its operator
-when over trigger. It is advisory only and fails silently, so a broken hook never
-blocks a prompt. A repeat throttle keeps the advisory from re-entering
-every prompt of a session that stays over trigger: after one is shown,
-the next advisory waits until the session's context grew by ≥25k tokens
-or ≥20 minutes passed (checked against the telemetry log tail, so it
-costs a bounded read per prompt, not a state file).
-`gobstopper uninstall-hooks` removes only Gobstopper-owned commands.
+Each bundle retains the original settings bytes and SHA-256 plus the candidate
+and its SHA-256. Keep it private. Candidate generation preserves unrelated
+settings and handlers; removal recognizes exact Gobstopper-owned entries.
+Review any change through provider-owned settings controls, retain trust
+prompts, and check the source precondition there. Blindly copying a candidate
+over settings is not a supported transaction.
 
-The same install registers `PostCompaction` (`gobstopper hook
-postcompact`, timeout 60): Devin's hook enum has no `PreCompact` event,
-so the handler runs after the provider's own compaction — it appends a
-`native/provider_compact/applied` telemetry record and snapshots the
-session's canonical export into the vault for provenance (a read-only
-export on the provider-held store; WAL readers don't contend with the
-session lock). Telemetry lands before the snapshot attempt so a timeout
-kill on a giant session still records the event.
+The Devin candidate targets `~/.config/devin/config.json` and proposes
+`UserPromptSubmit` (`gobstopper hook prompt-policy:devin`, timeout 10) and
+`PostCompaction` (`gobstopper hook postcompact`, timeout 60) handlers. The prompt
+handler resolves the exact session, runs shared policy and can advise the
+operator to use `/compact`. It does not execute that command. A shown advisory
+is throttled until context grows by at least 25k tokens or 20 minutes pass.
+Malformed or unresolvable input produces no advisory.
 
-**ACP caveat:** hooks fire in the interactive `devin` TUI; Devin's ACP
-server mode (`devin acp`, e.g. under Windsurf) does not run lifecycle hooks
-— verified empirically. For ACP sessions the equivalent advisory levers are
-the MCP `policy_check` tool and a global-rules entry in
-`~/.config/devin/AGENTS.md` instructing the agent to run
-`gobstopper policy-check --provider devin --session current --json` before
-substantive turns and obey `provider_compact` by running `/compact`.
+`PostCompaction` archives a source-bound canonical export as an observation.
+It has no operation ID and cannot establish a corresponding before-state,
+causality or token savings. Its event uses `action: "none"`,
+`outcome: "skipped"`, and `error_code: "unattributed_provider_hook"`.
+Duplicate and out-of-order callbacks do not become applied operations.
 
-The ACP bridge *does* interpret `session/prompt` text matching an
-advertised command — so `watch` can drive provider-native compaction on
-**idle** sessions: `devin acp` → `session/load` → `session/prompt
-"/compact"` runs the provider's own `file_compactor` (verified: a summary
-node lands on the main chain; print-mode `-p "/compact"` is a silent
-no-op). Enabled per provider with `auto_compact_closed = true`; when the
-flock check says the session is idle and the rollout cohort is treatment,
-watch tries ACP compaction. Failure or an uncertain outcome never falls back
-to direct store mutation. An observed lock refuses dispatch; proving ownership
-through concurrent provider startup is a separate qualification obligation.
+Earlier Devin TUI/ACP trials observed different hook delivery. Those historical
+observations do not qualify hook execution in an installed provider build. MCP
+`policy_check` remains an advisory alternative. An owner acting on that advice
+must establish its own provider control and outcome contract.
 
-Protocol notes, verified on the wire: requests must be **serialized** —
-`session/prompt` sent before `session/load` resolves reaches an unloaded
-session (`-32002 "Session not found"`). The prompt reply is only an ack;
-the compaction runs asynchronously and reports
-`_cognition.ai/compaction` notifications (`started` → `completed` with
-the summary text, or a failure status) plus a `Context compacted`
-display message. Dropping the client at the ack aborts the in-flight
-compaction, so `acp_compact` holds the session until a terminal status
-arrives. `session/load`'s result `_meta` carries `isLocked` /
-`lockHolderPid`. The adapter rejects a reported owner before `/compact`.
-Earlier trials observed `session/load` refusing another client's session
-with `-32015 "already open in another process (PID …)"`. This historical
-observation does not establish lifetime custody for every provider version;
-see the [qualification plan](correctness-plan.md). A compaction that started but never
-confirmed is left untouched rather than falling back to store mutation.
-`completed` is also possible when the provider's compactor finds nothing
-to do. Watch compares available same-session context observations; a zero,
-reset or missing value leaves the reduction unresolved. A measured unchanged
-context records a no-op with an expiring cooldown, rather than claimed savings.
+## Guarded native adapter
 
-The same `install-hooks` run installs the Claude Code `UserPromptSubmit`
-advisor (`gobstopper hook prompt-policy:claude`) into
-`~/.claude/settings.json` alongside the existing `PreCompact` and
-`SessionStart` hooks — one policy engine, one installer, per-provider
-session resolution.
+The lower-level adapter implements a bounded serialized ACP flow:
+`devin acp` → initialize → `session/load` → `session/prompt "/compact"`.
+It rejects a reported lock holder before submitting the prompt. A prompt reply
+is an acknowledgement, not a terminal result. The client processes framed
+notifications during reply waits and accepts a matching session's
+`_cognition.ai/compaction` terminal status; arbitrary `Context compacted`
+display text is not success evidence. Deadline, record and aggregate output
+limits cover owned process cleanup.
+
+These protocol fixtures do not establish that a concurrent provider cannot
+open the same session or that the proprietary provider retains ownership.
+No released Gobstopper CLI path activates the adapter. Existing opt-ins cannot
+override `native_unqualified`. A failed or uncertain attempt never falls back
+to database mutation, and a durable unknown operation is not retried after a
+cooldown, source change or restart. Devin's session-only terminal contract
+cannot satisfy the exact Codex terminal evidence accepted by
+`native-reconcile`; weaker evidence remains blocked.
+
+Even a matching completion does not establish reduction. Watch must compare
+source-bound provider observations; zero, reset or missing usage remains
+unresolved. Structural checks, lexical retention and a successful provider exit
+cannot substitute for a reported same-source reduction or task continuation.
 
 ## Rollout gating
 
@@ -286,8 +217,10 @@ shown/suppressed, watch cohort-skips, applies, and reclaimed tokens —
 recomputing each session's deterministic bucket rather than trusting
 event tags. `--since 24h` windows the readout (so pre-gate data does not
 pollute post-gate reads) and `--json` emits the same table for tooling. `gobstopper report` /
-`scripts/monitor.py --provider <name>` supply the per-session context
-trajectories to compare cohorts.
+`scripts/monitor.py --session <exact-id> --provider devin` supply bounded context
+observations; the provider flag broadens collection to active Devin sessions.
+Cohort event counts are not a randomized task-quality result, and unattributed
+hooks receive no applied credit. See the [monitor contract](../scripts/monitor.md).
 
 ## MCP inspection
 
@@ -298,8 +231,9 @@ devin mcp get gobstopper
 
 Use `-s project` for checked-in `.devin/mcp_config.json`, or omit `-s` for the
 gitignored local `.devin/mcp_config.local.json`. The server exposes inspection
-tools; configured trusted extensions can currently execute subprocesses or
-model calls. `policy_check` supports Devin; `plan`, `verify` and `list_sessions`
+tools with deterministic built-ins; it rejects executable strategy selection
+and does not call plugins or model scorers. `policy_check` supports Devin;
+`plan`, `verify` and `list_sessions`
 cover Devin sessions discovered from the store.
 
 ## Export inspection
@@ -320,11 +254,15 @@ logical items plus usage. Provider inspection cannot return edits.
 
 ## Resume integrity
 
-Use Devin's own `--resume <session-id>` or `--continue` controls. Gobstopper
-does not synthesize Devin session IDs or replace the provider's complete resume
-state with an exported trajectory. Its guarded `undo` path does restore selected
-payloads from a canonical per-session vault export into the existing store and
-rejects a foreign session identity. The idle-lock probe is not retained through
-that transaction, and restore does not bind an expected current export; these
-remaining ownership and drift risks are tracked in the
-[correctness audit](correctness-audit.md) and [plan](correctness-plan.md).
+Use Devin's own resume controls on provider-owned data. A canonical per-session
+export is an inspection and archive format, not a complete resumable Devin
+store. Gobstopper does not synthesize a replacement session identity or restore
+exported payloads into the database. `apply`, `undo`, `compact` and `fork`
+refuse store-backed mutation before snapshots or writes. Existing SQL helper
+entry points also refuse direct writes.
+
+The [dialect checks](../verify/transcript/README.md),
+[vault models](../verify/vault/README.md) and
+[native control model](../verify/watch/README.md) cover declared structural,
+recovery and no-replay properties. They do not prove current provider
+continuation behavior or universal preservation of task facts.

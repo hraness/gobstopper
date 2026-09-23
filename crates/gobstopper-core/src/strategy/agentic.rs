@@ -81,7 +81,7 @@ impl AgenticStrategy {
                     let valid: Vec<usize> = items
                         .iter()
                         .filter_map(|&i| transcript.items.get(i))
-                        .filter(|item| item.elidable_bytes.is_some())
+                        .filter(|item| item.is_elidable())
                         .map(|item| item.line_index)
                         .collect();
                     for &line in &valid {

@@ -2,7 +2,10 @@
 """Check assurance inventory structure and surface coverage, without claiming proof."""
 
 import argparse
+import ast
+import hashlib
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -57,6 +60,274 @@ def source_callables(root):
             )
             result.update((str(path.relative_to(root)), name) for name in names)
     return result
+
+
+def source_scripts(root):
+    # Include proof setup/download helpers as well as check.py entry points.
+    return {str(path.relative_to(root))
+            for directory in ("scripts", "verify")
+            for path in (root / directory).rglob("*.py")
+            if not path.name.startswith("test_") and path.name != "__init__.py"}
+
+
+def literal_contract(path, names):
+    """Read literals and bounded integer products without executing a runner."""
+    def value(node):
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Mult):
+            left, right = value(node.left), value(node.right)
+            if type(left) is not int or type(right) is not int or not 0 <= left <= 2**64 or not 0 <= right <= 2**64:
+                raise ValueError("unreviewed runner constant arithmetic")
+            result = left * right
+            if result > 2**64:
+                raise ValueError("unbounded runner constant arithmetic")
+            return result
+        return ast.literal_eval(node)
+
+    wanted = set(names)
+    result = {}
+    for node in ast.parse(path.read_text()).body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1:
+            target = node.targets[0]
+            if isinstance(target, ast.Name) and target.id in wanted:
+                if target.id in result:
+                    raise ValueError(f"duplicate runner contract: {target.id}")
+                result[target.id] = value(node.value)
+    if set(result) != wanted:
+        raise ValueError("missing literal runner contract")
+    return result
+
+
+def receipt_sources(root, family, cases):
+    """Mirror the reviewed runners' input inventories, not receipt-chosen subsets.
+
+    Runner source is itself included. A change to its inventory algorithm needs
+    corresponding review here; this deliberately does not execute proof code.
+    """
+    here = root / "verify" / family
+    runner = root / "verify/watch/check.py"
+    if family in {"vault", "watch"}:
+        models = ["Vault.tla", "Publication.tla"] if family == "vault" else ["Watch.tla"]
+        paths = [here / name for name in ["check.py", "test_check.py", "README.md", *models]]
+        paths += [here / f"{name}.cfg" for name in cases]
+        paths.append(runner)
+    else:
+        paths = [root / "Cargo.toml", root / "Cargo.lock", runner]
+        if family == "core":
+            paths += list(here.glob("*.py")) + [here / "README.md"]
+            paths += [root / "crates/gobstopper-core/Cargo.toml"]
+            paths += list((root / "crates/gobstopper-core/src").rglob("*.rs"))
+            paths += [root / name for name in (
+                "crates/gobstopper-cli/src/config.rs", "crates/gobstopper-adapters/src/codex.rs",
+                "crates/gobstopper-adapters/src/payload.rs")]
+        else:
+            paths += [path for path in here.iterdir() if path.is_file() and not path.name.startswith(".")]
+            if family == "transcript":
+                paths += [root / "crates/gobstopper-cli/Cargo.toml", root / "verify/tools.lock.json",
+                          root / "crates/gobstopper-adapters/tests/lean_correspondence.rs"]
+                for crate in ("gobstopper-core", "gobstopper-adapters"):
+                    base = root / "crates" / crate
+                    paths += [base / "Cargo.toml", *list((base / "src").rglob("*.rs"))]
+            elif family == "stress":
+                paths += [root / "scripts/monitor.py", root / "scripts/test_monitor.py"]
+                for crate in (root / "crates").iterdir():
+                    if crate.is_dir():
+                        paths.append(crate / "Cargo.toml")
+                        for directory in ("src", "tests"):
+                            paths += [path for path in (crate / directory).rglob("*") if path.is_file()]
+            else:
+                raise ValueError("unsupported receipt family")
+    return {str(path.relative_to(root)) for path in paths}
+
+
+def validate_receipt_contract(root, name, receipt, require):
+    """Check normalized evidence completeness and contradictions, not log attestation."""
+    families = {f"E-{family.upper()}-CURRENT": family
+                for family in ("vault", "watch", "core", "transcript", "stress")}
+    if name not in families:
+        require(False, f"receipt {name}: unreviewed receipt family")
+        return
+    family = families[name]
+    label = f"receipt {name}"
+    require("error" not in receipt, f"{label}: contradictory receipt error")
+    checker = root / "verify" / family / "check.py"
+    cases = receipt.get("results", [])
+    if not isinstance(cases, list) or not all(isinstance(case, dict) for case in cases):
+        return
+    rows = {case.get("case"): case for case in cases}
+    sources = receipt.get("source_sha256", {})
+    tools = receipt.get("tool_sha256", {})
+    if not isinstance(sources, dict) or not isinstance(tools, dict):
+        return
+    for row in cases:
+        require(row.get("timeout") is False and row.get("log_limit") is False,
+                f"{label}: incomplete resource-limited case")
+        require(isinstance(row.get("log_sha256"), str)
+                and re.fullmatch(r"[0-9a-f]{64}", row["log_sha256"]) is not None,
+                f"{label}: missing case log identity")
+
+    def integer(value, minimum=0):
+        return type(value) is int and value >= minimum
+
+    def digest(value):
+        return isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) is not None
+
+    def elapsed(value, maximum):
+        return (type(value) in {int, float} and 0 <= value <= maximum
+                and (type(value) is int or math.isfinite(value)))
+
+    def mutation(value, path, old, new):
+        raw = (root / path).read_bytes()
+        require(isinstance(value, dict) and value.get("old") == old and value.get("new") == new,
+                f"{label}: wrong intended mutation")
+        require(raw.count(old.encode()) == 1, f"{label}: mutation target is not unique")
+        if isinstance(value, dict):
+            require(value.get("source_sha256") == hashlib.sha256(raw.replace(old.encode(), new.encode())).hexdigest(),
+                    f"{label}: mutant source identity mismatch")
+
+    if family in {"vault", "watch"}:
+        contract = literal_contract(checker, ("CASES", "TLC_SHA256"))
+        expected = contract["CASES"]
+        require(set(rows) == set(expected), f"{label}: receipt case inventory differs from runner")
+        require(set(tools) == {"java", "tlc.jar"}, f"{label}: receipt tool inventory differs from runner")
+        pins = json.loads((root / "verify/tools.lock.json").read_text(), object_pairs_hook=unique_object)
+        require(tools.get("tlc.jar") == contract["TLC_SHA256"] == pins["tools"]["tlc"]["any"]["sha256"],
+                f"{label}: TLC tool differs from reviewed pin")
+        for case, value in expected.items():
+            row = rows.get(case, {})
+            invariant = value[2] if family == "watch" else value
+            require(row.get("expected_invariant_violation") == invariant,
+                    f"{label}: wrong intended invariant for {case}")
+            require(type(row.get("exit_code")) is int and row["exit_code"] == (12 if invariant else 0),
+                    f"{label}: wrong result exit for {case}")
+            states = row.get("states", {})
+            valid = (isinstance(states, dict) and all(integer(states.get(key)) for key in ("generated", "distinct", "queued")))
+            require(valid and states["generated"] >= states["distinct"] >= states["queued"]
+                    and states["distinct"] > (1 if invariant else 100)
+                    and (invariant is not None or states["queued"] == 0),
+                    f"{label}: incomplete state exploration for {case}")
+            if family == "watch":
+                require((row.get("kind"), row.get("mutation")) == value[:2],
+                        f"{label}: wrong case role for {case}")
+    elif family == "core":
+        expected = {"production", "boundary-mutant"}
+        contract = literal_contract(checker, ("KANI_VERSION", "CBMC_VERSION", "RUSTC_VERSION", "UNWINDS",
+                                              "BOUNDARY_ASSERTION", "MUTANT_OLD", "MUTANT_NEW"))
+        require(set(rows) == expected, f"{label}: receipt case inventory differs from runner")
+        require(set(tools) == {"cargo-kani", "kani-driver", "kani-compiler", "cbmc", "goto-instrument",
+                               "goto-cc", "rustc-version", "rust-toolchain-version"},
+                f"{label}: receipt tool inventory differs from runner")
+        require(receipt.get("versions") == {"kani": contract["KANI_VERSION"], "cbmc": contract["CBMC_VERSION"],
+                                            "rustc": contract["RUSTC_VERSION"]}, f"{label}: wrong proof versions")
+        require(receipt.get("unwind_bounds") == contract["UNWINDS"], f"{label}: wrong unwind bounds")
+        for case in expected:
+            row = rows.get(case, {})
+            mutant = case == "boundary-mutant"
+            code = row.get("exit_code")
+            require(integer(code) and (code != 0 if mutant else code == 0), f"{label}: wrong result exit for {case}")
+            require(row.get("failed_labels") == ([contract["BOUNDARY_ASSERTION"]] if mutant else []),
+                    f"{label}: wrong intended assertion for {case}")
+            counts = row.get("counts", {})
+            # These are the reviewed output counts for the pinned Kani/compiler
+            # and current source. A changed proof inventory needs a new receipt
+            # and review here, not merely a nonzero assertion total.
+            expected_counts = dict(zip(
+                ("assertions", "covers", "unwind_checks", "unreachable_safety_checks", "unsupported_paths_excluded"),
+                (2, 3, 0, 0, 0) if mutant else (159, 46, 3, 30, 11),
+            ))
+            require(isinstance(counts, dict) and counts == expected_counts
+                    and all(integer(value) for value in counts.values()),
+                    f"{label}: incomplete proof counts for {case}")
+            require(isinstance(row.get("report_sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", row["report_sha256"]),
+                    f"{label}: missing proof report identity")
+        mutation(receipt.get("mutation"), "crates/gobstopper-core/src/admission.rs", contract["MUTANT_OLD"], contract["MUTANT_NEW"])
+    elif family == "transcript":
+        expected = {"rust-sysroot", "lean-version", "lake-version", "rust-version", "cargo-version", "lean-build", "axioms",
+                    "kernel-replay", "vectors", "rust-correspondence", "oracle-mutant-build", "oracle-mutant-vectors",
+                    "oracle-mutant-correspondence", "rust-mutant-correspondence"}
+        require(set(rows) == expected, f"{label}: receipt case inventory differs from runner")
+        require(set(tools) == {"lake", "lean", "leanchecker", "cargo", "rustc", "cargo-dispatcher",
+                               "rustc-dispatcher", "python"},
+                f"{label}: receipt tool inventory differs from runner")
+        contract = literal_contract(checker, ("THEOREMS", "ALLOWED_AXIOMS", "ORACLE_OLD", "ORACLE_NEW", "RUST_OLD", "RUST_NEW"))
+        for case in expected:
+            code = rows.get(case, {}).get("exit_code")
+            require(type(code) is int and code == (101 if case in {"oracle-mutant-correspondence", "rust-mutant-correspondence"} else 0),
+                    f"{label}: wrong result exit for {case}")
+        axioms = receipt.get("axioms", {})
+        require(isinstance(axioms, dict) and set(axioms) == contract["THEOREMS"]
+                and all(isinstance(used, list) and set(used) <= contract["ALLOWED_AXIOMS"] for used in axioms.values()),
+                f"{label}: incomplete or unsupported axiom audit")
+        require(receipt.get("vectors") == {"cases": 20, "steps_per_provider": 23, "accepted_per_provider": 12,
+                                            "refused_per_provider": 11, "digests_per_provider": 3},
+                f"{label}: incomplete vector correspondence")
+        mutations = receipt.get("mutations", {})
+        require(isinstance(mutations, dict) and set(mutations) == {"oracle", "rust"},
+                f"{label}: incomplete intended mutation inventory")
+        if not isinstance(mutations, dict):
+            mutations = {}
+        mutation(mutations.get("oracle"), "verify/transcript/Vectors.lean", contract["ORACLE_OLD"], contract["ORACLE_NEW"])
+        mutation(mutations.get("rust"), "crates/gobstopper-adapters/src/codex.rs", contract["RUST_OLD"], contract["RUST_NEW"])
+        require(isinstance(mutations.get("rust"), dict)
+                and mutations["rust"].get("uncompiled_cli_metadata_target") is True,
+                f"{label}: missing isolated workspace metadata declaration")
+    else:
+        suites = json.loads((root / "verify/stress/suites.json").read_text(), object_pairs_hook=unique_object)["suites"]
+        contract = literal_contract(checker, ("TOTAL_SECONDS", "MAX_LOG_BYTES", "MAX_CHILD_RSS_BYTES", "SEED", "SUITES"))
+        expected = {suite["name"] for suite in suites}
+        require(len(suites) == len(expected) and expected == set(contract["SUITES"]),
+                f"{label}: stress suite inventory differs from runner")
+        require(set(rows) == expected, f"{label}: receipt case inventory differs from runner")
+        require(set(tools) == {"cargo", "rustc", "cargo-dispatcher", "rustc-dispatcher", "python"},
+                f"{label}: receipt tool inventory differs from runner")
+        require(receipt.get("platform") in {"linux", "darwin"}, f"{label}: unsupported resource accounting platform")
+        identities = receipt.get("identity_log_sha256", {})
+        require(isinstance(identities, dict)
+                and set(identities) == {"rust-sysroot.log", "cargo-version.log", "rust-version.log"}
+                and all(digest(value) for value in identities.values()),
+                f"{label}: incomplete tool identity logs")
+        bounds = receipt.get("raw_bounds", {})
+        expected_bounds = {
+            "total_seconds": contract["TOTAL_SECONDS"], "max_log_bytes_per_command": contract["MAX_LOG_BYTES"],
+            "cargo_jobs": 2, "test_threads": 1, "max_observed_single_child_rss_bytes": contract["MAX_CHILD_RSS_BYTES"],
+            "sequence_steps": 64, "sequence_corruption_recoveries": 16, "sequence_post_step_file_limit": 1200,
+            "sequence_post_step_bytes_limit": 16 * 1024 * 1024, "sequence_elapsed_ms_limit": 90_000,
+        }
+        require(isinstance(bounds, dict) and bounds == expected_bounds
+                and all(integer(value, 1) for value in bounds.values()),
+                f"{label}: stress resource bounds differ from runner")
+        require(elapsed(receipt.get("elapsed_seconds"), contract["TOTAL_SECONDS"]),
+                f"{label}: invalid aggregate elapsed bound")
+        suite_elapsed = 0
+        for suite in suites:
+            row = rows.get(suite["name"], {})
+            package, targets, count, seconds = contract["SUITES"].get(suite["name"], (None, [], 0, 0))
+            argv = (["cargo", "test", "-p", package, "--locked", *targets, "--", "--nocapture", "--test-threads=1"]
+                    if package else ["python3", *targets])
+            require(suite.get("argv") == argv and suite.get("seconds") == seconds
+                    and len(suite["tests"]) == len(set(suite["tests"])) == count,
+                    f"{label}: stress suite command or bounds differ from runner")
+            require(type(row.get("exit_code")) is int and row["exit_code"] == 0, f"{label}: wrong result exit")
+            require(row.get("passed_tests") == sorted(suite["tests"]), f"{label}: incomplete named tests")
+            duration = row.get("elapsed_seconds")
+            require(elapsed(duration, suite["seconds"]),
+                    f"{label}: invalid elapsed bound")
+            if elapsed(duration, suite["seconds"]):
+                suite_elapsed += duration
+            require(integer(row.get("largest_reaped_child_rss_bytes"))
+                    and row["largest_reaped_child_rss_bytes"] <= contract["MAX_CHILD_RSS_BYTES"],
+                    f"{label}: invalid observed child memory bound")
+        require(elapsed(receipt.get("elapsed_seconds"), contract["TOTAL_SECONDS"])
+                and receipt["elapsed_seconds"] >= suite_elapsed,
+                f"{label}: aggregate elapsed contradicts suite durations")
+        metrics = rows.get("sequence", {}).get("sequence_metrics", {})
+        require(isinstance(metrics, dict) and metrics.get("seed") == contract["SEED"]
+                and metrics.get("steps") == 64 and metrics.get("corruption_recoveries") == 16
+                and integer(metrics.get("peak_files"), 1) and metrics["peak_files"] <= 1200
+                and integer(metrics.get("peak_bytes"), 1) and metrics["peak_bytes"] <= 16 * 1024 * 1024
+                and integer(metrics.get("elapsed_ms")) and metrics["elapsed_ms"] < 90_000,
+                f"{label}: incomplete sequence bounds")
+    require(set(sources) == receipt_sources(root, family, expected),
+            f"{label}: receipt source inventory differs from runner")
 
 
 def validate(root, documents):
@@ -134,6 +405,43 @@ def validate(root, documents):
             for item in row.get("inputs", []):
                 source_ref(item, f"evidence {name}")
                 require(re.fullmatch(r"[0-9a-f]{64}", item.get("sha256", "")) is not None, f"evidence {name}: missing historical input digest")
+        if row.get("kind") == "verification_receipt":
+            ref = row.get("receipt", {})
+            source_ref(ref, f"evidence {name}")
+            relative = ref.get("path", "")
+            require(text(relative) and "url" not in ref, f"evidence {name}: receipt must be a local pinned file")
+            if not text(relative) or Path(relative).is_absolute() or ".." in Path(relative).parts:
+                continue
+            candidate = root / relative
+            if not candidate.is_file():
+                continue
+            raw = candidate.read_bytes()
+            require(hashlib.sha256(raw).hexdigest() == ref.get("sha256"), f"evidence {name}: receipt digest mismatch")
+            receipt = json.loads(raw, object_pairs_hook=unique_object)
+            require(receipt.get("schema") == "gobstopper.assurance-receipt.v1", f"evidence {name}: invalid receipt schema")
+            require(receipt.get("passed") is True and receipt.get("inputs_unchanged") is True, f"evidence {name}: receipt did not pass unchanged")
+            require(re.fullmatch(r"[0-9a-f]{64}", receipt.get("raw_receipt_sha256", "")) is not None, f"evidence {name}: missing raw receipt identity")
+            nonempty(receipt, ["scope", "bounds", "exclusions", "results"], f"receipt {name}")
+            for field in ("source_sha256", "tool_sha256"):
+                require(isinstance(receipt.get(field), dict) and bool(receipt.get(field)),
+                        f"receipt {name}: missing {field}")
+            cases = receipt.get("results", [])
+            require(isinstance(cases, list) and bool(cases)
+                    and all(isinstance(case, dict) and case.get("passed") is True
+                            and text(case.get("case")) for case in cases),
+                    f"evidence {name}: incomplete or failed receipt case")
+            if isinstance(cases, list) and all(isinstance(case, dict) for case in cases):
+                require(len({case.get("case") for case in cases}) == len(cases),
+                        f"evidence {name}: duplicate receipt case")
+            for source, expected in receipt.get("source_sha256", {}).items():
+                source_ref({"path": source}, f"receipt {name}")
+                if Path(source).is_absolute() or ".." in Path(source).parts or not (root / source).is_file():
+                    continue
+                require(hashlib.sha256((root / source).read_bytes()).hexdigest() == expected,
+                        f"evidence {name}: receipt source drift: {source}")
+            for digest in receipt.get("tool_sha256", {}).values():
+                require(re.fullmatch(r"[0-9a-f]{64}", digest) is not None, f"evidence {name}: invalid tool digest")
+            validate_receipt_contract(root, name, receipt, require)
 
     def obligation(row, label):
         nonempty(row, ["owner", "bounds", "exclusions", "evidence", "assumptions"], label)
@@ -203,8 +511,7 @@ def validate(root, documents):
             if label == "MCP":
                 require(row.get("content_opt_in") is (name in {"read_snapshot", "search_snapshot"}), f"MCP {name}: content gate mismatch")
     scripts = index(effects.get("scripts", []), "path", "scripts")
-    expected_scripts = {str(p.relative_to(root)) for p in (root / "scripts").rglob("*.py") if not p.name.startswith("test_")}
-    expected_scripts.update(str(p.relative_to(root)) for p in (root / "verify").rglob("check.py"))
+    expected_scripts = source_scripts(root)
     require(set(scripts) == expected_scripts, "script effect inventory differs from production Python entry points")
     for path, row in scripts.items():
         source_ref({"path": path}, "script")
@@ -223,7 +530,7 @@ def validate(root, documents):
         nonempty(row, ["assertion", "public_sources", "review_trigger"], f"claim {name}")
         require(not re.search(r"\b(?:provably correct|fully proven|universally safe|zero bugs)\b", str(row.get("assertion", "")), re.I), f"claim {name}: unsupported universal assertion")
         if row.get("status") == "bounded_check":
-            require(any(evidence.get(e, {}).get("kind") == "bounded_model_receipt" for e in row.get("evidence", [])), f"claim {name}: bounded check lacks a pinned receipt")
+            require(any(evidence.get(e, {}).get("kind") in {"bounded_model_receipt", "verification_receipt"} for e in row.get("evidence", [])), f"claim {name}: bounded check lacks a pinned receipt")
         if row.get("status") == "historical_observation":
             require(any(evidence.get(e, {}).get("kind") in {"historical_receipt", "scanner_inventory"} for e in row.get("evidence", [])), f"claim {name}: historical observation lacks evidence")
         for ref in row.get("public_sources", []):
@@ -261,7 +568,7 @@ def main():
     try:
         docs = load_documents(args.root)
         errors = validate(args.root, docs)
-    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError) as error:
+    except (OSError, ValueError, KeyError, IndexError, TypeError, AttributeError, SyntaxError) as error:
         errors = [f"invalid inventory/source structure: {error}"]
     if errors:
         for error in errors:

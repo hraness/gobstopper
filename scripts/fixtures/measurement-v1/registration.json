@@ -1,0 +1,104 @@
+{
+  "arms": [
+    {
+      "id": "no_compaction",
+      "mode": "offline_baseline"
+    },
+    {
+      "id": "observation_masking",
+      "mode": "offline_masking"
+    },
+    {
+      "id": "typed_masking",
+      "mode": "offline_pinned_masking"
+    },
+    {
+      "id": "typed_digest",
+      "mode": "offline_hybrid_verbatim_card"
+    },
+    {
+      "id": "tuned_provider_native",
+      "mode": "not_run_requires_provider_qualification"
+    },
+    {
+      "id": "provider_native_plus_masking",
+      "mode": "not_run_requires_provider_qualification"
+    }
+  ],
+  "asset_sha256": {
+    "negation.contradiction.jsonl": "6876a7477153ae7423df87b6f273d2ffef98d5e54d7bb10a19491ba8c244cfb2",
+    "negation.jsonl": "a377111030b6e658f6b0cf3e96dbc893d05714c4391e7e81f7d814ecd6ce3f1e",
+    "negation.manifest.json": "cd0830836b9a761b8ce0340d199341dd7d72a239a653fe07bbb3e9fc78018934",
+    "pending_effect.contradiction.jsonl": "df0795f8b72c08efaedfb5ac8d6115290701c98f6ab1b50e57e205158f195df7",
+    "pending_effect.jsonl": "f67abedcfcc911c719af672fbb0888c1b44f42ad7e30e614a7ad063766bd8bbb",
+    "pending_effect.manifest.json": "8d00810533d9fb2d959f30b62da6101b054444cbcf66de751f65f838625b7b61",
+    "superseded_approval.contradiction.jsonl": "7f0d1fc6e5b9a8665ed45df818bb809d9603b72fa346b09ee3d9391763cfee70",
+    "superseded_approval.jsonl": "91582995f16c13fc2ff0ec0338c3b37fa5bfe3b83e7fb1ad1ca1750e551020fe",
+    "superseded_approval.manifest.json": "c10bf5dbdd66916761cb1e411e4ff27e67537a30248f4ca6639d1f2ac0e497f8",
+    "tool_state.contradiction.jsonl": "57f6f6a9d1cc20c0d0bdf85c14028d566ce48d85583c3b95d20cd87f65540895",
+    "tool_state.jsonl": "d09fb755f29d37f0b099c9757a999bf75f4108510759260f22889dfdcb2415ae",
+    "tool_state.manifest.json": "1dbab1189e54d7fa0dcd9a6e4f43a2824712d4dff4bc361aaef6624f06653114"
+  },
+  "budgets": "Same frozen source, rounds, target floor and protected tail for every executed arm. Native arms are registered incomplete; no comparable live budget or outcome is claimed.",
+  "cases": [
+    {
+      "control_expected_literal_retained": 1,
+      "id": "negation",
+      "literal_false_assurance_control": "negation.contradiction.jsonl",
+      "manifest": "negation.manifest.json",
+      "semantic_oracle": "manually_authored_contradictory_replacement_not_an_executed_task",
+      "source": "negation.jsonl"
+    },
+    {
+      "control_expected_literal_retained": 1,
+      "id": "superseded_approval",
+      "literal_false_assurance_control": "superseded_approval.contradiction.jsonl",
+      "manifest": "superseded_approval.manifest.json",
+      "semantic_oracle": "manually_authored_contradictory_replacement_not_an_executed_task",
+      "source": "superseded_approval.jsonl"
+    },
+    {
+      "control_expected_literal_retained": 1,
+      "id": "pending_effect",
+      "literal_false_assurance_control": "pending_effect.contradiction.jsonl",
+      "manifest": "pending_effect.manifest.json",
+      "semantic_oracle": "manually_authored_contradictory_replacement_not_an_executed_task",
+      "source": "pending_effect.jsonl"
+    },
+    {
+      "control_expected_literal_retained": 1,
+      "id": "tool_state",
+      "literal_false_assurance_control": "tool_state.contradiction.jsonl",
+      "manifest": "tool_state.manifest.json",
+      "semantic_oracle": "manually_authored_contradictory_replacement_not_an_executed_task",
+      "source": "tool_state.jsonl"
+    }
+  ],
+  "held_out_task_qualification": "unavailable; these fixtures are named regression cases, not independent held-out tasks",
+  "independent_blinded_annotation": "unavailable; no inter-rater reliability or semantic qualification claim",
+  "metrics": {
+    "bytes": "serialized_transcript_bytes",
+    "cache_hits": null,
+    "charged_tokens": null,
+    "context": "normalized_payload_estimated_tokens",
+    "continuation_task_success": null,
+    "interval": "Wilson95 descriptive checks; cases/probes not independent",
+    "latency": "local_transform_milliseconds",
+    "lexical": "normalized_word_overlap_not_semantics",
+    "literal": "exact_decoded_span_presence",
+    "refetches": null,
+    "semantic_equivalence": null
+  },
+  "outcome_dependent_selection": false,
+  "policy": {
+    "floor_tokens": 64,
+    "keep_recent_tool_outputs": 1,
+    "min_savings_tokens": 0,
+    "rounds": 1,
+    "trigger_tokens": 1
+  },
+  "provider_calls_allowed": 0,
+  "schema": "gobstopper-preregistered-measurement-v1",
+  "selection": "Four hand-authored public adversarial cases frozen before execution; convenience fixtures, no population inference.",
+  "version": 1
+}

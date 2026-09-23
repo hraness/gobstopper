@@ -96,9 +96,12 @@ pub fn search_snapshot(
         truncated: false,
     };
     for (record_index, line) in records(&data)?.into_iter().enumerate() {
-        let value = match serde_json::from_slice::<Value>(line) {
-            Ok(value) => value,
-            Err(_) => {
+        let value = match std::str::from_utf8(line)
+            .ok()
+            .and_then(|raw| crate::payload::decode_record(raw).ok())
+        {
+            Some(value) => value,
+            None => {
                 result.unsearchable_records += 1;
                 continue;
             }

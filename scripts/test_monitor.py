@@ -34,6 +34,10 @@ def report(context=100000, native=2):
             "gobstopper": {
                 "sessionIdNative": session,
                 "contextTokens": context,
+                "reportedContextTokens": context,
+                "contextState": "reported",
+                "sourceIdentitySha256": "a" * 64 if session == A else "b" * 64,
+                "lifetimeScope": "full",
                 "modelContextWindow": 258400,
                 "lifetimeInputTokens": 500000,
                 "lifetimeCachedTokens": 400000,
@@ -43,6 +47,23 @@ def report(context=100000, native=2):
             },
         } for session in (A, UNRELATED)],
     }
+
+
+def bind_event(event):
+    if not isinstance(event, dict):
+        return event
+    return {"schema": "gobstopper/compaction-events-v1", "provider": "codex",
+            "action": "provider_compact", "error_code": None,
+            "outcome": "applied", "source_identity_sha256": "a" * 64,
+            "snapshot_before_sha256": "b" * 64, "snapshot_after_sha256": "c" * 64,
+            "before_observation": {"source_identity_sha256": "a" * 64, "source_sha256": "d" * 64,
+                                   "snapshot_manifest_sha256": "b" * 64},
+            "after_observation": {"source_identity_sha256": "a" * 64, "source_sha256": "e" * 64,
+                                  "snapshot_manifest_sha256": "c" * 64}, **event}
+
+
+def selected_sources(*sessions):
+    return {("codex", session, "a" * 64) for session in sessions}
 
 
 class MonitorTests(unittest.TestCase):
@@ -87,6 +108,7 @@ else:
             "STUB_REPORT": str(self.report_file), "STUB_CALLS": str(self.calls),
             "GOBSTOPPER_SCORER": "jev", "GOBSTOPPER_DIGEST": "apple",
             "GOBSTOPPER_EVAL_JUDGE": "jev", "GOBSTOPPER_JEV_API_KEY": "SECRET_ENV_SENTINEL",
+            "XDG_DATA_HOME": str(self.root / "data"),
         })
         self.environment.start()
 
@@ -234,6 +256,7 @@ else:
     def test_unavailable_fields_and_compaction_boundary_are_not_zero_savings(self):
         self.sample()
         value = report(context=0, native=None)
+        value["sessions"][0]["gobstopper"]["contextState"] = "reset"
         self.report_file.write_text(json.dumps(value))
         sample = self.sample()["sessions"][0]
         self.assertIsNone(sample["context_tokens"])
@@ -275,18 +298,20 @@ else:
             {"session_id": A, "retention_total": 10**9},
             "not json",
         ]
-        log.write_text("".join(json.dumps(e) + "\n" if not isinstance(e, str)
+        log.write_text("".join(json.dumps(bind_event(e)) + "\n" if not isinstance(e, str)
                               else e + "\n" for e in events))
-        out = monitor.retention_summary(log, {A, B})
+        out = monitor.retention_summary(log, selected_sources(A, B))
         self.assertEqual(out["measured"], 2)
         self.assertEqual(out["checks"], 30)
         self.assertEqual(out["literal"], 7)
         self.assertEqual(out["lexical"], 12)
         self.assertEqual(out["lossy_sessions"], [B])
-        # Missing log and oversize log both read as empty, never error.
-        self.assertEqual(monitor.retention_summary(log.with_name("nope"), {A}),
-                         {"measured": 0, "checks": 0, "literal": 0,
-                          "lexical": 0, "lossy_sessions": []})
+        self.assertTrue(out["available"])
+        self.assertEqual(out["invalid_records"], 1)
+        missing = monitor.retention_summary(log.with_name("nope"), selected_sources(A))
+        self.assertEqual(missing["measured"], 0)
+        self.assertFalse(missing["available"])
+        self.assertEqual(missing["error"], "event_log_absent")
 
     def test_retention_rejects_missing_boolean_and_impossible_measurements(self):
         log = self.root / "retention.jsonl"
@@ -303,20 +328,126 @@ else:
                         {**valid, "retention_lexical": 11},
                         {**valid, "session_id": []},
                         {**valid, "session_id": {}}])
-        log.write_text("".join(json.dumps(event) + "\n" for event in [valid, *invalid]))
+        log.write_text("".join(json.dumps(bind_event(event)) + "\n" for event in [valid, *invalid]))
         expected = {"measured": 1, "checks": 10, "literal": 6,
-                    "lexical": 8, "lossy_sessions": []}
-        self.assertEqual(monitor.retention_summary(log, {A}), expected)
+                    "lexical": 8, "lossy_sessions": [], "available": True,
+                    "error": None, "invalid_records": 0, "conflicting_pairs": 0}
+        self.assertEqual(monitor.retention_summary(log, selected_sources(A)), expected)
 
     def test_retention_read_is_bounded_and_invalid_utf8_is_unavailable(self):
         log = self.root / "retention.jsonl"
-        empty = {"measured": 0, "checks": 0, "literal": 0,
-                 "lexical": 0, "lossy_sessions": []}
-        log.write_bytes(b"\xff")
-        self.assertEqual(monitor.retention_summary(log, {A}), empty)
+        log.write_bytes(b"\xff\n")
+        result = monitor.retention_summary(log, selected_sources(A))
+        self.assertEqual(result["measured"], 0)
+        self.assertFalse(result["available"])
+        self.assertEqual(result["error"], "event_log_unavailable")
         log.write_bytes(b"x" * 33)
         with patch.object(monitor, "EVENTS_LOG_BYTES", 32):
-            self.assertEqual(monitor.retention_summary(log, {A}), empty)
+            result = monitor.retention_summary(log, selected_sources(A))
+        self.assertFalse(result["available"])
+        self.assertEqual(result["error"], "event_log_limit")
+
+    def test_reported_zero_and_foreign_source_are_not_context_savings(self):
+        self.sample()
+        value = report(context=0)
+        self.report_file.write_text(json.dumps(value))
+        row = self.sample()["sessions"][0]
+        self.assertEqual(row["context_tokens"], 0)
+        self.assertEqual(row["context_state"], "reported")
+        self.assertIsNone(row["context_drop_tokens"])
+        value = report(context=10)
+        value["sessions"][0]["gobstopper"]["sourceIdentitySha256"] = "f" * 64
+        value["sessions"][0]["gobstopper"]["lifetimeScope"] = "partial"
+        self.report_file.write_text(json.dumps(value))
+        row = self.sample()["sessions"][0]
+        self.assertIsNone(row["context_drop_tokens"])
+        self.assertIsNone(row["lifetime_input_tokens"])
+
+    def test_legacy_or_foreign_retention_pairs_are_unqualified(self):
+        log = self.root / "retention.jsonl"
+        legacy = {"session_id": A, "retention_total": 2, "retention_retained": 2, "retention_lexical": 2}
+        foreign = bind_event(legacy)
+        foreign["after_observation"]["source_identity_sha256"] = "f" * 64
+        log.write_text(json.dumps(legacy) + "\n" + json.dumps(foreign) + "\n")
+        self.assertEqual(monitor.retention_summary(log, selected_sources(A))["measured"], 0)
+
+    def test_retention_matches_selected_store_rejects_errors_and_deduplicates_pairs(self):
+        log = self.root / "retention.jsonl"
+        valid = bind_event({"session_id": A, "retention_total": 2,
+                            "retention_retained": 1, "retention_lexical": 1})
+        foreign = json.loads(json.dumps(valid))
+        foreign["source_identity_sha256"] = "f" * 64
+        for side in ("before", "after"):
+            foreign[f"{side}_observation"]["source_identity_sha256"] = "f" * 64
+        rows = [valid, valid, foreign, {**valid, "provider": "devin"},
+                {**valid, "error_code": "unresolved_context"}]
+        log.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        result = monitor.retention_summary(log, selected_sources(A))
+        self.assertEqual(result["measured"], 1)
+        self.assertEqual(result["checks"], 2)
+        with log.open("a") as stream:
+            stream.write(json.dumps({**valid, "retention_retained": 2}) + "\n")
+            stream.write(json.dumps(valid) + "\n")  # conflict cannot be undone by replay
+        result = monitor.retention_summary(log, selected_sources(A))
+        self.assertEqual(result["measured"], 0)
+        self.assertEqual(result["conflicting_pairs"], 1)
+
+        conflicting_source = json.loads(json.dumps(valid))
+        conflicting_source["after_observation"]["source_sha256"] = "f" * 64
+        log.write_text("\n".join(json.dumps(row) for row in
+                                [valid, conflicting_source, valid]) + "\n")
+        result = monitor.retention_summary(log, selected_sources(A))
+        self.assertEqual(result["measured"], 0)
+        self.assertEqual(result["conflicting_pairs"], 1)
+
+    def test_retention_strict_duplicates_and_torn_tail_never_gain_credit(self):
+        log = self.root / "retention.jsonl"
+        valid = bind_event({"session_id": A, "retention_total": 2,
+                            "retention_retained": 1, "retention_lexical": 1})
+        raw = json.dumps(valid)
+        duplicate = raw[:-1] + ', "retention_total": 2}'
+        nested = raw.replace('"source_sha256": "' + "d" * 64 + '"',
+                             '"source_sha256": "' + "d" * 64 + '", "source_sha256": "' + "e" * 64 + '"')
+        log.write_text(duplicate + "\n" + nested + "\n" + raw + "\n")
+        result = monitor.retention_summary(log, selected_sources(A))
+        self.assertEqual(result["measured"], 1)
+        self.assertEqual(result["invalid_records"], 2)
+        log.write_text(raw + "\n" + raw[:-1])
+        result = monitor.retention_summary(log, selected_sources(A))
+        self.assertEqual(result["measured"], 0)
+        self.assertFalse(result["available"])
+        self.assertEqual(result["error"], "event_log_incomplete")
+
+    def test_retention_refuses_symlink_fifo_and_directory_without_blocking(self):
+        target = self.root / "actual.jsonl"
+        target.write_text("{}\n")
+        link = self.root / "linked.jsonl"
+        link.symlink_to(target)
+        fifo = self.root / "events.fifo"
+        os.mkfifo(fifo)
+        for path in (link, fifo, self.root):
+            started = time.monotonic()
+            result = monitor.retention_summary(path, selected_sources(A))
+            self.assertFalse(result["available"])
+            self.assertEqual(result["measured"], 0)
+            self.assertLess(time.monotonic() - started, 0.5)
+        self.assertEqual(target.read_text(), "{}\n")
+
+    def test_observe_retention_uses_same_xdg_root_and_exact_report_identity(self):
+        log = self.root / "data" / "gobstopper" / "events.jsonl"
+        log.parent.mkdir(parents=True)
+        valid = bind_event({"session_id": A, "retention_total": 2,
+                            "retention_retained": 1, "retention_lexical": 1})
+        log.write_text(json.dumps(valid) + "\n")
+        self.assertEqual(self.sample()["retention"]["measured"], 1)
+        changed = report()
+        changed["sessions"][0]["gobstopper"]["sourceIdentitySha256"] = "f" * 64
+        self.report_file.write_text(json.dumps(changed))
+        self.assertEqual(self.sample()["retention"]["measured"], 0)
+        self.assertEqual(monitor.event_log_path({"HOME": "/synthetic/home"}),
+                         Path("/synthetic/home/.local/share/gobstopper/events.jsonl"))
+        self.assertEqual(monitor.event_log_path({"HOME": "/synthetic/home", "XDG_DATA_HOME": ""}),
+                         Path("/synthetic/home/.local/share/gobstopper/events.jsonl"))
 
     def test_counter_reset_is_unknown_delta(self):
         self.sample()
@@ -391,6 +522,28 @@ else:
             self.sample()
         self.assertEqual(stat.S_IMODE(self.output.stat().st_mode), 0o755)
 
+    def test_existing_output_fifo_is_refused_before_read_or_child_dispatch(self):
+        self.output.mkdir(mode=0o700)
+        fifo = self.output / "latest.json"
+        os.mkfifo(fifo, 0o600)
+        before = fifo.stat()
+        source = self.transcript.read_bytes()
+        # A separate bounded process makes the old blocking open a test failure,
+        # rather than hanging the runner when the FIFO has no writer.
+        result = subprocess.run([
+            sys.executable, str(Path(monitor.__file__)), "--binary", str(self.binary),
+            "--output-dir", str(self.output), "--session", A,
+        ], env=dict(os.environ), capture_output=True, timeout=3)
+        self.assertEqual(result.returncode, 1)
+        self.assertEqual(json.loads(result.stdout),
+                         {"status": "error", "error": "unsafe_output_file"})
+        self.assertEqual(result.stderr, b"")
+        self.assertFalse(self.calls.exists())
+        self.assertFalse((self.output / "observations.jsonl").exists())
+        self.assertEqual((fifo.stat().st_ino, fifo.stat().st_mode),
+                         (before.st_ino, before.st_mode))
+        self.assertEqual(self.transcript.read_bytes(), source)
+
     def test_single_owned_lock_prevents_overlapping_samples(self):
         directory = monitor.open_directory(self.output)
         lock = monitor.open_file(directory, ".monitor.lock", os.O_RDWR | os.O_CREAT)
@@ -420,9 +573,89 @@ else:
         self.assertLess(time.monotonic() - started, 1)
         environment.pop("STUB_SLEEP")
         with patch.object(monitor, "CAPTURE_BYTES", 32):
-            result, stdout, stderr = monitor.run_command([str(self.binary), "report", "--active-only"], environment, time.monotonic() + 1)
+            # Isolate capture admission from the fresh report stub's filesystem
+            # and interpreter startup. Timeout admission is tested above; this
+            # child immediately exceeds the same 32-byte output bound.
+            result, stdout, stderr = monitor.run_command(
+                [sys.executable, "-c", "import os; os.write(1, b'x' * 1024)"],
+                environment, time.monotonic() + 5)
         self.assertEqual(result["error"], "output_limit")
         self.assertLessEqual(len(stdout) + len(stderr), 32)
+
+    def test_success_collects_silent_owned_descendants_before_reaping_leader(self):
+        marker = self.root / "late-descendant"
+        code = f"""import os,time,pathlib
+pid=os.fork()
+if pid == 0:
+    os.close(1)
+    os.close(2)
+    time.sleep(0.5)
+    pathlib.Path({str(marker)!r}).write_text("escaped")
+    os._exit(0)
+else:
+    print("complete",flush=True)
+"""
+        signals = []
+        real_killpg = os.killpg
+
+        def observe_signal(pid, sig):
+            observed = os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT)
+            self.assertIsNotNone(observed, "leader must remain waitable until cleanup")
+            signals.append(pid)
+            return real_killpg(pid, sig)
+
+        with patch.object(monitor.os, "killpg", side_effect=observe_signal):
+            result, stdout, _ = monitor.run_command(
+                [sys.executable, "-c", code], dict(os.environ), time.monotonic() + 3)
+        self.assertEqual(result["exit_code"], 0)
+        self.assertIsNone(result["error"])
+        self.assertTrue(result["cleanup_complete"])
+        self.assertEqual(stdout, b"complete\n")
+        self.assertEqual(len(signals), 1)
+        time.sleep(0.6)
+        self.assertFalse(marker.exists())
+
+    def test_success_drains_trailing_output_before_return(self):
+        size = 512 * 1024
+        result, stdout, stderr = monitor.run_command(
+            [sys.executable, "-c", f"import os; os.write(1,b'x'*{size}); os.write(2,b'y'*20000)"],
+            dict(os.environ), time.monotonic() + 3)
+        self.assertIsNone(result["error"])
+        self.assertEqual(stdout, b"x" * size)
+        self.assertEqual(stderr, b"y" * 20000)
+        self.assertTrue(result["cleanup_complete"])
+
+    def test_escaped_pipe_holder_has_bounded_incomplete_cleanup(self):
+        finished = self.root / "escaped-fixture-finished"
+        code = f"""import os,time,pathlib
+ready_read,ready_write=os.pipe()
+pid=os.fork()
+if pid == 0:
+    os.close(ready_read)
+    os.setsid()
+    os.write(ready_write,b'1')
+    os.close(ready_write)
+    time.sleep(2)
+    pathlib.Path({str(finished)!r}).write_text("finished")
+    os._exit(0)
+else:
+    os.close(ready_write)
+    os.read(ready_read,1)
+    os.close(ready_read)
+"""
+        started = time.monotonic()
+        result, _, _ = monitor.run_command(
+            [sys.executable, "-c", code], dict(os.environ), started + 2)
+        self.assertLess(time.monotonic() - started, 1.5)
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["error"], "cleanup_failed")
+        self.assertFalse(result["cleanup_complete"])
+        # This explicit escape fixture terminates itself; the monitor must not
+        # signal a different group or claim complete custody of that process.
+        deadline = time.monotonic() + 3
+        while not finished.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(finished.exists())
 
 
 if __name__ == "__main__":

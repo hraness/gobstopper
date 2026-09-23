@@ -31,9 +31,9 @@
         "Injected callback execution is classified separately"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C6"
+      "next_gate": "C15"
     },
     {
       "id": "inspect",
@@ -77,9 +77,9 @@
         "No global resource bound"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C8"
+      "next_gate": "C15"
     },
     {
       "id": "output",
@@ -119,9 +119,9 @@
         "C1 does not sanitize all prefixes/paths/errors"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C8"
+      "next_gate": "C15"
     },
     {
       "id": "memory",
@@ -162,9 +162,9 @@
         "Persistent cache integrity is separate"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C10"
+      "next_gate": "C15"
     },
     {
       "id": "plan-extensions",
@@ -180,18 +180,18 @@
         {
           "state": "cache",
           "mode": "trusted_code",
-          "condition": "Optional model cache/bridge build effects."
+          "condition": "Optional validated model response caches; no automatic bridge compilation."
         },
         {
           "state": "process_state",
           "mode": "spawn",
-          "condition": "Configured plugin, legacy strategy/scorer command or local model bridge."
+          "condition": "Only explicitly admitted configured trusted plugin/scorer/model execution."
         }
       ],
       "outbound": [
         "Trusted executable may perform arbitrary user-authority I/O; configured remote scorers receive selected transcript excerpts."
       ],
-      "authority": "Explicit configuration selects trusted implementation; inspection is not a sandbox.",
+      "authority": "Configured trusted CLI planning/model/scorer execution and direct caller-supplied library callbacks have external authority. Deterministic MCP inspection refuses extension strategies and skips configured scorer/digest execution.",
       "invariants": [
         "READ-1",
         "PRIV-1",
@@ -218,15 +218,15 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Per-run plugin budgets exist; aggregate payload and indirect compiler/model effects require distinct gates.",
+      "bounds": "Aggregate request bytes, stream bytes, monotonic deadlines and owned process groups are bounded at each runner; trusted code can perform other I/O.",
       "exclusions": [
         "No no-network guarantee",
         "No whole-process mutation exclusion"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C8"
+      "next_gate": "C15"
     },
     {
       "id": "private-publication",
@@ -275,30 +275,42 @@
         "No global path-race theorem"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C3"
+      "next_gate": "C15"
     },
     {
       "id": "replacement",
       "owner": "adapters/transaction",
       "reads": [
+        "vault_index",
+        "operation_receipts",
         "source_file"
       ],
       "writes": [
         {
-          "state": "source_file",
+          "state": "vault_index",
           "mode": "replace",
-          "condition": "Caller-selected transcript/detached export after comparison and validation."
+          "condition": "Internal owned index replacement under exclusive vault custody."
+        },
+        {
+          "state": "operation_receipts",
+          "mode": "replace",
+          "condition": "Internal owned copy receipt publication/reconciliation."
         },
         {
           "state": "process_state",
           "mode": "create_delete",
           "condition": "Private temporary file then rename and directory sync."
+        },
+        {
+          "state": "source_file",
+          "mode": "replace",
+          "condition": "Compile-time test-only write_if_unchanged helper replaces a caller-owned synthetic fixture; no production provider replacement route."
         }
       ],
       "outbound": [],
-      "authority": "Low-level API caller must supply compatible provider custody and exact input; current rereads do not provide custody.",
+      "authority": "Crate-private helper for Gobstopper-owned metadata; public provider replacement APIs immediately refuse.",
       "invariants": [
         "OWN-1",
         "ID-1",
@@ -311,27 +323,19 @@
       "source": [
         {
           "path": "crates/gobstopper-adapters/src/transaction.rs",
-          "anchor": "pub fn replace"
-        },
-        {
-          "path": "crates/gobstopper-adapters/src/codex.rs",
-          "anchor": "pub fn apply"
-        },
-        {
-          "path": "crates/gobstopper-adapters/src/claude.rs",
-          "anchor": "pub fn apply"
+          "anchor": "pub(crate) fn replace"
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Default transcript cap 512 MiB, configurable; final comparison/rename gap remains.",
+      "bounds": "Visibility and durability reported separately; stable owner-controlled ancestors and cooperating custody required.",
       "exclusions": [
-        "No concurrent provider append safety",
-        "Snapshot is caller responsibility"
+        "No provider-file replacement authority",
+        "No hostile ancestor or power-loss theorem"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C2"
+      "next_gate": "C15"
     },
     {
       "id": "private-directory",
@@ -341,12 +345,7 @@
         {
           "state": "experiment_output",
           "mode": "create",
-          "condition": "Caller-selected directory tree."
-        },
-        {
-          "state": "config",
-          "mode": "permissions",
-          "condition": "Existing target directory permissions may be set to 0700; actual state depends on caller."
+          "condition": "Create missing caller-owned directory components with private mode; preserve existing directory permissions."
         }
       ],
       "outbound": [],
@@ -366,14 +365,14 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Unix chmod and directory sync; recursion follows missing ancestors.",
+      "bounds": "Directory creation and sync; existing ancestors must be stable and owner-controlled.",
       "exclusions": [
         "No arbitrary-target authorization"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C3"
+      "next_gate": "C15"
     },
     {
       "id": "snapshot",
@@ -419,9 +418,9 @@
         "No power-loss or noncooperating-reader theorem"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C3"
+      "next_gate": "C15"
     },
     {
       "id": "vault-read",
@@ -433,7 +432,7 @@
       ],
       "writes": [],
       "outbound": [],
-      "authority": "Read selected snapshots under shared directory custody for reconstruction; list/index metadata paths differ.",
+      "authority": "Shared vault directory custody covers strict index reads and reconstruction; missing roots remain read-only.",
       "invariants": [
         "REC-1",
         "READ-1",
@@ -454,15 +453,15 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Hash/integrity and configured reconstruction limits; missing root stays read-only.",
+      "bounds": "Configured reconstruction limits, exact hashes, strict versioned index/root admission; damaged or torn history refuses.",
       "exclusions": [
         "Does not cover independent Python readers",
         "No provider acceptance proof"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C3"
+      "next_gate": "C15"
     },
     {
       "id": "prune",
@@ -501,15 +500,15 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Exclusive cooperating root custody covers scan/index/delete; receipts pin pending and completed snapshots.",
+      "bounds": "Exclusive custody covers strict index/pin parsing, retained-root verification, index publication and deletion; failed manifest unlink stops chunk collection.",
       "exclusions": [
-        "Torn index/power-loss recovery incomplete",
-        "No abandoned pin lifecycle"
+        "No automatic operation-pin retirement",
+        "No physical power-loss or hostile-filesystem qualification"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C3"
+      "next_gate": "C15"
     },
     {
       "id": "copy",
@@ -523,22 +522,22 @@
         {
           "state": "source_file",
           "mode": "create",
-          "condition": "Fresh output identity only; source bytes remain separate."
+          "condition": "Fresh identity and exact retained candidate via no-clobber output publication."
         },
         {
           "state": "archive",
           "mode": "create",
-          "condition": "Before-state recovery snapshot."
+          "condition": "Retain original AND exact candidate before output."
         },
         {
           "state": "vault_index",
           "mode": "append",
-          "condition": "Recovery snapshot binding."
+          "condition": "Recovery snapshot bindings."
         },
         {
           "state": "operation_receipts",
           "mode": "create_replace",
-          "condition": "Participating copy operations persist intent then completion."
+          "condition": "Version 2 intent before output; exact-byte completion/reconciliation afterward."
         }
       ],
       "outbound": [],
@@ -568,43 +567,24 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Shared vault custody spans snapshot to receipt completion; no-clobber output. Plain fork does not create a CopyReceipt.",
+      "bounds": "Participating compact, fork and restore wrappers bind source identity, source hash and effective inputs; recovery uses retained candidate, never reruns a strategy.",
       "exclusions": [
-        "No universal exactly-once property",
-        "Post-publication receipt/sync uncertainty"
+        "Provider resume acceptance unqualified",
+        "Pins retained indefinitely",
+        "Legacy incomplete receipts may require repair"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C3"
+      "next_gate": "C15"
     },
     {
       "id": "store-write",
       "owner": "adapters/devin",
-      "reads": [
-        "provider_store",
-        "export",
-        "archive"
-      ],
-      "writes": [
-        {
-          "state": "provider_store",
-          "mode": "sql_transaction",
-          "condition": "Explicit low-level apply_store/restore_store or CLI branch admitted for selected session."
-        },
-        {
-          "state": "archive",
-          "mode": "create",
-          "condition": "Copy-wrapper/CLI recovery snapshots; low-level APIs do not automatically supply all wrapper effects."
-        },
-        {
-          "state": "operation_receipts",
-          "mode": "create",
-          "condition": "compact_devin_store receipt follows committed export."
-        }
-      ],
+      "reads": [],
+      "writes": [],
       "outbound": [],
-      "authority": "Exact store/session/graph binding required; released idle probe is not lifetime provider custody.",
+      "authority": "Disabled direct provider-file and Devin store mutation entry points refuse before reads, snapshots, prompts or writes.",
       "invariants": [
         "OWN-1",
         "ID-1",
@@ -629,15 +609,15 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "SQL transaction guards row writes, not provider in-memory ownership. C2 must qualify retained compatible custody or disable this mode.",
+      "bounds": "Immediate DirectMutationDisabled compatibility boundary; pure byte transformations remain separate.",
       "exclusions": [
-        "Not copy-only",
-        "No post-commit exactly-once reconciliation"
+        "No direct mutation qualification",
+        "No inference that idle age grants custody"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C2"
+      "next_gate": "C15"
     },
     {
       "id": "native",
@@ -672,7 +652,7 @@
       "outbound": [
         "Real provider/model/account operation under selected executable/home."
       ],
-      "authority": "Requires exact provider/session/home and qualified ownership; no native error/no-op falls through to surgery.",
+      "authority": "Released CLI native activation is guarded unqualified. Explicit low-level protocol library callers own qualification; isolated exact fixtures run only in debug builds.",
       "invariants": [
         "CTRL-1",
         "CTRL-2",
@@ -700,15 +680,16 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Unix Codex/ACP frame/queue/deadline/group fixtures; Claude leader-only cleanup remains. ACP correlation is session-scoped.",
+      "bounds": "Bounded streams/deadlines and owned Unix process groups; Codex turn/item correlation, ACP session-only correlation; all live cells remain disabled in CLI.",
       "exclusions": [
-        "No provider attestation from fixture",
-        "No exclusive ownership from file age/probe"
+        "No live provider attestation",
+        "No exclusivity from idle age",
+        "First private Codex compaction-item association remains an assumption"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C4"
+      "next_gate": "C15"
     },
     {
       "id": "telemetry",
@@ -725,12 +706,7 @@
         {
           "state": "event_log",
           "mode": "rename",
-          "condition": "Log rotation at the implementation size threshold renames current log."
-        },
-        {
-          "state": "event_log",
-          "mode": "delete",
-          "condition": "Rotation removes prior rotated log before rename."
+          "condition": "Oversized admitted regular log atomically replaces the prior regular-file generation; no pre-unlink. Concurrent rotation remains best-effort telemetry."
         }
       ],
       "outbound": [],
@@ -750,15 +726,15 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "8 MiB rotation threshold; caller-specific observations. Rotation/append concurrency is not a transaction-log theorem.",
+      "bounds": "8 MiB rotation; validated closed vocabulary and exact lowercase hashes; source-bound before/after observations are separate from estimated or billed savings.",
       "exclusions": [
-        "Not a transaction commit log",
-        "Some remaining diagnostics have wider privacy gaps"
+        "Not a transaction journal",
+        "Rotation/append concurrency is not proved"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C11"
+      "next_gate": "C15"
     },
     {
       "id": "watch-state",
@@ -775,7 +751,7 @@
         }
       ],
       "outbound": [],
-      "authority": "Watcher owns per-provider/all filename; no cross-process exclusive dispatch lock yet.",
+      "authority": "Watch generation 9 caches settlements; durable native journal and stable per-target locks separately enforce unresolved-operation suppression.",
       "invariants": [
         "CTRL-2",
         "ID-1",
@@ -792,15 +768,15 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Generation 8; cooldown expiry and future-generation acceptance need durable operation-state redesign.",
+      "bounds": "Strict bounded current version; older uncertain state migrates conservatively, corrupt/newer state refuses. Clock expiry never clears native uncertainty.",
       "exclusions": [
-        "No multiwatch exactly-once claim",
-        "Corrupt/missing state can lose knowledge"
+        "Not provider custody",
+        "Downgrading to a binary ignoring the journal is unsafe"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C4"
+      "next_gate": "C15"
     },
     {
       "id": "hooks-settings",
@@ -810,13 +786,13 @@
       ],
       "writes": [
         {
-          "state": "config",
-          "mode": "create_replace",
-          "condition": "Backup/settings/temp files install or uninstall provider hooks."
+          "state": "experiment_output",
+          "mode": "create",
+          "condition": "New private no-clobber bundle containing original settings and exact candidate hashes/bytes; source settings unchanged."
         }
       ],
       "outbound": [],
-      "authority": "Explicit install-hooks/uninstall-hooks at configured provider settings.",
+      "authority": "Explicit --output new file; install/uninstall without output refuse before effects.",
       "invariants": [
         "ID-1",
         "REC-2",
@@ -837,14 +813,15 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Preserve user settings; concurrent writer/corrupt-file/rollback qualification remains.",
+      "bounds": "1 MiB strict duplicate-free settings JSON, exact owned handler/event/matcher/timeout matching.",
       "exclusions": [
-        "No global settings transaction"
+        "No automatic provider settings activation",
+        "Applying a bundle requires provider-owned conditional update"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C9"
+      "next_gate": "C15"
     },
     {
       "id": "hook-execution",
@@ -879,7 +856,7 @@
         }
       ],
       "outbound": [],
-      "authority": "Invoked provider hook input; callbacks advise/snapshot, no direct forced transcript compaction.",
+      "authority": "Bounded callback input must match exact source metadata and configured provider root; frozen bytes are archived.",
       "invariants": [
         "ID-1",
         "CTRL-1",
@@ -897,15 +874,15 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Correlation based on available provider callback fields; optional idle hook no-op paths.",
+      "bounds": "64 KiB input and five-second EOF deadline; absent correlation yields only unattributed zero-savings events. No callback pairing inferred.",
       "exclusions": [
-        "No exact operation identity theorem",
-        "Remaining paths/raw errors require privacy review"
+        "No operation-correlation theorem",
+        "Verified archive pointer does not assert immediate pre-compaction state"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C9"
+      "next_gate": "C15"
     },
     {
       "id": "auth",
@@ -956,15 +933,15 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Clipboard bounded 3 seconds/16 KiB; stdin auth read remains separately unbounded. Unverified health may still store.",
+      "bounds": "Clipboard bounded 3 seconds/16 KiB; piped auth stdin bounded 5 seconds/64 KiB. Interactive terminal confirmation waits for the user; unverified health may still store.",
       "exclusions": [
         "No all-keys-verified claim",
         "Environment key authority remains separate"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C10"
+      "next_gate": "C15"
     },
     {
       "id": "plugin",
@@ -1007,15 +984,15 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Per-run byte/deadline limits; capability describes protocol, not OS privileges.",
+      "bounds": "SHA-admitted manifest and declared file bundle; aggregate input/dual-stream output caps, monotonic deadline, retained WNOWAIT child identity and owned process-group cleanup.",
       "exclusions": [
-        "Not a sandbox",
-        "No aggregate input theorem"
+        "Trusted code is not an OS sandbox",
+        "Escaped descendants and hostile same-user processes outside custody"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C8"
+      "next_gate": "C15"
     },
     {
       "id": "apple",
@@ -1028,24 +1005,24 @@
       "writes": [
         {
           "state": "cache",
-          "mode": "create_replace",
-          "condition": "Resolve/auto-build managed bridge; in-memory prompt-response entries."
+          "mode": "in_memory",
+          "condition": "Validated complete scorer batches or validated digest fields/stubs only, keyed by exact submitted task/instructions/schema/prompt and executable SHA."
         },
         {
           "state": "process_state",
           "mode": "spawn",
-          "condition": "swiftc/compiler and local model bridge as required."
+          "condition": "Installed trusted bridge --check/--once under serialized bounded owned runner."
         },
         {
           "state": "output",
           "mode": "emit",
-          "condition": "Availability and failure diagnostics currently may contain model/system text."
+          "condition": "Closed diagnostic categories only."
         }
       ],
       "outbound": [
         "Local model receives selected content through trusted bridge; explicit custom bridge has user authority."
       ],
-      "authority": "Configured Apple scorer/digest resolution and executable selection.",
+      "authority": "Explicitly admitted installed bridge; resolution never builds or installs one.",
       "invariants": [
         "READ-1",
         "PRIV-1",
@@ -1072,15 +1049,15 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Managed auto-build path ~/.local/share/gobstopper/apple-bridge; timeout clamp and bounded pending/cache.",
+      "bounds": "At most 64 in-memory entries; request/output limits and 600-second inference cap including serialized admission.",
       "exclusions": [
-        "No no-write inspection claim",
-        "Not semantic preservation proof"
+        "Opaque model weights not attested by executable hash",
+        "No semantic-preservation or live model qualification"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C10"
+      "next_gate": "C15"
     },
     {
       "id": "remote-score",
@@ -1093,18 +1070,18 @@
       "writes": [
         {
           "state": "cache",
-          "mode": "trusted_code",
-          "condition": "Configured scorer/model library cache according to implementation."
+          "mode": "create_replace",
+          "condition": "Private bounded Jev per-question cache admits individually valid answers (including partial batches); whole-request memory cache requires complete validated output. Atomic last-writer-wins disk publication."
         },
         {
           "state": "process_state",
           "mode": "spawn",
-          "condition": "curl or configured scorer executable."
+          "condition": "Bounded curl or explicitly configured trusted scorer executable."
         },
         {
           "state": "output",
           "mode": "emit",
-          "condition": "Model/fallback diagnostics require privacy review."
+          "condition": "Closed failure categories with heuristic fallback."
         }
       ],
       "outbound": [
@@ -1137,15 +1114,15 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Per-component budgets and parsing/fallback tests; external model behavior is unproved.",
+      "bounds": "Strict duplicate rejection, finite probabilities and exact IDs; frozen bounded source excerpts and context-bound cache keys.",
       "exclusions": [
-        "No hidden semantic attestation",
-        "No guaranteed privacy outside chosen provider boundary"
+        "External model weights and task correctness unproved",
+        "Concurrent cache replacement may lose entries and cause fresh calls"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C10"
+      "next_gate": "C15"
     },
     {
       "id": "replay",
@@ -1158,13 +1135,13 @@
       "writes": [
         {
           "state": "experiment_output",
-          "mode": "create_delete",
-          "condition": "Private replay copies, source-bound manifests or requested reports."
+          "mode": "create",
+          "condition": "Explicit source-bound manifests/reports and bench CSV artifacts use private no-clobber publication; ordinary transforms run in memory."
         },
         {
           "state": "process_state",
           "mode": "spawn",
-          "condition": "Only optional supplied judge/scorer hooks or runner commands."
+          "condition": "Only explicitly admitted caller-supplied scorer/judge or runner command."
         }
       ],
       "outbound": [
@@ -1194,18 +1171,22 @@
         {
           "path": "crates/gobstopper-adapters/src/study.rs",
           "anchor": "pub fn evaluate"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/eval.rs",
+          "anchor": "pub fn eval_session_with_hooks"
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Replay edits private copies; source-bound annotations and heuristic labels are not semantic truth.",
+      "bounds": "Frozen file bytes or a read-only session-bound Devin store export; source-bound labels, literal scores and judge estimates are separate evidence types. Bench records evaluation failures as unavailable rows.",
       "exclusions": [
         "No live task success claim",
         "No universal savings claim"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C11"
+      "next_gate": "C15"
     },
     {
       "id": "monitor",
@@ -1253,9 +1234,9 @@
         "No runtime all-process theorem"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C14"
+      "next_gate": "C15"
     },
     {
       "id": "offline-study-script",
@@ -1306,15 +1287,15 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Some retention code independently reads vault without directory custody; do not run that reader concurrently with prune until C3.",
+      "bounds": "Fresh private registered synthetic outputs; bounded owned subprocesses, exact source/binary/config hashes and incomplete arm reporting. Retention reader follows shared vault custody.",
       "exclusions": [
         "No live qualification",
         "No universal corpus evidence"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C11"
+      "next_gate": "C15"
     },
     {
       "id": "provider-study-script",
@@ -1368,9 +1349,9 @@
         "No global retention claim"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C13"
+      "next_gate": "C15"
     },
     {
       "id": "formal-runner",
@@ -1382,12 +1363,12 @@
         {
           "state": "experiment_output",
           "mode": "create",
-          "condition": "Fresh checker receipts/logs and Java metadata."
+          "condition": "Fresh receipts/logs, private exact-source proof/mutation workspaces and tool metadata."
         },
         {
           "state": "process_state",
           "mode": "spawn",
-          "condition": "Pinned Java/TLC subprocess, bounded per-case memory/time."
+          "condition": "Pinned TLC/Java, Kani/CBMC, Lean/kernel replay and bounded Cargo/test subprocesses."
         }
       ],
       "outbound": [],
@@ -1404,34 +1385,38 @@
         {
           "path": "verify/vault/check.py",
           "anchor": "def main"
+        },
+        {
+          "path": "verify/watch/check.py",
+          "anchor": "def main"
+        },
+        {
+          "path": "verify/core/check.py",
+          "anchor": "def main"
+        },
+        {
+          "path": "verify/transcript/check.py",
+          "anchor": "def main"
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Pinned TLC hash; safe model and required expected-counterexample checks. Structural assurance checker itself only reads and emits status.",
+      "bounds": "Exact source/tool input hashes, bounded subprocess time/output and required named assertion mutants; a compile failure is not a killed mutant.",
       "exclusions": [
-        "No Rust theorem",
-        "No full filesystem crash proof"
+        "No whole-system theorem",
+        "No filesystem or proprietary-provider proof"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C12"
+      "next_gate": "C15"
     },
     {
       "id": "append-transcript",
       "owner": "adapters/codex_compact",
-      "reads": [
-        "source_file"
-      ],
-      "writes": [
-        {
-          "state": "source_file",
-          "mode": "append",
-          "condition": "append_compacted opens caller-selected path for read/append and writes newline plus serialized record; used on owned replay/staging targets, not intrinsically pure."
-        }
-      ],
+      "reads": [],
+      "writes": [],
       "outbound": [],
-      "authority": "Caller owns target and source/custody admission; low-level helper does not snapshot or establish ownership.",
+      "authority": "Legacy on-disk compacted-record append has been removed; append_compacted_bytes operates on caller-owned memory.",
       "invariants": [
         "OWN-1",
         "ID-1",
@@ -1444,42 +1429,28 @@
       "source": [
         {
           "path": "crates/gobstopper-adapters/src/codex_compact.rs",
-          "anchor": "fn append_compacted"
+          "anchor": "fn append_compacted_bytes"
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Caller-supplied compacted record; append helper itself is not a concurrency transaction.",
+      "bounds": "Pure candidate construction only.",
       "exclusions": [
-        "No no-write claim",
-        "No automatic snapshot/custody"
+        "No filesystem mutation authorization"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C2"
+      "next_gate": "C15"
     },
     {
       "id": "process-probe",
       "owner": "CLI/adapters",
       "reads": [
-        "source_file",
-        "provider_store",
-        "export",
-        "effective_context",
-        "archive",
-        "vault_index",
-        "event_log",
-        "config"
+        "source_file"
       ],
-      "writes": [
-        {
-          "state": "process_state",
-          "mode": "spawn",
-          "condition": "Read-only liveness/version/help subprocess; no compaction command is sent."
-        }
-      ],
+      "writes": [],
       "outbound": [],
-      "authority": "Read chosen configured roots/target; output fields are separately authorized.",
+      "authority": "Inspect selected provider liveness metadata and probe one positive PID with signal zero; no signal is delivered.",
       "invariants": [
         "ID-1",
         "PRIV-1",
@@ -1493,22 +1464,18 @@
         {
           "path": "crates/gobstopper-adapters/src/claude.rs",
           "anchor": "pub fn live_sessions"
-        },
-        {
-          "path": "crates/gobstopper-cli/src/hooks.rs",
-          "anchor": "pub fn codex_hooks_supported"
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Enclosing probe deadline/process constraints need separate review.",
+      "bounds": "Each metadata file is a nofollow, nonblocking regular read capped at 64 KiB, with strict JSON and checked positive i32 PID. Unix signal zero only; no subprocess. Unsupported or uncertain PID probes conservatively count as live.",
       "exclusions": [
         "No native compaction effect implied",
         "Probe observation is not ownership"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C8"
+      "next_gate": "C15"
     },
     {
       "id": "credential-read",
@@ -1541,9 +1508,206 @@
         "No output authorization for key or fragments"
       ],
       "evidence": [
-        "E-SOURCE"
+        "E-FOUNDATION-SOURCE"
       ],
-      "next_gate": "C8"
+      "next_gate": "C15"
+    },
+    {
+      "id": "native-journal",
+      "owner": "CLI watcher",
+      "reads": [
+        "native_journal",
+        "archive",
+        "config",
+        "source_file"
+      ],
+      "writes": [
+        {
+          "state": "native_journal",
+          "mode": "create",
+          "condition": "Stable target registry and cooperating lock identity."
+        },
+        {
+          "state": "native_journal",
+          "mode": "append",
+          "condition": "Durable prepare, dispatch, terminal/unknown and evidence-only reconcile records."
+        },
+        {
+          "state": "operation_receipts",
+          "mode": "create",
+          "condition": "Durable pre-dispatch recovery pin."
+        }
+      ],
+      "outbound": [],
+      "authority": "Canonical provider/home/store/session binding; dispatch append+sync must succeed before provider call. Reconciliation accepts only retained exact Codex terminal evidence.",
+      "invariants": [
+        "CTRL-2",
+        "ID-1",
+        "REC-2"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/native_operations.rs",
+          "anchor": "pub(super) fn reconcile"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "4 MiB journals, 4096 targets, bounded exact binary identity; unresolved states never time-expire.",
+      "exclusions": [
+        "No live activation permission",
+        "No distributed lock across differing data roots"
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "owned-storage-io",
+      "owner": "adapters/transaction",
+      "reads": [
+        "archive",
+        "vault_index",
+        "operation_receipts"
+      ],
+      "writes": [
+        {
+          "state": "archive",
+          "mode": "create_delete",
+          "condition": "Crate-private caller-admitted write/sync/unlink primitives, effect target determined by enclosing vault/copy operation."
+        },
+        {
+          "state": "vault_index",
+          "mode": "append",
+          "condition": "Caller-admitted index write/sync."
+        },
+        {
+          "state": "operation_receipts",
+          "mode": "create_replace",
+          "condition": "Caller-admitted intent/pin/receipt write/sync."
+        }
+      ],
+      "outbound": [],
+      "authority": "Internal primitives require the enclosing operation custody; no public provider mutation route.",
+      "invariants": [
+        "OWN-1",
+        "ID-1",
+        "REC-2"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-adapters/src/transaction.rs",
+          "anchor": "pub(crate) fn write_all"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Visibility and durability reported separately; stable owner-controlled ancestors and cooperating custody required.",
+      "exclusions": [
+        "No provider-file replacement authority",
+        "No hostile ancestor or power-loss theorem"
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "tool-fetch",
+      "owner": "verification owner",
+      "reads": [
+        "config"
+      ],
+      "writes": [
+        {
+          "state": "experiment_output",
+          "mode": "create",
+          "condition": "One new private checksum-verified official archive; no extraction or execution."
+        }
+      ],
+      "outbound": [
+        "HTTPS to the exact reviewed GitHub release artifact and HTTPS release redirects."
+      ],
+      "authority": "Explicit tool fetch command and reviewed tools.lock.json pin.",
+      "invariants": [
+        "REL-1",
+        "RES-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "verify/tools.py",
+          "anchor": "def fetch"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "240-second monotonic copy deadline, 20-second socket idle timeout, at most 1 GiB; DNS/one blocking read overhead bounded by enclosing CI job.",
+      "exclusions": [
+        "No automatic trust in latest releases",
+        "No installation or execution"
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "test-fixture",
+      "owner": "CLI/adapters",
+      "reads": [
+        "effective_context"
+      ],
+      "writes": [
+        {
+          "state": "cache",
+          "mode": "in_memory",
+          "condition": "Compile-time test-only fault arm/selection; never a production fault switch."
+        },
+        {
+          "state": "experiment_output",
+          "mode": "create",
+          "condition": "Compile-time test-only synthetic bridge fixture."
+        }
+      ],
+      "outbound": [],
+      "authority": "Only cfg(test) helper declarations retained conservatively by the inventory scanner.",
+      "invariants": [
+        "ID-1",
+        "RES-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-adapters/src/transaction.rs",
+          "anchor": "mod faults"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/lib.rs",
+          "anchor": "pub(crate) fn write_if_unchanged"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Enclosing synthetic tests own temporary roots and thread-local fault state.",
+      "exclusions": [
+        "Not present in production builds"
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "next_gate": "C15"
     }
   ],
   "cli": [
@@ -1581,10 +1745,11 @@
         "copy",
         "store-write",
         "native",
+        "native-journal",
         "telemetry",
         "output"
       ],
-      "contract": "Codex/Claude defaults copy; Devin store and explicit native branches differ. Retired in-place/no-backup flags refuse.",
+      "contract": "Codex/Claude detached copy after admission; Devin direct mutation and released native dispatch refuse before effects.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -1606,12 +1771,11 @@
       "name": "Undo",
       "effects": [
         "inspect",
-        "snapshot",
         "copy",
         "store-write",
         "output"
       ],
-      "contract": "Codex/Claude restore a fresh identity; Devin restore can write selected store; prompt or --yes admits selected recovery.",
+      "contract": "Fresh Codex/Claude identity from retained bytes; Devin store restore disabled.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -1621,10 +1785,10 @@
       "name": "Fork",
       "effects": [
         "inspect",
-        "private-publication",
+        "copy",
         "output"
       ],
-      "contract": "Fresh file identity; plain fork is not the copy receipt protocol and does not automatically snapshot.",
+      "contract": "Explicit recovery vault and retained exact candidate precede fresh copy identity.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -1688,7 +1852,7 @@
         "hooks-settings",
         "output"
       ],
-      "contract": "Explicit settings installation.",
+      "contract": "Requires --output new private settings bundle; source settings unchanged.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -1700,7 +1864,7 @@
         "hooks-settings",
         "output"
       ],
-      "contract": "Explicit settings removal.",
+      "contract": "Requires --output new private removal candidate bundle; source settings unchanged.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -1847,7 +2011,7 @@
         "replay",
         "output"
       ],
-      "contract": "Private strategy replay; optional CSV output and configured judges/scorers.",
+      "contract": "Private built-in strategy replay with source-bound rows, explicit failure categories and optional configured scorer; no semantic judge calls. Optional CSV output is a new private file and refuses existing targets.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -1870,10 +2034,9 @@
       "effects": [
         "inspect",
         "vault-read",
-        "plan-extensions",
         "output"
       ],
-      "contract": "No mutating tool advertised, but planning extensions can execute. Content tools gated.",
+      "contract": "Bounded deterministic inspection; extension strategies refused and external scorers/digests skipped. --allow-transcript-content gates explicit recovery content only.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -1886,14 +2049,13 @@
         "plan-extensions",
         "snapshot",
         "copy",
-        "replacement",
-        "store-write",
         "native",
+        "native-journal",
         "telemetry",
         "watch-state",
         "output"
       ],
-      "contract": "Dry-run skips mutation/state/event paths; configured planning may execute. Live opt-ins differ by provider and need separate activation qualification.",
+      "contract": "Dry-run skips state/event publication. Released native dispatch is guarded even for old auto_compact_closed opt-ins; unresolved operations remain blocked.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -1969,6 +2131,31 @@
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
       }
+    },
+    {
+      "name": "NativeOperations",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "anchor": "enum Cmd"
+      },
+      "contract": "Read-only metadata for registered native operations; no provider call.",
+      "effects": [
+        "inspect",
+        "output"
+      ]
+    },
+    {
+      "name": "NativeReconcile",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "anchor": "enum Cmd"
+      },
+      "contract": "Exact retained Codex terminal evidence only; append reconciliation without any provider call or invented measurement.",
+      "effects": [
+        "inspect",
+        "native-journal",
+        "output"
+      ]
     }
   ],
   "mcp": [
@@ -2050,7 +2237,6 @@
       "name": "plan",
       "effects": [
         "inspect",
-        "plan-extensions",
         "output"
       ],
       "content_opt_in": false,
@@ -2170,9 +2356,16 @@
   ],
   "scripts": [
     {
-      "path": "scripts/monitor.py",
+      "path": "scripts/check-dialects.py",
       "effects": [
-        "monitor"
+        "offline-study-script"
+      ]
+    },
+    {
+      "path": "scripts/check_assurance.py",
+      "effects": [
+        "inspect",
+        "output"
       ]
     },
     {
@@ -2182,9 +2375,9 @@
       ]
     },
     {
-      "path": "scripts/retention-audit.py",
+      "path": "scripts/monitor.py",
       "effects": [
-        "offline-study-script"
+        "monitor"
       ]
     },
     {
@@ -2206,14 +2399,49 @@
       ]
     },
     {
-      "path": "scripts/check_assurance.py",
+      "path": "scripts/registered-study.py",
       "effects": [
-        "inspect",
-        "output"
+        "offline-study-script"
+      ]
+    },
+    {
+      "path": "scripts/retention-audit.py",
+      "effects": [
+        "offline-study-script"
+      ]
+    },
+    {
+      "path": "verify/core/check.py",
+      "effects": [
+        "formal-runner"
+      ]
+    },
+    {
+      "path": "verify/tools.py",
+      "effects": [
+        "tool-fetch"
+      ]
+    },
+    {
+      "path": "verify/transcript/check.py",
+      "effects": [
+        "formal-runner"
       ]
     },
     {
       "path": "verify/vault/check.py",
+      "effects": [
+        "formal-runner"
+      ]
+    },
+    {
+      "path": "verify/watch/check.py",
+      "effects": [
+        "formal-runner"
+      ]
+    },
+    {
+      "path": "verify/stress/check.py",
       "effects": [
         "formal-runner"
       ]
@@ -2224,7 +2452,7 @@
       "path": "crates/gobstopper-adapters/src/claude.rs",
       "symbol": "apply",
       "effects": [
-        "replacement"
+        "store-write"
       ]
     },
     {
@@ -2239,6 +2467,13 @@
       "symbol": "headless_compact_in_home",
       "effects": [
         "native"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/claude.rs",
+      "symbol": "live_branch",
+      "effects": [
+        "pure"
       ]
     },
     {
@@ -2285,10 +2520,17 @@
       ]
     },
     {
+      "path": "crates/gobstopper-adapters/src/claude.rs",
+      "symbol": "transform",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
       "path": "crates/gobstopper-adapters/src/codex.rs",
       "symbol": "apply",
       "effects": [
-        "replacement"
+        "store-write"
       ]
     },
     {
@@ -2335,6 +2577,13 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/codex.rs",
+      "symbol": "record_call_id",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/codex.rs",
       "symbol": "scan_meta",
       "effects": [
         "inspect"
@@ -2348,10 +2597,24 @@
       ]
     },
     {
-      "path": "crates/gobstopper-adapters/src/codex_compact.rs",
-      "symbol": "append_compacted",
+      "path": "crates/gobstopper-adapters/src/codex.rs",
+      "symbol": "supported_item",
       "effects": [
-        "append-transcript"
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/codex.rs",
+      "symbol": "transform",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/codex_compact.rs",
+      "symbol": "append_compacted_bytes",
+      "effects": [
+        "pure"
       ]
     },
     {
@@ -2365,7 +2628,7 @@
       "path": "crates/gobstopper-adapters/src/codex_compact.rs",
       "symbol": "compact_with_digest",
       "effects": [
-        "replacement"
+        "store-write"
       ]
     },
     {
@@ -2390,6 +2653,13 @@
       ]
     },
     {
+      "path": "crates/gobstopper-adapters/src/codex_compact.rs",
+      "symbol": "transform_with_digest",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
       "path": "crates/gobstopper-adapters/src/copy.rs",
       "symbol": "compact",
       "effects": [
@@ -2400,8 +2670,7 @@
       "path": "crates/gobstopper-adapters/src/copy.rs",
       "symbol": "compact_devin_store",
       "effects": [
-        "store-write",
-        "snapshot"
+        "store-write"
       ]
     },
     {
@@ -2416,6 +2685,27 @@
       "symbol": "load_bound",
       "effects": [
         "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/copy.rs",
+      "symbol": "publish_prepared",
+      "effects": [
+        "copy"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/copy.rs",
+      "symbol": "recover_operation",
+      "effects": [
+        "copy"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/copy.rs",
+      "symbol": "recovery_roots_locked",
+      "effects": [
+        "vault-read"
       ]
     },
     {
@@ -2493,7 +2783,7 @@
       "path": "crates/gobstopper-adapters/src/devin.rs",
       "symbol": "apply",
       "effects": [
-        "replacement"
+        "store-write"
       ]
     },
     {
@@ -2568,6 +2858,13 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/devin.rs",
+      "symbol": "matching_tool_call",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/devin.rs",
       "symbol": "restore_store",
       "effects": [
         "store-write"
@@ -2609,6 +2906,28 @@
       ]
     },
     {
+      "path": "crates/gobstopper-adapters/src/devin.rs",
+      "symbol": "transform",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/devin.rs",
+      "symbol": "valid_tool_id",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/eval.rs",
+      "symbol": "eval_session_with_hooks",
+      "effects": [
+        "replay",
+        "plan-extensions"
+      ]
+    },
+    {
       "path": "crates/gobstopper-adapters/src/eval.rs",
       "symbol": "eval_transcript",
       "effects": [
@@ -2631,10 +2950,24 @@
       ]
     },
     {
+      "path": "crates/gobstopper-adapters/src/eval.rs",
+      "symbol": "token_observation",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
       "path": "crates/gobstopper-adapters/src/fork.rs",
       "symbol": "fork",
       "effects": [
-        "private-publication"
+        "store-write"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/fork.rs",
+      "symbol": "fork_with_vault",
+      "effects": [
+        "copy"
       ]
     },
     {
@@ -2648,8 +2981,7 @@
       "path": "crates/gobstopper-adapters/src/fork.rs",
       "symbol": "restore_copy",
       "effects": [
-        "snapshot",
-        "private-publication"
+        "copy"
       ]
     },
     {
@@ -2661,9 +2993,23 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/fork.rs",
-      "symbol": "target_path",
+      "symbol": "source_session_id",
       "effects": [
-        "inspect"
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/fork.rs",
+      "symbol": "target_path_bound",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/fork.rs",
+      "symbol": "validate_session_id",
+      "effects": [
+        "pure"
       ]
     },
     {
@@ -2677,7 +3023,29 @@
       "path": "crates/gobstopper-adapters/src/lib.rs",
       "symbol": "write_if_unchanged",
       "effects": [
+        "test-fixture",
         "replacement"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/payload.rs",
+      "symbol": "check_digest_bounds",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/payload.rs",
+      "symbol": "check_edit_bounds",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/payload.rs",
+      "symbol": "decode_record",
+      "effects": [
+        "pure"
       ]
     },
     {
@@ -2696,7 +3064,28 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/payload.rs",
+      "symbol": "elision_targets",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/payload.rs",
       "symbol": "fingerprint",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/payload.rs",
+      "symbol": "head_records",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/payload.rs",
+      "symbol": "supported_content",
       "effects": [
         "pure"
       ]
@@ -2732,6 +3121,13 @@
     {
       "path": "crates/gobstopper-adapters/src/plugins.rs",
       "symbol": "run_bounded",
+      "effects": [
+        "plugin"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/plugins.rs",
+      "symbol": "run_bounded_inference",
       "effects": [
         "plugin"
       ]
@@ -2794,9 +3190,30 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/transaction.rs",
-      "symbol": "apply",
+      "symbol": "checkpoint",
       "effects": [
-        "replacement"
+        "test-fixture"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/transaction.rs",
+      "symbol": "confirm_publication",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/transaction.rs",
+      "symbol": "hit",
+      "effects": [
+        "test-fixture"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/transaction.rs",
+      "symbol": "install",
+      "effects": [
+        "test-fixture"
       ]
     },
     {
@@ -2822,9 +3239,31 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/transaction.rs",
+      "symbol": "parse_limit",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/transaction.rs",
+      "symbol": "prepare",
+      "effects": [
+        "pure",
+        "plan-extensions"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/transaction.rs",
       "symbol": "private_dir",
       "effects": [
         "private-directory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/transaction.rs",
+      "symbol": "publication_error",
+      "effects": [
+        "pure"
       ]
     },
     {
@@ -2843,6 +3282,20 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/transaction.rs",
+      "symbol": "read_with_limit",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/transaction.rs",
+      "symbol": "remove_file",
+      "effects": [
+        "owned-storage-io"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/transaction.rs",
       "symbol": "replace",
       "effects": [
         "replacement"
@@ -2853,6 +3306,20 @@
       "symbol": "sync_dir",
       "effects": [
         "private-publication"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/transaction.rs",
+      "symbol": "sync_file",
+      "effects": [
+        "owned-storage-io"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/transaction.rs",
+      "symbol": "write_all",
+      "effects": [
+        "owned-storage-io"
       ]
     },
     {
@@ -2867,6 +3334,20 @@
       "symbol": "diff",
       "effects": [
         "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/vault.rs",
+      "symbol": "entries",
+      "effects": [
+        "vault-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/vault.rs",
+      "symbol": "entries_locked",
+      "effects": [
+        "vault-read"
       ]
     },
     {
@@ -2899,6 +3380,13 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/vault.rs",
+      "symbol": "open",
+      "effects": [
+        "vault-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/vault.rs",
       "symbol": "prune",
       "effects": [
         "prune"
@@ -2909,6 +3397,13 @@
       "symbol": "read_object",
       "effects": [
         "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/vault.rs",
+      "symbol": "read_object_locked",
+      "effects": [
+        "vault-read"
       ]
     },
     {
@@ -2927,11 +3422,24 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/vault.rs",
+      "symbol": "recall_entries",
+      "effects": [
+        "vault-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/vault.rs",
       "symbol": "restore",
       "effects": [
         "vault-read",
-        "replacement",
         "private-publication"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/vault.rs",
+      "symbol": "retain_operation_snapshot",
+      "effects": [
+        "snapshot"
       ]
     },
     {
@@ -2951,6 +3459,13 @@
     {
       "path": "crates/gobstopper-adapters/src/vault.rs",
       "symbol": "snapshot_data",
+      "effects": [
+        "snapshot"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/vault.rs",
+      "symbol": "store_object_locked",
       "effects": [
         "snapshot"
       ]
@@ -2999,9 +3514,30 @@
     },
     {
       "path": "crates/gobstopper-cli/src/apple.rs",
+      "symbol": "new",
+      "effects": [
+        "apple"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/apple.rs",
       "symbol": "read_excerpts",
       "effects": [
         "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/apple.rs",
+      "symbol": "reply",
+      "effects": [
+        "apple"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/apple.rs",
+      "symbol": "request",
+      "effects": [
+        "apple"
       ]
     },
     {
@@ -3016,6 +3552,13 @@
       "symbol": "shared_bridge",
       "effects": [
         "apple"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/apple.rs",
+      "symbol": "test_bridge",
+      "effects": [
+        "test-fixture"
       ]
     },
     {
@@ -3058,6 +3601,13 @@
       "symbol": "config_path",
       "effects": [
         "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/config.rs",
+      "symbol": "ensure_inspection",
+      "effects": [
+        "pure"
       ]
     },
     {
@@ -3106,8 +3656,7 @@
       "path": "crates/gobstopper-cli/src/hooks.rs",
       "symbol": "codex_hooks_supported",
       "effects": [
-        "inspect",
-        "process-probe"
+        "pure"
       ]
     },
     {
@@ -3127,6 +3676,20 @@
     {
       "path": "crates/gobstopper-cli/src/hooks.rs",
       "symbol": "is_installed",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/hooks.rs",
+      "symbol": "prepare_settings",
+      "effects": [
+        "hooks-settings"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/hooks.rs",
+      "symbol": "read_stdin_bounded",
       "effects": [
         "inspect"
       ]
@@ -3203,6 +3766,13 @@
     },
     {
       "path": "crates/gobstopper-cli/src/llm_scorer.rs",
+      "symbol": "bounded_text",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/llm_scorer.rs",
       "symbol": "fan_out_answers",
       "effects": [
         "inspect"
@@ -3258,6 +3828,13 @@
       ]
     },
     {
+      "path": "crates/gobstopper-cli/src/llm_scorer.rs",
+      "symbol": "valid_probability",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
       "path": "crates/gobstopper-cli/src/main.rs",
       "symbol": "realized_retention",
       "effects": [
@@ -3269,9 +3846,106 @@
       "symbol": "run",
       "effects": [
         "inspect",
-        "plan-extensions",
         "vault-read",
         "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/mcp.rs",
+      "symbol": "strict_json",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/native_operations.rs",
+      "symbol": "activation_unqualified",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/native_operations.rs",
+      "symbol": "arm",
+      "effects": [
+        "test-fixture"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/native_operations.rs",
+      "symbol": "binary",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/native_operations.rs",
+      "symbol": "check_activation",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/native_operations.rs",
+      "symbol": "dispatch",
+      "effects": [
+        "native-journal"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/native_operations.rs",
+      "symbol": "executable_unavailable",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/native_operations.rs",
+      "symbol": "finish",
+      "effects": [
+        "native-journal"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/native_operations.rs",
+      "symbol": "hit",
+      "effects": [
+        "test-fixture"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/native_operations.rs",
+      "symbol": "inspect",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/native_operations.rs",
+      "symbol": "pending",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/native_operations.rs",
+      "symbol": "prepare",
+      "effects": [
+        "native-journal"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/native_operations.rs",
+      "symbol": "reconcile",
+      "effects": [
+        "native-journal"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/native_operations.rs",
+      "symbol": "selected",
+      "effects": [
+        "test-fixture"
       ]
     },
     {
@@ -3324,6 +3998,83 @@
       ]
     },
     {
+      "path": "crates/gobstopper-core/src/admission.rs",
+      "symbol": "add_digest_bytes",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/admission.rs",
+      "symbol": "admit",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/admission.rs",
+      "symbol": "find_index",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/admission.rs",
+      "symbol": "is_elidable",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/admission.rs",
+      "symbol": "plan_bounds",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/admission.rs",
+      "symbol": "strictly_increasing",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/admission.rs",
+      "symbol": "target_allowed",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/admission.rs",
+      "symbol": "unprotected_len",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/estimate.rs",
+      "symbol": "add_tokens",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/estimate.rs",
+      "symbol": "elision_savings",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/estimate.rs",
+      "symbol": "estimate_token_bytes",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
       "path": "crates/gobstopper-core/src/estimate.rs",
       "symbol": "estimate_tokens",
       "effects": [
@@ -3346,6 +4097,13 @@
     },
     {
       "path": "crates/gobstopper-core/src/events.rs",
+      "symbol": "is_valid",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/events.rs",
       "symbol": "new",
       "effects": [
         "pure"
@@ -3356,6 +4114,13 @@
       "symbol": "read_events",
       "effects": [
         "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/events.rs",
+      "symbol": "recorded_context_reduction_tokens",
+      "effects": [
+        "pure"
       ]
     },
     {
@@ -3395,7 +4160,42 @@
     },
     {
       "path": "crates/gobstopper-core/src/model.rs",
+      "symbol": "invalidate_context",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/model.rs",
       "symbol": "is_active",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/model.rs",
+      "symbol": "is_elidable",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/model.rs",
+      "symbol": "observe_cumulative_report",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/model.rs",
+      "symbol": "reported_context",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/model.rs",
+      "symbol": "reset_context",
       "effects": [
         "pure"
       ]
@@ -3429,6 +4229,13 @@
       ]
     },
     {
+      "path": "crates/gobstopper-core/src/policy.rs",
+      "symbol": "validate_policy",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
       "path": "crates/gobstopper-core/src/probe.rs",
       "symbol": "extract_probes",
       "effects": [
@@ -3452,6 +4259,13 @@
     {
       "path": "crates/gobstopper-core/src/probe.rs",
       "symbol": "score_text",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/probe.rs",
+      "symbol": "wilson_interval",
       "effects": [
         "pure"
       ]
