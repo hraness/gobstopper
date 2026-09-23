@@ -266,6 +266,18 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// Prune the undo vault: keep only the newest snapshots per session.
+    /// Dry-run by default; pass --yes to delete.
+    Prune {
+        /// Snapshots to keep per (provider, session) stream.
+        #[arg(long, default_value_t = 10)]
+        keep: usize,
+        /// Actually delete; without it prints the plan only.
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        json: bool,
+    },
     /// Show the version history of a session (all recorded snapshots).
     History {
         /// Session id prefix or path to the transcript.
@@ -1576,6 +1588,28 @@ fn cmd_vault(cli: &Cli, cfg: &config::Config, session: Option<&str>, json: bool)
             display_prefix(&e.session_id, 12),
             e.path.display(),
         );
+    }
+    Ok(())
+}
+
+fn cmd_prune(keep: usize, yes: bool, json: bool) -> Result<()> {
+    let report = vault::prune(&vault::default_root(), keep, !yes)?;
+    if json {
+        println!("{}", serde_json::to_string_pretty(&report)?);
+        return Ok(());
+    }
+    println!(
+        "{}: {} streams, {} index entries dropped ({} kept), {} manifests + {} chunks removed, {} bytes reclaimed",
+        if yes { "pruned" } else { "plan" },
+        report.streams,
+        report.dropped_entries,
+        report.kept_entries,
+        report.manifests_removed,
+        report.chunks_removed,
+        report.bytes_reclaimed,
+    );
+    if !yes && report.dropped_entries > 0 {
+        println!("dry-run only — rerun with --yes to delete");
     }
     Ok(())
 }
@@ -4910,6 +4944,7 @@ fn main() -> Result<()> {
             *json,
         ),
         Cmd::Vault { session, json } => cmd_vault(&cli, &cfg, session.as_deref(), *json),
+        Cmd::Prune { keep, yes, json } => cmd_prune(*keep, *yes, *json),
         Cmd::History { session, json } => cmd_history(&cli, &cfg, session, *json),
         Cmd::Show { target, json } => cmd_show(&cli, &cfg, target, *json),
         Cmd::SearchSnapshot {

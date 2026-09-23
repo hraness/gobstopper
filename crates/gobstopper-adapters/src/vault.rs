@@ -499,6 +499,186 @@ pub fn for_session(session_id: &str, root: &Path) -> anyhow::Result<Vec<VaultEnt
         .collect())
 }
 
+/// Outcome of a [`prune`] pass (planned when `dry_run`, applied otherwise).
+#[derive(Debug, serde::Serialize)]
+pub struct PruneReport {
+    /// Distinct (provider, session) streams seen in the index.
+    pub streams: usize,
+    /// Index entries retained.
+    pub kept_entries: usize,
+    /// Index entries dropped.
+    pub dropped_entries: usize,
+    /// Manifest objects removed (deduplicated — several index entries can
+    /// share one manifest).
+    pub manifests_removed: usize,
+    /// Content chunks removed that no surviving manifest references.
+    pub chunks_removed: usize,
+    /// Sum of chunk sizes removed from disk.
+    pub bytes_reclaimed: u64,
+    /// When true nothing was deleted — the report is the plan.
+    pub dry_run: bool,
+}
+
+/// Retain only the newest `keep` snapshots per (provider, session)
+/// stream, then drop manifest objects no index entry references and
+/// content chunks no surviving manifest reaches.
+///
+/// Ordering is crash-safe: `index.jsonl` is rewritten first via a
+/// conditional swap (a concurrent snapshot append fails the write
+/// instead of being silently lost), then unreachable objects are
+/// unlinked — a crash mid-delete leaves only orphans a later prune
+/// reclaims. `dry_run` computes the same plan without touching disk.
+pub fn prune(root: &Path, keep: usize, dry_run: bool) -> anyhow::Result<PruneReport> {
+    let index_path = root.join("index.jsonl");
+    let original_index = if index_path.exists() {
+        crate::transaction::read(&index_path)?
+    } else {
+        Vec::new()
+    };
+    let entries = list(root)?;
+
+    // Drop decisions are per index ENTRY, not per manifest — several
+    // index entries can reference one manifest (identical bytes under
+    // different streams), so a sha-keyed drop would wrongly remove a
+    // kept entry in another stream.
+    let mut groups: std::collections::BTreeMap<(String, String), Vec<(usize, &VaultEntry)>> =
+        std::collections::BTreeMap::new();
+    for (idx, e) in entries.iter().enumerate() {
+        groups
+            .entry((e.provider.as_str().to_string(), e.session_id.clone()))
+            .or_default()
+            .push((idx, e));
+    }
+    let mut drop_idx = std::collections::HashSet::new();
+    for group in groups.values_mut() {
+        group.sort_by(|a, b| {
+            b.1.ts
+                .cmp(&a.1.ts)
+                .then_with(|| a.1.sha256.cmp(&b.1.sha256))
+        });
+        for (idx, _) in group.iter().skip(keep) {
+            drop_idx.insert(*idx);
+        }
+    }
+    let kept_entries: Vec<&VaultEntry> = entries
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !drop_idx.contains(i))
+        .map(|(_, e)| e)
+        .collect();
+    let kept_shas: std::collections::HashSet<&str> =
+        kept_entries.iter().map(|e| e.sha256.as_str()).collect();
+    let manifests_remove: std::collections::HashSet<String> = entries
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| drop_idx.contains(i))
+        .map(|(_, e)| e.sha256.clone())
+        .filter(|sha| !kept_shas.contains(sha.as_str()))
+        .collect();
+
+    // Chunks survive iff a manifest remaining on disk reaches them —
+    // computed over ALL manifests minus the removals so index-orphaned
+    // manifests can't be left dangling.
+    let mut manifests_on_disk = std::collections::HashSet::new();
+    let manifests = manifests_dir(root);
+    if manifests.exists() {
+        for ent in fs::read_dir(&manifests)? {
+            manifests_on_disk.insert(ent?.file_name().to_string_lossy().to_string());
+        }
+    }
+    let mut keep_chunks = std::collections::HashSet::new();
+    for sha in manifests_on_disk
+        .iter()
+        .filter(|s| !manifests_remove.contains(*s))
+    {
+        let Ok(bytes) = crate::transaction::read(&manifests.join(sha)) else {
+            continue;
+        };
+        let Ok(doc) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
+            continue;
+        };
+        if let Some(chunks) = doc.get("chunks").and_then(|c| c.as_array()) {
+            for c in chunks {
+                if let Some(s) = c.as_str() {
+                    keep_chunks.insert(s.to_string());
+                }
+            }
+        }
+    }
+    let chunks = chunks_dir(root);
+    let mut chunks_remove = Vec::new();
+    if chunks.exists() {
+        for ent in fs::read_dir(&chunks)? {
+            let ent = ent?;
+            if !keep_chunks.contains(&ent.file_name().to_string_lossy().to_string()) {
+                chunks_remove.push(ent.path());
+            }
+        }
+    }
+    let mut reclaimed = 0u64;
+    for p in &chunks_remove {
+        reclaimed += fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    }
+
+    let report = PruneReport {
+        streams: groups.len(),
+        kept_entries: entries.len() - drop_idx.len(),
+        dropped_entries: drop_idx.len(),
+        manifests_removed: manifests_remove.len(),
+        chunks_removed: chunks_remove.len(),
+        bytes_reclaimed: reclaimed,
+        dry_run,
+    };
+
+    if dry_run {
+        return Ok(report);
+    }
+
+    // Rewrite the index first, conditionally: a snapshot that landed
+    // during the scan aborts the prune rather than being silently lost.
+    // Kept lines are matched by their exact serialized entry (index
+    // lines were written by serializing VaultEntry) with a multiset so
+    // duplicate identical lines survive independently. Unparseable
+    // lines are always preserved — never destroy what can't classify.
+    let mut kept_lines: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for e in &kept_entries {
+        if let Ok(line) = serde_json::to_string(e) {
+            *kept_lines.entry(line).or_default() += 1;
+        }
+    }
+    let mut new_index = Vec::with_capacity(original_index.len());
+    for line in original_index.split(|b| *b == b'\n') {
+        if line.is_empty() {
+            continue;
+        }
+        let normalized = serde_json::from_slice::<VaultEntry>(line)
+            .ok()
+            .and_then(|e| serde_json::to_string(&e).ok());
+        let keep_line = match normalized {
+            None => true,
+            Some(key) => match kept_lines.get_mut(&key) {
+                Some(remaining) if *remaining > 0 => {
+                    *remaining -= 1;
+                    true
+                }
+                _ => false,
+            },
+        };
+        if keep_line {
+            new_index.extend_from_slice(line);
+            new_index.push(b'\n');
+        }
+    }
+    crate::transaction::replace(&index_path, &original_index, &new_index)?;
+    for sha in &manifests_remove {
+        let _ = fs::remove_file(manifests.join(sha));
+    }
+    for p in &chunks_remove {
+        let _ = fs::remove_file(p);
+    }
+    Ok(report)
+}
+
 fn record_type(record: &[u8]) -> String {
     serde_json::from_slice::<serde_json::Value>(record)
         .ok()
@@ -941,6 +1121,77 @@ mod tests {
         assert_eq!(entries[0].session_id, "third");
         assert_eq!(entries[1].session_id, "second");
         assert_eq!(entries[2].session_id, "first");
+    }
+
+    #[test]
+    fn prune_keeps_newest_per_stream_and_drops_unreachable_objects() {
+        let dir = TestDir::new();
+        let root = dir.0.join("vault");
+        let src = dir.0.join("s.jsonl");
+        // Three versions of one stream plus a second stream's snapshot.
+        for body in [b"v1".as_slice(), b"v2", b"v3"] {
+            fs::write(&src, body).unwrap();
+            snapshot(&src, Provider::Codex, "stream-a", None, &root).unwrap();
+            // Distinct second-resolution timestamps keep ordering honest.
+            std::thread::sleep(std::time::Duration::from_millis(1100));
+        }
+        let other = dir.0.join("other.jsonl");
+        fs::write(&other, b"other stream").unwrap();
+        snapshot(&other, Provider::Codex, "stream-b", None, &root).unwrap();
+        assert_eq!(list(&root).unwrap().len(), 4);
+
+        // Dry-run plans without touching anything.
+        let plan = prune(&root, 1, true).unwrap();
+        assert_eq!(plan.dropped_entries, 2);
+        assert_eq!(plan.kept_entries, 2);
+        assert!(plan.chunks_removed > 0);
+        assert_eq!(list(&root).unwrap().len(), 4);
+
+        let report = prune(&root, 1, false).unwrap();
+        assert_eq!(report.dropped_entries, 2);
+        let entries = list(&root).unwrap();
+        assert_eq!(entries.len(), 2);
+        let mut ids: Vec<&str> = entries.iter().map(|e| e.session_id.as_str()).collect();
+        ids.sort();
+        assert_eq!(ids, ["stream-a", "stream-b"]);
+        // The stream-a survivor is the newest version, byte-exact.
+        let survivor = entries.iter().find(|e| e.session_id == "stream-a").unwrap();
+        let out = dir.0.join("restored.jsonl");
+        restore(&survivor.sha256, &out, &root).unwrap();
+        assert_eq!(fs::read(&out).unwrap(), b"v3");
+        // A second pass is a no-op.
+        assert_eq!(prune(&root, 1, false).unwrap().dropped_entries, 0);
+    }
+
+    #[test]
+    fn prune_preserves_a_manifest_shared_by_kept_and_dropped_entries() {
+        let dir = TestDir::new();
+        let root = dir.0.join("vault");
+        // Same bytes snapshotted under two streams: one manifest, two
+        // index entries. Dropping one stream's entry must keep the
+        // manifest and chunks alive for the survivor.
+        let a = dir.0.join("a.jsonl");
+        let b = dir.0.join("b.jsonl");
+        fs::write(&a, b"shared").unwrap();
+        fs::write(&b, b"shared").unwrap();
+        snapshot(&a, Provider::Codex, "a", None, &root).unwrap();
+        snapshot(&b, Provider::Codex, "b", None, &root).unwrap();
+        fs::write(&a, b"shared-new").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        snapshot(&a, Provider::Codex, "a", None, &root).unwrap();
+
+        let report = prune(&root, 1, false).unwrap();
+        // Only stream-a's older index entry is dropped — the shared
+        // manifest stays referenced by stream-b's kept entry.
+        assert_eq!(report.dropped_entries, 1);
+        assert_eq!(report.manifests_removed, 0);
+        assert_eq!(report.chunks_removed, 0);
+        assert_eq!(fs::read_dir(manifests_dir(&root)).unwrap().count(), 2);
+        assert_eq!(fs::read_dir(chunks_dir(&root)).unwrap().count(), 2);
+        let entries = list(&root).unwrap();
+        assert_eq!(entries.len(), 2);
+        let out = dir.0.join("r.jsonl");
+        restore(&entries[0].sha256, &out, &root).unwrap();
     }
 
     #[test]
