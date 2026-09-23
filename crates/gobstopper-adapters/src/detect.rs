@@ -254,7 +254,8 @@ pub fn discover_cached(
 }
 
 /// Identify the provider from file content, not filename: Codex records
-/// carry `payload`/`ordinal` envelopes (`session_meta` first), Claude
+/// carry typed `payload` envelopes, optionally with `ordinal`; an export
+/// can start after session_meta or contain usage records alone. Claude
 /// lines carry `sessionId`/`uuid`. Returns `None` when neither matches.
 pub fn sniff_provider(path: &Path) -> Option<Provider> {
     use std::io::{BufRead, BufReader};
@@ -264,16 +265,26 @@ pub fn sniff_provider(path: &Path) -> Option<Provider> {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else {
             continue;
         };
+        let ty = v.get("type").and_then(serde_json::Value::as_str);
         if v.get("payload").is_some()
             && (v.get("ordinal").is_some()
-                || v.get("type").and_then(serde_json::Value::as_str) == Some("session_meta"))
+                || matches!(
+                    ty,
+                    Some(
+                        "session_meta"
+                            | "response_item"
+                            | "compacted"
+                            | "token_usage_record"
+                            | "event_msg"
+                            | "turn_context"
+                    )
+                ))
         {
             return Some(Provider::Codex);
         }
         // Devin canonical exports: `session_meta` + `main_chain_id`, or
         // `message_node` records. Checked before Claude because the devin
         // meta record also carries a `session_id` field.
-        let ty = v.get("type").and_then(serde_json::Value::as_str);
         if (ty == Some("session_meta") && v.get("main_chain_id").is_some())
             || (ty == Some("message_node") && v.get("node_id").is_some())
         {
@@ -291,11 +302,23 @@ pub fn sniff_provider(path: &Path) -> Option<Provider> {
 /// `rollout-<ts>-<uuid>.jsonl`, Claude `<uuid>.jsonl`), so a name filter
 /// misses nothing the id-prefix match would hit.
 pub fn find(roots: &Roots, query: &str) -> Vec<Discovered> {
-    let mut paths = Vec::new();
-    collect_jsonl(&roots.codex_home.join("sessions"), &mut paths, 4);
-    collect_jsonl(&roots.claude_home.join("projects"), &mut paths, 3);
+    let mut codex_paths = Vec::new();
+    let mut claude_paths = Vec::new();
+    collect_jsonl(&roots.codex_home.join("sessions"), &mut codex_paths, 4);
+    collect_jsonl(&roots.claude_home.join("projects"), &mut claude_paths, 3);
     let mut found = Vec::new();
-    for path in paths {
+    // The configured root already establishes the provider. Do not
+    // discard that identity and guess from a filename or default-home
+    // component: managed homes and detached filenames need neither.
+    let paths = codex_paths
+        .into_iter()
+        .map(|path| (Provider::Codex, path))
+        .chain(
+            claude_paths
+                .into_iter()
+                .map(|path| (Provider::ClaudeCode, path)),
+        );
+    for (provider, path) in paths {
         let name = path
             .file_name()
             .map(|n| n.to_string_lossy())
@@ -303,20 +326,10 @@ pub fn find(roots: &Roots, query: &str) -> Vec<Discovered> {
         if !name.contains(query) {
             continue;
         }
-        let codex =
-            name.starts_with("rollout-") || path.components().any(|c| c.as_os_str() == ".codex");
-        let (provider, meta, usage) = if codex {
-            (
-                Provider::Codex,
-                codex::scan_meta(&path),
-                codex::scan_usage(&path),
-            )
+        let (meta, usage) = if provider == Provider::Codex {
+            (codex::scan_meta(&path), codex::scan_usage(&path))
         } else {
-            (
-                Provider::ClaudeCode,
-                claude::scan_meta(&path),
-                claude::scan_usage(&path),
-            )
+            (claude::scan_meta(&path), claude::scan_usage(&path))
         };
         let handle = handle_for(provider, path.clone(), meta, age_secs(&path));
         if handle.session_id.starts_with(query) || name.contains(query) {

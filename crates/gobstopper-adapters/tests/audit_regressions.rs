@@ -395,6 +395,67 @@ fn compact_copy_keeps_open_writer_and_is_idempotent() {
 }
 
 #[test]
+fn compacted_copy_identity_binds_digest_and_retained_tail() {
+    use gobstopper_adapters::copy;
+    use gobstopper_core::CompactionPlan;
+    let dir = Scratch::new();
+    let path = dir.0.join("rollout-compacted-identity.jsonl");
+    let original = [
+        json!({"type":"session_meta","payload":{"id":"audit"}}),
+        json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"first turn"}]}}),
+        json!({"type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"second turn"}]}}),
+    ]
+    .iter()
+    .map(|record| format!("{record}\n"))
+    .collect::<String>();
+    fs::write(&path, &original).unwrap();
+    let source = handle(Provider::Codex, &path);
+    let hash = copy::sha256(original.as_bytes());
+    let plan = CompactionPlan {
+        strategy: "compacted".into(),
+        rationale: "audit".into(),
+        context_tokens_before: 1000,
+        context_tokens_after: 10,
+        edits: vec![],
+    };
+    let first_digest = DigestBlock {
+        goal: Some("first retained goal".into()),
+        ..Default::default()
+    };
+    let second_digest = DigestBlock {
+        goal: Some("second retained goal".into()),
+        ..Default::default()
+    };
+    let root = dir.0.join("vault");
+    let first =
+        copy::compact_via_compacted(&source, &hash, &plan, &first_digest, 0, &root).unwrap();
+    let changed_digest =
+        copy::compact_via_compacted(&source, &hash, &plan, &second_digest, 0, &root).unwrap();
+    let changed_tail =
+        copy::compact_via_compacted(&source, &hash, &plan, &second_digest, 1, &root).unwrap();
+    let repeated =
+        copy::compact_via_compacted(&source, &hash, &plan, &second_digest, 1, &root).unwrap();
+    assert_ne!(first.path, changed_digest.path);
+    assert_ne!(changed_digest.path, changed_tail.path);
+    assert_eq!(repeated.path, changed_tail.path);
+    assert_eq!(repeated.output_sha256, changed_tail.output_sha256);
+    let history = |output: &Path| {
+        let bytes = fs::read_to_string(output).unwrap();
+        let record: Value = serde_json::from_str(bytes.lines().last().unwrap()).unwrap();
+        record["payload"]["replacement_history"]
+            .as_array()
+            .unwrap()
+            .clone()
+    };
+    assert_eq!(history(&changed_digest.path).len(), 1);
+    assert_eq!(history(&changed_tail.path).len(), 2);
+    assert!(serde_json::to_string(&history(&changed_digest.path))
+        .unwrap()
+        .contains("second retained goal"));
+    assert_eq!(fs::read_to_string(&path).unwrap(), original);
+}
+
+#[test]
 fn incomplete_copy_intent_recovers_without_touching_source() {
     use gobstopper_adapters::copy::{self, CopyReceipt};
     use gobstopper_core::CompactionPlan;
@@ -432,6 +493,14 @@ fn incomplete_copy_intent_recovers_without_touching_source() {
         serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
     pending.completed = false;
     fs::write(&receipt_path, serde_json::to_vec(&pending).unwrap()).unwrap();
+
+    // An operation intent is an independent recovery root even when
+    // retention removes every ordinary index entry.
+    vault::prune(&root, 0, false).unwrap();
+    assert_eq!(
+        vault::read_object(pending.snapshot_manifest_sha256.as_deref().unwrap(), &root).unwrap(),
+        original.as_bytes()
+    );
 
     let recovered = copy::compact(&handle, &hash, &plan, &root).unwrap();
     assert!(recovered.completed);

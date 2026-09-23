@@ -79,6 +79,8 @@ impl Fixture {
             .arg(self.root.join("codex"))
             .arg("--claude-home")
             .arg(self.root.join("claude"))
+            .arg("--devin-home")
+            .arg(self.root.join("devin"))
             .args(args)
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_DATA_HOME", self.root.join("data"))
@@ -220,6 +222,44 @@ fn json_and_archived_ids_remain_complete() {
         }
         assert_eq!(fs::read(index).unwrap(), original_index);
         assert!(!fixture.root.join("data/gobstopper/events.jsonl").exists());
+    }
+}
+
+#[test]
+fn custom_home_filename_lookup_and_path_agree_on_provider() {
+    let fixture = Fixture::new("filename-only-id".into(), false);
+    fixture.snapshot();
+    for target in [
+        fixture.source.to_str().unwrap(),
+        fixture.session_id.as_str(),
+    ] {
+        let entries: serde_json::Value =
+            serde_json::from_slice(&fixture.run(&["history", target, "--json"]).stdout).unwrap();
+        assert_eq!(entries.as_array().unwrap().len(), 1);
+        assert_eq!(entries[0]["provider"], "codex");
+        assert_eq!(entries[0]["session_id"], fixture.session_id);
+    }
+
+    // A Claude filename may resemble a Codex rollout, but its configured
+    // provider root and metadata still own its identity.
+    let claude = fixture.root.join("claude/projects/project");
+    fs::create_dir_all(&claude).unwrap();
+    let source = claude.join("rollout-claude-fixture.jsonl");
+    fs::write(&source, "{\"type\":\"user\",\"sessionId\":\"rollout-claude-fixture\",\"uuid\":\"u1\",\"message\":{\"role\":\"user\",\"content\":\"fixture\"}}\n").unwrap();
+    gobstopper_adapters::vault::snapshot(
+        &source,
+        gobstopper_core::Provider::ClaudeCode,
+        "rollout-claude-fixture",
+        None,
+        &fixture.root.join("data/gobstopper/vault"),
+    )
+    .unwrap();
+    for target in [source.to_str().unwrap(), "rollout-claude-fixture"] {
+        let entries: serde_json::Value =
+            serde_json::from_slice(&fixture.run(&["history", target, "--json"]).stdout).unwrap();
+        assert_eq!(entries.as_array().unwrap().len(), 1);
+        assert_eq!(entries[0]["provider"], "claude_code");
+        assert_eq!(entries[0]["session_id"], "rollout-claude-fixture");
     }
 }
 

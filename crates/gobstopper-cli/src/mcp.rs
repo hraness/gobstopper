@@ -318,7 +318,12 @@ fn run_tool(cli: &Cli, cfg: &config::Config, name: &str, args: &Value) -> Result
             let d = find_session(cli, cfg, session)?;
             let root = vault::default_root();
             let mut entries = vault::list(&root)?;
-            entries.retain(|e| e.path == d.handle.path || e.session_id.starts_with(session));
+            let canonical = d.handle.path.canonicalize()?;
+            entries.retain(|e| {
+                e.provider == d.handle.provider
+                    && e.session_id == d.handle.session_id
+                    && (e.path == d.handle.path || e.path == canonical)
+            });
             Ok(json!({"session_id": d.handle.session_id, "snapshots": entries}))
         }
         "show" => show_summary(cli, cfg, get_str("target").unwrap_or_default()),
@@ -398,7 +403,13 @@ fn run_tool(cli: &Cli, cfg: &config::Config, name: &str, args: &Value) -> Result
         "verify" => {
             let session = get_str("session").unwrap_or_default();
             let d = find_session(cli, cfg, session)?;
-            let bytes = transaction::read(&d.handle.path)?;
+            let bytes = if d.handle.provider == gobstopper_core::Provider::Devin
+                && gobstopper_adapters::devin::is_store_path(&d.handle.path)
+            {
+                gobstopper_adapters::devin::export_bytes(&d.handle.path, &d.handle.session_id)?
+            } else {
+                transaction::read(&d.handle.path)?
+            };
             let findings = verify::verify(d.handle.provider, &bytes);
             let errors = findings
                 .iter()
