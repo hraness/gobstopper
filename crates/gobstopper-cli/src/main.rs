@@ -1149,9 +1149,8 @@ fn record_native_completion(
         eprintln!("telemetry write failed (non-fatal): {error}");
     }
     eprintln!(
-        "native compaction for {} {}: {}{}",
+        "native {} compaction: {}{}",
         d.handle.provider.as_str(),
-        d.handle.session_id,
         outcome,
         error.map(|code| format!(" ({code})")).unwrap_or_default(),
     );
@@ -3981,10 +3980,7 @@ fn cmd_watch(
                             // the provider's started event. Any bridge error may
                             // therefore follow dispatch; do not perform a second,
                             // different mutation underneath an uncertain operation.
-                            eprintln!(
-                                "acp devin /compact for {} failed; leaving session unchanged by gobstopper",
-                                d.handle.session_id,
-                            );
+                            eprintln!("native devin compaction did not confirm completion; direct store rewrite suppressed");
                             holddown.insert(session_key.clone(), now_secs() + 3600);
                             continue;
                         }

@@ -115,8 +115,11 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
   states. Resolve conflicting roadmap/design comments in favor of actual code.
 - **Acceptance:** every coverage-map row has an owner, invariant, strongest current
   evidence, exclusions and a next gate; every write is classified; all public
-  “safe/verified/proven/savings” claims have a bounded supporting receipt or are
-  corrected. Record exact schema/version and upgrade/downgrade behavior.
+  "safe/verified/proven/savings" claims have a bounded supporting receipt or are
+  corrected. Triage each baseline scanner finding against its actual source,
+  sink and authorized output contract; record the repair or reviewed rationale,
+  with no blanket dismissal of a rule. Record exact schema/version and
+  upgrade/downgrade behavior.
 - **Validation:** `cargo test -p gobstopper --locked`; structural ledger check
   added by this phase, with a fixture rejecting an unsupported claim.
 

@@ -86,6 +86,7 @@ are recorded in the delivery evidence; a source repair alone is not proof.
 | Standalone native fork compares incompatible hashes and identities | A manifest digest was compared with raw source SHA; using the original snapshot as the fork's before-state also mistakes fork metadata changes for compaction. | Compare the source-byte SHA and snapshot the exact prepared fork before dispatch; preserve the original recovery snapshot separately. Missing-usage/no-op fixture confirms identical native before/after evidence. |
 | Native telemetry claims unmeasured savings | Provider resets, stale counters, missing post-state or estimated plan output can be reported as realized savings. | Freeze post-state in the vault; classify unchanged results as no-op and reset/unknown usage as unresolved with zero claimed savings; attach before/after recovery references. |
 | Native protocol/process resources and diagnostics are unsafe | Unbounded frames/queues, inherited pipes, raw provider errors and process-group identity reuse cross resource/privacy/ownership boundaries. | On Unix, bounded Codex/ACP readers and queues, closed error categories, and owned-group cleanup with retained child identity; adversarial subprocess fixtures. Claude lifecycle and non-Unix support remain separate obligations. |
+| Native diagnostics expose raw session identity | New stderr diagnostics printed session identifiers; PR CodeQL detected both sites. | Remove raw identifiers from the diagnostics while retaining the exact identity in structured recovery evidence; native no-op fixture checks both sides of this boundary. |
 | Native no-op suppression never expires | A no-op records a timed holddown and a permanent unchanged-source settlement. | No-op uses expiring suppression; repeat fixture exercises retry after expiry. |
 | MCP verifies database bytes | CLI verify exports the selected Devin session, while MCP treated SQLite as JSONL. | MCP uses the same canonical per-session export; clean fixture remains byte-identical. |
 | Shared-store history crosses sessions | Filtering by `sessions.db` path alone includes every session in that database. | Provider, exact resolved session, and path scope in MCP history and CLI history/vault. |
@@ -140,7 +141,11 @@ claims of observed production data loss.
 - **Some diagnostic/metadata paths need a dedicated privacy review.** Provider
   errors, paths, model rationale and summaries can cross logs and plan surfaces.
   Use sentinel fixtures to assert the permitted fields, not only a tool-name
-  allowlist.
+  allowlist. The repository's baseline CodeQL inventory at `c797729` contained
+  27 open `rust/cleartext-logging` alerts, each automatically rated high severity.
+  Inventory intentional requested displays separately from background diagnostics
+  and secret-bearing fields before resolving an alert. The PR check reports new
+  alerts; passing it is not evidence that the baseline inventory is clear.
 - **Semantic retention is empirical.** Literal/lexical matches can miss meaning
   changes, negation, authority, temporal order, and pending tool effects. A reset
   usage counter is not a measurement of zero context or reclaimed tokens. Small

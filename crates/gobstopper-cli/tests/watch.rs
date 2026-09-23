@@ -281,9 +281,18 @@ fn dry_run_once_does_not_write_events_or_forks() {
 fn native_noop_has_snapshot_evidence_and_retries_after_cooldown_expiry() {
     let f = Fixture::new();
     f.idle(&f.0.join("codex/sessions/rollout-fixture.jsonl"));
-    assert!(f.native_codex("noop").output().unwrap().status.success());
+    let output = f.native_codex("noop").output().unwrap();
+    assert!(output.status.success());
+    assert!(
+        !String::from_utf8_lossy(&output.stderr).contains("11111111-1111-4111-8111-111111111111"),
+        "native diagnostics must not expose raw session identifiers"
+    );
     let events = f.events();
     assert_eq!(events.len(), 1);
+    assert_eq!(
+        events[0]["session_id"],
+        "11111111-1111-4111-8111-111111111111"
+    );
     assert_eq!(events[0]["outcome"], "skipped");
     assert_eq!(events[0]["error_code"], "provider_noop");
     assert_eq!(events[0]["est_reclaimed_tokens"], 0);
