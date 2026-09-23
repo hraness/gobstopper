@@ -28,7 +28,7 @@ test("renders the repository README with stable heading fragments and repository
   const source = await readFile(join(repository, "README.md"), "utf8");
   const html = renderReadmeHtml(source);
   expect(html).toContain('<h2 id="install--use">Install &amp; use</h2>');
-  expect(html).toContain('<h2 id="the-oompa-seam">The oompa seam</h2>');
+  expect(html).toContain('<h2 id="integrating-with-a-session-runtime">Integrating with a session runtime</h2>');
   expect(html).toContain('href="https://github.com/hraness/gobstopper/blob/main/docs/design.md"');
   expect(html).not.toContain("<script");
 });

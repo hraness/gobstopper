@@ -108,7 +108,7 @@ Strategy proposals may use `elide` and `inject_digest`. External plugins cannot 
 - edits that do not reduce projected context by `min_savings_tokens`;
 - candidates that add structural verification findings.
 
-Standalone application still snapshots the exact source and publishes a separate no-clobber fork.
+Applying a plugin's plan works like any other `apply`: Gobstopper snapshots the exact source first, then publishes a separate no-clobber fork for Claude Code and Codex, or rewrites an idle Devin session in place in one database transaction (see [Devin integration](devin.md)).
 
 ## Resource and failure contract
 
@@ -126,4 +126,4 @@ A new provider integration should include:
 6. documentation of the provider-owned native compaction control;
 7. no direct mutation until a separate, reviewed write protocol exists.
 
-Built-in adapter proposals must additionally preserve provider resume invariants and pass the workspace regression/property suite. Native XCB is a concrete library consumer: it pins `gobstopper-core` immutably and applies a strategy only to an in-memory prompt projection while retaining full local history. Its XCB compatibility editor uses the bounded command seam. Other adjacent runtimes have no implicit privileged access: use numeric policy/MCP or this plugin protocol unless a provider-owned contract is documented and tested.
+Built-in adapter proposals must additionally preserve provider resume invariants and pass the workspace regression/property suite. xcb is a library consumer: it pins `gobstopper-core` to an exact Git commit and applies a strategy only to the prompt it builds in memory, keeping the full local history. Its compatibility editor uses the preset command interface. Other adjacent runtimes have no implicit privileged access: use numeric policy/MCP or this plugin protocol unless a provider-owned contract is documented and tested.

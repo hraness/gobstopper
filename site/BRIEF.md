@@ -5,8 +5,10 @@ Mode: Persuade. Target: `app/page.tsx`.
 ## THESIS
 
 Present Gobstopper's context-compaction workflow with the approved shared
-editorial marketing appearance. Keep the README identity, actual command
-examples, honest savings math, and product boundaries.
+editorial marketing appearance. Keep the README lead, command and config
+examples that run on the release the page installs, the savings math with its
+stated limits, and what Gobstopper won't do. Page copy follows `../STYLE.md`,
+including its repository additions.
 
 ## OWN-WORLD
 
@@ -14,23 +16,25 @@ The shared editorial preset owns display typography, spacing and controls.
 Lantern adds quiet opaque reading planes, subtle seams, luminous header edges,
 and warm open-disclosure states over the pinned Paper palette. Its richer square
 wall belongs only behind the hero and its proof frame. Gobstopper keeps its own
-brand mark (🍬 — the layered candy) and fixed command-transcript contrast.
+brand mark (🍬, the layered candy) and fixed command-transcript contrast.
 The material arrives through a separate immutable snapshot; it adds no fonts,
 images or runtime package dependency.
 
 ## STORY
 
-Hero with the real detect/plan/watch command example, the model (detection,
-edit IR, strategies, presets, undo vault, telemetry), three interfaces (CLI,
-watcher/hooks, preset.command), boundaries, installation, questions, maker, and
-final actions. Omit redundant section labels through empty legacy slots.
-Display verified release facts beneath the install heading once a release is
-admitted; until then say so plainly.
+Hero with a dated proof frame (the September 17, 2026 resume trial, labeled
+as one historical session) over the sawtooth graphic; the six topics a reader
+needs (session detection, edits, strategies, presets and plugins, undo vault,
+telemetry and eval); three ways to run it (CLI, watcher and hooks, your own
+program); what Gobstopper won't do; installation; questions; maker; related
+products. Omit redundant section labels through empty legacy slots. Show the
+latest release and its verification run under the install heading; with no
+release, say so plainly.
 
 ## FIRST VIEWPORT
 
-One header identity leads into the benefit heading, README lead, and a
-command-transcript proof frame showing detect → plan → watch.
+One header identity leads into the heading, the README lead, and the dated
+proof frame.
 
 ## FORM
 

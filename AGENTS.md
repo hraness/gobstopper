@@ -1,9 +1,10 @@
 # Contents
 
 - `crates/gobstopper-core/` holds the normalized transcript model, the `Edit` IR, the `Strategy` trait, all built-in strategies, and the `compaction-events-v1` telemetry schema. No I/O beyond event-log append.
-- `crates/gobstopper-adapters/` holds session discovery, the Codex and Claude Code JSONL dialects (parse and in-place rewrite), the `verify` resume-validity checker, and the `vault` content-addressed snapshot store.
-- `crates/gobstopper-cli/` holds the `gobstopper` binary, layered config/preset resolution, and the read-only `mcp` stdio server (`mcp.rs`) that exposes vault/recall/plan/verify as agent tools — it must never surface a mutating operation.
-- `docs/design.md` is the architecture and research record; `docs/roadmap.md` is the phased plan; `docs/oompa-contract.md` is the oompa integration contract.
+- `crates/gobstopper-adapters/` holds session discovery, the Codex and Claude Code JSONL dialects (parse and in-place rewrite), the Devin session-store adapter (`devin.rs`, guarded store write and restore), the `verify` resume-validity checker, and the `vault` content-addressed snapshot store.
+- `crates/gobstopper-cli/` holds the `gobstopper` binary, layered config/preset resolution, and the read-only `mcp` stdio server (`mcp.rs`) that exposes vault/recall/plan/verify as agent tools; it must never surface a mutating operation.
+- `docs/design.md` is the architecture and research record; `docs/roadmap.md` is the phased plan; `docs/devin.md` documents Devin support; `docs/oompa-contract.md` is the historical OOMPA integration contract (OOMPA was retired on 2026-09-19 and replaced by xcb).
+- `STYLE.md` and `WRITING.md` are synced from hraness/.github. Their “Repository additions” list the Gobstopper facts that public copy most often gets wrong.
 
 # Guidelines
 
@@ -25,6 +26,13 @@ cargo install --path crates/gobstopper-cli --locked
 ```
 
 `~/.cargo/bin/gobstopper` is then on `$PATH` after a shell restart and `gobstopper --version` reflects the current checkout.
+
+<!-- hraness-public-copy:start -->
+- Public copy (websites, READMEs, docs, package and GitHub descriptions, CLI help, `llms.txt`, generated pages) follows `STYLE.md`, synced from hraness/.github. Text a model writes for publication also follows `GENERATION_STYLE.md`.
+- The delivery vocabulary in this file (admission, qualification, custody, receipt, bounded, lane, gate, surface, projection) is internal. Translate it into what the reader gets.
+- Take one-line product and sibling descriptions from the portfolio registry and versions from the release record. Tests pin facts, not prose.
+- Run `bun run check:copy` before handoff when the repository has it.
+<!-- hraness-public-copy:end -->
 
 <!-- oompa-local-efficiency:start -->
 - Treat the user's request to change this repository as standing authorization for routine task-owned commits, pushes, pull requests, merges, releases, deployments, and production verification after the gates applicable to that action pass. Do not ask for duplicate confirmation. Build confidence through relevant automated checks, bounded diagnostics, and independent review, not another human approval. Passing checks does not expand task scope or authority.

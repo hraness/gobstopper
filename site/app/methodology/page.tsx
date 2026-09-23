@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 
 import { SiteHeader, SiteFooter } from "../_components/site-chrome";
 
-const title = "Gobstopper methodology";
+const title = "Methodology";
+const socialTitle = "Gobstopper methodology";
 const description =
   "How Gobstopper measures compaction: the occupancy model behind its projections, what each strategy does, and what the published benchmarks can and cannot show.";
 
@@ -11,18 +12,18 @@ export const metadata: Metadata = {
   description,
   alternates: { canonical: "/methodology" },
   openGraph: {
-    title,
+    title: socialTitle,
     description,
     siteName: "Gobstopper",
     type: "article",
     url: "/methodology",
-    images: [{ url: "/opengraph-image", width: 1200, height: 630, alt: title }],
+    images: [{ url: "/opengraph-image", width: 1200, height: 630, alt: socialTitle }],
   },
   twitter: {
     card: "summary_large_image",
-    title,
+    title: socialTitle,
     description,
-    images: [{ url: "/opengraph-image", alt: title }],
+    images: [{ url: "/opengraph-image", alt: socialTitle }],
   },
 };
 
