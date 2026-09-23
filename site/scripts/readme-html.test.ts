@@ -40,7 +40,7 @@ test("extracts the landing block between the shared Hraness markers", async () =
   const landing = readmeLanding(source);
   expect(landing.title).toBe("gobstopper");
   expect(landing.lead).toContain("compacts Claude Code, Codex, and Devin sessions");
-  expect(landing.markdown).toContain("the strategy you picked for that session");
+  expect(landing.markdown).toContain("picked for that session");
 });
 
 test("rejects unsafe README link targets", () => {

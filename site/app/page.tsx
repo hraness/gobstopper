@@ -28,7 +28,7 @@ const repository = "https://github.com/hraness/gobstopper";
 
 const heading = "Compact coding-agent sessions early, with a way back.";
 const summary =
-  "Gobstopper watches your Claude Code, Codex, and Devin sessions and compacts each one when its context passes a size you choose, well before the provider would. It saves an exact copy of the transcript first, so any compaction can be undone, and it can score what each strategy kept.";
+  "Gobstopper watches your Claude Code, Codex, and Devin sessions and compacts each one when its context passes a size you choose. It snapshots every transcript before changing it, so the original is never lost, and it can score what each strategy preserved.";
 const footnote =
   `Free and open source (MIT or Apache-2.0). Needs Rust 1.85 or newer. Runs on your machine with no account.${releaseVersion === undefined ? " No release yet; install from source." : ` Latest release: v${releaseVersion}.`}`;
 
@@ -40,8 +40,8 @@ const primitives = [
   },
   {
     icon: "edit-ir",
-    label: "Three kinds of edit",
-    summary: "Every strategy reduces to the same three edits: hide stale tool output, insert a digest, or ask the provider to compact. Gobstopper validates the result before writing it and never removes the parent links and ordinals a provider needs to resume the session.",
+    label: "A few kinds of edit",
+    summary: "Every strategy reduces to the same small set of edits, such as hiding stale tool output, inserting a digest, or asking the provider to compact. Gobstopper validates the result before writing it and never removes the parent links and ordinals a provider needs to resume the session.",
   },
   {
     icon: "strategies",
@@ -56,7 +56,7 @@ const primitives = [
   {
     icon: "undo-vault",
     label: "Undo vault",
-    summary: "Before changing anything, Gobstopper stores an exact copy of the transcript in a local vault. The undo command restores those bytes into a new fork, and a standalone compaction never overwrites the original.",
+    summary: "Before changing anything, Gobstopper stores an exact copy of the transcript in a local vault. Claude Code and Codex compactions are written to a new fork, and undo restores the original bytes into another. Idle Devin sessions are edited in place, and undo writes the original back.",
   },
   {
     icon: "telemetry-eval",
@@ -68,11 +68,11 @@ const primitives = [
 const trust = [
   {
     label: "Transcripts are never destroyed",
-    detail: "Gobstopper snapshots a transcript before it changes a byte. A standalone compaction writes a separate copy and leaves the source file alone. Rewrites change content inside existing records and never delete one, so the provider can still resume the session, and gobstopper verify checks the result.",
+    detail: "Gobstopper snapshots a transcript before it changes a byte. Claude Code and Codex compactions go to a separate copy and leave the source file alone. A Devin session is edited in place only while it is idle and locked. Rewrites keep the links a provider needs to resume the session, and gobstopper verify checks the result.",
   },
   {
-    label: "Running sessions stay with the provider",
-    detail: "While a provider is serving a session, Gobstopper asks the provider to compact it instead of editing files underneath. Custom rewrites run only on idle sessions and forks.",
+    label: "Running sessions are left alone",
+    detail: "Gobstopper never edits a session that is still running. A running Claude Code or Devin session compacts only when you run /compact inside it. Custom rewrites run only on idle sessions and forks.",
   },
   {
     label: "Failures are reported as failures",
@@ -87,7 +87,7 @@ const questions = [
   },
   {
     question: "Does it edit my live session?",
-    answer: "No. Standalone `apply` and `watch` write a separate, validated copy and leave the source unchanged. When a session belongs to the provider, Gobstopper asks the provider to compact it: `thread/compact/start` over the Codex app-server protocol, `claude --resume <id> -p /compact` for Claude Code, and `/compact` over ACP for Devin. Gobstopper rewrites files only for idle transcripts, and always takes a snapshot first.",
+    answer: "No. A running Claude Code or Devin session compacts only through `/compact` in that session. For a closed session, Gobstopper can ask the provider to compact it: `thread/compact/start` over the Codex app-server protocol, `claude --resume <id> -p /compact` for Claude Code, and `/compact` over ACP for Devin. Otherwise it rewrites idle transcripts itself, always after a snapshot. Claude Code and Codex rewrites go to a separate, validated copy; a Devin session is edited in place under a lock.",
   },
   {
     question: "What if a compaction loses something important?",
@@ -95,7 +95,7 @@ const questions = [
   },
   {
     question: "Which agents does it support?",
-    answer: "Codex, Claude Code, and Devin, each through its real session format. For Devin, Gobstopper detects sessions, applies your policy, and triggers Devin's own compaction, but never edits Devin's history. Edits are provider-neutral, so another agent that stores JSONL transcripts needs only a small adapter.",
+    answer: "Codex, Claude Code, and Devin, each through its real session format. Edits are provider-neutral, so another agent that stores JSONL transcripts needs only a small adapter.",
   },
   {
     question: "Can I run my own compaction logic?",
@@ -103,7 +103,7 @@ const questions = [
   },
   {
     question: "Who made it?",
-    answer: "Ben Guo, a musician and builder, formerly a founder and engineering leader at companies including Venmo and Stripe, now building from Puerto Rico. Hraness publishes Gobstopper under the MIT and Apache-2.0 licenses.",
+    answer: "Ben Guo, a musician and builder, formerly a founder and engineering leader at companies including Venmo and Stripe, now building from Puerto Rico. Hraness publishes Gobstopper under your choice of the MIT or Apache-2.0 license.",
   },
 ] as const;
 
@@ -149,7 +149,7 @@ export default function Home() {
                   credit="Recorded September 17, 2026"
                   title="Gobstopper vs. Claude autocompact"
                 >
-                  <pre className="transcript" tabIndex={0}><code>{`# tokens on resume · recalled?
+                  <pre className="transcript" tabIndex={0}><code>{`# input tokens on resume · recalled?
 no compaction     312,722  yes
 elide             219,167  yes
 compacted         220,447  yes
@@ -300,7 +300,7 @@ gobstopper watch`}</code></pre>
             <p>
               Gobstopper is built by Ben Guo, a musician and builder, formerly a founder and
               engineering leader at companies including Venmo and Stripe, now building from
-              Puerto Rico. Hraness publishes it under the MIT and Apache-2.0 licenses.
+              Puerto Rico. Hraness publishes it under your choice of the MIT or Apache-2.0 license.
             </p>
           </MarketingMaker>
 
@@ -376,7 +376,7 @@ gobstopper watch`}</code></pre>
             footnote={footnote}
             heading="Keep long sessions going for less."
             headingId="cta-title"
-            summary="Set a trigger, pick a strategy, and stop paying for the same 900k tokens on every turn."
+            summary="Set a trigger, pick a strategy, and stop sending the same 900k tokens on every turn."
           />
         </MarketingPage>
       </main>
