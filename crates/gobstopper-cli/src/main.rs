@@ -1121,8 +1121,14 @@ fn codex_failure_hold_secs(msg: &str) -> u64 {
     if msg.contains("usage limit") {
         // Provider quota window — unknown length, retry sparingly.
         4 * 3600
-    } else if msg.contains("cannot resume") || msg.contains("not found") {
-        // Structural for this thread state; a day bounds the noise.
+    } else if msg.contains("cannot resume")
+        || msg.contains("not found")
+        || msg.contains("not supported")
+    {
+        // Structural for this thread state or account plan — the remote
+        // compact task's server-side model may not be provisioned. A
+        // day bounds the noise; checked before the generic turn-failed
+        // arm because these errors also carry that status text.
         24 * 3600
     } else if msg.contains("outcome unknown")
         || msg.contains("turn failed")
@@ -1221,11 +1227,13 @@ fn codex_compact(
                             bail!("codex app-server: {msg}");
                         }
                         let code = if msg.contains("cannot resume") {
-                            "cannot resume provider thread"
+                            "cannot resume provider thread".to_string()
                         } else if msg.contains("usage limit") {
-                            "usage limit exceeded"
+                            "usage limit exceeded".to_string()
                         } else {
-                            "provider_rejected"
+                            // Keep the provider's message — downstream
+                            // failure classification keys on it.
+                            format!("provider rejected: {msg}")
                         };
                         bail!("codex app-server: {code}");
                     }
@@ -5427,6 +5435,15 @@ mod tests {
             24 * 3600
         );
         assert_eq!(codex_failure_hold_secs("thread not found"), 24 * 3600);
+        // Structural > generic: the remote compact task's model being
+        // unprovisioned must outrank the "turn failed" wrapper text.
+        assert_eq!(
+            codex_failure_hold_secs(
+                "codex compaction turn failed: Error running remote compact task: \
+                 {\"error\":{\"message\":\"The 'gpt-5-mini' model is not supported\"}}"
+            ),
+            24 * 3600
+        );
         assert_eq!(
             codex_failure_hold_secs(
                 "provider outcome unknown at deadline; do not replay automatically"
