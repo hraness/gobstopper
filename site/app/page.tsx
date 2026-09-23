@@ -7,6 +7,7 @@ import {
   MarketingPrimitives,
   MarketingProofFrame,
   MarketingQuestionList,
+  MarketingRelated,
   MarketingSection,
   MarketingTrustBoundary,
   ProductHero,
@@ -301,6 +302,70 @@ gobstopper watch`}</code></pre>
               Puerto Rico. It is published by Hraness under the MIT license.
             </p>
           </MarketingMaker>
+
+          <MarketingRelated
+            groups={[
+              {
+                heading: "The agent platform",
+                headingId: "related-tools",
+                summary: "The layer your agent runs through — sessions, accounts, web reads, and the models behind them.",
+                items: [
+                  {
+                    name: "Ghostget",
+                    href: "https://ghostget.com",
+                    role: "A bounded bridge to provider data",
+                    relationship: "Ghostget bounds what each web read puts into the context Gobstopper compacts — a measured article costs about 3,800 tokens where the raw page carries 36,000.",
+                  },
+                  {
+                    name: "xcb",
+                    href: "https://xcb.sh",
+                    role: "A metaharness for agent subscriptions",
+                    relationship: "xcb runs the subscriptions behind the sessions Gobstopper compacts — one terminal workspace with account custody and visible token spend.",
+                  },
+                  {
+                    name: "Aicharts",
+                    href: "https://aicharts.io",
+                    role: "AI model benchmarks and usage inspection",
+                    relationship: "Aicharts measures the spend Gobstopper cuts — benchmarks for the models your agent uses, and local inspection of what a session actually cost.",
+                  },
+                ],
+              },
+              {
+                heading: "The personal apps",
+                headingId: "related-apps",
+                items: [
+                  {
+                    name: "PeopleBlade",
+                    href: "https://peopleblade.com",
+                    role: "A private contact book for you and your agent",
+                    relationship: "PeopleBlade gives your agent a whole contact book to work through; Gobstopper keeps that long session compact.",
+                  },
+                  {
+                    name: "Soulscrape",
+                    href: "https://soulscrape.com",
+                    role: "A dated, cited dossier on a person",
+                    relationship: "Deep dossier research runs long; Gobstopper compacts the session without losing what the agent already established.",
+                  },
+                  {
+                    name: "Textbutler",
+                    href: "https://textbutler.app",
+                    role: "A personal message butler for Mac",
+                    relationship: "Textbutler studies whole conversation histories; Gobstopper keeps the study session cheap.",
+                  },
+                  {
+                    name: "Wordcell",
+                    href: "https://wordcell.io",
+                    role: "A Markdown knowledge base for agents",
+                    relationship: "Wordcell gives an agent a whole vault to traverse; Gobstopper compacts the traversal context.",
+                  },
+                ],
+              },
+            ]}
+            heading="From the same workshop."
+            headingId="related-title"
+            label="Related"
+            summary="Each Hraness product owns one private domain and gives your agent the same kind of access: local, bounded, and inspectable."
+          />
 
           <MarketingCallToAction
             actions={[
