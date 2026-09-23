@@ -1133,6 +1133,8 @@ fn codex_failure_hold_secs(msg: &str) -> u64 {
     } else if msg.contains("outcome unknown")
         || msg.contains("turn failed")
         || msg.contains("turn interrupted")
+        || msg.contains("turn aborted")
+        || msg.contains("turn unknown")
     {
         // Possibly in-flight or a provider-side turn failure — do not
         // race a write that may still land; if it does, the post-state
@@ -1330,6 +1332,7 @@ fn codex_compact(
                         let status = match status {
                             "failed" => "failed",
                             "interrupted" => "interrupted",
+                            "aborted" => "aborted",
                             _ => "unknown",
                         };
                         bail!("codex compaction turn {status}{detail}");
@@ -5507,6 +5510,14 @@ mod tests {
         );
         assert_eq!(
             codex_failure_hold_secs("codex compaction turn interrupted"),
+            3600
+        );
+        assert_eq!(
+            codex_failure_hold_secs("codex compaction turn aborted"),
+            3600
+        );
+        assert_eq!(
+            codex_failure_hold_secs("codex compaction turn unknown"),
             3600
         );
         // Transient infra → no cooldown, retry next pass.
