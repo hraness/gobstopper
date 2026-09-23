@@ -3723,36 +3723,42 @@ fn cmd_watch(
                     600_000,
                 ) {
                     Ok(()) => {
+                        // Post-state read: a `compacted` record resets
+                        // scan_usage to 0 — that IS the provider's
+                        // post-state, not an unreadable context. A turn
+                        // that completed without dropping context was a
+                        // provider no-op, not an apply.
                         let after =
                             gobstopper_adapters::codex::scan_usage(&d.handle.path).context_tokens;
+                        let noop = after >= ctx;
                         let done = CompactionPlan {
                             strategy: resolved.strategy.clone(),
                             rationale: "auto (closed codex): thread/compact".to_string(),
                             edits: vec![],
                             context_tokens_before: ctx,
-                            context_tokens_after: if after > 0 { after } else { ctx },
+                            context_tokens_after: after,
                         };
-                        let post_sha = vault::snapshot(
-                            &d.handle.path,
-                            d.handle.provider,
-                            &d.handle.session_id,
-                            Some("post-compact"),
-                            &vault::default_root(),
-                        )
-                        .map(|e| e.sha256)
-                        .ok();
+                        let post_sha = if noop {
+                            None
+                        } else {
+                            vault::snapshot(
+                                &d.handle.path,
+                                d.handle.provider,
+                                &d.handle.session_id,
+                                Some("post-compact"),
+                                &vault::default_root(),
+                            )
+                            .map(|e| e.sha256)
+                            .ok()
+                        };
                         let mut ev = build_event(
                             &d,
                             &done,
                             "provider_compact",
-                            "applied",
+                            if noop { "skipped" } else { "applied" },
                             trigger,
                             started.elapsed().as_millis() as u64,
-                            if after == 0 {
-                                Some("unresolved_context")
-                            } else {
-                                None
-                            },
+                            if noop { Some("provider_noop") } else { None },
                         );
                         ev.snapshot_before_sha256 = Some(pre_snapshot.sha256.clone());
                         ev.snapshot_after_sha256 = post_sha.clone();
@@ -3801,6 +3807,8 @@ fn cmd_watch(
                             started.elapsed().as_millis() as u64,
                             Some(if msg.contains("spawning") {
                                 "spawn_failed"
+                            } else if msg.contains("usage limit") {
+                                "quota_limited"
                             } else {
                                 "provider_rejected"
                             }),

@@ -148,6 +148,7 @@ fn valid_event(event: &CompactionEvent) -> bool {
                     | "spawn_failed"
                     | "parent_thread"
                     | "provider_noop"
+                    | "quota_limited"
             )
         })
         && event.est_reclaimed_tokens
