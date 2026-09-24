@@ -183,7 +183,7 @@
         "unqualified_devin_unknown_context_never_exports_or_snapshots",
         "active_auto_unknown_devin_delegates_without_export_or_snapshot"
       ],
-      "seconds": 180
+      "seconds": 240
     },
     {
       "name": "claude-process",

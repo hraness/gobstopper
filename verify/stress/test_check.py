@@ -26,6 +26,8 @@ class AdmissionTests(unittest.TestCase):
     def test_exact_inventory_and_budget(self):
         suites = check.admitted_inventory(document())
         self.assertEqual(sum(len(s["tests"]) for s in suites), 158)
+        self.assertEqual(check.TOTAL_SECONDS, 900)
+        self.assertEqual(next(s for s in suites if s["name"] == "watch")["seconds"], 240)
         for mutate in (lambda d:d["suites"].pop(),
                        lambda d:d["suites"][0]["argv"].append("--ignored"),
                        lambda d:d["suites"][0].update(seconds=999999),
@@ -34,6 +36,10 @@ class AdmissionTests(unittest.TestCase):
             mutate(changed)
             with self.assertRaises(ValueError):
                 check.admitted_inventory(changed)
+        changed = document()
+        next(s for s in changed["suites"] if s["name"] == "watch")["seconds"] = 241
+        with self.assertRaises(ValueError):
+            check.admitted_inventory(changed)
 
     def test_every_named_test_must_execute_once_and_pass(self):
         for suite in check.admitted_inventory(document()):

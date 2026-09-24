@@ -39,10 +39,18 @@ trusted inputs; this is not a hermetic build attestation.
 | Monitor | 40 | Source-bound observations, malformed/conflicting history refusal, measurement admission, bounded private logs, timeouts, child collection and inherited environment isolation |
 
 The aggregate has a 900-second deadline, individual suites have reviewed limits
-of 60–180 seconds including compilation, and logs are capped at 8 MiB per
+of 60–240 seconds including compilation, and logs are capped at 8 MiB per
 command. The shared `watch.run_owned` reactor retains process-group identity
 through cleanup, observes exit without reaping, and avoids blocking pipe reads.
 If a deadline, output cap or cleanup operation fails, admission fails.
+
+The 28-test watch suite has a 240-second limit. Executable provenance now hashes
+the complete debug binary at each CLI startup, and these tests start many CLI
+processes. The unchanged suite passed in 152 seconds locally and 163 seconds in
+Linux CI; a later CI run exhausted the former 180-second aggregate suite limit
+near its final tests. A focused rerun and a timed full rerun found no stalled
+test. The larger suite budget preserves every test, serial execution, child
+cleanup, and the 900-second overall limit. It is not a production latency target.
 
 The sequence itself must finish in less than 90 seconds with the exact seed,
 64 steps and 16 corruption recoveries. Its largest **post-step** footprint must

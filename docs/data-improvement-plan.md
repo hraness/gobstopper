@@ -224,3 +224,15 @@ monitor passes establish a short observation window, not sustained reliability.
   69 Rust correspondence steps, and 158 stress tests. Exact intended negative
   controls passed. New normalized receipts bind current source hashes.
   Draft PR 94 now proceeds to final exact-candidate CI and merged-source checks.
+- 2026-09-24: Candidate CI passed quality, MSRV and all three formal jobs, but
+  the serial watch stress suite reached its 180-second limit near its final
+  tests. The unchanged suite passed all 28 tests in 152 seconds locally and
+  previously in 163 seconds on Linux. Reviewed startup hashing explains the
+  added debug-test cost; focused and timed full reruns found no hang. The watch
+  budget is now 240 seconds, with all 158 tests and the 900-second aggregate
+  bound preserved. Fresh stress evidence and final candidate CI are required.
+- 2026-09-24: Independent budget review passed. Fresh macOS stress evidence
+  passed all 158 tests in 288 seconds (watch: 148 seconds), and every saved log
+  was readmitted against the exact inventory. The new `2026-09-24-stress-r2`
+  receipt preserves the earlier Linux record as history. Assurance inventory and
+  its negative controls pass; final Linux CI remains a separate required gate.
