@@ -28,19 +28,26 @@ the selected binary not to detach or change privileges; it is not a sandbox.
 SIGTERM/SIGINT cancellation kills and reaps the owned child before exiting;
 interrupted passes do not replace the last complete observation.
 
-The script runs `gobstopper report --active-only` and
+The script runs `gobstopper report --active-only --context-only` and
 `gobstopper watch --dry-run --active-only --once`. It writes an atomic
 `latest.json` and appends `observations.jsonl`, rotating at 10 MiB and retaining
 one previous log. Reports include the executable's SHA-256 and command duration,
 exit code, and closed error code. Freeform command output is discarded. The
 watch command's known per-session load/plan failure diagnostics are classified as
 `watch_evaluation_failed` even when that command exits zero; plan count is then
-unavailable. Both commands limit discovery to files updated within 180 seconds
-before reading their usage; activity is a file modification heuristic, not proof
-of an owning process. The report is capped at 2,000 sessions. `sessions` contains
+unavailable. Both commands restrict JSONL discovery to files updated within
+180 seconds before reading their usage; Devin also includes sessions with an
+observed held provider lock. These observations do not establish mutation
+custody. The report is capped at 2,000 sessions. `sessions` contains
 only exact allowlisted Codex rows; `context_samples` also includes explicitly
 selected IDs or provider opt-ins from other providers. A missing or idle row is
-unavailable, never a zero-valued measurement.
+unavailable, never a zero-valued measurement. Context-only reporting omits Devin
+lifetime totals: it validates node identities and the complete selected ancestry,
+then reads at most 32 live-chain payloads. Discarded branch payloads do not need
+to be exported for an observation of current context. The regular `report`
+command still requests complete Devin usage accounting. This distinction keeps
+the monitor's requested measurements explicit; its shared deadline and the
+separate dry-run evaluation are unchanged.
 
 Each command also includes an additive `resources` object with `user_cpu_us`,
 `system_cpu_us`, `minor_page_faults`, `major_page_faults`,

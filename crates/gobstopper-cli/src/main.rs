@@ -239,6 +239,10 @@ enum Cmd {
         /// Report only files updated in the last 180 seconds.
         #[arg(long)]
         active_only: bool,
+        /// Sample current context without scanning full provider histories.
+        /// Lifetime usage may be unavailable.
+        #[arg(long)]
+        context_only: bool,
     },
     /// Show compaction telemetry: recent events and cumulative savings.
     Events {
@@ -2551,15 +2555,23 @@ fn cmd_hook(cli: &Cli, cfg: &config::Config, event: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_report(cli: &Cli, strict: bool, active_only: bool) -> Result<()> {
-    let sessions = detect::discover(
-        &roots(cli),
-        if active_only {
-            gobstopper_core::SessionHandle::HOT_SECS
-        } else {
-            0
-        },
-    );
+fn cmd_report(cli: &Cli, strict: bool, active_only: bool, context_only: bool) -> Result<()> {
+    let max_age_secs = if active_only {
+        gobstopper_core::SessionHandle::HOT_SECS
+    } else {
+        0
+    };
+    let sessions = if context_only {
+        detect::discover_cached(
+            &roots(cli),
+            max_age_secs,
+            &mut detect::DiscoveryCache::default(),
+            None,
+            true,
+        )
+    } else {
+        detect::discover(&roots(cli), max_age_secs)
+    };
     let events = match gobstopper_core::events::read_events(&default_log_path()) {
         Ok(events) => events,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
@@ -5302,7 +5314,8 @@ fn main() -> Result<()> {
         Cmd::Report {
             strict,
             active_only,
-        } => cmd_report(&cli, *strict, *active_only),
+            context_only,
+        } => cmd_report(&cli, *strict, *active_only, *context_only),
         Cmd::Events {
             session,
             tail,

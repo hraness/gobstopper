@@ -638,3 +638,23 @@ resolve or an honest bounded claim; do not weaken the property just to turn gree
   and separated mismatched protocol EOF from a real post-ack silence deadline.
   Assertions, production deadlines and suite inventories remain intact. Final
   refreshed receipts and exact-head delivery results are tracked in PR 90.
+- 2026-09-23, installed-service follow-up: PRs 90 and 91 merged; all six
+  required Linux gates and four CodeQL analyses passed at merged source
+  `ef8f06f976b256f5fd828226df7b19e38807d67c`. The guarded binary and monitor were
+  installed with preserved configuration, recovery state and native-dispatch
+  guards. Initial monitor reports exceeded the shared 45-second deadline;
+  subsequent warmed observations took 20.2–31.7 seconds for report and
+  1.4–3.0 seconds for dry-run watch. Profiling and read-only query plans showed
+  unnecessary Devin discarded-branch reads. Context discovery now uses the
+  covering identity index and validates the complete selected ancestry before
+  reading its latest 32 payloads. Negative/duplicate identities and broken live
+  ancestry still refuse; unused dead-branch fields have no context authority.
+  The monitor explicitly requests `report --context-only`, with absent Devin
+  lifetime totals; ordinary reporting and the shared deadline remain unchanged.
+  Three read-only candidate observations took 0.23–1.49 seconds for report and
+  0.37–0.49 seconds for watch. Provider activity and host caches were uncontrolled,
+  so these are local measurements, not a universal latency guarantee. All 508
+  Rust tests/doctests, formatting, Clippy, MSRV, refreshed Lean correspondence
+  and 127 bounded stress tests passed. Exact candidate CI, merge and restarted
+  health evidence follow the same delivery gates; no live provider qualification
+  or whole-system proof is inferred.
