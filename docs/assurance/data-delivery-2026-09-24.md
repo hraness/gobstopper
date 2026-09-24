@@ -146,6 +146,129 @@ allowlist. The private observation record is
 `ffe7ff7244763f1d09a88beb0ed34f35960b16b315967d67b759f2a8fc14adb6`, with the
 stack samples under `implementation/`.
 
+## D7 follow-up installation
+
+[PR 98](https://github.com/hraness/gobstopper/pull/98) merged as
+`1eae6b352b5501a44aaeae3af237cef72a110625` with source tree
+`23dfc843c0ff4b75ce684fdbb947201cf6f54e12`. It keeps an identified
+discovery-cache entry valid until its fingerprint (length, modification time,
+device, inode and change time) changes, keeps the 60-second bound for entries
+without identity fields, and gives the monitor's report and dry-run watch
+commands separate 45-second budgets. The watch state generation is unchanged
+at 9.
+
+The [merged-source CI run](https://github.com/hraness/gobstopper/actions/runs/36058785133)
+passed all six required jobs; its quality log records 560 Rust tests, 150 Python
+tests and the separate 512-case dialect replay. The
+[merged CodeQL run](https://github.com/hraness/gobstopper/actions/runs/36058784780)
+completed all four analyses. A local release gate rebuilt the merged tree with
+the locked dependencies and passed the four release-only refusal tests; the
+installed hashes below come from that build. An independent read-only review
+of the merge diff approved it for operational admission with one advisory and
+four notes. The advisory: an identified cache entry has neither a time bound
+nor a content hash, so a same-length in-place rewrite that lands within the
+filesystem's timestamp granularity of the previous write would not be rescanned.
+The notes: the negative test changes length and both timestamps together, so no
+test isolates a same-length or rename-replace change, although tuple equality
+covers both today; a monitor pass can now hold its exclusive lock for about 90
+seconds, so a supervisor with a period of 90 seconds or less sees overlapping
+invocations rejected; the monitor timeout test could fail under heavy host load
+without a product defect; and earlier stress receipts keep the old monitor test
+name as immutable history. The private review is
+`implementation/d7-change-independent-review.json`, SHA-256
+`3bf9b26d5fa45ee98785afda96866c3616c43aad9b740a8dc3fe46667a1838d8`.
+
+### Installed artifact
+
+The installed `gobstopper 0.2.1` binary now has SHA-256
+`528f88758ccb0ec5f3ff78e20c41c9f34afc8b3b1d38772f1def352e1fec1d7f`;
+the installed monitor has SHA-256
+`e452d992b2a2f31ec4565d7da72fbdbffdf830c30d5f26b42d3e818f08fd7646`.
+There is still no new package tag: this is the documented checked source
+installation from the merged tree.
+
+The cutover reused the morning's reviewed protocol. The copied helpers differ
+from the retained originals by four exact strings (the bundle directory, the
+evidence base and the two previously installed hashes); the copy passed its 37
+synthetic data-helper tests and 17 helper checks before pins, a source gate
+receipt and a root review admitted each operation. The three watchers exited
+naturally at 22:29 UTC after the configuration marker was published. The first
+removal attempt at 22:30 UTC observed a watcher that launchd had restarted onto
+the marker and returned pending without sending a signal; the explicit
+reconcile-then-resume path removed the four jobs at 22:33 UTC. A stable stopped
+backup preceded installation, the Cargo build was a cached rebuild of the gated
+tree, and the version, deterministic policy and native-operation inspection
+checks passed before the four admitted launch jobs restarted at 22:35 UTC with
+the configuration restored from its exact original bytes and mode. The protocol
+copy, its pins, receipts and the retained-copy manifest (SHA-256
+`fab08ba0320e61655790afb6d03354112d5c2e818d54f734567611f4997a2825`) are kept
+privately under `runtime-d7-cutover/`.
+
+### Runtime readiness
+
+The protocol's final receipt step ran this time. The read-only readiness
+evaluation was applied once a minute from 22:35 UTC; the first eleven
+evaluations were pending on the cold first passes of the Codex and Devin
+watchers, which completed at 22:42 and 22:43 UTC, and on monitor commands that
+timed out under host load averages of 33 to 38. The twelfth evaluation passed
+at 22:46 UTC and recorded `postbootstrap.json` next to the bootstrap receipt,
+so the receipt owner item from the morning cutover is closed. The receipt binds
+the 22:46:11 UTC monitor observation, in which the report command completed in
+1.8 seconds and the dry-run watch in 20.8 seconds with an empty plan, and all
+three checkpoints were fresh with generation 9, the installed binary hash and
+native activation `unqualified`. Coverage is recorded separately from command
+health: the 14 allowlisted sessions still have no active overlap, so that owner
+item stands, while the report exported 20 of 20 eligible context samples (15
+complete, three partial) and discovery scanned 9,887 Codex, 218 Claude Code and
+104 Devin files. The native journal, configuration and launch definitions were
+unchanged throughout.
+
+### Observation window
+
+The window covers the 21 monitor observations from the 22:35 UTC restart to
+23:10 UTC, about 36 minutes on a host whose load average rose from 33 to 44.
+Observations came about 100 seconds apart because launchd starts the next pass
+only after the previous one exits, and a pass with two timeouts lasts about 90
+seconds. Both commands were healthy in 13 observations, and at nine instants all
+three checkpoints were fresh as well. The report command timed out twice;
+healthy reports took a median of 4.6 seconds and a 90th percentile of 26.2
+seconds. The dry-run watch command timed out eight times, each under its own
+45-second budget: no watch timeout had zero duration, which is the monitor
+change D7 made. In the hour before the restart the previous binary recorded 11
+watch timeouts in 38 observations, one of them zero-duration after a slow report
+consumed the shared budget. Healthy dry-run watch runs took a median of 17.1
+seconds. The 23:10 UTC report exported 20 of 20 eligible context samples (17
+complete, three partial) and discovery scanned 9,887 Codex, 218 Claude Code and
+104 Devin files. Monitor command health is not shown to be better or worse than
+before the installation: the hour before the restart had 27 of 38 observations
+healthy at a lower load, and no controlled comparison was run. The data volume
+had 163 GiB free at 91 percent, up from 18 GiB in the morning.
+
+The cache change shows in the watcher passes that the monitor checkpoints
+recorded. The first pass under the new binary was cold: the Codex pass
+completed between 22:41 and 22:42 UTC, and the Devin pass took 485 seconds,
+finishing at 22:43 UTC. After that, completed Codex passes over 1,932
+discovered files took a median of 2.5 seconds (18 passes, maximum 17.2 seconds)
+against a median of 15.3 seconds and a maximum of 328 seconds in the morning
+window, and Claude Code passes took a median of 4.2 seconds (20 passes, maximum
+36.8 seconds). Devin passes took a median of 15.6 seconds (12 passes, 90th
+percentile 135 seconds): the Devin per-pass read cost is the deferred part of
+D7, so each pass still reads the session store, on a busier host than in the
+morning. The 480 telemetry events written after the restart all carry the
+installed binary hash and match the early-refusal contract: Codex recorded 164
+`blocked/native_unqualified` decisions under `auto` and 168
+`skipped/unresolved_context` control decisions, Devin 26 and 29, and the
+Claude Code hooks recorded 30 `unattributed_provider_hook` skips. No native
+provider call was attempted. The private observation record is
+`runtime-d7-cutover/observation-window.json`, SHA-256
+`b9085b128a6916a8ac540592bbc7fa78beb10f2c78953d159c97230c3c185935`.
+
+The two operational findings from the morning keep their owners: the monitor's
+14 allowlisted sessions still have no active overlap until the launch job's
+allowlist is refreshed, and the Devin write-ahead log remains a Devin-side
+item. No product change was made in this installation beyond the merged D7
+source.
+
 ## Remaining evidence limits
 
 The assurance case in [README.md](README.md) states each proof's assumptions.
@@ -158,5 +281,5 @@ remain outside these results.
 No native provider cell is qualified. The registered held-out retention study
 has not run. These changes neither enable provider mutation nor establish task
 success, billed savings, causal latency improvement or sustained reliability.
-The 44-minute window above is a short observation on a saturated host, not a
-reliability measurement.
+The 44-minute and 36-minute windows above are short observations on a
+saturated host, not reliability measurements.

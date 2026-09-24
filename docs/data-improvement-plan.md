@@ -173,8 +173,10 @@ monitor passes establish a short observation window, not sustained reliability.
 
 ## D7: Discovery and monitor overhead
 
-- **Status:** Cache validity and monitor deadlines implemented; Devin read
-  cost deferred; post-install observation window pending
+- **Status:** Cache validity and monitor deadlines installed on the runtime
+  at 22:35 UTC on 2026-09-24 with the receipt step passed and a 36-minute
+  observation window recorded; Devin read cost deferred; allowlist refresh
+  remains an owner item
 - **Depends on:** D6 observation record
 - **Objective:** keep watcher passes and monitor commands inside their budgets on
   a busy host without weakening bounded reads, custody or the deadline contract
@@ -320,3 +322,17 @@ monitor passes establish a short observation window, not sustained reliability.
   transcript r3 summarized from the change's own Linux proof job after two
   local kernel replays timed out at the reviewed 120-second limit, which was
   not changed.
+- 2026-09-24: D7 installed under the guarded cutover. The merged tree
+  `1eae6b3` was rebuilt by the local release gate; the checked binary
+  (`528f8875…`) and monitor (`e452d992…`) replaced the morning's artifacts
+  after natural watcher exit at 22:29 UTC, a reconcile-then-resume removal at
+  22:33 UTC and a stable stopped backup. The four launch jobs restarted at
+  22:35 UTC with the configuration restored from its exact bytes, and the
+  protocol's receipt step passed at 22:46 UTC, closing that owner item. In the
+  36-minute window, warm Codex passes over 1,932 discovered files took a median
+  of 2.5 seconds (morning window: 15.3 seconds), Claude Code 4.2 seconds and
+  Devin 15.6 seconds with the deferred read cost; the monitor's dry-run watch
+  still timed out 8 of 21 times under its own budget with no zero-duration
+  timeout, at load averages of 33 to 44. The stale allowlist and the Devin
+  write-ahead log remain owner items. Details and hashes are in the
+  [delivery record](assurance/data-delivery-2026-09-24.md).
