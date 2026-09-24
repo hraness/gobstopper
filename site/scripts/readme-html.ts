@@ -16,7 +16,7 @@ function decodeCharacterReferences(value: string): string {
     .replaceAll("&amp;", "&");
 }
 
-function assertSafeTarget(encodedTarget: string): void {
+export function assertSafeTarget(encodedTarget: string): void {
   const target = decodeCharacterReferences(encodedTarget);
   const compact = target.trim().replace(/[\u0000- \u007f]+/gu, "");
   if (compact.startsWith("//")) {
@@ -73,7 +73,7 @@ function githubHeadingSlug(text: string): string {
     .replace(/\s/gu, "-");
 }
 
-function addHeadingIds(html: string): string {
+export function addHeadingIds(html: string): string {
   const occurrences = new Map<string, number>();
   return html.replace(/<h([1-6])>([\s\S]*?)<\/h\1>/gu, (_, level: string, body: string) => {
     const base = githubHeadingSlug(headingText(body));
@@ -85,7 +85,7 @@ function addHeadingIds(html: string): string {
   });
 }
 
-function assertFragmentsResolve(html: string): void {
+export function assertFragmentsResolve(html: string): void {
   const ids = new Set(Array.from(html.matchAll(/\sid="([^"]+)"/gu), ([, id]) => id));
   for (const [, encodedFragment] of html.matchAll(/\shref="#([^"]+)"/gu)) {
     let fragment: string;

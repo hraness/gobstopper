@@ -250,3 +250,7 @@ A prompt, skill, or template that makes a model write published text is public c
 - Show only commands and config that run on the source or release the page installs. The homepage and README use the current `main` source install to match the described safeguards; `site/published-release.json` records the historical published tag, which predates those safeguards. The retired flags `--in-place`, `--no-backup`, and `--double-buffer` exit with an error, `watch` has no `--trigger` flag, and a preset `command` is a string that needs `trusted_legacy_command = true`.
 - Label every benchmark with its date, build, and scope. The September 17, 2026 resume trials are historical single-session results on earlier builds.
 - OOMPA was retired on 2026-09-19 and replaced by xcb. Mention OOMPA only as history.
+
+### Blog posts
+
+- Posts under `/blog` carry the byline “Hraness” and the visible note “Drafted with AI from the source code and reviewed by <reviewer>.”, rendered from the post's review record. This follows the owner's decision of 2026-09-23 that essays and blog posts on every Hraness site show that note; other gobstopper.sh pages carry no AI-drafting labels. A disclosed AI review may admit a post for indexing and is never called human review.

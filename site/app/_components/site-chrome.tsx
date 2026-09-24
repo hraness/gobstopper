@@ -41,6 +41,7 @@ export function SiteHeader({ path }: Readonly<{ path?: CanonicalPagePath }>) {
           { href: "/docs", label: "Docs" },
           { href: "/methodology", label: "Methodology" },
           { href: "/benchmarks", label: "Benchmarks" },
+          { href: "/blog", label: "Blog" },
           { href: ARCHITECTURE_URL, label: "Architecture" },
           { href: GITHUB_URL, label: "GitHub" },
         ]}
@@ -64,6 +65,7 @@ export function SiteFooter({ path }: Readonly<{ path?: CanonicalPagePath }>) {
           { href: "/docs", label: "Docs" },
           { href: "/methodology", label: "Methodology" },
           { href: "/benchmarks", label: "Benchmarks" },
+          { href: "/blog", label: "Blog" },
           { href: ARCHITECTURE_URL, label: "Architecture" },
           { href: GITHUB_URL, label: "GitHub" },
         ]}
