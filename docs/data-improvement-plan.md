@@ -216,3 +216,11 @@ monitor passes establish a short observation window, not sustained reliability.
   158 named tests. Final aggregate and fresh Linux receipts remain pending.
 - 2026-09-24: Main advanced through site-only PR 93; integration preserves those
   changes. This task changes no site source or deployment target.
+- 2026-09-24: Integrated local gate passed: 558 Rust tests, doctests (no
+  examples), fmt, Clippy, MSRV 1.85 and the separate 512-case dialect replay.
+  All Python and verification-runner checks passed. Fresh Linux evidence passed
+  24 TLA+ configurations, 16 Kani harnesses (178 assertion checks: 148 successful
+  and 30 unreachable safety checks; 52 satisfied covers), 27 Lean laws with
+  69 Rust correspondence steps, and 158 stress tests. Exact intended negative
+  controls passed. New normalized receipts bind current source hashes.
+  Draft PR 94 now proceeds to final exact-candidate CI and merged-source checks.

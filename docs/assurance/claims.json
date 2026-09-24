@@ -309,64 +309,10 @@
       "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
     },
     {
-      "id": "CLAIM-VAULT",
-      "owner": "integration owner",
-      "status": "bounded_check",
-      "assertion": "Finite custody and publication model; 11 safety/control/witness configurations.",
-      "bounds": "Two publishers/one reader/one prune in custody; one publisher/one reader/two prune cycles/one restart in publication; 256 MiB JVM, 45 seconds per case, 32 MiB logs.",
-      "public_sources": [
-        {
-          "path": "verify/vault/README.md"
-        }
-      ],
-      "evidence": [
-        "E-VAULT-CURRENT"
-      ],
-      "assumptions": [
-        "A-RECEIPT",
-        "A-OS",
-        "A-MODEL"
-      ],
-      "exclusions": [
-        "No production refinement",
-        "No power-loss or network filesystem theorem",
-        "No fairness or unbounded actor theorem"
-      ],
-      "next_gate": "C15",
-      "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."
-    },
-    {
-      "id": "CLAIM-WATCH",
-      "owner": "integration owner",
-      "status": "bounded_check",
-      "assertion": "Finite native dispatch model; 13 safety/control/witness configurations.",
-      "bounds": "Two watchers, one target, two operations, four records per operation, one generation change; no fairness; 256 MiB JVM, 45 seconds per case, 32 MiB logs.",
-      "public_sources": [
-        {
-          "path": "verify/watch/README.md"
-        }
-      ],
-      "evidence": [
-        "E-WATCH-CURRENT"
-      ],
-      "assumptions": [
-        "A-RECEIPT",
-        "A-OS",
-        "A-MODEL"
-      ],
-      "exclusions": [
-        "No provider-attested operation association",
-        "No production/filesystem refinement",
-        "No eventual progress guarantee"
-      ],
-      "next_gate": "C15",
-      "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."
-    },
-    {
       "id": "CLAIM-CORE",
       "owner": "integration owner",
       "status": "bounded_check",
-      "assertion": "Selected production Rust admission, arithmetic and usage kernels under Kani.",
+      "assertion": "Selected production Rust admission, arithmetic, usage and evidence-agreement kernels under Kani.",
       "bounds": "Full scalar numeric domains; index lengths 0/1/2/4 and four-edit sequence; production limits unchanged.",
       "public_sources": [
         {
@@ -439,6 +385,60 @@
         "No physical power-loss or real full-volume qualification",
         "No whole-process-tree RSS theorem",
         "No live provider acceptance"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."
+    },
+    {
+      "id": "CLAIM-WATCH",
+      "owner": "integration owner",
+      "status": "bounded_check",
+      "assertion": "Finite native dispatch model; 13 safety/control/witness configurations.",
+      "bounds": "Two watchers, one target, two operations, four records per operation, one generation change; no fairness; 256 MiB JVM, 45 seconds per case, 32 MiB logs.",
+      "public_sources": [
+        {
+          "path": "verify/watch/README.md"
+        }
+      ],
+      "evidence": [
+        "E-WATCH-CURRENT"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS",
+        "A-MODEL"
+      ],
+      "exclusions": [
+        "No provider-attested operation association",
+        "No production/filesystem refinement",
+        "No eventual progress guarantee"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."
+    },
+    {
+      "id": "CLAIM-VAULT",
+      "owner": "integration owner",
+      "status": "bounded_check",
+      "assertion": "Finite custody and publication model; 11 safety/control/witness configurations.",
+      "bounds": "Two publishers/one reader/one prune in custody; one publisher/one reader/two prune cycles/one restart in publication; 256 MiB JVM, 45 seconds per case, 32 MiB logs.",
+      "public_sources": [
+        {
+          "path": "verify/vault/README.md"
+        }
+      ],
+      "evidence": [
+        "E-VAULT-CURRENT"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS",
+        "A-MODEL"
+      ],
+      "exclusions": [
+        "No production refinement",
+        "No power-loss or network filesystem theorem",
+        "No fairness or unbounded actor theorem"
       ],
       "next_gate": "C15",
       "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."

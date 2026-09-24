@@ -1,0 +1,247 @@
+{
+  "schema": "gobstopper.assurance-receipt.v1",
+  "raw_receipt_sha256": "cc8f71a18c4d2f84932e886d6cf6c2d17b106f288ba6e7541b66b999306b89b2",
+  "observed_at": "2026-09-24T14:24:53.776654+00:00",
+  "scope": "Finite native dispatch model; 13 safety/control/witness configurations.",
+  "bounds": "Two watchers, one target, two operations, four records per operation, one generation change; no fairness; 256 MiB JVM, 45 seconds per case, 32 MiB logs.",
+  "exclusions": [
+    "No provider-attested operation association",
+    "No production/filesystem refinement",
+    "No eventual progress guarantee"
+  ],
+  "passed": true,
+  "inputs_unchanged": true,
+  "source_sha256": {
+    "verify/watch/check.py": "97ce34ea1926af465cfd242074ad80d9941311c9f412ee163923a90b7bfaebad",
+    "verify/watch/test_check.py": "3e873a9d311487ecabbad1fe15361b98e5ca438ba89bdbda049368ed29ac69eb",
+    "verify/watch/README.md": "356687cd09faa745fcbc2ba8d946ecf3c123de0e397424ecabd6e0b58a1f07df",
+    "verify/watch/Watch.tla": "c762695ec8c507df28066e183e761449df2349fd2a0d2d864447b207c4e06513",
+    "verify/watch/safe.cfg": "615bb781a448dcd54b8f16e40cb233e3dfcf41911f0fbc4167721643d7178394",
+    "verify/watch/safe-assumed-correlation.cfg": "8ce0248f379215630074a88723ccc6e9d979ddaa9491fe3ce7d1e27c1526ecca",
+    "verify/watch/replay-after-expiry.cfg": "06b16bd332641c8d9ab6e30efac6b14c338a4a76bb87cb7dc803df4f9d9eb20e",
+    "verify/watch/success-on-ack.cfg": "fa72eda87ebe48d135f6bfa4eaab4dbdf17b5794caaaadb23f0b23924c0b75d2",
+    "verify/watch/missing-pin.cfg": "8f22e3934af73f8d287dee7717c4a7101ee798268c52edbf7ec678ede1fcb6ce",
+    "verify/watch/automatic-fallback.cfg": "5517a4afb9f94ae2f58e0cabeca11d0d1d95f98c51f0ce88b80392d000160b94",
+    "verify/watch/fabricated-reconciliation.cfg": "e29ea627a2cfb4d391a698789f04b7b8c81cb12fc162aa8eb26cf1b486bbd15e",
+    "verify/watch/witness-applied.cfg": "8d56521608539864a5b967199ef07b2cc35b26340106eeb679e65b7211493405",
+    "verify/watch/witness-noop.cfg": "79bb997e279c9eb31dec6304256b599bb06ec2d7e15a55d0a584b3ee15b0cfa0",
+    "verify/watch/witness-unknown.cfg": "f3c5cb375621041c627306af3d2fc72a49ddeeb4b3d2b1e1c88bd3b17f362412",
+    "verify/watch/witness-reconciled.cfg": "3277e641e11f4a13b8286741cfb913405c16956c399266016a607e5b5111e9de",
+    "verify/watch/witness-crash.cfg": "f77d4dbabe1b77a905c0095d0a7ab6f93991b3910736da9d24b11ea7495171a1",
+    "verify/watch/witness-terminal-before-ack.cfg": "951b9dafce7dc89589a735c94cd5c9f743c71bdfeba4c7b29975aaee762edd69"
+  },
+  "tool_sha256": {
+    "java": "2a207f5e7d075afa01d97f8048389a64432a44c4a5af0f5e77d6e286ec5f401d",
+    "tlc.jar": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+  },
+  "results": [
+    {
+      "case": "safe",
+      "kind": "safety",
+      "mutation": null,
+      "expected_invariant_violation": null,
+      "passed": true,
+      "states": {
+        "generated": 171444,
+        "distinct": 32251,
+        "queued": 0
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 0,
+      "log_sha256": "cde6dc5024ce77231fafdf14470492a49cf8db710adf756cf3feaf9fa0331dba"
+    },
+    {
+      "case": "safe-assumed-correlation",
+      "kind": "safety",
+      "mutation": null,
+      "expected_invariant_violation": null,
+      "passed": true,
+      "states": {
+        "generated": 134356,
+        "distinct": 24609,
+        "queued": 0
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 0,
+      "log_sha256": "991bdeb52a424e96d7b5d3c6b6eac2bb257ba4eb1608ab86a6f110278fd37a25"
+    },
+    {
+      "case": "replay-after-expiry",
+      "kind": "mutant",
+      "mutation": "AllowExpiredReplay",
+      "expected_invariant_violation": "NoUnresolvedReplay",
+      "passed": true,
+      "states": {
+        "generated": 8603,
+        "distinct": 2499,
+        "queued": 972
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "7a152438aaca8365da3798fddb603b9955864d17227c068f6149e7d306b7e84a"
+    },
+    {
+      "case": "success-on-ack",
+      "kind": "mutant",
+      "mutation": "AllowAckSuccess",
+      "expected_invariant_violation": "AppliedNeedsTerminal",
+      "passed": true,
+      "states": {
+        "generated": 533,
+        "distinct": 257,
+        "queued": 127
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "9b9a77aee94f94381401145a3ec4f80c4d9d84d360e4f6b6a48c74673e730aec"
+    },
+    {
+      "case": "missing-pin",
+      "kind": "mutant",
+      "mutation": "OmitRecoveryPin",
+      "expected_invariant_violation": "RecoveryPinned",
+      "passed": true,
+      "states": {
+        "generated": 22,
+        "distinct": 15,
+        "queued": 7
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "fd273efaf7d885431a48a4c756e101902544123755d2dfddb58f21e980fd6b63"
+    },
+    {
+      "case": "automatic-fallback",
+      "kind": "mutant",
+      "mutation": "AllowFallback",
+      "expected_invariant_violation": "NoFallback",
+      "passed": true,
+      "states": {
+        "generated": 109,
+        "distinct": 67,
+        "queued": 34
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "af9e04901a6f63a5d2100f59b2364b5d8a907b1a0dbf3c6559e24221a4e45d12"
+    },
+    {
+      "case": "fabricated-reconciliation",
+      "kind": "mutant",
+      "mutation": "AllowFabricatedReconciliation",
+      "expected_invariant_violation": "ReconcileNeedsExactEvidence",
+      "passed": true,
+      "states": {
+        "generated": 564,
+        "distinct": 266,
+        "queued": 131
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "68d6f2f92520223d3f6bf82380cdb82fa3448ada937d384e015d49f7860d3ec8"
+    },
+    {
+      "case": "witness-applied",
+      "kind": "witness",
+      "mutation": null,
+      "expected_invariant_violation": "NoAppliedWitness",
+      "passed": true,
+      "states": {
+        "generated": 2682,
+        "distinct": 893,
+        "queued": 397
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "c34b64a1bc1a72d39954786ef1780a73840064781b49a1b4a25f817a1874af70"
+    },
+    {
+      "case": "witness-noop",
+      "kind": "witness",
+      "mutation": null,
+      "expected_invariant_violation": "NoNoopWitness",
+      "passed": true,
+      "states": {
+        "generated": 2683,
+        "distinct": 894,
+        "queued": 398
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "ac95a49dc0b5f4fca68f9a5c13f9cf2172024196f202557958cd2d402c710353"
+    },
+    {
+      "case": "witness-unknown",
+      "kind": "witness",
+      "mutation": null,
+      "expected_invariant_violation": "NoUnknownWitness",
+      "passed": true,
+      "states": {
+        "generated": 110,
+        "distinct": 68,
+        "queued": 35
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "7b88d0b7f093db64f6231fcf3f86755487e6648d52ef0805119094ccf6f1bfde"
+    },
+    {
+      "case": "witness-reconciled",
+      "kind": "witness",
+      "mutation": null,
+      "expected_invariant_violation": "NoReconciledWitness",
+      "passed": true,
+      "states": {
+        "generated": 8299,
+        "distinct": 2267,
+        "queued": 792
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "9e5dff38c20830d734c2e91a2d93310de90b81fc2ecf9a155b733030182cdc78"
+    },
+    {
+      "case": "witness-crash",
+      "kind": "witness",
+      "mutation": null,
+      "expected_invariant_violation": "NoCrashWitness",
+      "passed": true,
+      "states": {
+        "generated": 111,
+        "distinct": 69,
+        "queued": 36
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "84f5a21c8cf69f1d877d7e03f40f6553769d3c7bb903b5e4f7bb618d0784cf44"
+    },
+    {
+      "case": "witness-terminal-before-ack",
+      "kind": "witness",
+      "mutation": null,
+      "expected_invariant_violation": "NoTerminalBeforeAckWitness",
+      "passed": true,
+      "states": {
+        "generated": 499,
+        "distinct": 247,
+        "queued": 119
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "f089f6ae6179b87c9eadb456cdba56939c78e682fc52d61862c4b54a278696d6"
+    }
+  ]
+}

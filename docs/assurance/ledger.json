@@ -369,52 +369,10 @@
       ]
     },
     {
-      "id": "E-VAULT-CURRENT",
-      "kind": "verification_receipt",
-      "revision": "source_sha256 map in receipt",
-      "scope": "Finite custody and publication model; 11 safety/control/witness configurations.",
-      "bounds": "Two publishers/one reader/one prune in custody; one publisher/one reader/two prune cycles/one restart in publication; 256 MiB JVM, 45 seconds per case, 32 MiB logs.",
-      "exclusions": [
-        "No production refinement",
-        "No power-loss or network filesystem theorem",
-        "No fairness or unbounded actor theorem"
-      ],
-      "references": [
-        {
-          "path": "verify/vault/README.md"
-        }
-      ],
-      "receipt": {
-        "path": "docs/assurance/receipts/2026-09-23-vault.json",
-        "sha256": "1b4ad4b49ace20be2265a7270214bbc033b764215ff964aee3c3269a7ae88bb7"
-      }
-    },
-    {
-      "id": "E-WATCH-CURRENT",
-      "kind": "verification_receipt",
-      "revision": "source_sha256 map in receipt",
-      "scope": "Finite native dispatch model; 13 safety/control/witness configurations.",
-      "bounds": "Two watchers, one target, two operations, four records per operation, one generation change; no fairness; 256 MiB JVM, 45 seconds per case, 32 MiB logs.",
-      "exclusions": [
-        "No provider-attested operation association",
-        "No production/filesystem refinement",
-        "No eventual progress guarantee"
-      ],
-      "references": [
-        {
-          "path": "verify/watch/README.md"
-        }
-      ],
-      "receipt": {
-        "path": "docs/assurance/receipts/2026-09-23-watch.json",
-        "sha256": "f1039fa3600b554a8c863d24168a27c69e8703ce538c86b1e6f9249a38fe83ba"
-      }
-    },
-    {
       "id": "E-CORE-CURRENT",
       "kind": "verification_receipt",
       "revision": "source_sha256 map in receipt",
-      "scope": "Selected production Rust admission, arithmetic and usage kernels under Kani.",
+      "scope": "Selected production Rust admission, arithmetic, usage and evidence-agreement kernels under Kani.",
       "bounds": "Full scalar numeric domains; index lengths 0/1/2/4 and four-edit sequence; production limits unchanged.",
       "exclusions": [
         "No parsing/OS/allocation theorem",
@@ -427,8 +385,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-23-core.json",
-        "sha256": "b61f3de49754b4970bbf7ecfd06b4e34e5acdc5be46e36b19370f9824e0d5c4f"
+        "path": "docs/assurance/receipts/2026-09-24-core.json",
+        "sha256": "6b753fccec712805d7a74edef3ffce76798b86e2f6fbcac53571683e8824471f"
       }
     },
     {
@@ -448,8 +406,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-23-transcript.json",
-        "sha256": "730a72688d827ee8b07465cf9407ec8deba46db0442414dda1b26e918ccb4495"
+        "path": "docs/assurance/receipts/2026-09-24-transcript.json",
+        "sha256": "695a7dc8ac3d773c139bbd7ca3042df99dce0e30a3048a4791d898629ea7c0a4"
       }
     },
     {
@@ -469,8 +427,50 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-23-stress.json",
-        "sha256": "e509dfdc20128b6c6b6ed5b6b29916f3470746d920c8561d15618a6c5249f87b"
+        "path": "docs/assurance/receipts/2026-09-24-stress.json",
+        "sha256": "524141bc3b01137b70c28845215f158c3041e1919bc6353d014368042600b192"
+      }
+    },
+    {
+      "id": "E-WATCH-CURRENT",
+      "kind": "verification_receipt",
+      "revision": "source_sha256 map in receipt",
+      "scope": "Finite native dispatch model; 13 safety/control/witness configurations.",
+      "bounds": "Two watchers, one target, two operations, four records per operation, one generation change; no fairness; 256 MiB JVM, 45 seconds per case, 32 MiB logs.",
+      "exclusions": [
+        "No provider-attested operation association",
+        "No production/filesystem refinement",
+        "No eventual progress guarantee"
+      ],
+      "references": [
+        {
+          "path": "verify/watch/README.md"
+        }
+      ],
+      "receipt": {
+        "path": "docs/assurance/receipts/2026-09-24-watch.json",
+        "sha256": "263e54a8e4305494f40c33160be933f25b5370b06c2e5fb1e52957be2253248f"
+      }
+    },
+    {
+      "id": "E-VAULT-CURRENT",
+      "kind": "verification_receipt",
+      "revision": "source_sha256 map in receipt",
+      "scope": "Finite custody and publication model; 11 safety/control/witness configurations.",
+      "bounds": "Two publishers/one reader/one prune in custody; one publisher/one reader/two prune cycles/one restart in publication; 256 MiB JVM, 45 seconds per case, 32 MiB logs.",
+      "exclusions": [
+        "No production refinement",
+        "No power-loss or network filesystem theorem",
+        "No fairness or unbounded actor theorem"
+      ],
+      "references": [
+        {
+          "path": "verify/vault/README.md"
+        }
+      ],
+      "receipt": {
+        "path": "docs/assurance/receipts/2026-09-24-vault.json",
+        "sha256": "4a49b6d2bdd2792ef897ebbea53526f584f4e3ecefbed100dd4dbdce1ad73e02"
       }
     }
   ],
