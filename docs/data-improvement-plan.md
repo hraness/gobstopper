@@ -173,11 +173,12 @@ monitor passes establish a short observation window, not sustained reliability.
 
 ## D7: Discovery and monitor overhead
 
-- **Status:** Planned
+- **Status:** Cache validity and monitor deadlines implemented; Devin read
+  cost deferred; post-install observation window pending
 - **Depends on:** D6 observation record
 - **Objective:** keep watcher passes and monitor commands inside their budgets on
-  a busy host without weakening bounded reads, custody or the shared deadline
-  contract by an ad hoc skip.
+  a busy host without weakening bounded reads, custody or the deadline contract
+  by an ad hoc skip.
 - **Scope:** adapter discovery cache validity, Devin per-pass read cost, monitor
   command deadlines, and the launch job's monitor allowlist.
 - **Out of scope:** raising deadlines to admit slow passes, widening discovery
@@ -296,3 +297,22 @@ monitor passes establish a short observation window, not sustained reliability.
   of a 17 GB store dominate the stack samples. D7 records the follow-ups; the
   stale 14-session monitor allowlist and the 26.4 GB Devin write-ahead log are
   owner items. No product code changed for these findings.
+- 2026-09-24: D7 implemented in part. An identified discovery-cache entry
+  (length, mtime, device, inode, ctime) now stays valid until its fingerprint
+  changes, the same evidence the persisted watch `settled` map relies on;
+  entries without identity fields keep the 60-second bound, and the 4,096-entry
+  bound still drops the whole cache once a growing window exceeds it. The
+  monitor gives report and dry-run watch separate 45-second budgets, so a pass
+  can last about 90 seconds and the exclusive lock rejects an overlapping
+  supervisor invocation. Correction to the observation record: the monitor's
+  commands never rescanned the seven-day corpus, because `--active-only` bounds
+  their discovery to 180 seconds; the sampled dry-run cost was the full export
+  of the one active Devin session for its plan preview, which dry-run keeps by
+  design. The Devin per-session scan cache is deferred: row counts and
+  `last_activity_at` cannot show an in-place row update, so skipping unchanged
+  rows is unsound without provider write semantics. Two read-only looks at the
+  Devin write-ahead index (20:31 and 20:34 UTC) showed 1,228 and then 1,740
+  live frames, so the log had restarted since the window's 456,032-frame
+  reading; its 26.4 GB on-disk size is unreclaimed space rather than live
+  frames, and reclaiming it stays a Devin-side item. Fresh observation after
+  the next guarded install remains pending.
