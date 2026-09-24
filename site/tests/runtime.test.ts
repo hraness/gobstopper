@@ -151,4 +151,39 @@ describe("built Gobstopper site", () => {
       await stopBuiltSite(server);
     }
   }, 20_000);
+  test("serves the blog, its posts, the Atom feed, and indexable sitemap entries", async () => {
+    const server = await startBuiltSite();
+    try {
+      const canonical = (html: string): string => html.replaceAll(/https:\/\/[a-z0-9-]+\.vercel\.app/gu, "https://gobstopper.sh");
+      const index = await fetch(`${server.origin}/blog`, { redirect: "manual" });
+      expect(index.status).toBe(200);
+      const indexHtml = canonical(await index.text());
+      expect(indexHtml).toContain('<link rel="canonical" href="https://gobstopper.sh/blog"');
+      expect(indexHtml).toContain('"@type":"Blog"');
+      for (const slug of ["introducing-gobstopper", "proofs-for-the-admission-math", "vault-models-that-fail-on-purpose"]) {
+        const response = await fetch(`${server.origin}/blog/${slug}`, { redirect: "manual" });
+        expect(response.status).toBe(200);
+        const html = canonical(await response.text());
+        expect(html).toContain(`<link rel="canonical" href="https://gobstopper.sh/blog/${slug}"`);
+        expect(html).toContain('"@type":"BlogPosting"');
+        expect(html).toContain("Drafted with AI from the source code and reviewed by Claude Opus 5.5 (claude-opus-5-5) editorial review.");
+        expect(html).toMatch(/<meta\s+property="og:type"\s+content="article"/u);
+        expect(html).not.toMatch(/<meta\s+name="robots"\s+content="noindex/u);
+        const card = await fetch(`${server.origin}/blog/${slug}/opengraph-image`, { redirect: "manual" });
+        expect(card.status).toBe(200);
+        expect(card.headers.get("content-type")).toContain("image/png");
+      }
+      const missing = await fetch(`${server.origin}/blog/not-a-post`, { redirect: "manual" });
+      expect(missing.status).toBe(404);
+      const feed = await fetch(`${server.origin}/blog/feed.xml`, { redirect: "manual" });
+      expect(feed.status).toBe(200);
+      expect(feed.headers.get("content-type")).toContain("application/atom+xml");
+      expect(await feed.text()).toContain("<id>https://gobstopper.sh/blog/introducing-gobstopper</id>");
+      const sitemap = await (await fetch(`${server.origin}/sitemap.xml`, { redirect: "manual" })).text();
+      expect(sitemap).toContain("<loc>https://gobstopper.sh/blog/introducing-gobstopper</loc>");
+      expect(sitemap).toContain("<lastmod>2026-09-24T00:00:00.000Z</lastmod>");
+    } finally {
+      await stopBuiltSite(server);
+    }
+  }, 20_000);
 });

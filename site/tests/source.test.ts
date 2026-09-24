@@ -64,7 +64,7 @@ describe("Gobstopper site source contract", () => {
       read("app/readme.generated.ts"),
     ]);
     expect(packageJson).toContain('"@hraness/ui": "github:hraness/ui#v0.5.18"');
-    expect(packageJson).toContain('"@hraness/design-kit": "github:hraness/design-kit#v0.16.3"');
+    expect(packageJson).toContain('"@hraness/design-kit": "github:hraness/design-kit#v0.17.0"');
     expect(chrome).toContain('import { AskAiAboutThis } from "@hraness/ui"');
     expect(chrome).toContain('url={absoluteUrl(path)}');
     expect(generated).toContain('export const readmeTitle = "gobstopper";');
@@ -80,13 +80,13 @@ describe("Gobstopper site source contract", () => {
   });
 
   test("keeps the sitemap and robots on the canonical origin", async () => {
-    const [sitemap, robots] = await Promise.all([read("public/sitemap.xml"), read("public/robots.txt")]);
-    expect(sitemap).toContain("<loc>https://gobstopper.sh/</loc>");
-    expect(sitemap).toContain("<loc>https://gobstopper.sh/docs</loc>");
-    expect(sitemap).toContain("<loc>https://gobstopper.sh/methodology</loc>");
-    expect(sitemap).toContain("<loc>https://gobstopper.sh/benchmarks</loc>");
-    expect(sitemap).toContain("<loc>https://gobstopper.sh/compare/cliffcompaction</loc>");
-    expect(robots).toContain("Sitemap: https://gobstopper.sh/sitemap.xml");
+    const [{ default: sitemap }, { default: robots }] = await Promise.all([import("../app/sitemap"), import("../app/robots")]);
+    const urls = sitemap().map((entry) => entry.url);
+    for (const path of ["", "/docs", "/methodology", "/benchmarks", "/compare/cliffcompaction", "/blog"]) {
+      expect(urls).toContain(`https://gobstopper.sh${path === "" ? "/" : path}`);
+    }
+    expect(urls.every((url) => url.startsWith("https://gobstopper.sh/"))).toBe(true);
+    expect(robots().sitemap).toBe("https://gobstopper.sh/sitemap.xml");
   });
 
   test("keeps social previews and the agent map on the canonical origin", async () => {

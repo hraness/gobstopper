@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import Home from "../app/page";
 import Docs from "../app/docs/page";
+import BlogIndex from "../app/blog/page";
 import { publishedRelease } from "../app/publication";
 import { readmeLead } from "../app/readme.generated";
 import RootLayout from "../app/layout";
@@ -21,7 +22,7 @@ function countOccurrences(haystack: string, needle: string): number {
 }
 
 test("every public route has one optional support footer without product signup", () => {
-  for (const Page of [Home, Docs]) {
+  for (const Page of [Home, Docs, BlogIndex]) {
     const html = renderToStaticMarkup(<RootLayout><Page /></RootLayout>);
     // The shared support footer appears once; a product marketing footer may also render.
     expect(countOccurrences(html, SUPPORT_URL)).toBe(1);
@@ -86,7 +87,7 @@ test("scopes the editorial preset to the homepage header and real command exampl
 
 
 test("the header keeps a named home link and exact-artwork foil fallback", () => {
-  for (const Page of [Home, Docs]) {
+  for (const Page of [Home, Docs, BlogIndex]) {
     const html = renderToStaticMarkup(<Page />);
     const homeLinks: string[] = [];
     const marks: string[] = [];

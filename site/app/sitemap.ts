@@ -1,6 +1,8 @@
 import type { MetadataRoute } from "next";
+import { createSitemap } from "@hraness/web-discovery";
 
-import { absoluteUrl } from "./_lib/site";
+import { absoluteUrl, SITE_ORIGIN } from "./_lib/site";
+import { blogSitemapPaths } from "./blog/discovery";
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const now = new Date();
@@ -35,5 +37,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "monthly",
       priority: 0.6,
     },
+    // Only posts whose review record admits them for indexing.
+    ...createSitemap(SITE_ORIGIN as `https://${string}`, blogSitemapPaths()),
   ];
 }
