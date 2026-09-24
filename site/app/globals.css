@@ -12,6 +12,8 @@
 @import "@hraness/site-footer/styles.css";
 
 :root {
+  --hraness-site-accent: var(--primary);
+  --hraness-site-accent-ink: var(--primary-foreground);
   --inverse-background: #14202a;
   --gobstopper-code-foreground: #eef2ea;
   --hraness-marketing-display-font: var(--font-text);
@@ -46,7 +48,7 @@ pre {
 }
 
 a:focus-visible {
-  outline: 2px solid var(--hraness-site-accent);
+  outline: 2px solid var(--focus);
   outline-offset: 3px;
 }
 
