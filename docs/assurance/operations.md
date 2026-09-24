@@ -122,3 +122,12 @@ abstract writes; runtime process-death tests do not establish power-loss behavio
 for every filesystem. See the [assurance ledger](ledger.json),
 [vault models](../../verify/vault/README.md) and
 [native dispatch model](../../verify/watch/README.md) for exact scopes.
+
+On Unix, a duplicated or fork-inherited descriptor can retain the same lock
+after another descriptor closes. Close-on-exec prevents inheritance past a
+successful exec; it does not remove the interval between fork and exec. Accounting
+releases its read locks explicitly at the end of each scan. Other close-based
+custody ends when the last associated descriptor closes, which may occur after
+the original owner exits. Extra retention can delay another cooperating process;
+the safety models do not establish eventual lock acquisition or crash recovery
+for arbitrary inherited descriptors.

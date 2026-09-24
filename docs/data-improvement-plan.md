@@ -236,3 +236,19 @@ monitor passes establish a short observation window, not sustained reliability.
   was readmitted against the exact inventory. The new `2026-09-24-stress-r2`
   receipt preserves the earlier Linux record as history. Assurance inventory and
   its negative controls pass; final Linux CI remains a separate required gate.
+- 2026-09-24: The next Linux run passed bounded stress and all formal gates,
+  but parallel quality tests found accounting custody still held after a scan.
+  Closing a file alone can retain its lock through a duplicated or fork-inherited
+  descriptor. A focused repair adds explicit release for accounting's root and
+  index custody, with a deterministic duplicate-descriptor regression. The exact
+  concurrent child in the failed run was not observed. Final source review,
+  aggregate checks and affected Lean/stress evidence must be refreshed.
+- 2026-09-24: The accounting repair passed independent source review, the full
+  adapter library (158/158), and the new 13-test accounting slice. Fresh pinned
+  Lean correspondence and the bounded stress run passed against the repaired
+  source; stress now admits 159 exact tests and completes 159/159 locally. The
+  converged macOS workspace aggregate reached format, Clippy and the existing
+  workspace tests but its sequence test exceeded its 90-second internal bound
+  at 93–103 seconds on this host; the same exact sequence passed in the fresh
+  bounded run in 38 seconds. Linux candidate CI remains the authoritative
+  aggregate gate.

@@ -390,48 +390,6 @@
       }
     },
     {
-      "id": "E-TRANSCRIPT-CURRENT",
-      "kind": "verification_receipt",
-      "revision": "source_sha256 map in receipt",
-      "scope": "Unbounded Lean structural list laws plus finite actual Rust dialect correspondence.",
-      "bounds": "27 theorems, 20 synthetic cases, 23 steps per provider; kernel replay and both exact intended mutants.",
-      "exclusions": [
-        "No universal Rust refinement",
-        "No branching/unknown-wire dialect theorem",
-        "No semantic equivalence of lossy output"
-      ],
-      "references": [
-        {
-          "path": "verify/transcript/README.md"
-        }
-      ],
-      "receipt": {
-        "path": "docs/assurance/receipts/2026-09-24-transcript.json",
-        "sha256": "695a7dc8ac3d773c139bbd7ca3042df99dce0e30a3048a4791d898629ea7c0a4"
-      }
-    },
-    {
-      "id": "E-STRESS-CURRENT",
-      "kind": "verification_receipt",
-      "revision": "source_sha256 map in receipt",
-      "scope": "Bounded synthetic operation, process and fault suites.",
-      "bounds": "See retained exact suite inventory and receipt bounds; fixed sequence seed and finite capacities.",
-      "exclusions": [
-        "No physical power-loss or real full-volume qualification",
-        "No whole-process-tree RSS theorem",
-        "No live provider acceptance"
-      ],
-      "references": [
-        {
-          "path": "verify/stress/README.md"
-        }
-      ],
-      "receipt": {
-        "path": "docs/assurance/receipts/2026-09-24-stress-r2.json",
-        "sha256": "9463ced985f69200b610833aa8623c748bfd08201eefecc73adf4d2d89ce0ee8"
-      }
-    },
-    {
       "id": "E-WATCH-CURRENT",
       "kind": "verification_receipt",
       "revision": "source_sha256 map in receipt",
@@ -471,6 +429,48 @@
       "receipt": {
         "path": "docs/assurance/receipts/2026-09-24-vault.json",
         "sha256": "4a49b6d2bdd2792ef897ebbea53526f584f4e3ecefbed100dd4dbdce1ad73e02"
+      }
+    },
+    {
+      "id": "E-TRANSCRIPT-CURRENT",
+      "kind": "verification_receipt",
+      "revision": "source_sha256 map in receipt",
+      "scope": "Unbounded Lean structural list laws plus finite actual Rust dialect correspondence.",
+      "bounds": "27 theorems, 20 synthetic cases, 23 steps per provider; kernel replay and both exact intended mutants.",
+      "exclusions": [
+        "No universal Rust refinement",
+        "No branching/unknown-wire dialect theorem",
+        "No semantic equivalence of lossy output"
+      ],
+      "references": [
+        {
+          "path": "verify/transcript/README.md"
+        }
+      ],
+      "receipt": {
+        "path": "docs/assurance/receipts/2026-09-24-transcript-r2.json",
+        "sha256": "6190496599a1ba3f4428ebd4da4c18fea05887fcd94abc40b71efe0c67bddae8"
+      }
+    },
+    {
+      "id": "E-STRESS-CURRENT",
+      "kind": "verification_receipt",
+      "revision": "source_sha256 map in receipt",
+      "scope": "Bounded synthetic operation, process and fault suites.",
+      "bounds": "See retained exact suite inventory and receipt bounds; fixed sequence seed and finite capacities.",
+      "exclusions": [
+        "No physical power-loss or real full-volume qualification",
+        "No whole-process-tree RSS theorem",
+        "No live provider acceptance"
+      ],
+      "references": [
+        {
+          "path": "verify/stress/README.md"
+        }
+      ],
+      "receipt": {
+        "path": "docs/assurance/receipts/2026-09-24-stress-r3.json",
+        "sha256": "313211a54b441fbd1b6323a8750dedfd77c827d24ca79ee645bf38e3adc59ce2"
       }
     }
   ],

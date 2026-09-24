@@ -336,60 +336,6 @@
       "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."
     },
     {
-      "id": "CLAIM-TRANSCRIPT",
-      "owner": "integration owner",
-      "status": "bounded_check",
-      "assertion": "Unbounded Lean structural list laws plus finite actual Rust dialect correspondence.",
-      "bounds": "27 theorems, 20 synthetic cases, 23 steps per provider; kernel replay and both exact intended mutants.",
-      "public_sources": [
-        {
-          "path": "verify/transcript/README.md"
-        }
-      ],
-      "evidence": [
-        "E-TRANSCRIPT-CURRENT"
-      ],
-      "assumptions": [
-        "A-RECEIPT",
-        "A-OS",
-        "A-MODEL"
-      ],
-      "exclusions": [
-        "No universal Rust refinement",
-        "No branching/unknown-wire dialect theorem",
-        "No semantic equivalence of lossy output"
-      ],
-      "next_gate": "C15",
-      "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."
-    },
-    {
-      "id": "CLAIM-STRESS",
-      "owner": "integration owner",
-      "status": "bounded_check",
-      "assertion": "Bounded synthetic operation, process and fault suites.",
-      "bounds": "See retained exact suite inventory and receipt bounds; fixed sequence seed and finite capacities.",
-      "public_sources": [
-        {
-          "path": "verify/stress/README.md"
-        }
-      ],
-      "evidence": [
-        "E-STRESS-CURRENT"
-      ],
-      "assumptions": [
-        "A-RECEIPT",
-        "A-OS",
-        "A-MODEL"
-      ],
-      "exclusions": [
-        "No physical power-loss or real full-volume qualification",
-        "No whole-process-tree RSS theorem",
-        "No live provider acceptance"
-      ],
-      "next_gate": "C15",
-      "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."
-    },
-    {
       "id": "CLAIM-WATCH",
       "owner": "integration owner",
       "status": "bounded_check",
@@ -439,6 +385,60 @@
         "No production refinement",
         "No power-loss or network filesystem theorem",
         "No fairness or unbounded actor theorem"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."
+    },
+    {
+      "id": "CLAIM-TRANSCRIPT",
+      "owner": "integration owner",
+      "status": "bounded_check",
+      "assertion": "Unbounded Lean structural list laws plus finite actual Rust dialect correspondence.",
+      "bounds": "27 theorems, 20 synthetic cases, 23 steps per provider; kernel replay and both exact intended mutants.",
+      "public_sources": [
+        {
+          "path": "verify/transcript/README.md"
+        }
+      ],
+      "evidence": [
+        "E-TRANSCRIPT-CURRENT"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS",
+        "A-MODEL"
+      ],
+      "exclusions": [
+        "No universal Rust refinement",
+        "No branching/unknown-wire dialect theorem",
+        "No semantic equivalence of lossy output"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."
+    },
+    {
+      "id": "CLAIM-STRESS",
+      "owner": "integration owner",
+      "status": "bounded_check",
+      "assertion": "Bounded synthetic operation, process and fault suites.",
+      "bounds": "See retained exact suite inventory and receipt bounds; fixed sequence seed and finite capacities.",
+      "public_sources": [
+        {
+          "path": "verify/stress/README.md"
+        }
+      ],
+      "evidence": [
+        "E-STRESS-CURRENT"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS",
+        "A-MODEL"
+      ],
+      "exclusions": [
+        "No physical power-loss or real full-volume qualification",
+        "No whole-process-tree RSS theorem",
+        "No live provider acceptance"
       ],
       "next_gate": "C15",
       "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."

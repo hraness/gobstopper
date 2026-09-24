@@ -437,6 +437,27 @@ mod unix {
         }
     }
 
+    struct SharedLock {
+        file: File,
+    }
+
+    impl SharedLock {
+        fn try_acquire(file: File) -> io::Result<Self> {
+            fs2::FileExt::try_lock_shared(&file)?;
+            Ok(Self { file })
+        }
+    }
+
+    impl Drop for SharedLock {
+        fn drop(&mut self) {
+            // The scanner owns this lock's lifetime; it never delegates custody.
+            // Closing alone can retain flock custody through a duplicated open
+            // file description, including a concurrent child's fork/exec window.
+            // Explicit unlock ends custody on every exit before File closes.
+            let _ = fs2::FileExt::unlock(&self.file);
+        }
+    }
+
     fn busy(error: &io::Error) -> bool {
         error.kind() == io::ErrorKind::WouldBlock || error.raw_os_error() == Some(libc::EWOULDBLOCK)
     }
@@ -662,14 +683,14 @@ mod unix {
     }
 
     pub(super) fn scan(root_path: &Path, start: Instant, report: &mut VaultAccounting) {
-        scan_with_hook(root_path, start, report, |_| {});
+        scan_with_hook(root_path, start, report, |_, _, _| {});
     }
 
     pub(super) fn scan_with_hook(
         root_path: &Path,
         mut start: Instant,
         report: &mut VaultAccounting,
-        after_scan: impl FnOnce(&mut Instant),
+        after_scan: impl FnOnce(&mut Instant, &File, Option<&File>),
     ) {
         if !report.within_time(start) {
             return;
@@ -690,26 +711,29 @@ mod unix {
                 return;
             }
         };
-        if let Err(error) = fs2::FileExt::try_lock_shared(&root) {
-            report.status = if busy(&error) {
-                AccountingStatus::Busy
-            } else {
-                AccountingStatus::Unavailable
-            };
-            report.issue(if busy(&error) {
-                AccountingIssue::CustodyBusy
-            } else {
-                AccountingIssue::IoFailure
-            });
-            return;
-        }
-        let Ok(root_before) = node_file(&root) else {
+        let root = match SharedLock::try_acquire(root) {
+            Ok(lock) => lock,
+            Err(error) => {
+                report.status = if busy(&error) {
+                    AccountingStatus::Busy
+                } else {
+                    AccountingStatus::Unavailable
+                };
+                report.issue(if busy(&error) {
+                    AccountingIssue::CustodyBusy
+                } else {
+                    AccountingIssue::IoFailure
+                });
+                return;
+            }
+        };
+        let Ok(root_before) = node_file(&root.file) else {
             report.status = AccountingStatus::Unavailable;
             report.issue(AccountingIssue::IoFailure);
             return;
         };
         let index_name = CString::new("index.jsonl").unwrap();
-        let index_before = match node_at(&root, &index_name) {
+        let index_before = match node_at(&root.file, &index_name) {
             Ok(node) => node,
             Err(_) => {
                 report.status = AccountingStatus::Unavailable;
@@ -730,7 +754,7 @@ mod unix {
                 });
                 return;
             }
-            let file = match open_at(&root, &index_name, false) {
+            let file = match open_at(&root.file, &index_name, false) {
                 Ok(file) if node_file(&file).ok() == Some(before) => file,
                 _ => {
                     report.issue(AccountingIssue::MetadataChanged);
@@ -738,20 +762,22 @@ mod unix {
                     return;
                 }
             };
-            if let Err(error) = fs2::FileExt::try_lock_shared(&file) {
-                report.status = if busy(&error) {
-                    AccountingStatus::Busy
-                } else {
-                    AccountingStatus::Unavailable
-                };
-                report.issue(if busy(&error) {
-                    AccountingIssue::IndexBusy
-                } else {
-                    AccountingIssue::IoFailure
-                });
-                return;
-            }
-            index_file = Some(file);
+            index_file = Some(match SharedLock::try_acquire(file) {
+                Ok(lock) => lock,
+                Err(error) => {
+                    report.status = if busy(&error) {
+                        AccountingStatus::Busy
+                    } else {
+                        AccountingStatus::Unavailable
+                    };
+                    report.issue(if busy(&error) {
+                        AccountingIssue::IndexBusy
+                    } else {
+                        AccountingIssue::IoFailure
+                    });
+                    return;
+                }
+            });
         } else {
             report.index.status = ScanStatus::Missing;
             report.index.observed_file_bytes = Some(0);
@@ -759,7 +785,7 @@ mod unix {
         }
         let mut layout = Vec::new();
         for kind in DirectoryKind::ALL {
-            match node_at(&root, &directory_name(kind)) {
+            match node_at(&root.file, &directory_name(kind)) {
                 Ok(node) => layout.push((kind, node)),
                 Err(_) => {
                     report.directories.get_mut(&kind).unwrap().status = ScanStatus::Unavailable;
@@ -767,23 +793,32 @@ mod unix {
                 }
             }
         }
-        if let (Some(file), Some(before)) = (&mut index_file, index_before) {
-            scan_index(file, before, start, report);
+        if let (Some(lock), Some(before)) = (&mut index_file, index_before) {
+            scan_index(&mut lock.file, before, start, report);
         }
         for (kind, before) in &layout {
-            scan_directory(&root, *kind, *before, start, report);
+            scan_directory(&root.file, *kind, *before, start, report);
         }
         // Private race/deadline test seam; production does not alter the clock.
-        after_scan(&mut start);
+        after_scan(
+            &mut start,
+            &root.file,
+            index_file.as_ref().map(|lock| &lock.file),
+        );
         // Check known names again through retained directory descriptors. Root
         // path replacement is separately detected by opening its components.
-        let stable = node_file(&root).ok() == Some(root_before)
+        let stable = node_file(&root.file).ok() == Some(root_before)
             && open_root(root_path).and_then(|file| node_file(&file)).ok() == Some(root_before)
-            && node_at(&root, &index_name).ok() == Some(index_before)
-            && index_file.as_ref().map(node_file).transpose().ok() == Some(index_before)
-            && layout
-                .iter()
-                .all(|(kind, before)| node_at(&root, &directory_name(*kind)).ok() == Some(*before));
+            && node_at(&root.file, &index_name).ok() == Some(index_before)
+            && index_file
+                .as_ref()
+                .map(|lock| node_file(&lock.file))
+                .transpose()
+                .ok()
+                == Some(index_before)
+            && layout.iter().all(|(kind, before)| {
+                node_at(&root.file, &directory_name(*kind)).ok() == Some(*before)
+            });
         report.observed_directory_and_index_metadata_stable = Some(stable && layout.len() == 6);
         if !stable {
             report.issue(AccountingIssue::MetadataChanged);
@@ -874,7 +909,9 @@ mod tests {
         fs2::FileExt::try_lock_exclusive(&root_lock).unwrap();
         if let Ok(index_lock) = File::open(root.join("index.jsonl")) {
             fs2::FileExt::try_lock_exclusive(&index_lock).unwrap();
+            fs2::FileExt::unlock(&index_lock).unwrap();
         }
+        fs2::FileExt::unlock(&root_lock).unwrap();
     }
 
     #[test]
@@ -1060,6 +1097,7 @@ mod tests {
             report
         });
         let completed_without_release = receive.recv_timeout(Duration::from_secs(2)).is_ok();
+        fs2::FileExt::unlock(&lock).unwrap();
         drop(lock);
         let report = worker.join().unwrap();
         assert!(
@@ -1185,7 +1223,7 @@ mod tests {
         assert_locks_released(&root);
 
         let mut report = VaultAccounting::new(AccountingLimits::default());
-        unix::scan_with_hook(&root, Instant::now(), &mut report, |start| {
+        unix::scan_with_hook(&root, Instant::now(), &mut report, |start, _, _| {
             // Deterministically model time spent after traversal, without a
             // scheduler-dependent sleep or changing any filesystem contents.
             *start -= Duration::from_millis(AccountingLimits::default().max_elapsed_ms + 1);
@@ -1203,11 +1241,12 @@ mod tests {
         fs::create_dir(root.join("chunks")).unwrap();
         index(&root, &[]);
         let mut report = VaultAccounting::new(AccountingLimits::default());
-        unix::scan_with_hook(&root, Instant::now(), &mut report, |_| {
+        unix::scan_with_hook(&root, Instant::now(), &mut report, |_, _, _| {
             let writer = File::open(&root).unwrap();
             // A publisher can share directory custody while this reader runs.
             fs2::FileExt::try_lock_shared(&writer).unwrap();
             fs::write(root.join("chunks").join(format!("{:064x}", 1)), b"new").unwrap();
+            fs2::FileExt::unlock(&writer).unwrap();
         });
         assert_eq!(report.status, AccountingStatus::Incomplete);
         assert_eq!(
@@ -1224,7 +1263,7 @@ mod tests {
         let fixture = TestRoot::new();
         let root = fixture.vault();
         let mut report = VaultAccounting::new(AccountingLimits::default());
-        unix::scan_with_hook(&root, Instant::now(), &mut report, |_| {
+        unix::scan_with_hook(&root, Instant::now(), &mut report, |_, _, _| {
             index(&root, &[entry("new", 1, None)]);
         });
         assert_eq!(report.index.status, ScanStatus::Missing);
@@ -1243,7 +1282,7 @@ mod tests {
         let root = fixture.vault();
         index(&root, &[]);
         let mut report = VaultAccounting::new(AccountingLimits::default());
-        unix::scan_with_hook(&root, Instant::now(), &mut report, |_| {
+        unix::scan_with_hook(&root, Instant::now(), &mut report, |_, _, _| {
             let mut writer = fs::OpenOptions::new()
                 .append(true)
                 .open(root.join("index.jsonl"))
@@ -1257,5 +1296,55 @@ mod tests {
             Some(false)
         );
         assert_locks_released(&root);
+    }
+
+    #[test]
+    fn scan_releases_locks_while_duplicated_descriptors_remain_open() {
+        for exceed_budget in [false, true] {
+            let fixture = TestRoot::new();
+            let root = fixture.vault();
+            index(&root, &[]);
+            let mut report = VaultAccounting::new(AccountingLimits::default());
+            let mut duplicates = None;
+            unix::scan_with_hook(
+                &root,
+                Instant::now(),
+                &mut report,
+                |start, root_file, index_file| {
+                    // dup and fork retain the same locked open-file description.
+                    // Cloning models a child awaiting exec without forking this
+                    // multithreaded test process or relying on scheduler timing.
+                    duplicates = Some((
+                        root_file.try_clone().unwrap(),
+                        index_file.unwrap().try_clone().unwrap(),
+                    ));
+                    for path in [&root, &root.join("index.jsonl")] {
+                        let contender = File::open(path).unwrap();
+                        assert_eq!(
+                            fs2::FileExt::try_lock_exclusive(&contender)
+                                .unwrap_err()
+                                .kind(),
+                            std::io::ErrorKind::WouldBlock
+                        );
+                    }
+                    if exceed_budget {
+                        *start -=
+                            Duration::from_millis(AccountingLimits::default().max_elapsed_ms + 1);
+                    }
+                },
+            );
+            assert_eq!(
+                report.status,
+                if exceed_budget {
+                    AccountingStatus::Incomplete
+                } else {
+                    AccountingStatus::Complete
+                }
+            );
+            assert_locks_released(&root);
+            let (root_duplicate, index_duplicate) = duplicates.unwrap();
+            assert!(root_duplicate.metadata().unwrap().is_dir());
+            assert!(index_duplicate.metadata().unwrap().is_file());
+        }
     }
 }

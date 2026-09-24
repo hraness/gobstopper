@@ -11,7 +11,7 @@ python3 verify/stress/check.py --output "$NEW_EVIDENCE_DIR"
 ```
 
 Cargo dependencies must already be fetched; execution is offline. Supported
-platforms are Linux and macOS. The exact commands and 158 expected test names are
+platforms are Linux and macOS. The exact commands and 159 expected test names are
 in `suites.json`. Tests run serially and Cargo uses two build jobs. The gate
 rejects missing, duplicated, ignored, failed or unexpected test results. A zero
 process exit with an empty or filtered-away suite is not evidence. The receipt
@@ -27,7 +27,7 @@ trusted inputs; this is not a hermetic build attestation.
 | --- | ---: | --- |
 | Sequence | 1 | 64 snapshot/copy/pin/prune/recovery steps, alternating timestamps and 16 corruption/repair episodes |
 | Storage | 16 | Publication errors, reused-object durability confirmation, torn writes, corrupt/legacy roots, conflicts, no-clobber recovery, SIGKILL checkpoints and independent reader custody; one test is the private child entry point |
-| Vault metadata | 12 | Nonblocking locks, no-follow paths, index/entry/time limits, non-atomic concurrent changes and explicit missingness |
+| Vault metadata | 13 | Nonblocking locks, release with duplicate descriptors, no-follow paths, index/entry/time limits, non-atomic concurrent changes and explicit missingness |
 | Vault accounting CLI | 2 | Additive stats mode, output privacy, no source creation, missing-root refusal and legacy list compatibility |
 | Native journal | 10 | Prepared/dispatched/terminal persistence faults, refusal before dispatch, identity binding, fabricated reconciliation and unknown/corrupt state |
 | Watch | 28 | Unqualified activation refusal, source/snapshot binding, no-op/unknown state, restart/config changes, two watchers and process death, explicit evidence-only reconciliation |

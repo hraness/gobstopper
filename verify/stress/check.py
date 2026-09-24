@@ -30,7 +30,7 @@ SEED = 0x6a09e667f3bcc909
 SUITES = {
     "sequence": ("gobstopper-adapters", ["--test", "sequence"], 1, 150),
     "storage": ("gobstopper-adapters", ["--lib", "storage_tests::"], 16, 180),
-    "vault-metadata": ("gobstopper-adapters", ["--lib", "vault::accounting::tests::"], 12, 90),
+    "vault-metadata": ("gobstopper-adapters", ["--lib", "vault::accounting::tests::"], 13, 90),
     "vault-accounting-cli": ("gobstopper", ["--test", "vault_accounting"], 2, 90),
     "journal": ("gobstopper", ["--bin", "gobstopper", "native_operations::tests::"], 10, 180),
     "watch": ("gobstopper", ["--test", "watch"], 28, 240),
