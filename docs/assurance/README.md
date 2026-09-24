@@ -4,7 +4,9 @@ This inventory records the current correctness foundation, its assumptions and
 bounded evidence. It does not certify whole-system correctness. The immutable
 baseline is `ffc71480564f0d0077f27e59a04df3174d5335ef`
 ([PR 88](https://github.com/hraness/gobstopper/pull/88)); foundation delivery is
-tracked in [PR 90](https://github.com/hraness/gobstopper/pull/90).
+tracked in [PR 90](https://github.com/hraness/gobstopper/pull/90). The September 24
+measurement and runtime delivery ([PR 94](https://github.com/hraness/gobstopper/pull/94))
+is recorded in [data-delivery-2026-09-24.md](data-delivery-2026-09-24.md).
 
 - [ledger.json](ledger.json): state ownership, assumptions, invariant obligations,
   audit coverage, evidence, schema compatibility and activation gates.
