@@ -37,6 +37,8 @@ A smaller context is not the same as a successful continuation or a lower bill.
 The [published studies](https://gobstopper.sh/benchmarks) report context reduction,
 retention, no-op cases, and limitations separately.
 
+Gobstopper keeps the exact source in a local vault before any compaction changes it, so a compaction is a recorded edit you can recover from rather than a silent loss: the design every Hraness project shares. [The thread through hraness](https://hraness.com/writing/the-thread-through-hraness) follows that design across the projects, and the [ALGAL vision](https://algal.computer/docs/vision/) states the bet behind it.
+
 ## Recoverable history
 
 Before publishing a Claude Code or Codex copy, Gobstopper stores the exact
