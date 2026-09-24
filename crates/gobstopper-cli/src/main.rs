@@ -433,7 +433,7 @@ enum Cmd {
         #[arg(long)]
         delete: bool,
     },
-    /// Pure policy check for integrators (oompa): give the numbers, get
+    /// Pure policy check for integrators: give the numbers, get
     /// the action. Reads no transcript files.
     PolicyCheck {
         #[arg(long)]
