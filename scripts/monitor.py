@@ -814,7 +814,6 @@ def observe(binary, output_dir, sessions, providers=()):
         except BlockingIOError:
             raise MonitorError("already_running") from None
         previous = previous_observation(directory)
-        deadline = time.monotonic() + TIMEOUT_SECONDS
         with tempfile.TemporaryDirectory(prefix=".monitor-config-", dir=output_dir) as config:
             environment = {key: value for key, value in os.environ.items()
                            if not key.startswith("GOBSTOPPER_")}
@@ -822,9 +821,11 @@ def observe(binary, output_dir, sessions, providers=()):
             # Even dry-run can execute configured extensions. Empty config
             # guarantees the deterministic built-in policy and no plugins.
             environment["XDG_CONFIG_HOME"] = config
+            # Each command owns a full budget: a slow report must not leave
+            # the dry-run watch an already-exhausted deadline.
             report_status, stdout, _ = run_command(
                 [str(executable), "report", "--active-only", "--context-only"],
-                environment, deadline)
+                environment, time.monotonic() + TIMEOUT_SECONDS)
             report = {}
             if report_status["error"] is None:
                 try:
@@ -838,7 +839,7 @@ def observe(binary, output_dir, sessions, providers=()):
                     report_status["error"] = "invalid_report"
             watch_status, _, stderr = run_command(
                 [str(executable), "watch", "--dry-run", "--active-only", "--once"],
-                environment, deadline)
+                environment, time.monotonic() + TIMEOUT_SECONDS)
         # watch reports per-session failures on stderr but can still exit 0.
         # Classify only its known diagnostic shapes; never retain their text.
         if watch_status["error"] is None and any(WATCH_FAILURE.match(line) for line in stderr.splitlines()):

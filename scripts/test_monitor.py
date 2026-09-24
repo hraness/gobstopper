@@ -222,7 +222,8 @@ call = {
 with open(os.environ["STUB_CALLS"], "a") as log:
     log.write(json.dumps(call) + "\n")
 if os.environ.get("STUB_PID"):
-    Path(os.environ["STUB_PID"]).write_text(str(os.getpid()))
+    with open(os.environ["STUB_PID"], "a") as pids:
+        pids.write(str(os.getpid()) + "\n")
 if os.environ.get("STUB_SLEEP"):
     time.sleep(float(os.environ["STUB_SLEEP"]))
 if sys.argv[1:] == ["report", "--active-only", "--context-only"]:
@@ -268,19 +269,25 @@ else:
             self.assert_resources(observation[command]["resources"])
         self.assertGreater(observation["report"]["resources"]["user_cpu_us"], 0)
 
-    def test_timeout_child_is_reaped_and_unstarted_watch_has_no_resources(self):
+    def test_each_timed_out_child_is_reaped_under_its_own_deadline(self):
         pid_file = self.root / "timeout.pid"
         with patch.dict(os.environ, {"STUB_SLEEP": "30", "STUB_PID": str(pid_file)}), \
                 patch.object(monitor, "TIMEOUT_SECONDS", 3):
             observation = self.sample()
-        self.assertEqual(observation["report"]["error"], "timeout")
-        self.assert_resources(observation["report"]["resources"])
-        self.assertEqual(observation["watch"]["error"], "timeout")
-        self.assertIsNone(observation["watch"]["resources"])
-        self.assertIsNone(observation["watch"]["exit_code"])
-        self.assertEqual(len(self.calls.read_text().splitlines()), 1)
-        with self.assertRaises(ProcessLookupError):
-            os.kill(int(pid_file.read_text()), 0)
+        for command in ("report", "watch"):
+            self.assertEqual(observation[command]["error"], "timeout")
+            self.assertIsNone(observation[command]["exit_code"])
+            self.assert_resources(observation[command]["resources"])
+        # The report's exhausted budget is not the watch's: watch still
+        # started and ran its own full budget before being reaped.
+        self.assertGreaterEqual(observation["watch"]["duration_ms"], 2500)
+        calls = [json.loads(line)["arguments"][0] for line in self.calls.read_text().splitlines()]
+        self.assertEqual(calls, ["report", "watch"])
+        pids = [int(line) for line in pid_file.read_text().split()]
+        self.assertEqual(len(pids), 2)
+        for pid in pids:
+            with self.assertRaises(ProcessLookupError):
+                os.kill(pid, 0)
 
     def test_resource_read_failure_preserves_result_and_timeout_cleanup(self):
         environment = dict(os.environ, XDG_CONFIG_HOME=str(self.root))
@@ -335,7 +342,9 @@ else:
             first = self.sample()
         self.assertEqual(monitor.TIMEOUT_SECONDS, 45)
         self.assertEqual(len(commands.call_args_list), 2)
-        self.assertEqual(commands.call_args_list[0].args[2], commands.call_args_list[1].args[2])
+        report_deadline, watch_deadline = (call.args[2] for call in commands.call_args_list)
+        self.assertGreater(watch_deadline, report_deadline)
+        self.assertLess(watch_deadline - report_deadline, monitor.TIMEOUT_SECONDS)
         self.assertEqual(first["binary_sha256"], hashlib.sha256(self.binary.read_bytes()).hexdigest())
         self.assertEqual(first["watch"]["plan_count"], 1)
         self.assertEqual(first["sessions"][0]["context_tokens"], 100000)

@@ -233,19 +233,45 @@ pub fn discover(roots: &Roots, max_age_secs: u64) -> Vec<Discovered> {
     )
 }
 
+/// Per-process cache of bounded session metadata and usage scans, keyed
+/// by provider and path. An entry is served again while the file's
+/// fingerprint is unchanged: length, mtime and, on Unix, device, inode
+/// and ctime. Those identity fields are the same evidence the watch
+/// loop's persisted `settled` fingerprints rely on, so an identified
+/// entry has no time bound; an unchanged transcript is not reread every
+/// pass. Without identity fields (no metadata, or a non-Unix host) the
+/// entry expires after [`DiscoveryCache::SAMPLE_TTL_SECS`] seconds.
 #[derive(Default)]
 pub struct DiscoveryCache(std::collections::HashMap<(Provider, PathBuf), CachedSession>);
 struct CachedSession {
     fingerprint: (u64, Option<SystemTime>, u64, u64, i64, i64),
+    /// True when the fingerprint carries device, inode and ctime, so an
+    /// equal fingerprint alone shows the bytes are unchanged.
+    identified: bool,
     sampled: std::time::Instant,
     meta: (Option<String>, Option<PathBuf>),
     usage: UsageSample,
 }
 impl DiscoveryCache {
+    /// Validity bound for entries whose fingerprint lacks identity fields.
+    const SAMPLE_TTL_SECS: u64 = 60;
+    /// Entries kept before the cache is dropped and rebuilt; a corpus
+    /// larger than this bound rescans once per pass.
+    const MAX_ENTRIES: usize = 4096;
+
     fn inspect(
         &mut self,
         provider: Provider,
         path: &Path,
+    ) -> ((Option<String>, Option<PathBuf>), UsageSample) {
+        self.inspect_at(provider, path, std::time::Instant::now())
+    }
+
+    fn inspect_at(
+        &mut self,
+        provider: Provider,
+        path: &Path,
+        now: std::time::Instant,
     ) -> ((Option<String>, Option<PathBuf>), UsageSample) {
         let metadata = fs::metadata(path).ok();
         let mut fingerprint = (
@@ -256,6 +282,7 @@ impl DiscoveryCache {
             0,
             0,
         );
+        let mut identified = false;
         #[cfg(unix)]
         {
             use std::os::unix::fs::MetadataExt;
@@ -264,11 +291,14 @@ impl DiscoveryCache {
                 fingerprint.3 = meta.ino();
                 fingerprint.4 = meta.ctime();
                 fingerprint.5 = meta.ctime_nsec();
+                identified = true;
             }
         }
         let key = (provider, path.to_path_buf());
         if let Some(entry) = self.0.get(&key) {
-            if entry.fingerprint == fingerprint && entry.sampled.elapsed().as_secs() < 60 {
+            let fresh = entry.identified
+                || now.saturating_duration_since(entry.sampled).as_secs() < Self::SAMPLE_TTL_SECS;
+            if entry.fingerprint == fingerprint && fresh {
                 return (entry.meta.clone(), entry.usage);
             }
         }
@@ -279,14 +309,15 @@ impl DiscoveryCache {
             // per-session files, so they bypass the file cache entirely.
             Provider::Devin => ((None, None), UsageSample::default()),
         };
-        if self.0.len() >= 4096 {
+        if self.0.len() >= Self::MAX_ENTRIES {
             self.0.clear();
         }
         self.0.insert(
             key,
             CachedSession {
                 fingerprint,
-                sampled: std::time::Instant::now(),
+                identified,
+                sampled: now,
                 meta: meta.clone(),
                 usage,
             },
@@ -634,5 +665,72 @@ mod tests {
         // file's pre-filter read is bounded session metadata only.
         assert_eq!(cache.0.len(), 1);
         assert!(cache.0.keys().all(|(_, path)| path.ends_with("live.jsonl")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn identified_cache_entries_outlive_the_sample_interval_until_the_file_changes() {
+        use std::io::Write;
+        let fixture = Fixture::new();
+        let path = fixture.0.join("rollout.jsonl");
+        let token_count = concat!(
+            "{\"type\":\"event_msg\",\"payload\":{\"type\":\"token_count\",\"info\":{",
+            "\"last_token_usage\":{\"input_tokens\":100,\"output_tokens\":5},",
+            "\"total_token_usage\":{\"input_tokens\":100,\"cached_input_tokens\":0},",
+            "\"model_context_window\":258400}}}\n"
+        );
+        fs::write(
+            &path,
+            format!(
+                "{{\"type\":\"session_meta\",\"payload\":{{\"id\":\"sess-1\",\"cwd\":\"/work\"}}}}\n{token_count}"
+            ),
+        )
+        .unwrap();
+        let mut cache = DiscoveryCache::default();
+        let now = std::time::Instant::now();
+        let (meta, usage) = cache.inspect_at(Provider::Codex, &path, now);
+        assert_eq!(meta.0.as_deref(), Some("sess-1"));
+        assert_eq!(usage.reported_context(), Some(105));
+        let key = (Provider::Codex, path.clone());
+        let entry = cache.0.get_mut(&key).unwrap();
+        assert!(entry.identified);
+        entry.meta.0 = Some("cached-marker".into());
+        // Hours past the sample interval an unchanged file is served from
+        // the cache: no metadata or usage rescan touches the transcript.
+        let later = now + std::time::Duration::from_secs(3 * 3600);
+        let (meta, cached) = cache.inspect_at(Provider::Codex, &path, later);
+        assert_eq!(meta.0.as_deref(), Some("cached-marker"));
+        assert_eq!(cached, usage);
+        // Any fingerprint difference rescans the file.
+        fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(token_count.as_bytes())
+            .unwrap();
+        let (meta, rescanned) = cache.inspect_at(Provider::Codex, &path, later);
+        assert_eq!(meta.0.as_deref(), Some("sess-1"));
+        assert_eq!(rescanned, usage);
+        assert_eq!(cache.0.len(), 1);
+    }
+
+    #[test]
+    fn unidentified_cache_entries_expire_after_the_sample_interval() {
+        let fixture = Fixture::new();
+        let missing = fixture.0.join("missing.jsonl");
+        let mut cache = DiscoveryCache::default();
+        let now = std::time::Instant::now();
+        let (meta, _) = cache.inspect_at(Provider::Codex, &missing, now);
+        assert_eq!(meta, (None, None));
+        let key = (Provider::Codex, missing.clone());
+        let entry = cache.0.get_mut(&key).unwrap();
+        assert!(!entry.identified);
+        entry.meta.0 = Some("cached-marker".into());
+        let within = now + std::time::Duration::from_secs(DiscoveryCache::SAMPLE_TTL_SECS - 1);
+        let (meta, _) = cache.inspect_at(Provider::Codex, &missing, within);
+        assert_eq!(meta.0.as_deref(), Some("cached-marker"));
+        let expired = now + std::time::Duration::from_secs(DiscoveryCache::SAMPLE_TTL_SECS);
+        let (meta, _) = cache.inspect_at(Provider::Codex, &missing, expired);
+        assert_eq!(meta, (None, None));
     }
 }

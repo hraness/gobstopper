@@ -1,7 +1,7 @@
 {
   "schema": "gobstopper.assurance-receipt.v1",
-  "raw_receipt_sha256": "a763c5af752dbca1dd6c4428599c5d1cda2858f1fca8273d42992a406f539b8e",
-  "observed_at": "2026-09-24T21:08:22.837540+00:00",
+  "raw_receipt_sha256": "5c33d22a34bdbbe9f242230749249070c39f25678c49972b816a97ad0ebc6b23",
+  "observed_at": "2026-09-24T20:38:32.744064+00:00",
   "scope": "Bounded synthetic operation, process and fault suites.",
   "bounds": "See retained exact suite inventory and receipt bounds; fixed sequence seed and finite capacities.",
   "exclusions": [
@@ -19,9 +19,9 @@
     "crates/gobstopper-adapters/src/codex.rs": "c32a693ac0fcee559ba858515c30e0a5a951ad715f8987fc6cf72357898dfa3b",
     "crates/gobstopper-adapters/src/codex_compact.rs": "104ccbdfb90c505118160498b648147d18a1762ab7de113f761d94c1e9b575c2",
     "crates/gobstopper-adapters/src/copy.rs": "a7d02302400ea612951f9ae3d2e7a71f929d56ec989a994dff3f5185a96e7ed6",
-    "crates/gobstopper-adapters/src/detect.rs": "e3c455640b0dfa9c34708cb055a96f21a41a3fec7c0b0209b578f27de8dbc0b3",
+    "crates/gobstopper-adapters/src/detect.rs": "ea73c417186bdffaea84e7b1586148caac0d878b733c114645a89757e0aca2fd",
     "crates/gobstopper-adapters/src/devin.rs": "50e57a914ab2b7cf65886ad302c997b0c8008267ad78ed9e2447f78d39674e12",
-    "crates/gobstopper-adapters/src/eval.rs": "af62b60ac968642d8f8234cc3774e6559b1fb187c076288d9b27037e94faa861",
+    "crates/gobstopper-adapters/src/eval.rs": "3f9d3105874d900ceb75585a4924d1e793a79540d5af0bd3274b798c096baebc",
     "crates/gobstopper-adapters/src/fork.rs": "e9f7ac308a4fa9a64f389aa6791355d67fee4c91121faa8ac6a05b0e540ee7e9",
     "crates/gobstopper-adapters/src/lib.rs": "10e907c4cbc8c5ebd05a6241744565c059f68fe9350fb6e3fb0595220b5eb32f",
     "crates/gobstopper-adapters/src/payload.rs": "46b2ab521ded311618a6b1883afd0d06c445693c1507396821ee5ec30ce767a1",
@@ -51,12 +51,12 @@
     "crates/gobstopper-cli/src/apple.rs": "4d8cfa6d019542b999cb168540364897e6be3d4974c140bfb70f660227938b30",
     "crates/gobstopper-cli/src/apple_digest.rs": "5cf71a29a53b148f7941337735b9a6bc9a32dcecea00f65ca4f8bb4b8a589f40",
     "crates/gobstopper-cli/src/apple_scorer.rs": "e492dded3fd01964fbb7a98ded977c9bc9a8284c01e68a75c1592904a2099268",
-    "crates/gobstopper-cli/src/config.rs": "52d364fcece3284aa8e27a67a7d34c996d31c3ec3f73bee324234524bcaab2bb",
+    "crates/gobstopper-cli/src/config.rs": "bd4a347197bd71c390ae6b84ad5fd151bb697ed0d8529b8e5ab851ade3d4b26a",
     "crates/gobstopper-cli/src/hooks.rs": "53e37275a3b4fb62f6b900d061889c1fac2f957c3abe8147a9a8d6920e1dcfc6",
     "crates/gobstopper-cli/src/jev.rs": "b99ecb1863d1c8e4c6cacf2e6484a69ee11ec18f7c0246ed2071ff3b00179a49",
     "crates/gobstopper-cli/src/llm_scorer.rs": "fe62f99e95c4be92111e033babcc552802d2b91117f198c40bf6fb4cfbd3298d",
     "crates/gobstopper-cli/src/main.rs": "c1f6435f461fb202dbc61fa4d70e42ce4a43d3e2d6f9b0ebe127972c86eae2d7",
-    "crates/gobstopper-cli/src/mcp.rs": "157e96101ef18c85a550e47951accc8c24226a4fc59d635afebbc321792aedf3",
+    "crates/gobstopper-cli/src/mcp.rs": "55b73c3b4f7639cbdb7693d24f871c8b5cfe933e0d22232e45937efc11c79dc6",
     "crates/gobstopper-cli/src/native_operations.rs": "d40688c86159df1123ba2f391406765f0ed3294dcded0d5be5c0ad7269129861",
     "crates/gobstopper-cli/src/report.rs": "6f6a77edd707bd2b878efbcaad2496c5a882512ff59777ced5e3661534652c05",
     "crates/gobstopper-cli/src/secrets.rs": "3fd007250ac0a8a44fd53d94a02083adf5334eafd8e6fa481270e54ca77f6fa7",
@@ -80,37 +80,36 @@
     "crates/gobstopper-core/src/lib.rs": "7a2ed76f6874d539b2ec82bf8912701247ee82a7d45674db0c8971d506572d7a",
     "crates/gobstopper-core/src/model.rs": "1687347980be057af253946555985b85e567d4bdddc8716f5ab27583eceae212",
     "crates/gobstopper-core/src/plan.rs": "fcafb6a44a955bd1880b12194560d29371dde40d0a47f6456b9d4f96cb6c67bd",
-    "crates/gobstopper-core/src/policy.rs": "77fa1d849c9d34e0829e8ed009f88ecd508a0d0c22883931f1d2ae492060fd68",
+    "crates/gobstopper-core/src/policy.rs": "9cf99126dee56ecb78c3ed6f028b439a50f204516626b2f0ef71a2562f230154",
     "crates/gobstopper-core/src/probe.rs": "77b3814fcec225f6dfcd95e917305cbbaf799424498f08a3c8b7c4e15cad3175",
     "crates/gobstopper-core/src/strategy/agentic.rs": "2cdce75031567462a8fcc6df5d0c7551235e1dfb14cd9480138ba38a9af7d9a0",
     "crates/gobstopper-core/src/strategy/auto.rs": "54f9c0334abedeed6c66d70cd4eeb2cbe612a6c090d06aa5e474c749886cb8c2",
     "crates/gobstopper-core/src/strategy/cache_aware.rs": "72a9dfdffca54a21b13c2ffa786c148a179fd47e144b4dc095c0e047baab3392",
     "crates/gobstopper-core/src/strategy/cache_edits.rs": "03ec09f5ad36acdbfdb5ef54583243d2721edc092bc3d7b9709afe2dd664acf6",
-    "crates/gobstopper-core/src/strategy/cliff.rs": "0722c8927071ca35134b937d6613e891a9674a75307ceb405e0cb9db6736be61",
     "crates/gobstopper-core/src/strategy/compacted.rs": "fa57607a7367e8e6ef492ea2ee4cb88178ea069012ba079d12bbb02a2decfb6d",
     "crates/gobstopper-core/src/strategy/dedupe.rs": "51fbe4f6a381e8bc5657f1a24b1570d0a5d5f51a1c5acd2beeabf61fa2bcca7f",
     "crates/gobstopper-core/src/strategy/elide.rs": "a008b66213f7d6f239db83e5ce3bf6965b5b85b00cd6862ec43ec1d036cf9b79",
     "crates/gobstopper-core/src/strategy/micro.rs": "026e582a11b08fb5e779134a4ee8ca7d3065f9cd06c00f19b48bda94a636393e",
     "crates/gobstopper-core/src/strategy/middle.rs": "e03bd8d80ea87d521425f1c8f6af575d545a1ea908a0c2c8635f39070e0aa31d",
-    "crates/gobstopper-core/src/strategy/mod.rs": "7cfe8517c0a1144259f21a1abf94336b8f467410cb4e6e950b9bcf3c06a376b9",
+    "crates/gobstopper-core/src/strategy/mod.rs": "0776b3f60ecb6f066fd0bbf119a2a25d109c3bf85e4685fe3f05ae0c7188109b",
     "crates/gobstopper-core/src/strategy/sawtooth.rs": "57da8d11980c57294cfd6c499bfe85f83d205975c09c3d993a7507f31923d063",
     "crates/gobstopper-core/src/strategy/scored.rs": "ba3c13121045ed669bceb7e590668afde0c888ebdb4425e7d8c7dbf6b5c178de",
     "crates/gobstopper-core/src/strategy/structured.rs": "032114f60b92f9bf41646b8d1459c2717bf7becd032e89bd87bcc0660ce98157",
     "crates/gobstopper-core/src/validation.rs": "f7735d12c5af9d86a2964ce9ab6502159a5dfe97ff74f2ef5bee07f42698219e",
-    "scripts/monitor.py": "114b23f4bf5a798ee2dbeb6c0498f85825d868adf12e39be8fd9c1889eef847b",
-    "scripts/test_monitor.py": "d3481b60a31fa3683d079eae0ae96d8dd6fd851caf2d6afb8af6bfb353316b27",
+    "scripts/monitor.py": "e452d992b2a2f31ec4565d7da72fbdbffdf830c30d5f26b42d3e818f08fd7646",
+    "scripts/test_monitor.py": "d2342208b60d549216d80e9eb20ac4e1b1f5f308c18f877df3b3381323b5668c",
     "verify/stress/README.md": "b02da2d452bf4cf59462e19c30e606232444880cd483d636a1515e92ddb301b3",
     "verify/stress/check.py": "24a8ec85e71eeeeb52eb7204e3814b9b358e02ef1b7a1426643ca92b493bc38d",
-    "verify/stress/suites.json": "4fca64f18fb66ae5104438bc161762868afa736d359ecd1719386b29bbd83437",
+    "verify/stress/suites.json": "80d3aec580cc94297559c80766cde218996cd97b7f34bf7547cee3401f745da9",
     "verify/stress/test_check.py": "eeb942111be6c77aa85d0e0b51fbd8e48de279e357b21066f263dccec811ca8f",
     "verify/watch/check.py": "97ce34ea1926af465cfd242074ad80d9941311c9f412ee163923a90b7bfaebad"
   },
   "tool_sha256": {
+    "cargo": "b7a341737d8777ef0e21a71f0af90723ccf692914255110c12bbcfed79d75a53",
+    "rustc": "d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd",
     "cargo-dispatcher": "b7a341737d8777ef0e21a71f0af90723ccf692914255110c12bbcfed79d75a53",
     "rustc-dispatcher": "d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd",
-    "python": "b502cb4c5b46b8d4192ec6bcb600ce8922f1afc396fcf646e8765c6eba74a0bf",
-    "cargo": "b7a341737d8777ef0e21a71f0af90723ccf692914255110c12bbcfed79d75a53",
-    "rustc": "d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd"
+    "python": "4f00ea2ad53d62437a6a3946b73c73614a97e8accdc5b96dc095ea1a0d9c6a56"
   },
   "results": [
     {
@@ -123,16 +122,16 @@
         "steps": 64,
         "corruption_recoveries": 16,
         "peak_files": 402,
-        "peak_bytes": 343278,
-        "elapsed_ms": 43705
+        "peak_bytes": 341988,
+        "elapsed_ms": 51009
       },
       "case": "sequence",
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "d698f19e79a5e7fdf95147761d3b59c367a4ab131abaf9898bb41c035d3b71e0",
-      "elapsed_seconds": 45.27017779194284,
-      "largest_reaped_child_rss_bytes": 163020800
+      "log_sha256": "594bfda4c78484794259a19a427be8b9121668443fd97b6a25b28df8cb092e11",
+      "elapsed_seconds": 64.66119245905429,
+      "largest_reaped_child_rss_bytes": 403030016
     },
     {
       "passed": true,
@@ -159,9 +158,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "10ba9f2619a879dc69bbae24c987e09611d06a242413e1cef596ac75c6b46f4f",
-      "elapsed_seconds": 4.972166375024244,
-      "largest_reaped_child_rss_bytes": 334315520
+      "log_sha256": "b70069b638bff14359fabcba203a7b9d6699a376fd7b47361c91aea49fb31d05",
+      "elapsed_seconds": 6.1736589160282165,
+      "largest_reaped_child_rss_bytes": 403030016
     },
     {
       "passed": true,
@@ -185,9 +184,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "6fc1ca578c4a5f79ba54f79523ea92fdf034d2aa44dd896cfb3a0bbecd31cc50",
-      "elapsed_seconds": 0.07693166693206877,
-      "largest_reaped_child_rss_bytes": 334315520
+      "log_sha256": "54b99b1a515de85101b57778162a1271c0b4853b3da8c39a8594f1790af01ce1",
+      "elapsed_seconds": 0.2971649169921875,
+      "largest_reaped_child_rss_bytes": 403030016
     },
     {
       "passed": true,
@@ -200,9 +199,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "3e5caff540cba6cb1ee8796a94d2a4dd35b07d6b77c6629b81cf1d3d666a7a29",
-      "elapsed_seconds": 4.101278249989264,
-      "largest_reaped_child_rss_bytes": 334315520
+      "log_sha256": "cac69aeb2e5f263c22141eb601e2c56da545c0306fc5e9c9e7956efc0b131720",
+      "elapsed_seconds": 3.299042124999687,
+      "largest_reaped_child_rss_bytes": 403030016
     },
     {
       "passed": true,
@@ -223,9 +222,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "5f1a044c69bb63488656785e4022859c86ad9972fd6ddd7e6cbd87ee667ef5f7",
-      "elapsed_seconds": 1.8712234999984503,
-      "largest_reaped_child_rss_bytes": 342786048
+      "log_sha256": "ac6cbcb0f62e34067a98c7d301fd8e5f4984cc907282231cc0c8e9f66448a3f6",
+      "elapsed_seconds": 5.554081417038105,
+      "largest_reaped_child_rss_bytes": 422150144
     },
     {
       "passed": true,
@@ -264,9 +263,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "7ae7f65762881c30a6bc076b3bebed106043b262a104d3b583a8d9ebfdde8f8a",
-      "elapsed_seconds": 165.0026713339612,
-      "largest_reaped_child_rss_bytes": 342786048
+      "log_sha256": "a221ae2fb6d4191dc4bf68fc140f17dd2e3198a8a231672eb9460866b36ad3c9",
+      "elapsed_seconds": 125.79374241596088,
+      "largest_reaped_child_rss_bytes": 422150144
     },
     {
       "passed": true,
@@ -279,9 +278,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "b002fe870d6a316875df1cf20183f402b519a78198f4e62b2a83465acaa241b4",
-      "elapsed_seconds": 5.817464792053215,
-      "largest_reaped_child_rss_bytes": 342786048
+      "log_sha256": "3c84548a648578fc5f12045f62e1bdcd34569cef96b5501f04c0c3a08b29e639",
+      "elapsed_seconds": 6.728235458955169,
+      "largest_reaped_child_rss_bytes": 422150144
     },
     {
       "passed": true,
@@ -302,9 +301,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "83e9e84a9e670bdb71534a86174844f05a380fe7ca974a71057f4f7e54c58a22",
-      "elapsed_seconds": 6.057199166039936,
-      "largest_reaped_child_rss_bytes": 342786048
+      "log_sha256": "0e2c91e3d13574c84eb41bc08315be2118144b822da4ddf2ac223937655de8d5",
+      "elapsed_seconds": 9.3167114170501,
+      "largest_reaped_child_rss_bytes": 422150144
     },
     {
       "passed": true,
@@ -326,9 +325,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "8988774a37ba9987cfd71181310064953b52097b027587f6b761eb92ee1998b1",
-      "elapsed_seconds": 2.4647114579565823,
-      "largest_reaped_child_rss_bytes": 342786048
+      "log_sha256": "e008497fa81c025d7f7a5a354b7529642bb81cd0b1997fc1796ce5f0a7552b26",
+      "elapsed_seconds": 3.665889917057939,
+      "largest_reaped_child_rss_bytes": 422150144
     },
     {
       "passed": true,
@@ -350,9 +349,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "900bfc76e87239e252647e64120b58ac4f24941d69315d41350ceb41bbe63247",
-      "elapsed_seconds": 7.044023958034813,
-      "largest_reaped_child_rss_bytes": 342786048
+      "log_sha256": "543e6dbd051055b83e3b914b2d4c8fbf274d3a1f2502cf18f2ef054b0965c734",
+      "elapsed_seconds": 12.438238166971132,
+      "largest_reaped_child_rss_bytes": 422150144
     },
     {
       "passed": true,
@@ -378,9 +377,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "f55bf2ce660d963bb903f1fa59542d3231e63a12da9bfe6e00451cb6f9e17c53",
-      "elapsed_seconds": 0.23419474996626377,
-      "largest_reaped_child_rss_bytes": 342786048
+      "log_sha256": "654a3ef2a6e4c16915460d03fb5827377cd467bc69f9dbac86b9ce7ea01f755c",
+      "elapsed_seconds": 8.279580584028736,
+      "largest_reaped_child_rss_bytes": 422150144
     },
     {
       "passed": true,
@@ -393,6 +392,7 @@
         "MonitorTests.test_counter_reset_is_unknown_delta",
         "MonitorTests.test_coverage_distinguishes_empty_selection_unknown_usage_and_caps",
         "MonitorTests.test_coverage_records_identifier_omissions_without_exposing_values",
+        "MonitorTests.test_each_timed_out_child_is_reaped_under_its_own_deadline",
         "MonitorTests.test_escaped_pipe_holder_has_bounded_incomplete_cleanup",
         "MonitorTests.test_existing_output_fifo_is_refused_before_read_or_child_dispatch",
         "MonitorTests.test_invalid_report_persists_only_error_class_and_unavailable_rows",
@@ -420,7 +420,6 @@
         "MonitorTests.test_success_collects_silent_owned_descendants_before_reaping_leader",
         "MonitorTests.test_success_drains_trailing_output_before_return",
         "MonitorTests.test_successful_children_have_bounded_numeric_resource_deltas",
-        "MonitorTests.test_timeout_child_is_reaped_and_unstarted_watch_has_no_resources",
         "MonitorTests.test_unavailable_fields_and_compaction_boundary_are_not_zero_savings",
         "MonitorTests.test_unavailable_resource_module_does_not_hide_success",
         "MonitorTests.test_valid_noncompaction_and_optional_legacy_events_are_unqualified_not_invalid",
@@ -431,9 +430,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "3e9193041491e2353e6bf80cb8983cff54ea0713ab056377988558ed467d399b",
-      "elapsed_seconds": 14.341934334021062,
-      "largest_reaped_child_rss_bytes": 342786048
+      "log_sha256": "48cda8e0f178f71c3e464f2aeb5a0259334aba66cdf62c1dc619cb32a29d7871",
+      "elapsed_seconds": 27.11448595894035,
+      "largest_reaped_child_rss_bytes": 422150144
     }
   ],
   "platform": "darwin",
@@ -442,7 +441,7 @@
     "cargo-version.log": "22cf38b38044f7e66c130e80d546028773672b549ec7bb81bf1e7652ede0c8ac",
     "rust-version.log": "eaf195daced7a434718b67881bed97c02440b2b6196dad18db476478c66b1c36"
   },
-  "elapsed_seconds": 257.40515674999915,
+  "elapsed_seconds": 273.83188145793974,
   "raw_bounds": {
     "total_seconds": 900,
     "max_log_bytes_per_command": 8388608,
