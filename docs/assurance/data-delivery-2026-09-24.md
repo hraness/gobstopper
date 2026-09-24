@@ -111,14 +111,21 @@ installed binary is not shown to be slower; a controlled comparison was not run
 because it would add more of the same I/O to the saturated host.
 
 Stack samples and the discovery corpus explain where the time goes. Discovery
-caches a file fingerprint for 60 seconds, so each 60-second watcher pass and
-each fresh monitor process rescans every candidate: 1,961 Codex transcripts
-modified in the seven-day window mean about 1.08 GB of bounded head and tail
-reads per pass on a cold cache, and the Codex sample spent 80 of 92 frames in
-those reads. The Devin scan reads a 17.0 GB SQLite store while Devin writes it
-(89 of 90 frames in page reads). Inside the monitor, a slow report consumes the
-shared budget and watch then records a zero-duration timeout, which is the
-documented contract.
+cached a file fingerprint for only 60 seconds, so each 60-second watcher pass
+rescanned every candidate: 1,961 Codex transcripts modified in the seven-day
+window mean about 1.08 GB of bounded head and tail reads per pass, and the
+Codex watcher sample spent 80 of 92 frames in those reads. The Devin watcher
+scan reads a 17.0 GB SQLite store while Devin writes it (89 of 90 frames in
+page reads). The monitor's two commands do not rescan that corpus: their
+`--active-only` discovery is limited to sessions active within 180 seconds, and
+a sample of the dry-run watch spent nearly all of its time exporting the one
+active Devin session for its plan preview, which is the documented dry-run
+contract. Inside the monitor, a slow report consumed the shared budget and
+watch then recorded a zero-duration timeout, which was the contract during the
+window. D7 in the [data improvement plan](../data-improvement-plan.md) keeps an
+identified cache entry valid until its file changes and gives each monitor
+command its own budget. An earlier version of this paragraph attributed the
+corpus rescans to the monitor as well; that was wrong.
 
 Two operational findings need an owner. The monitor's 14 allowlisted session
 IDs are all Codex sessions last updated between September 19 and 21, so the

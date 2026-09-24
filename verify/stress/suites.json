@@ -341,7 +341,7 @@
       "source": "scripts/test_monitor.py",
       "tests": [
         "MonitorTests.test_successful_children_have_bounded_numeric_resource_deltas",
-        "MonitorTests.test_timeout_child_is_reaped_and_unstarted_watch_has_no_resources",
+        "MonitorTests.test_each_timed_out_child_is_reaped_under_its_own_deadline",
         "MonitorTests.test_resource_read_failure_preserves_result_and_timeout_cleanup",
         "MonitorTests.test_unavailable_resource_module_does_not_hide_success",
         "MonitorTests.test_resource_counter_validation_rejects_invalid_and_regressing_values",

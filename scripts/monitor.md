@@ -17,10 +17,11 @@ sessions of that provider in `context_samples`, up to 256 samples total. That
 option broadens the retained identifier scope; it does not enable compaction.
 Use Python 3.9 or later on macOS/Linux. This
 script does not install a service. A supervisor can invoke it periodically;
-an exclusive lock prevents overlapping passes. Each pass gives both child
-commands a combined 45-second budget, and bounds captured output to 8 MiB per
-command. Child process groups belong to this invocation and are collected on
-success as well as failure, before reaping their leader. Cleanup allows up to
+an exclusive lock prevents overlapping passes. Each pass gives each child
+command its own 45-second budget, so a pass can last about 90 seconds plus
+cleanup before it fails, and bounds captured output to 8 MiB per command.
+Child process groups belong to this invocation and are collected on success
+as well as failure, before reaping their leader. Cleanup allows up to
 one additional second for the leader and 250 ms for nonblocking pipe drain;
 `cleanup_complete` is explicit. A descendant that escapes the group can make
 cleanup incomplete, but cannot hold the reader indefinitely. The runner trusts
@@ -47,8 +48,8 @@ lifetime totals: it validates node identities and the complete selected ancestry
 then reads at most 32 live-chain payloads. Discarded branch payloads do not need
 to be exported for an observation of current context. The regular `report`
 command still requests complete Devin usage accounting. This distinction keeps
-the monitor's requested measurements explicit; its shared deadline and the
-separate dry-run evaluation are unchanged.
+the monitor's requested measurements explicit; the separate dry-run
+evaluation is unchanged.
 
 The additive `coverage` summary reports selected Codex overlap, unavailable
 selected IDs, eligible versus exported samples, measurement states/reasons,
@@ -92,11 +93,12 @@ data, not a process-tree trace; descendant accounting and counter availability
 depend on the operating system and whether descendants were waited for. They do
 not measure all machine work or unaccounted surviving descendants.
 
-An unstarted command (including watch after report exhausts the shared deadline)
-or unavailable resource measurement has `resources: null`. Individual invalid,
+A command that could not be spawned or an unavailable resource measurement
+has `resources: null`. A slow or timed-out report does not shorten the watch
+budget: each command starts with its own deadline. Individual invalid,
 regressing, or out-of-range counters are `null`; valid unchanged counters are
 `0`. Values are restricted to unsigned 64-bit integers. Diagnostic failures do
-not change command errors, cleanup, the shared deadline, or capture limits.
+not change command errors, cleanup, the command deadlines, or capture limits.
 Resource and wall-clock durations can help investigate a slow pass, but do not
 establish its cause or prove Gobstopper token, cost, or quota savings.
 
@@ -168,8 +170,8 @@ Tests exercise realistic subprocess reports and dry-run output, source
 preservation, private permissions, allowlisting, environment isolation, missing
 data, counter resets, symlink refusal, overlap exclusion, log rotation, timeout,
 bounded capture, zero-exit evaluation failures, and cancellation cleanup. They
-also cover numeric child-resource deltas, timeout reaping versus an unstarted
-second command, unavailable or invalid counters, and diagnostic failure without
-losing command results or cleanup, same-ID foreign stores, duplicate/conflicting
+also cover numeric child-resource deltas, timeout reaping of each command
+under its own deadline, unavailable or invalid counters, and diagnostic
+failure without losing command results or cleanup, same-ID foreign stores, duplicate/conflicting
 evidence, torn or special-file logs, successful leaders with silent descendants,
 and escaped pipe holders. They do not establish live session compaction savings.
