@@ -46,6 +46,7 @@ monitor passes establish a short observation window, not sustained reliability.
 | D4 | Consistent evidence and visible coverage | D1, D2 API handoff | integrator: core/events, CLI report/hooks, adapter discovery, monitor | D3; handed-off D5 |
 | D5 | Bounded vault accounting | D2 handoff for CLI entry point | storage worker: adapters vault/accounting, CLI integration by owner | D4 |
 | D6 | Formal correspondence, review and delivery | D1–D5 | integrator, independent reviewer | independent checks |
+| D7 | Discovery and monitor overhead | D6 observation record | integrator: adapter discovery, Devin reader, monitor deadlines | owner allowlist refresh |
 
 ## D1: Usage and ancestry
 
@@ -153,7 +154,8 @@ monitor passes establish a short observation window, not sustained reliability.
 
 ## D6: Proofs, review and delivery
 
-- **Status:** In progress
+- **Status:** Complete except the post-bootstrap receipt, which is an owner action; see the
+  [delivery record](assurance/data-delivery-2026-09-24.md)
 - **Depends on:** D1–D5
 - **Objective:** tie changes to regression and formal evidence, merge and verify
   installed behavior, and retain exact delivery records.
@@ -168,6 +170,30 @@ monitor passes establish a short observation window, not sustained reliability.
   all Rust tests/doctests; MSRV 1.85; all Python/dialect tests; `check_assurance.py`;
   exact affected proof runners and bounded stress; site copy/site gates as applicable;
   release-only refusal tests; independent main CI and guarded installation checks.
+
+## D7: Discovery and monitor overhead
+
+- **Status:** Planned
+- **Depends on:** D6 observation record
+- **Objective:** keep watcher passes and monitor commands inside their budgets on
+  a busy host without weakening bounded reads, custody or the shared deadline
+  contract by an ad hoc skip.
+- **Scope:** adapter discovery cache validity, Devin per-pass read cost, monitor
+  command deadlines, and the launch job's monitor allowlist.
+- **Out of scope:** raising deadlines to admit slow passes, widening discovery
+  windows, modifying or checkpointing the Devin store, or any native activation.
+- **Approach:** treat a fingerprint-equal cache entry (length, mtime, device,
+  inode, ctime) as valid beyond the 60-second sample interval so unchanged files
+  are not reread each pass; skip the Devin read snapshot or bound its bytes when
+  a session's store rows are unchanged; give report and dry-run watch separate
+  deadlines or run the cheaper command first; refresh the allowlist with active
+  session IDs through the owner's launch job change.
+- **Acceptance:** a warm second pass over an unchanged corpus reads no transcript
+  bytes; a changed file is still rescanned on any fingerprint difference; a slow
+  report cannot starve watch; selected overlap is non-empty for an active
+  allowlist. Existing detect, watch, Devin and monitor tests pass unchanged.
+- **Validation:** focused detect/Devin/monitor tests with cold and warm cache
+  fixtures; the six CI gates; a fresh read-only observation window after install.
 
 ## Implementation log
 
@@ -252,3 +278,21 @@ monitor passes establish a short observation window, not sustained reliability.
   at 93–103 seconds on this host; the same exact sequence passed in the fresh
   bounded run in 38 seconds. Linux candidate CI remains the authoritative
   aggregate gate.
+- 2026-09-24: PR 94 merged as `7ff13e3`; merged-source CI passed all six jobs.
+  The checked binary (`31a5b3ea…`) and monitor (`114b23f4…`) were installed
+  under the guarded cutover; the four launch jobs restarted at 17:06 UTC with
+  the configuration restored from its exact bytes. Details and hashes are in
+  the [delivery record](assurance/data-delivery-2026-09-24.md).
+- 2026-09-24: Read-only readiness evaluation. Eleven monitor instants between
+  17:11 and 17:36 UTC met the post-bootstrap criteria; 497 events since the
+  restart carry the installed hash and match the early-refusal contract. The
+  protocol's receipt step was declined by the session's permission reviewer and
+  remains an owner action; no other route was used.
+- 2026-09-24: Observation window 17:06–17:50 UTC: 14 of 28 monitor observations
+  fully healthy, 14 dry-run watch timeouts under the shared 45-second budget.
+  Timeouts began at 14:00 UTC under the previous binary on a saturated host
+  (load 25–35, volume 99 percent full, Devin appending ~9 MB/s). Cold-cache
+  rescans of 1,961 Codex transcripts (~1.08 GB per pass) and Devin page reads
+  of a 17 GB store dominate the stack samples. D7 records the follow-ups; the
+  stale 14-session monitor allowlist and the 26.4 GB Devin write-ahead log are
+  owner items. No product code changed for these findings.
