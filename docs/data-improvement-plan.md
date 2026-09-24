@@ -291,7 +291,7 @@ monitor passes establish a short observation window, not sustained reliability.
 - 2026-09-24: Observation window 17:06–17:50 UTC: 14 of 28 monitor observations
   fully healthy, 14 dry-run watch timeouts under the shared 45-second budget.
   Timeouts began at 14:00 UTC under the previous binary on a saturated host
-  (load 22–35, volume 99 percent full, Devin writing ~6 MB/s). Cold-cache
+  (load 25–35, volume 99 percent full, Devin appending ~9 MB/s). Cold-cache
   rescans of 1,961 Codex transcripts (~1.08 GB per pass) and Devin page reads
   of a 17 GB store dominate the stack samples. D7 records the follow-ups; the
   stale 14-session monitor allowlist and the 26.4 GB Devin write-ahead log are

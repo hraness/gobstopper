@@ -90,21 +90,22 @@ control decisions, Devin 32 and 33, and the Claude Code hooks recorded 37
 
 The window covers the 28 monitor observations from the 17:06 UTC restart to
 17:50 UTC. Both commands were healthy in 14 of them. The report command timed
-out seven times, three of them in the startup burst before 17:10 UTC; healthy
-reports took a median of 1.9 seconds and a 90th percentile of 8.9 seconds. The
+out seven times, three of them within five minutes of the restart; healthy
+reports took a median of 1.9 seconds and a 90th percentile of 18.7 seconds. The
 dry-run watch command errored 14 times, every one a timeout under the shared
 45-second budget; healthy runs took a median of 22.3 seconds. The 17:43 UTC
 report exported 20 of 20 eligible context samples (16 complete, four partial)
 and recorded discovery of 9,887 Codex, 217 Claude Code and 104 Devin files.
 
 The slowdown predates the installation. Under the previous binary the dry-run
-watch took a median of 196 milliseconds until 13:59 UTC, then timed out 5, 12
+watch took a median of 178 milliseconds until 13:59 UTC, then timed out 5, 12
 and 11 times in the 14:00, 15:00 and 16:00 UTC hours, three hours before the
-restart. The host was saturated throughout the window: load averages of 22 to
-35, the data volume at 99 percent with about 18 GiB free, two solver processes
-running for 20 hours, package checks and a merge queue, build-directory
-deletions, and the Devin CLI writing its session-store log at roughly 6 MB/s
-while the disk sustained about 90 MB/s. The previous binary timed out 11 of 12
+restart. The host was saturated throughout the window: load averages of 25 to
+35 in the retained samples, the data volume at 99 percent with about 18 GiB
+free, two solver processes running for 20 hours, repository checks and a merge
+queue, build-directory deletions, and the Devin CLI appending about 1.9 GB to
+its session-store log in under four minutes (about 9 MB/s) while the disk
+sustained about 90 MB/s. The previous binary timed out 11 of 12
 times in the same conditions immediately before its replacement, so the
 installed binary is not shown to be slower; a controlled comparison was not run
 because it would add more of the same I/O to the saturated host.
@@ -135,7 +136,7 @@ fingerprint beyond the sample interval, avoid rereading unchanged Devin
 sessions, give the monitor's two commands separate deadlines, and refresh the
 allowlist. The private observation record is
 `runtime-observation-window/observation-window.json`, SHA-256
-`115b55125906ee3fb69a3a4003bd2aa3929dfb94daad349e9f0d6f9924225f6f`, with the
+`ffe7ff7244763f1d09a88beb0ed34f35960b16b315967d67b759f2a8fc14adb6`, with the
 stack samples under `implementation/`.
 
 ## Remaining evidence limits
