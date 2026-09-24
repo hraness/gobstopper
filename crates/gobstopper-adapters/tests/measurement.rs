@@ -99,7 +99,7 @@ fn invalid_new_usage_does_not_reuse_stale_context() {
 }
 
 #[test]
-fn additive_tail_totals_remain_partial_but_cumulative_tail_totals_are_full() {
+fn complete_claude_projection_and_cumulative_codex_tail_totals_are_full() {
     let fixture = Fixture::new();
     let (mut handle, _) = fixture.write(&[
         json!({"type":"progress","padding":"x".repeat(600_000)}),
@@ -108,7 +108,7 @@ fn additive_tail_totals_remain_partial_but_cumulative_tail_totals_are_full() {
     handle.provider = Provider::ClaudeCode;
     let sample = claude::scan_usage(&handle.path);
     assert_eq!(sample.reported_context(), Some(6));
-    assert_eq!(sample.lifetime_scope, LifetimeScope::Partial);
+    assert_eq!(sample.lifetime_scope, LifetimeScope::Full);
     assert_eq!(
         claude::load(handle.clone()).unwrap().usage.lifetime_scope,
         LifetimeScope::Full

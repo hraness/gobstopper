@@ -57,6 +57,58 @@
       "seconds": 180
     },
     {
+      "name": "vault-metadata",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "gobstopper-adapters",
+        "--locked",
+        "--lib",
+        "vault::accounting::tests::",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "source": "crates/gobstopper-adapters/src/vault/accounting.rs",
+      "tests": [
+        "vault::accounting::tests::missing_and_empty_roots_are_distinct_without_creation",
+        "vault::accounting::tests::metadata_counts_all_six_categories_without_reading_payloads",
+        "vault::accounting::tests::index_references_duplicates_and_origins_do_not_expose_private_labels",
+        "vault::accounting::tests::malformed_entries_and_incomplete_tail_preserve_partial_denominators",
+        "vault::accounting::tests::index_byte_line_and_entry_limits_are_explicit_and_release_locks",
+        "vault::accounting::tests::root_and_index_contention_return_busy_without_mutation_or_waiting",
+        "vault::accounting::tests::symlink_roots_ancestors_directories_and_index_are_never_followed",
+        "vault::accounting::tests::nested_special_and_unexpected_entries_are_counted_without_recursion",
+        "vault::accounting::tests::directory_and_time_limits_leave_explicit_partial_results_and_no_locks",
+        "vault::accounting::tests::publication_during_shared_observation_is_incomplete_not_an_atomic_snapshot",
+        "vault::accounting::tests::missing_index_created_during_scan_is_not_reported_as_complete_absence",
+        "vault::accounting::tests::changed_index_metadata_is_detected_even_when_root_directory_is_unchanged"
+      ],
+      "seconds": 90
+    },
+    {
+      "name": "vault-accounting-cli",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "gobstopper",
+        "--locked",
+        "--test",
+        "vault_accounting",
+        "--",
+        "--nocapture",
+        "--test-threads=1"
+      ],
+      "source": "crates/gobstopper-cli/tests/vault_accounting.rs",
+      "tests": [
+        "vault_stats_reports_bounded_read_only_counts_without_contents_or_identifiers",
+        "vault_stats_missing_root_is_explicit_and_does_not_create_it"
+      ],
+      "seconds": 90
+    },
+    {
       "name": "journal",
       "argv": [
         "cargo",
@@ -81,7 +133,8 @@
         "native_operations::tests::registry_preserves_target_binding_after_rename_or_missing_file",
         "native_operations::tests::journal_rejects_unknown_provider_contract_or_relative_identity",
         "native_operations::tests::independent_openers_share_custody_until_owner_releases",
-        "native_operations::tests::symlinks_and_special_files_are_not_state"
+        "native_operations::tests::symlinks_and_special_files_are_not_state",
+        "native_operations::tests::artifact_identity_detects_replacement_and_same_size_writes"
       ],
       "seconds": 180
     },
@@ -124,7 +177,11 @@
         "malformed_operation_journal_cannot_be_cleared_by_watch_or_reconciliation",
         "claude_native_dispatch_precedes_planning_and_persists_clean_first_pass",
         "policy_change_invalidates_unchanged_session_decisions",
-        "standalone_native_noop_and_failure_never_credit_the_projected_floor"
+        "standalone_native_noop_and_failure_never_credit_the_projected_floor",
+        "unqualified_watch_suppresses_restarts_but_rechecks_source_policy_and_artifact",
+        "unqualified_watch_preserves_control_cohort_before_artifact_refusal",
+        "unqualified_devin_unknown_context_never_exports_or_snapshots",
+        "active_auto_unknown_devin_delegates_without_export_or_snapshot"
       ],
       "seconds": 180
     },
@@ -266,7 +323,10 @@
         "events::tests::event_json_round_trip",
         "events::tests::evidence_fields_are_additive_and_backward_compatible",
         "events::tests::append_and_read_events_jsonl",
-        "events::tests::oversize_log_rotates_and_read_events_stitches_generations"
+        "events::tests::oversize_log_rotates_and_read_events_stitches_generations",
+        "events::tests::pair_conflicts_survive_permutation_and_duplicate_replay",
+        "events::tests::event_reader_reports_invalid_and_oversized_records",
+        "events::tests::direct_pair_qualification_rejects_invalid_event_provenance"
       ],
       "seconds": 60
     },
@@ -289,6 +349,10 @@
         "MonitorTests.test_unavailable_fields_and_compaction_boundary_are_not_zero_savings",
         "MonitorTests.test_closed_session_compact_passthrough",
         "MonitorTests.test_retention_summary_counts_allowlisted_events_and_flags_lossy",
+        "MonitorTests.test_retention_requires_valid_observations_and_event_provenance",
+        "MonitorTests.test_malformed_or_oversized_history_cannot_keep_a_valid_counterpart",
+        "MonitorTests.test_schema_invalid_counterparts_make_qualification_unavailable_in_any_order",
+        "MonitorTests.test_valid_noncompaction_and_optional_legacy_events_are_unqualified_not_invalid",
         "MonitorTests.test_retention_rejects_missing_boolean_and_impossible_measurements",
         "MonitorTests.test_retention_read_is_bounded_and_invalid_utf8_is_unavailable",
         "MonitorTests.test_reported_zero_and_foreign_source_are_not_context_savings",
@@ -309,7 +373,12 @@
         "MonitorTests.test_child_timeout_and_capture_limit_are_bounded",
         "MonitorTests.test_success_collects_silent_owned_descendants_before_reaping_leader",
         "MonitorTests.test_success_drains_trailing_output_before_return",
-        "MonitorTests.test_escaped_pipe_holder_has_bounded_incomplete_cleanup"
+        "MonitorTests.test_escaped_pipe_holder_has_bounded_incomplete_cleanup",
+        "MonitorTests.test_partial_components_never_become_complete_context",
+        "MonitorTests.test_malformed_measurement_metadata_cannot_become_complete_context",
+        "MonitorTests.test_coverage_distinguishes_empty_selection_unknown_usage_and_caps",
+        "MonitorTests.test_checkpoint_freshness_is_separate_from_process_and_command_health",
+        "MonitorTests.test_coverage_records_identifier_omissions_without_exposing_values"
       ],
       "seconds": 90
     }

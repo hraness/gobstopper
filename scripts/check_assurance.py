@@ -118,7 +118,10 @@ def receipt_sources(root, family, cases):
             paths += list((root / "crates/gobstopper-core/src").rglob("*.rs"))
             paths += [root / name for name in (
                 "crates/gobstopper-cli/src/config.rs", "crates/gobstopper-adapters/src/codex.rs",
-                "crates/gobstopper-adapters/src/payload.rs")]
+                "crates/gobstopper-adapters/src/payload.rs", "crates/gobstopper-adapters/src/claude.rs",
+                "crates/gobstopper-adapters/src/devin.rs", "crates/gobstopper-adapters/src/eval.rs",
+                "crates/gobstopper-cli/src/main.rs", "crates/gobstopper-cli/src/hooks.rs",
+                "crates/gobstopper-cli/src/report.rs", "crates/gobstopper-cli/src/telemetry.rs")]
         else:
             paths += [path for path in here.iterdir() if path.is_file() and not path.name.startswith(".")]
             if family == "transcript":

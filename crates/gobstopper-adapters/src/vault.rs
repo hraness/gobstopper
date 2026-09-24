@@ -20,6 +20,8 @@ const CHUNK_BYTES: usize = 1024 * 1024;
 const MAX_INDEX_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_INDEX_LINE_BYTES: usize = 64 * 1024;
 
+pub mod accounting;
+
 /// Stable lifetime lock on the vault root directory inode: snapshots/readers
 /// share custody, while pruning excludes publication and reconstruction until
 /// deletion finishes. Unlike index.jsonl, this directory is never replaced.

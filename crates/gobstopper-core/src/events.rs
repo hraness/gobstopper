@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 
 /// Accounting parsed from one retained byte sequence. This is provider-record
 /// evidence, not a billing measurement or a guarantee about a resumed context.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TokenObservation {
     pub source_sha256: String,
@@ -25,6 +25,16 @@ pub struct TokenObservation {
     pub lifetime_scope: crate::model::LifetimeScope,
     pub lifetime_input_tokens: Option<u64>,
     pub lifetime_cached_tokens: Option<u64>,
+}
+
+/// The decision-time rollout arm. Legacy events without this field are unknown;
+/// a reader must not reassign them using today's configuration.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Cohort {
+    Treatment,
+    Control,
+    Ungated,
 }
 
 fn valid_hash(digest: &str) -> bool {
@@ -102,6 +112,17 @@ pub struct CompactionEvent {
     /// Absent for legacy events whose precise source was not retained.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_identity_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_sha256: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision_cohort: Option<Cohort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rollout_percent: Option<u8>,
+    /// Hash of the registered rollout configuration, not a human-readable name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub experiment_sha256: Option<String>,
     /// Vault object holding the exact pre-compaction bytes, when the
     /// compaction path preserved them. Hash identifier only — never
     /// content.
@@ -167,6 +188,11 @@ impl CompactionEvent {
             duration_ms,
             error_code,
             source_identity_sha256: None,
+            binary_sha256: None,
+            config_sha256: None,
+            decision_cohort: None,
+            rollout_percent: None,
+            experiment_sha256: None,
             snapshot_before_sha256: None,
             snapshot_after_sha256: None,
             before_observation: None,
@@ -181,7 +207,13 @@ impl CompactionEvent {
     /// context reports, in tokens. Zero/reset/unknown, legacy estimates, and
     /// unapplied plans remain unqualified. This is never billed-token savings.
     pub fn recorded_context_reduction_tokens(&self) -> Option<u64> {
-        if self.outcome != "applied" || self.error_code.is_some() {
+        if self.outcome != "applied"
+            || self.error_code.is_some()
+            || !matches!(
+                self.action.as_str(),
+                "provider_compact" | "transcript_compact"
+            )
+        {
             return None;
         }
         let (before, after) = (
@@ -204,10 +236,144 @@ impl CompactionEvent {
     }
 }
 
+/// Agreement of all observations for an evidence pair. Conflict is absorbing;
+/// replay and input ordering cannot recover a contradicted claim.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum EvidenceAgreement<T> {
+    #[default]
+    Unseen,
+    Agreed(T),
+    Conflict,
+}
+
+impl<T: Eq> EvidenceAgreement<T> {
+    pub fn join(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Conflict, _) | (_, Self::Conflict) => Self::Conflict,
+            (Self::Unseen, value) | (value, Self::Unseen) => value,
+            (Self::Agreed(a), Self::Agreed(b)) if a == b => Self::Agreed(a),
+            _ => Self::Conflict,
+        }
+    }
+}
+
+/// A unique, uncontradicted retained pair. `first_index` keeps a duplicate replay
+/// from moving historical evidence ahead of newer distinct observations.
+#[derive(Debug)]
+pub struct QualifiedReduction<'a> {
+    pub event: &'a CompactionEvent,
+    pub first_index: usize,
+    pub before_tokens: u64,
+    pub reduction_tokens: u64,
+}
+
+#[derive(Debug, Default)]
+pub struct ReductionEvidence<'a> {
+    pub reductions: Vec<QualifiedReduction<'a>>,
+    pub conflicting_pairs: usize,
+    pub duplicate_records: usize,
+    pub unqualified_records: usize,
+}
+
+/// Shared qualification for reports and adaptive history. Evidence equality
+/// covers every retained accounting field, not merely the final subtraction.
+/// An incomplete/failed applied record bearing the same pair poisons the claim.
+pub fn qualified_reductions(events: &[CompactionEvent]) -> ReductionEvidence<'_> {
+    type Evidence<'a> = (
+        &'a TokenObservation,
+        &'a TokenObservation,
+        Option<Cohort>,
+        Option<u8>,
+        &'a Option<String>,
+        &'a Option<String>,
+        &'a Option<String>,
+    );
+    let mut pairs = std::collections::HashMap::new();
+    let mut result = ReductionEvidence::default();
+    for (index, event) in events.iter().enumerate() {
+        if event.outcome != "applied" {
+            continue;
+        }
+        let (Some(identity), Some(before), Some(after)) = (
+            event.source_identity_sha256.as_deref(),
+            event.snapshot_before_sha256.as_deref(),
+            event.snapshot_after_sha256.as_deref(),
+        ) else {
+            result.unqualified_records += 1;
+            continue;
+        };
+        if ![identity, before, after].into_iter().all(valid_hash) {
+            result.unqualified_records += 1;
+            continue;
+        }
+        let evidence: EvidenceAgreement<Evidence<'_>> = match (
+            event.recorded_context_reduction_tokens(),
+            &event.before_observation,
+            &event.after_observation,
+        ) {
+            (Some(_), Some(a), Some(b)) if valid_event(event) => EvidenceAgreement::Agreed((
+                a,
+                b,
+                event.decision_cohort,
+                event.rollout_percent,
+                &event.experiment_sha256,
+                &event.binary_sha256,
+                &event.config_sha256,
+            )),
+            _ => {
+                result.unqualified_records += 1;
+                EvidenceAgreement::Conflict
+            }
+        };
+        let entry = pairs
+            .entry((
+                event.provider,
+                event.session_id.as_str(),
+                identity,
+                before,
+                after,
+            ))
+            .or_insert((index, EvidenceAgreement::Unseen));
+        if entry.1 != EvidenceAgreement::Unseen {
+            result.duplicate_records += 1;
+        }
+        entry.1 = entry.1.join(evidence);
+    }
+    for (_, (index, agreement)) in pairs {
+        match agreement {
+            EvidenceAgreement::Agreed((before, after, ..)) => {
+                result.reductions.push(QualifiedReduction {
+                    event: &events[index],
+                    first_index: index,
+                    before_tokens: before.context_tokens.expect("qualified positive context"),
+                    reduction_tokens: before
+                        .context_tokens
+                        .unwrap()
+                        .saturating_sub(after.context_tokens.unwrap()),
+                })
+            }
+            EvidenceAgreement::Conflict => result.conflicting_pairs += 1,
+            EvidenceAgreement::Unseen => unreachable!("every indexed pair has an observation"),
+        }
+    }
+    result
+        .reductions
+        .sort_unstable_by_key(|row| row.first_index);
+    result
+}
+
 fn valid_event(event: &CompactionEvent) -> bool {
     let valid_digest = |digest: &Option<String>| digest.as_deref().is_none_or(valid_hash);
     event.schema == CompactionEvent::SCHEMA
         && valid_digest(&event.source_identity_sha256)
+        && valid_digest(&event.binary_sha256)
+        && valid_digest(&event.config_sha256)
+        && valid_digest(&event.experiment_sha256)
+        && match (event.decision_cohort, event.rollout_percent) {
+            (None | Some(Cohort::Ungated), None) => true,
+            (Some(Cohort::Treatment | Cohort::Control), Some(percent)) => percent <= 100,
+            _ => false,
+        }
         && valid_digest(&event.snapshot_before_sha256)
         && valid_digest(&event.snapshot_after_sha256)
         && event
@@ -383,12 +549,35 @@ pub fn default_log_path() -> PathBuf {
 }
 
 /// Read every event in the log, oldest generation first so a rotation
-/// boundary does not silently truncate history. Blank and unparseable
-/// lines are skipped so one torn write does not lose the rest.
+/// boundary does not silently truncate history. Blank lines are ignored, but
+/// malformed or oversized records make qualification unavailable: discarding
+/// one might conceal a contradiction of an otherwise valid evidence pair.
+/// Diagnostic callers can retain readable rows through `read_events_with_status`.
 pub fn read_events(log_path: &Path) -> std::io::Result<Vec<CompactionEvent>> {
+    let result = read_events_with_status(log_path)?;
+    if result.invalid_records > 0 || result.oversized_records > 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "compaction event history is incomplete; evidence unavailable",
+        ));
+    }
+    Ok(result.events)
+}
+
+/// Retained generations, including malformed-record loss. Limits fail rather
+/// than pretending the resulting prefix is complete history.
+#[derive(Debug, Default)]
+pub struct EventRead {
+    pub events: Vec<CompactionEvent>,
+    pub invalid_records: usize,
+    pub oversized_records: usize,
+    pub generations: usize,
+}
+
+pub fn read_events_with_status(log_path: &Path) -> std::io::Result<EventRead> {
     const MAX_LOG_BYTES: u64 = 128 * 1024 * 1024;
     const MAX_LINE_BYTES: usize = 16 * 1024;
-    let mut events = Vec::new();
+    let mut result = EventRead::default();
     let rotated = rotated_path(log_path);
     for path in [rotated.as_path(), log_path] {
         let file = match open_event_log(path, MAX_LOG_BYTES) {
@@ -400,16 +589,23 @@ pub fn read_events(log_path: &Path) -> std::io::Result<Vec<CompactionEvent>> {
             Err(error) => return Err(error),
         };
         let bytes = bounded_log_bytes(file, MAX_LOG_BYTES)?;
+        result.generations += 1;
         for line in bytes.split(|byte| *byte == b'\n') {
-            if line.len() > MAX_LINE_BYTES || line.iter().all(u8::is_ascii_whitespace) {
+            if line.len() > MAX_LINE_BYTES {
+                result.oversized_records += 1;
+                continue;
+            }
+            if line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
             if let Some(event) = serde_json::from_slice(line).ok().filter(valid_event) {
-                events.push(event);
+                result.events.push(event);
+            } else {
+                result.invalid_records += 1;
             }
         }
     }
-    Ok(events)
+    Ok(result)
 }
 
 fn open_event_log(path: &Path, max_bytes: u64) -> std::io::Result<std::fs::File> {
@@ -676,7 +872,8 @@ mod tests {
         assert_eq!(event.recorded_context_reduction_tokens(), Some(60));
         // Deliberately different legacy scalar estimates cannot affect the result.
         assert_eq!(event.est_reclaimed_tokens, 400);
-        let mutate: [fn(&mut CompactionEvent); 7] = [
+        let mutate: [fn(&mut CompactionEvent); 8] = [
+            |e| e.action = "none".into(),
             |e| e.outcome = "planned".into(),
             |e| e.error_code = Some("unresolved_context".into()),
             |e| e.after_observation = None,
@@ -707,6 +904,106 @@ mod tests {
             assert!(observation.is_valid());
             assert_eq!(changed.recorded_context_reduction_tokens(), None);
         }
+    }
+
+    #[test]
+    fn pair_conflicts_survive_permutation_and_duplicate_replay() {
+        let original = observed_event();
+        let same = original.clone();
+        let mut conflict = original.clone();
+        conflict.after_observation.as_mut().unwrap().context_tokens = Some(30);
+        for events in [
+            vec![
+                original.clone(),
+                same.clone(),
+                conflict.clone(),
+                original.clone(),
+            ],
+            vec![conflict.clone(), original.clone(), same.clone()],
+            vec![same.clone(), conflict.clone(), original.clone()],
+        ] {
+            let result = qualified_reductions(&events);
+            assert!(result.reductions.is_empty());
+            assert_eq!(result.conflicting_pairs, 1);
+        }
+        let events = [original.clone(), same];
+        let qualified = qualified_reductions(&events);
+        assert_eq!(qualified.reductions.len(), 1);
+        assert_eq!(qualified.reductions[0].first_index, 0);
+        assert_eq!(qualified.reductions[0].reduction_tokens, 60);
+        assert_eq!(qualified.duplicate_records, 1);
+        // Changing retained bytes, provenance or validity cannot revive a pair.
+        let mutations: [fn(&mut CompactionEvent); 4] = [
+            |event| event.before_observation.as_mut().unwrap().source_sha256 = "f".repeat(64),
+            |event| event.after_observation = None,
+            |event| event.action = "none".into(),
+            |event| event.config_sha256 = Some("e".repeat(64)),
+        ];
+        for mutate in mutations {
+            let mut other = original.clone();
+            mutate(&mut other);
+            assert!(qualified_reductions(&[original.clone(), other])
+                .reductions
+                .is_empty());
+        }
+        let mut foreign = original.clone();
+        foreign.session_id = "different-source".into();
+        assert_eq!(
+            qualified_reductions(&[original, foreign]).reductions.len(),
+            2
+        );
+    }
+
+    #[test]
+    fn direct_pair_qualification_rejects_invalid_event_provenance() {
+        let original = observed_event();
+        let mutations: [fn(&mut CompactionEvent); 7] = [
+            |event| event.binary_sha256 = Some("invalid".into()),
+            |event| event.config_sha256 = Some("A".repeat(64)),
+            |event| event.experiment_sha256 = Some("short".into()),
+            |event| event.decision_cohort = Some(Cohort::Treatment),
+            |event| event.rollout_percent = Some(101),
+            |event| event.schema = "future".into(),
+            |event| event.est_reclaimed_tokens += 1,
+        ];
+        for mutate in mutations {
+            let mut invalid = original.clone();
+            mutate(&mut invalid);
+            assert!(!valid_event(&invalid));
+            for events in [
+                vec![invalid.clone()],
+                vec![original.clone(), invalid.clone(), original.clone()],
+                vec![invalid, original.clone()],
+            ] {
+                let qualified = qualified_reductions(&events);
+                assert!(qualified.reductions.is_empty());
+                assert_eq!(qualified.conflicting_pairs, 1);
+            }
+        }
+    }
+
+    #[test]
+    fn event_reader_reports_invalid_and_oversized_records() {
+        let path = std::env::temp_dir().join(format!(
+            "gobstopper-event-read-status-{}",
+            std::process::id()
+        ));
+        let event = observed_event();
+        let mut data = serde_json::to_vec(&event).unwrap();
+        data.extend_from_slice(b"\n{torn}\n\n");
+        data.extend(std::iter::repeat_n(b'x', 16 * 1024 + 1));
+        data.push(b'\n');
+        std::fs::write(&path, data).unwrap();
+        let result = read_events_with_status(&path).unwrap();
+        assert_eq!(result.events.len(), 1);
+        assert_eq!(result.invalid_records, 1);
+        assert_eq!(result.oversized_records, 1);
+        assert_eq!(result.generations, 1);
+        assert_eq!(
+            read_events(&path).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
@@ -918,12 +1215,21 @@ mod tests {
             }
         }
 
-        // A torn write / foreign line is skipped, not fatal.
+        let events = read_events(&log).unwrap();
+        assert_eq!(events.len(), 2);
+        // A torn write stays visible as diagnostic loss and must not permit
+        // qualification of the remaining events as uncontradicted history.
         let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();
         f.write_all(b"this is not json\n\n").unwrap();
         drop(f);
 
-        let events = read_events(&log).unwrap();
+        assert_eq!(
+            read_events(&log).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        let diagnostic = read_events_with_status(&log).unwrap();
+        assert_eq!(diagnostic.invalid_records, 1);
+        let events = diagnostic.events;
         assert_eq!(events.len(), 2);
         assert_eq!(events[0].session_id, "a");
         assert_eq!(events[1].session_id, "b");
@@ -1002,5 +1308,45 @@ mod tests {
         assert!(!dir.join("small.1.jsonl").exists());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(kani)]
+mod proofs {
+    use super::EvidenceAgreement;
+
+    fn arbitrary() -> EvidenceAgreement<u64> {
+        match kani::any::<u8>() % 3 {
+            0 => EvidenceAgreement::Unseen,
+            1 => EvidenceAgreement::Agreed(kani::any()),
+            _ => EvidenceAgreement::Conflict,
+        }
+    }
+
+    #[kani::proof]
+    fn evidence_agreement_is_order_independent_and_conflict_absorbing() {
+        let a = arbitrary();
+        let b = arbitrary();
+        let c = arbitrary();
+        assert!(a.join(b) == b.join(a), "evidence join is commutative");
+        assert!(
+            a.join(b).join(c) == a.join(b.join(c)),
+            "evidence join is associative"
+        );
+        assert!(a.join(a) == a, "identical evidence replay is idempotent");
+        assert!(
+            a.join(EvidenceAgreement::Conflict) == EvidenceAgreement::Conflict,
+            "conflicting evidence cannot recover through replay"
+        );
+        let value: u64 = kani::any();
+        let other: u64 = kani::any();
+        let joined = EvidenceAgreement::Agreed(value).join(EvidenceAgreement::Agreed(other));
+        assert!(
+            (value == other) == matches!(joined, EvidenceAgreement::Agreed(_)),
+            "only identical evidence remains agreed"
+        );
+        kani::cover!(a == EvidenceAgreement::Unseen && b == EvidenceAgreement::Conflict);
+        kani::cover!(value == other && value == u64::MAX);
+        kani::cover!(value != other && matches!(joined, EvidenceAgreement::Conflict));
     }
 }

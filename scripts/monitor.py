@@ -29,7 +29,8 @@ SCHEMA = "gobstopper/local-monitor-v1"
 LOG_BYTES = 10 * 1024 * 1024
 CAPTURE_BYTES = 8 * 1024 * 1024
 EVENTS_LOG_BYTES = 16 * 1024 * 1024
-EVENT_RECORD_BYTES = 64 * 1024
+EVENT_RECORD_BYTES = 16 * 1024
+WATCH_STATE_BYTES = 4 * 1024 * 1024
 TIMEOUT_SECONDS = 45
 SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 PLAN_LINE = re.compile(rb"^\[dry-run\] codex ([A-Za-z0-9_-]{1,12}): ")
@@ -296,6 +297,9 @@ def strict_json(raw):
     def object_pairs(pairs):
         result = {}
         for key, value in pairs:
+            # Rust's JSON object reader refuses unpaired surrogate keys even
+            # for additive fields; Python otherwise accepts those escapes.
+            key.encode("utf-8")
             if key in result:
                 raise ValueError("duplicate_json_key")
             result[key] = value
@@ -304,7 +308,17 @@ def strict_json(raw):
     def invalid_constant(_value):
         raise ValueError("invalid_json_constant")
 
-    return json.loads(raw, object_pairs_hook=object_pairs, parse_constant=invalid_constant)
+    def finite_float(value):
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("invalid_json_constant")
+        return number
+
+    return json.loads(raw, object_pairs_hook=object_pairs, parse_constant=invalid_constant,
+                      parse_float=finite_float,
+                      # Serde rejects a signed zero token for unsigned fields;
+                      # do not normalize it into an accepted Python integer.
+                      parse_int=lambda value: -0.0 if value == "-0" else int(value))
 
 
 def event_log_path(environment):
@@ -319,38 +333,134 @@ def accounting_fields(value):
     state = state if state in ("absent", "unknown", "reported", "reset") else "absent"
     scope = value.get("lifetimeScope")
     scope = scope if scope in ("absent", "partial", "full") else "absent"
+    raw_reason = value.get("contextReason")
+    reasons = {"missing_component", "null_component", "malformed_component", "overflow",
+               "invalid_ancestry", "invalid_record", "read_limit", "source_changed", "source_unavailable"}
+    reason = (raw_reason if isinstance(raw_reason, str) and raw_reason in reasons else
+              None if raw_reason is None else "invalid_record")
+    raw_components = value.get("contextComponents")
+    component_keys = ("input_tokens", "cache_read_tokens", "cache_creation_tokens", "output_tokens")
+    components = ({key: number(raw_components.get(key)) for key in
+                   component_keys}
+                  if isinstance(raw_components, dict) else None)
+    if raw_components is not None and not isinstance(raw_components, dict):
+        reason = "invalid_record"
+    elif components is not None:
+        if any(raw_components.get(key) is not None and components[key] is None for key in component_keys):
+            reason = "malformed_component"
+        elif reason is None:
+            reason = "invalid_record"
+    # Complete accounting and partial components are deliberately disjoint.
+    reported = number(value.get("reportedContextTokens"))
+    complete = state == "reported" and reason is None and components is None and reported is not None
+    if state == "reported" and not complete and reason is None:
+        reason = "invalid_record"
+    subtotal = (sum(v for v in components.values() if v is not None)
+                if components and any(v is not None for v in components.values()) else None)
     return {
         "source_identity_sha256": digest(value.get("sourceIdentitySha256")),
-        "context_state": state,
-        "context_tokens": number(value.get("reportedContextTokens")) if state == "reported" else None,
+        "context_state": "unknown" if state == "reported" and not complete else state,
+        "context_tokens": reported if complete else None,
+        "context_reason": reason,
+        "context_components": components,
+        "measured_component_subtotal": number(subtotal),
+        "component_subtotal_basis": "known_numeric_components_not_complete_occupancy",
         "lifetime_scope": scope,
         "lifetime_input_tokens": number(value.get("lifetimeInputTokens")) if scope == "full" else None,
         "lifetime_cached_tokens": number(value.get("lifetimeCachedTokens")) if scope == "full" else None,
     }
 
 
-def paired_evidence(event):
-    identity = digest(event.get("source_identity_sha256"))
-    provider = event.get("provider")
-    session = event.get("session_id")
-    if (identity is None or provider not in ("codex", "claude_code", "devin")
-            or not isinstance(session, str) or not SESSION_ID.fullmatch(session)
+def valid_token_observation(value):
+    """Mirror the retained observation schema and Rust accounting invariants."""
+    keys = {"source_sha256", "source_identity_sha256", "snapshot_manifest_sha256",
+            "context_state", "context_tokens", "estimated_context_tokens", "lifetime_scope",
+            "lifetime_input_tokens", "lifetime_cached_tokens"}
+    if (not isinstance(value, dict) or value.keys() - keys
+            or digest(value.get("source_sha256")) is None
+            or digest(value.get("source_identity_sha256")) is None
+            or number(value.get("estimated_context_tokens")) is None
+            or value.get("context_state") not in ("absent", "unknown", "reported", "reset")
+            or value.get("lifetime_scope") not in ("absent", "partial", "full")):
+        return False
+    if (value.get("snapshot_manifest_sha256") is not None
+            and digest(value["snapshot_manifest_sha256"]) is None):
+        return False
+    context = value.get("context_tokens")
+    if (context is not None and number(context) is None
+            or (value["context_state"] == "reported") != (context is not None)):
+        return False
+    lifetime, cached = value.get("lifetime_input_tokens"), value.get("lifetime_cached_tokens")
+    if value["lifetime_scope"] == "full":
+        return number(lifetime) is not None and number(cached) is not None and cached <= lifetime
+    return lifetime is None and cached is None
+
+
+def valid_compaction_event(event):
+    """Match CompactionEvent deserialization plus events::valid_event.
+
+    Optional fields may be absent or null, and unknown top-level fields remain
+    additive. TokenObservation has its own closed field set. Schema validity is
+    separate from whether an event can qualify as paired retention evidence.
+    """
+    if (not isinstance(event, dict)
             or event.get("schema") != "gobstopper/compaction-events-v1"
-            or event.get("outcome") != "applied"
-            or event.get("action") not in ("provider_compact", "transcript_compact")
-            or "error_code" not in event or event["error_code"] is not None):
+            or event.get("provider") not in ("codex", "claude_code", "devin")
+            or event.get("action") not in ("provider_compact", "transcript_compact", "none")
+            or event.get("outcome") not in ("applied", "planned", "failed", "skipped", "blocked")):
+        return False
+    for key, pattern in (("session_id", r"[A-Za-z0-9_.-]{1,256}"),
+                         ("strategy", r"[A-Za-z0-9_.:-]{1,128}")):
+        if not isinstance(event.get(key), str) or not re.fullmatch(pattern, event[key]):
+            return False
+    if any(number(event.get(key)) is None for key in
+           ("ts", "trigger_tokens", "context_tokens_before", "context_tokens_after",
+            "est_reclaimed_tokens", "items_covered", "duration_ms")):
+        return False
+    if event["est_reclaimed_tokens"] != max(0, event["context_tokens_before"] - event["context_tokens_after"]):
+        return False
+    if event.get("error_code") not in (None, "io", "provider_rejected", "apply_failed",
+            "verification_failed", "custody_unavailable", "unattributed_provider_hook",
+            "unresolved_context", "native_unqualified", "spawn_failed", "parent_thread",
+            "provider_noop", "quota_limited"):
+        return False
+    if any(event.get(key) is not None and digest(event[key]) is None
+           for key in ("source_identity_sha256", "binary_sha256", "config_sha256",
+                       "experiment_sha256", "snapshot_before_sha256", "snapshot_after_sha256")):
+        return False
+    cohort, percent = event.get("decision_cohort"), event.get("rollout_percent")
+    if not ((cohort in (None, "ungated") and percent is None)
+            or (cohort in ("treatment", "control") and type(percent) is int and 0 <= percent <= 100)):
+        return False
+    for key in ("before_observation", "after_observation"):
+        if event.get(key) is not None and not valid_token_observation(event[key]):
+            return False
+    total, literal, lexical = (event.get(key) for key in
+                               ("retention_total", "retention_retained", "retention_lexical"))
+    return ((total is None and literal is None and lexical is None)
+            or (all(number(value) is not None for value in (total, literal, lexical))
+                and literal <= total and lexical <= total))
+
+
+def paired_evidence(event):
+    if not valid_compaction_event(event):
+        return None
+    identity = event.get("source_identity_sha256")
+    if (identity is None or event["outcome"] != "applied"
+            or event["action"] not in ("provider_compact", "transcript_compact")
+            or event.get("error_code") is not None):
         return None
     pair = []
     for side in ("before", "after"):
         snapshot = digest(event.get(f"snapshot_{side}_sha256"))
         observation = event.get(f"{side}_observation")
-        if (snapshot is None or not isinstance(observation, dict)
+        if (snapshot is None or not valid_token_observation(observation)
                 or observation.get("source_identity_sha256") != identity
                 or observation.get("snapshot_manifest_sha256") != snapshot
                 or digest(observation.get("source_sha256")) is None):
             return None
         pair.append(snapshot)
-    return (provider, session, identity), tuple(pair)
+    return (event["provider"], event["session_id"], identity), tuple(pair)
 
 
 def session_rows(report, sessions, previous):
@@ -427,9 +537,141 @@ def context_samples(report, sessions, providers):
     return samples
 
 
+def coverage_summary(report, sessions, providers, samples):
+    """Coverage is distinct from command success and actual watcher decisions."""
+    wanted, opted_in = set(sessions), set(providers)
+    matched, eligible, identifier_omissions, states, reasons = set(), 0, 0, {}, {}
+    for row in report.get("sessions", []):
+        if not isinstance(row, dict) or not isinstance(row.get("gobstopper"), dict):
+            continue
+        fields = row["gobstopper"]
+        session, provider = fields.get("sessionIdNative"), row.get("provider")
+        if provider not in ("codex", "claude_code", "devin"):
+            continue
+        if not isinstance(session, str) or not SESSION_ID.fullmatch(session):
+            if provider in opted_in:
+                identifier_omissions += 1
+            continue
+        if session in wanted and provider == "codex":
+            matched.add(session)
+        if provider in ("codex", "claude_code", "devin") and (session in wanted or provider in opted_in):
+            eligible += 1
+    for sample in samples:
+        state = sample["context_state"]
+        states[state] = states.get(state, 0) + 1
+        if sample["context_reason"]:
+            reason = sample["context_reason"]
+            reasons[reason] = reasons.get(reason, 0) + 1
+    extension = report.get("gobstopper", {})
+    raw_discovery = extension.get("discovery") if isinstance(extension, dict) else None
+    discovery = []
+    discovery_seen = set()
+    if isinstance(raw_discovery, list) and len(raw_discovery) <= 3:
+        for row in raw_discovery:
+            if (not isinstance(row, dict) or row.get("provider") not in ("codex", "claude_code", "devin")
+                    or row.get("source_state") not in ("available", "missing", "unavailable")
+                    or row["provider"] in discovery_seen
+                    or any(number(row.get(key)) is None for key in
+                           ("scanned", "selected", "invalid_records", "io_errors", "omitted"))
+                    or type(row.get("truncated")) is not bool
+                    or row["selected"] > row["scanned"]):
+                continue
+            discovery_seen.add(row["provider"])
+            discovery.append({"provider": row["provider"], "source_state": row["source_state"],
+                              **{key: number(row.get(key)) for key in
+                                 ("scanned", "selected", "invalid_records", "io_errors", "omitted")},
+                              "truncated": row.get("truncated") if type(row.get("truncated")) is bool else None})
+    exported = extension.get("coverage", {}) if isinstance(extension, dict) else {}
+    if not isinstance(exported, dict):
+        exported = {}
+    issues = []
+    if wanted and not matched:
+        issues.append("selected_overlap_empty")
+    if wanted - matched:
+        issues.append("selected_sessions_unavailable")
+    if any(s["context_tokens"] is None for s in samples):
+        issues.append("incomplete_context_measurements")
+    if identifier_omissions:
+        issues.append("unsupported_session_identifiers")
+    if len(discovery) != 3:
+        issues.append("discovery_status_unavailable")
+    if any(row["source_state"] != "available" or row["io_errors"] or row["invalid_records"] for row in discovery):
+        issues.append("discovery_gaps")
+    if eligible > len(samples) or exported.get("truncated") is True or any(row["truncated"] or row["omitted"] for row in discovery):
+        issues.append("coverage_truncated")
+    return {"selected_sessions": len(wanted), "selected_active_overlap": len(matched),
+            "selected_unavailable": len(wanted - matched),
+            "eligible_context_samples": eligible, "exported_context_samples": len(samples),
+            "identifier_omissions": identifier_omissions,
+            "sample_limit": 256, "samples_truncated": eligible > len(samples),
+            "context_states": states, "context_reasons": reasons,
+            "complete_context_samples": sum(s["context_tokens"] is not None for s in samples),
+            "partial_component_samples": sum(s["measured_component_subtotal"] is not None for s in samples),
+            "discovery": discovery, "discovery_available": len(discovery) == 3,
+            "report_truncated": exported.get("truncated") if type(exported.get("truncated")) is bool else None,
+            "issues": issues, "scope": "selected_codex_sessions_and_explicit_provider_opt_ins"}
+
+
+def watcher_checkpoints(runtime, binary_sha256, now_ms):
+    """Read private checkpoints only; do not load configuration or execute it."""
+    result = []
+    decisions = ("discovered", "legacy_unresolved", "native_unresolved", "settled",
+                 "cooldown", "below_trigger", "native_unqualified")
+    for provider in ("codex", "claude_code", "devin"):
+        row = {"provider": provider, "available": False, "status": "unavailable"}
+        path = runtime / ("watch-state-" + provider + ".json")
+        try:
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, "rb") as source:
+                private_file(source.fileno())
+                before = os.fstat(source.fileno())
+                raw = source.read(WATCH_STATE_BYTES + 1)
+                after = os.fstat(source.fileno())
+            identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            if len(raw) > WATCH_STATE_BYTES or identity(before) != identity(after) or identity(after) != identity(path.lstat()):
+                raise MonitorError("checkpoint_changed_or_limited")
+            value = strict_json(raw)
+            if (not isinstance(value, dict) or type(value.get("generation")) is not int or value["generation"] != 9
+                    or type(value.get("checkpoint_schema")) is not int or value["checkpoint_schema"] != 1):
+                raise MonitorError("checkpoint_schema_unavailable")
+            artifact = digest(value.get("artifact_sha256"))
+            config = digest(value.get("config_sha256"))
+            started = number(value.get("pass_started_at_ms"))
+            completed = number(value.get("pass_completed_at_ms"))
+            interval = number(value.get("interval_secs"))
+            if artifact is None or config is None or started is None or interval is None or interval == 0:
+                raise MonitorError("invalid_checkpoint")
+            if value.get("pass_completed_at_ms") is not None and completed is None:
+                raise MonitorError("invalid_checkpoint")
+            if started > now_ms or completed is not None and (completed < started or completed > now_ms):
+                raise MonitorError("checkpoint_clock_mismatch")
+            age = now_ms - (completed if completed is not None else started)
+            status = ("artifact_mismatch" if artifact != binary_sha256 else
+                      "stale" if age > max(180_000, interval * 3000) else
+                      "in_progress" if completed is None else "fresh")
+            raw_decisions = value.get("decisions", {})
+            if (not isinstance(raw_decisions, dict) or any(number(raw_decisions.get(key)) is None for key in decisions)
+                    or sum(raw_decisions[key] for key in decisions if key != "discovered") > raw_decisions["discovered"]
+                    or type(value.get("active_only")) is not bool
+                    or value.get("native_activation") not in ("unqualified", "isolated_fixtures_only")):
+                raise MonitorError("invalid_checkpoint")
+            row.update(available=True, status=status, artifact_sha256=artifact, config_sha256=config,
+                       pass_started_at_ms=started, pass_completed_at_ms=completed, age_ms=age,
+                       interval_secs=interval, active_only=value.get("active_only") if type(value.get("active_only")) is bool else None,
+                       native_activation=value.get("native_activation") if value.get("native_activation") in
+                       ("unqualified", "isolated_fixtures_only") else None,
+                       decisions={key: number(raw_decisions.get(key)) for key in decisions})
+        except FileNotFoundError:
+            row["status"] = "missing"
+        except (OSError, ValueError, TypeError, RecursionError, MonitorError):
+            row["status"] = "unavailable"
+        result.append(row)
+    return result
+
+
 def save_observation(directory, observation):
     line = (json.dumps(observation, separators=(",", ":"), sort_keys=True) + "\n").encode()
-    if len(line) > 1024 * 1024:
+    if len(line) > min(1024 * 1024, LOG_BYTES):
         raise MonitorError("observation_limit")
     for name in ("latest.json", "observations.jsonl", "observations.1.jsonl"):
         check_file(directory, name)
@@ -473,11 +715,13 @@ def retention_summary(log_path, selected):
 
     Counts and flagged native IDs only. Duplicate records do not multiply a
     measurement; conflicting tallies for one exact pair exclude that pair.
+    Invalid history makes qualification unavailable for the entire observation,
+    since an invalid record may contradict an otherwise accepted evidence pair.
     This reads one bounded local generation, not a lifetime retention total.
     """
     out = {"measured": 0, "checks": 0, "literal": 0, "lexical": 0,
            "lossy_sessions": [], "available": False, "error": None,
-           "invalid_records": 0, "conflicting_pairs": 0}
+           "invalid_records": 0, "oversized_records": 0, "conflicting_pairs": 0}
     try:
         fd = os.open(log_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as log:
@@ -495,24 +739,25 @@ def retention_summary(log_path, selected):
         if data and not data.endswith(b"\n"):
             out["error"] = "event_log_incomplete"
             return out
-        lines = data.decode("utf-8").splitlines()
     except FileNotFoundError:
         out["error"] = "event_log_absent"
         return out
-    except (OSError, UnicodeError):
+    except OSError:
         out["error"] = "event_log_unavailable"
         return out
-    out["available"] = True
     pairs = {}
-    for line in lines:
+    for line in data.split(b"\n"):
+        if len(line) > EVENT_RECORD_BYTES:
+            out["oversized_records"] += 1
+            continue
+        if not line.strip(b" \t\n\r\f"):
+            continue
         try:
-            if len(line.encode("utf-8")) > EVENT_RECORD_BYTES:
-                raise ValueError("event_record_limit")
-            event = strict_json(line)
-        except (ValueError, RecursionError):
+            event = strict_json(line.decode("utf-8"))
+        except (ValueError, UnicodeError, RecursionError):
             out["invalid_records"] += 1
             continue
-        if not isinstance(event, dict):
+        if not valid_compaction_event(event):
             out["invalid_records"] += 1
             continue
         evidence = paired_evidence(event)
@@ -521,9 +766,7 @@ def retention_summary(log_path, selected):
         total, literal = event.get("retention_total"), event.get("retention_retained")
         lexical = event.get("retention_lexical")
         values = (total, literal, lexical)
-        if not all(type(v) is int and 0 <= v <= 100_000 for v in values):
-            continue
-        if literal > total or lexical > total:
+        if total is None:
             continue
         # A manifest identifies one exact byte sequence. Conflicting source
         # hashes for the same manifests invalidate the pair, not a new sample.
@@ -533,6 +776,10 @@ def retention_summary(log_path, selected):
             pairs[evidence] = None
         else:
             pairs[evidence] = values
+    if out["invalid_records"] or out["oversized_records"]:
+        out["error"] = "event_log_invalid"
+        return out
+    out["available"] = True
     seen_lossy = set()
     for (identity, _pair), values in pairs.items():
         if values is None:
@@ -540,9 +787,10 @@ def retention_summary(log_path, selected):
             continue
         total, literal, lexical = values[:3]
         out["measured"] += 1
-        out["checks"] += total
-        out["literal"] += literal
-        out["lexical"] += lexical
+        # Preserve the CLI's saturating u64 aggregate contract even when each
+        # individually valid denominator is near the schema's numeric limit.
+        for key, value in (("checks", total), ("literal", literal), ("lexical", lexical)):
+            out[key] = min(2**64 - 1, out[key] + value)
         session = identity[1]
         if total and lexical * 2 < total and session not in seen_lossy:
             seen_lossy.add(session)
@@ -620,6 +868,7 @@ def observe(binary, output_dir, sessions, providers=()):
                                             and report_status["available"] and not ambiguous_plan else None),
                              "scope": "allowlisted_sessions", "policy": "built_in_defaults"})
         samples = context_samples(report, sessions, providers)
+        coverage = coverage_summary(report, sessions, providers, samples)
         # Retention uses the selected report's exact provider/store/session
         # identity, not a native ID that a foreign store can also contain.
         selected = {(s["provider"], s["session_id"], s["source_identity_sha256"])
@@ -633,6 +882,9 @@ def observe(binary, output_dir, sessions, providers=()):
             "watch": watch_status,
             "sessions": session_rows(report, sessions, previous),
             "context_samples": samples,
+            "coverage": coverage,
+            "watcher_checkpoints": watcher_checkpoints(event_log_path(environment).parent, digest,
+                                                       time.time_ns() // 1_000_000),
             "retention": retention_summary(event_log_path(environment), selected),
         }
         save_observation(directory, observation)

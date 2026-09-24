@@ -25,7 +25,7 @@ def log(suite):
 class AdmissionTests(unittest.TestCase):
     def test_exact_inventory_and_budget(self):
         suites = check.admitted_inventory(document())
-        self.assertEqual(sum(len(s["tests"]) for s in suites), 127)
+        self.assertEqual(sum(len(s["tests"]) for s in suites), 158)
         for mutate in (lambda d:d["suites"].pop(),
                        lambda d:d["suites"][0]["argv"].append("--ignored"),
                        lambda d:d["suites"][0].update(seconds=999999),

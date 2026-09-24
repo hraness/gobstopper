@@ -151,10 +151,12 @@ fn unqualified_native_activation_never_runs_a_provider_or_creates_a_journal() {
     );
     assert!(!f.0.join("codex/requests.log").exists());
     assert!(!f.0.join("data/gobstopper/native-operations-v1").exists());
+    assert!(!f.0.join("data/gobstopper/vault").exists());
     assert_eq!(fs::read(&source).unwrap(), original);
     let events = f.events();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0]["error_code"], "native_unqualified");
+    assert_eq!(events[0]["outcome"], "blocked");
     assert_eq!(events[0]["est_reclaimed_tokens"], 0);
 
     // An arbitrary executable and an environment selector do not provide a
@@ -180,6 +182,334 @@ fn unqualified_native_activation_never_runs_a_provider_or_creates_a_journal() {
         assert!(!f.0.join("data/gobstopper/native-operations-v1").exists());
         assert_eq!(fs::read(&source).unwrap(), original);
     }
+}
+
+#[test]
+fn unqualified_watch_suppresses_restarts_but_rechecks_source_policy_and_artifact() {
+    let f = Fixture::new();
+    let source = f.0.join("codex/sessions/rollout-fixture.jsonl");
+    f.idle(&source);
+    let _configured = f.native_codex("lower");
+    let run = || {
+        let output = f
+            .command(&["watch", "--once", "--provider", "codex"])
+            .env_remove("GOBSTOPPER_NATIVE_FIXTURE_ROOT")
+            .env("GOBSTOPPER_CODEX_BIN", "/not-a-provider")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(!f.0.join("codex/requests.log").exists());
+        assert!(!f.0.join("data/gobstopper/vault").exists());
+        assert!(!f.0.join("data/gobstopper/native-operations-v1").exists());
+    };
+    run();
+    let state_path = f.0.join("data/gobstopper/watch-state-codex.json");
+    let first: serde_json::Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert_eq!(first["checkpoint_schema"], 1);
+    assert_eq!(first["artifact_sha256"].as_str().unwrap().len(), 64);
+    assert!(first["pass_started_at_ms"].as_u64().unwrap() > 0);
+    assert!(
+        first["pass_completed_at_ms"].as_u64().unwrap()
+            >= first["pass_started_at_ms"].as_u64().unwrap()
+    );
+    assert_eq!(first["decisions"]["native_unqualified"], 1);
+    assert_eq!(f.events().len(), 1);
+    run();
+    assert_eq!(
+        f.events().len(),
+        1,
+        "unchanged restart must not repeat refusal"
+    );
+    let second: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    assert_eq!(second["decisions"]["settled"], 1);
+    assert_eq!(second["decisions"]["native_unqualified"], 0);
+
+    let mut transcript = fs::read_to_string(&source).unwrap();
+    transcript.push_str("{\"type\":\"event_msg\",\"payload\":{\"type\":\"user_message\",\"message\":\"synthetic change\"}}\n");
+    fs::write(&source, transcript).unwrap();
+    f.idle(&source);
+    let expected_source = fs::read(&source).unwrap();
+    run();
+    assert_eq!(f.events().len(), 2);
+    let config = f.0.join("config/gobstopper/config.toml");
+    fs::write(
+        &config,
+        fs::read_to_string(&config)
+            .unwrap()
+            .replace("trigger_tokens=1000", "trigger_tokens=999"),
+    )
+    .unwrap();
+    run();
+    assert_eq!(f.events().len(), 3);
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    state["artifact_sha256"] = serde_json::json!("0".repeat(64));
+    fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    run();
+    assert_eq!(
+        f.events().len(),
+        4,
+        "a different admitted artifact invalidates terminal cache"
+    );
+    assert_eq!(fs::read(&source).unwrap(), expected_source);
+
+    // A stale artifact/config cache never clears legacy unknown outcomes.
+    let mut state: serde_json::Value =
+        serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+    let key = state["settled"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .next()
+        .unwrap()
+        .clone();
+    state["artifact_sha256"] = serde_json::json!("1".repeat(64));
+    state["legacy_unresolved"] = serde_json::json!([key]);
+    fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    run();
+    assert_eq!(f.events().len(), 4);
+    let state: serde_json::Value = serde_json::from_slice(&fs::read(state_path).unwrap()).unwrap();
+    assert_eq!(state["legacy_unresolved"].as_array().unwrap().len(), 1);
+    assert_eq!(state["decisions"]["legacy_unresolved"], 1);
+}
+
+#[test]
+fn unqualified_watch_preserves_control_cohort_before_artifact_refusal() {
+    for unknown in [false, true] {
+        let f = Fixture::new();
+        let source = f.0.join("codex/sessions/rollout-fixture.jsonl");
+        if unknown {
+            // No complete reading exists. A fallback parse would estimate zero and
+            // skip below-trigger instead of recording the known control decision.
+            fs::write(&source, "{\"type\":\"session_meta\",\"payload\":{\"id\":\"11111111-1111-4111-8111-111111111111\"}}\n").unwrap();
+        }
+        f.idle(&source);
+        let original = fs::read(&source).unwrap();
+        let _configured = f.native_codex("lower");
+        let config = f.0.join("config/gobstopper/config.toml");
+        let mut control = fs::read_to_string(&config).unwrap();
+        control.push_str("\n[rollout]\ncodex=0\n");
+        fs::write(&config, &control).unwrap();
+        let run = || {
+            let output = f
+                .command(&["watch", "--once", "--provider", "codex"])
+                .env_remove("GOBSTOPPER_NATIVE_FIXTURE_ROOT")
+                .env("GOBSTOPPER_CODEX_BIN", "/not-a-provider")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "{}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            assert_eq!(fs::read(&source).unwrap(), original);
+            assert!(!f.0.join("data/gobstopper/vault").exists());
+            assert!(!f.0.join("data/gobstopper/native-operations-v1").exists());
+            assert!(!f.0.join("codex/requests.log").exists());
+        };
+        run();
+        let events = f.events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["outcome"], "skipped");
+        assert_eq!(events[0]["strategy"], "watch-native:control");
+        assert_eq!(
+            events[0]["error_code"],
+            if unknown {
+                serde_json::json!("unresolved_context")
+            } else {
+                serde_json::Value::Null
+            }
+        );
+        assert_eq!(events[0]["decision_cohort"], "control");
+        run();
+        assert_eq!(f.events().len(), 1, "unchanged controls remain settled");
+        fs::write(&config, control.replace("codex=0", "codex=100")).unwrap();
+        run();
+        let events = f.events();
+        assert_eq!(
+            events.len(),
+            2,
+            "changed assignment invalidates the terminal cache"
+        );
+        assert_eq!(events[1]["outcome"], "blocked");
+        assert_eq!(events[1]["error_code"], "native_unqualified");
+        assert_eq!(events[1]["decision_cohort"], "treatment");
+    }
+}
+
+/// The current-context projection is valid, but a full fallback/export fails
+/// on the oldest payload. Native refusal/delegation must not read that payload.
+fn poisoned_devin_source(f: &Fixture, active: bool) -> PathBuf {
+    use rusqlite::{params, Connection};
+    fs::create_dir_all(f.0.join("devin")).unwrap();
+    let path = f.0.join("devin/sessions.db");
+    let conn = Connection::open(&path).unwrap();
+    conn.execute_batch(
+        "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, working_directory TEXT, created_at INTEGER, last_activity_at INTEGER, main_chain_id INTEGER);
+         CREATE TABLE message_nodes (session_id TEXT, node_id INTEGER, parent_node_id INTEGER, chat_message TEXT, created_at INTEGER, metadata TEXT);
+         CREATE INDEX nodes_by_session ON message_nodes(session_id, node_id);"
+    ).unwrap();
+    let idle = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        - if active { 0 } else { 600 };
+    conn.execute(
+        "INSERT INTO sessions VALUES ('synthetic-devin', 'fixture', '/synthetic', ?1, ?1, 32)",
+        [idle],
+    )
+    .unwrap();
+    for node in 0..33i64 {
+        // The bounded current-context projection skips this oldest payload.
+        // Full transcript fallback/export would encounter invalid JSON instead
+        // of producing the expected refusal or delegation decision.
+        let message = if node == 0 {
+            "not-json".to_string()
+        } else {
+            serde_json::json!({"message_id":format!("m{node}"), "role":"assistant", "content":"synthetic", "metadata":{"metrics":null}}).to_string()
+        };
+        conn.execute(
+            "INSERT INTO message_nodes VALUES ('synthetic-devin', ?1, ?2, ?3, ?4, NULL)",
+            params![
+                node,
+                if node == 0 { None } else { Some(node - 1) },
+                message,
+                idle
+            ],
+        )
+        .unwrap();
+    }
+    drop(conn);
+    path
+}
+
+#[test]
+fn unqualified_devin_unknown_context_never_exports_or_snapshots() {
+    let f = Fixture::new();
+    fs::write(
+        f.0.join("config/gobstopper/config.toml"),
+        "[provider.devin]\nauto_compact_closed=true\n",
+    )
+    .unwrap();
+    let path = poisoned_devin_source(&f, false);
+    let original = fs::read(&path).unwrap();
+    let vault = f.0.join("data/gobstopper/vault");
+    fs::create_dir_all(&vault).unwrap();
+    // A disabled dispatch must not even inspect a pre-existing vault/index to
+    // learn that it is disabled, and it must preserve unrelated recovery bytes.
+    fs::write(vault.join("index.jsonl"), "synthetic existing index\n").unwrap();
+    fs::write(vault.join("retained-object"), "synthetic recovery bytes").unwrap();
+    let provider = f.0.join("devin-provider-sentinel");
+    fs::write(
+        &provider,
+        b"#!/bin/sh\nprintf 'called' > \"$XDG_DATA_HOME/provider-called\"\nexit 99\n",
+    )
+    .unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&provider, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    for _ in 0..3 {
+        let output = f
+            .command(&["watch", "--once", "--provider", "devin"])
+            .env("GOBSTOPPER_DEVIN_BIN", &provider)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(&path).unwrap(), original);
+        assert_eq!(
+            fs::read_to_string(vault.join("index.jsonl")).unwrap(),
+            "synthetic existing index\n"
+        );
+        assert_eq!(
+            fs::read_to_string(vault.join("retained-object")).unwrap(),
+            "synthetic recovery bytes"
+        );
+        assert_eq!(fs::read_dir(&vault).unwrap().count(), 2);
+        assert!(!f.0.join("data/provider-called").exists());
+        assert!(!f.0.join("data/gobstopper/native-operations-v1").exists());
+    }
+    let events = f.events();
+    assert_eq!(events.len(), 1);
+    assert_eq!(events[0]["outcome"], "blocked");
+    assert_eq!(events[0]["error_code"], "native_unqualified");
+    assert_eq!(events[0]["context_tokens_before"], 0);
+    assert!(events[0]["snapshot_before_sha256"].is_null());
+}
+
+#[test]
+fn active_auto_unknown_devin_delegates_without_export_or_snapshot() {
+    use rusqlite::Connection;
+    let f = Fixture::new();
+    let path = poisoned_devin_source(&f, true);
+    fs::write(f.0.join("config/gobstopper/config.toml"), "[policy]\ntrigger_tokens=1000\nfloor_tokens=100\nmin_interval_secs=0\napply_hold_secs=0\n[provider.devin]\nauto_compact_closed=true\n").unwrap();
+    let run = |expected: &[u8]| {
+        let output = f
+            .command(&["watch", "--once", "--provider", "devin"])
+            .env_remove("GOBSTOPPER_NATIVE_FIXTURE_ROOT")
+            .env("GOBSTOPPER_DEVIN_BIN", "/not-a-provider")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(fs::read(&path).unwrap(), expected);
+        assert!(!f.0.join("data/gobstopper/vault").exists());
+        assert!(!f.0.join("data/gobstopper/native-operations-v1").exists());
+    };
+    let original = fs::read(&path).unwrap();
+    for _ in 0..3 {
+        run(&original);
+    }
+    let events = f.events();
+    assert_eq!(
+        events.len(),
+        1,
+        "unchanged unknown source must not repeat delegation"
+    );
+    for event in &events {
+        assert_eq!(event["strategy"], "auto");
+        assert_eq!(event["action"], "provider_compact");
+        assert_eq!(event["outcome"], "skipped");
+        assert_eq!(event["error_code"], "unresolved_context");
+        assert_eq!(event["decision_cohort"], "ungated");
+        assert_eq!(event["context_tokens_before"], 0);
+        assert_eq!(event["context_tokens_after"], 0);
+        assert_eq!(event["est_reclaimed_tokens"], 0);
+        assert!(event["snapshot_before_sha256"].is_null());
+    }
+    let conn = Connection::open(&path).unwrap();
+    let changed = serde_json::json!({"message_id":"m32","role":"assistant","content":"synthetic","metadata":{"metrics":{"input_tokens":100,"output_tokens":1,"cache_creation_tokens":null}}});
+    conn.execute(
+        "UPDATE message_nodes SET chat_message=?1 WHERE node_id=32",
+        [changed.to_string()],
+    )
+    .unwrap();
+    drop(conn);
+    let current = fs::read(&path).unwrap();
+    run(&current);
+    let events = f.events();
+    assert_eq!(
+        events.len(),
+        2,
+        "changed partial metrics invalidate unknown delegation cache"
+    );
+    assert_eq!(events[1]["outcome"], "skipped");
+    assert_eq!(events[1]["error_code"], "unresolved_context");
+    assert_eq!(events[1]["decision_cohort"], "ungated");
+    assert_eq!(events[1]["est_reclaimed_tokens"], 0);
 }
 
 #[test]
@@ -464,6 +794,9 @@ fn native_dispatch_checkpoints_unknown_outcome_before_starting_provider() {
         .success());
     let state: serde_json::Value =
         serde_json::from_slice(&fs::read(f.0.join("codex/dispatch-state.json")).unwrap()).unwrap();
+    assert_eq!(state["checkpoint_schema"], 1);
+    assert!(state["pass_started_at_ms"].as_u64().unwrap() > 0);
+    assert!(state["pass_completed_at_ms"].is_null());
     let holds = state["holddown"].as_object().unwrap();
     assert_eq!(holds.len(), 1);
     let now = std::time::SystemTime::now()

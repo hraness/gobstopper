@@ -30,14 +30,16 @@ SEED = 0x6a09e667f3bcc909
 SUITES = {
     "sequence": ("gobstopper-adapters", ["--test", "sequence"], 1, 150),
     "storage": ("gobstopper-adapters", ["--lib", "storage_tests::"], 16, 180),
-    "journal": ("gobstopper", ["--bin", "gobstopper", "native_operations::tests::"], 9, 180),
-    "watch": ("gobstopper", ["--test", "watch"], 24, 180),
+    "vault-metadata": ("gobstopper-adapters", ["--lib", "vault::accounting::tests::"], 12, 90),
+    "vault-accounting-cli": ("gobstopper", ["--test", "vault_accounting"], 2, 90),
+    "journal": ("gobstopper", ["--bin", "gobstopper", "native_operations::tests::"], 10, 180),
+    "watch": ("gobstopper", ["--test", "watch"], 28, 180),
     "claude-process": ("gobstopper-adapters", ["--test", "native_process"], 2, 60),
     "acp-process": ("gobstopper-adapters", ["--lib", "devin::tests::acp_"], 10, 90),
     "codex-process": ("gobstopper", ["--bin", "gobstopper", "tests::codex_"], 11, 90),
     "plugins": ("gobstopper-adapters", ["--test", "plugin_contract"], 11, 90),
-    "events": ("gobstopper-core", ["--lib", "events::tests::"], 12, 60),
-    "monitor": (None, ["scripts/test_monitor.py", "-v"], 31, 90),
+    "events": ("gobstopper-core", ["--lib", "events::tests::"], 15, 60),
+    "monitor": (None, ["scripts/test_monitor.py", "-v"], 40, 90),
 }
 
 

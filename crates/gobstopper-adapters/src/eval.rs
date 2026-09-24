@@ -54,11 +54,7 @@ pub fn token_observation(
     let full = transcript.usage.lifetime_scope == gobstopper_core::model::LifetimeScope::Full;
     let observation = gobstopper_core::events::TokenObservation {
         source_sha256: crate::copy::sha256(bytes),
-        source_identity_sha256: crate::copy::sha256(&serde_json::to_vec(&(
-            handle.provider,
-            &handle.session_id,
-            &canonical,
-        ))?),
+        source_identity_sha256: crate::detect::source_identity(handle)?,
         snapshot_manifest_sha256: snapshot_manifest_sha256.map(str::to_owned),
         context_state: transcript.usage.context_state,
         context_tokens: transcript.usage.reported_context(),

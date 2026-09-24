@@ -1911,7 +1911,7 @@
         "vault-read",
         "output"
       ],
-      "contract": "Requested snapshot metadata, optionally exact session scope.",
+      "contract": "Requested snapshot metadata, optionally exact session scope; --stats reports bounded read-only non-atomic logical-byte and index accounting without object content or reclamation claims.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2739,6 +2739,13 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/detect.rs",
+      "symbol": "discover_cached_with_status",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/detect.rs",
       "symbol": "find",
       "effects": [
         "inspect"
@@ -2760,7 +2767,21 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/detect.rs",
+      "symbol": "new",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/detect.rs",
       "symbol": "sniff_provider",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/detect.rs",
+      "symbol": "source_identity",
       "effects": [
         "inspect"
       ]
@@ -2817,6 +2838,13 @@
     {
       "path": "crates/gobstopper-adapters/src/devin.rs",
       "symbol": "discover",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/devin.rs",
+      "symbol": "discover_with_status",
       "effects": [
         "inspect"
       ]
@@ -3471,6 +3499,28 @@
       ]
     },
     {
+      "path": "crates/gobstopper-adapters/src/vault/accounting.rs",
+      "symbol": "inspect",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/vault/accounting.rs",
+      "symbol": "scan",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/vault/accounting.rs",
+      "symbol": "scan_with_hook",
+      "effects": [
+        "inspect",
+        "test-fixture"
+      ]
+    },
+    {
       "path": "crates/gobstopper-adapters/src/verify.rs",
       "symbol": "verify",
       "effects": [
@@ -3873,6 +3923,20 @@
     },
     {
       "path": "crates/gobstopper-cli/src/native_operations.rs",
+      "symbol": "artifact_activation_status",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/native_operations.rs",
+      "symbol": "artifact_sha256",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/native_operations.rs",
       "symbol": "binary",
       "effects": [
         "pure"
@@ -3881,6 +3945,13 @@
     {
       "path": "crates/gobstopper-cli/src/native_operations.rs",
       "symbol": "check_activation",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/native_operations.rs",
+      "symbol": "check_artifact_activation",
       "effects": [
         "inspect"
       ]
@@ -3998,6 +4069,20 @@
       ]
     },
     {
+      "path": "crates/gobstopper-cli/src/telemetry.rs",
+      "symbol": "annotate",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/telemetry.rs",
+      "symbol": "new",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
       "path": "crates/gobstopper-core/src/admission.rs",
       "symbol": "add_digest_bytes",
       "effects": [
@@ -4104,6 +4189,13 @@
     },
     {
       "path": "crates/gobstopper-core/src/events.rs",
+      "symbol": "join",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/events.rs",
       "symbol": "new",
       "effects": [
         "pure"
@@ -4111,7 +4203,21 @@
     },
     {
       "path": "crates/gobstopper-core/src/events.rs",
+      "symbol": "qualified_reductions",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/events.rs",
       "symbol": "read_events",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/events.rs",
+      "symbol": "read_events_with_status",
       "effects": [
         "inspect"
       ]
@@ -4126,6 +4232,13 @@
     {
       "path": "crates/gobstopper-core/src/model.rs",
       "symbol": "as_str",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/model.rs",
+      "symbol": "complete_total",
       "effects": [
         "pure"
       ]
@@ -4167,6 +4280,13 @@
     },
     {
       "path": "crates/gobstopper-core/src/model.rs",
+      "symbol": "invalidate_context_because",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/model.rs",
       "symbol": "is_active",
       "effects": [
         "pure"
@@ -4175,6 +4295,27 @@
     {
       "path": "crates/gobstopper-core/src/model.rs",
       "symbol": "is_elidable",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/model.rs",
+      "symbol": "measured_component_subtotal",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/model.rs",
+      "symbol": "measured_subtotal",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/model.rs",
+      "symbol": "observe_context_components",
       "effects": [
         "pure"
       ]

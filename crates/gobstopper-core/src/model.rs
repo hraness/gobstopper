@@ -126,6 +126,59 @@ pub enum LifetimeScope {
     Full,
 }
 
+/// A closed explanation for unavailable complete context accounting. These
+/// values describe evidence, never provider content or a billing conclusion.
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextReason {
+    MissingComponent,
+    NullComponent,
+    MalformedComponent,
+    Overflow,
+    InvalidAncestry,
+    InvalidRecord,
+    ReadLimit,
+    SourceChanged,
+    SourceUnavailable,
+}
+
+/// Metrics from one assistant message under the adapter's accounting dialect.
+/// Unknown slots remain unknown; adapters retain their existing zero convention
+/// for omitted optional counters, which does not extend to explicit null.
+/// The sum of known slots is a measured-component subtotal,
+/// not a claim about complete occupancy, a lower bound, or charged usage.
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ContextComponents {
+    pub input_tokens: Option<u64>,
+    pub cache_read_tokens: Option<u64>,
+    pub cache_creation_tokens: Option<u64>,
+    pub output_tokens: Option<u64>,
+}
+
+impl ContextComponents {
+    pub fn measured_subtotal(&self) -> Option<u64> {
+        if self.input_tokens.is_none()
+            && self.cache_read_tokens.is_none()
+            && self.cache_creation_tokens.is_none()
+            && self.output_tokens.is_none()
+        {
+            return None;
+        }
+        self.input_tokens
+            .unwrap_or(0)
+            .checked_add(self.cache_read_tokens.unwrap_or(0))?
+            .checked_add(self.cache_creation_tokens.unwrap_or(0))?
+            .checked_add(self.output_tokens.unwrap_or(0))
+    }
+
+    pub fn complete_total(&self) -> Option<u64> {
+        self.input_tokens?
+            .checked_add(self.cache_read_tokens?)?
+            .checked_add(self.cache_creation_tokens?)?
+            .checked_add(self.output_tokens?)
+    }
+}
+
 /// Point-in-time token accounting extracted from provider records.
 #[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct UsageSample {
@@ -141,6 +194,12 @@ pub struct UsageSample {
     pub context_state: ContextState,
     #[serde(default)]
     pub lifetime_scope: LifetimeScope,
+    /// Retained only for an incomplete component reading; never substitute this
+    /// for `context_tokens` or use it to qualify a before/after reduction.
+    #[serde(default)]
+    pub context_components: Option<ContextComponents>,
+    #[serde(default)]
+    pub context_reason: Option<ContextReason>,
 }
 
 impl UsageSample {
@@ -159,6 +218,8 @@ impl UsageSample {
         if let Some(context) = context {
             self.context_tokens = context;
             self.context_state = ContextState::Reported;
+            self.context_components = None;
+            self.context_reason = None;
         }
         if let Some(input) = input {
             self.lifetime_input_tokens = input;
@@ -176,15 +237,64 @@ impl UsageSample {
     pub fn reset_context(&mut self) {
         self.context_tokens = 0;
         self.context_state = ContextState::Reset;
+        self.context_components = None;
+        self.context_reason = None;
     }
 
     pub fn invalidate_context(&mut self) {
         self.context_tokens = 0;
         self.context_state = ContextState::Unknown;
+        self.context_components = None;
+        self.context_reason = None;
+    }
+
+    pub fn invalidate_context_because(&mut self, reason: ContextReason) {
+        self.invalidate_context();
+        self.context_reason = Some(reason);
+    }
+
+    /// Only all present, representable components with no parser uncertainty
+    /// establish complete accounting. A null or malformed slot is not zero.
+    pub fn observe_context_components(
+        &mut self,
+        components: ContextComponents,
+        reason: Option<ContextReason>,
+    ) {
+        if let Some(total) = components.complete_total().filter(|_| reason.is_none()) {
+            self.context_tokens = total;
+            self.context_state = ContextState::Reported;
+            self.context_components = None;
+            self.context_reason = None;
+            return;
+        }
+        self.invalidate_context();
+        self.context_components = Some(components);
+        self.context_reason = Some(
+            if components.measured_subtotal().is_none()
+                && (components.input_tokens.is_some()
+                    || components.cache_read_tokens.is_some()
+                    || components.cache_creation_tokens.is_some()
+                    || components.output_tokens.is_some())
+            {
+                ContextReason::Overflow
+            } else {
+                reason.unwrap_or(ContextReason::MissingComponent)
+            },
+        );
+    }
+
+    pub fn measured_component_subtotal(&self) -> Option<u64> {
+        if self.context_state != ContextState::Unknown || self.context_reason.is_none() {
+            return None;
+        }
+        self.context_components?.measured_subtotal()
     }
 
     pub fn reported_context(&self) -> Option<u64> {
-        (self.context_state == ContextState::Reported).then_some(self.context_tokens)
+        (self.context_state == ContextState::Reported
+            && self.context_reason.is_none()
+            && self.context_components.is_none())
+        .then_some(self.context_tokens)
     }
 }
 
@@ -264,6 +374,7 @@ mod accounting_tests {
             model_context_window: Some(200_000),
             context_state: ContextState::Reported,
             lifetime_scope: LifetimeScope::Full,
+            ..Default::default()
         };
         usage.observe_cumulative_report(None, None, None, Some(0));
         assert_eq!(usage.context_tokens, u64::MAX);
@@ -277,6 +388,71 @@ mod accounting_tests {
         assert_eq!(usage, first);
         usage.observe_cumulative_report(None, Some(0), None, None);
         assert_eq!(usage.lifetime_cached_tokens, 0);
+    }
+
+    #[test]
+    fn partial_components_never_claim_complete_context_and_do_not_survive_reset() {
+        let components = ContextComponents {
+            input_tokens: Some(100),
+            cache_read_tokens: Some(900),
+            cache_creation_tokens: None,
+            output_tokens: Some(5),
+        };
+        let mut usage = UsageSample::default();
+        usage.observe_context_components(components, Some(ContextReason::NullComponent));
+        assert_eq!(usage.context_state, ContextState::Unknown);
+        assert_eq!(usage.context_tokens, 0);
+        assert_eq!(usage.reported_context(), None);
+        assert_eq!(usage.measured_component_subtotal(), Some(1005));
+        assert_eq!(usage.context_components, Some(components));
+        assert_eq!(usage.context_reason, Some(ContextReason::NullComponent));
+        let mut inconsistent = usage;
+        inconsistent.context_state = ContextState::Reported;
+        assert_eq!(inconsistent.reported_context(), None);
+        inconsistent.context_reason = None;
+        assert_eq!(inconsistent.reported_context(), None);
+        usage.reset_context();
+        assert_eq!(usage.context_components, None);
+        assert_eq!(usage.context_reason, None);
+        assert_eq!(usage.measured_component_subtotal(), None);
+        usage.observe_context_components(components, None);
+        assert_eq!(usage.context_reason, Some(ContextReason::MissingComponent));
+        usage.invalidate_context();
+        assert_eq!(usage.context_components, None);
+        assert_eq!(usage.context_reason, None);
+    }
+
+    #[test]
+    fn component_zero_absence_and_overflow_have_distinct_meanings() {
+        let mut usage = UsageSample::default();
+        usage.observe_context_components(ContextComponents::default(), None);
+        assert_eq!(usage.reported_context(), None);
+        assert_eq!(usage.measured_component_subtotal(), None);
+        let zero = ContextComponents {
+            input_tokens: Some(0),
+            cache_read_tokens: Some(0),
+            cache_creation_tokens: Some(0),
+            output_tokens: Some(0),
+        };
+        usage.observe_context_components(zero, None);
+        assert_eq!(usage.reported_context(), Some(0));
+        assert_eq!(usage.context_components, None);
+        assert_eq!(usage.context_reason, None);
+        usage.observe_context_components(
+            ContextComponents {
+                input_tokens: Some(u64::MAX),
+                output_tokens: Some(1),
+                ..zero
+            },
+            None,
+        );
+        assert_eq!(usage.reported_context(), None);
+        assert_eq!(usage.measured_component_subtotal(), None);
+        assert_eq!(usage.context_reason, Some(ContextReason::Overflow));
+        usage.observe_cumulative_report(Some(0), None, None, None);
+        assert_eq!(usage.reported_context(), Some(0));
+        assert_eq!(usage.context_components, None);
+        assert_eq!(usage.context_reason, None);
     }
 
     #[test]
@@ -339,6 +515,7 @@ mod proofs {
                 1 => LifetimeScope::Partial,
                 _ => LifetimeScope::Full,
             },
+            ..Default::default()
         };
         let before = usage;
         let context: Option<u64> = kani::any();
@@ -472,5 +649,72 @@ mod proofs {
         );
         assert_eq!(unknown.lifetime_scope, before.lifetime_scope);
         assert_eq!(unknown.model_context_window, before.model_context_window);
+
+        // This exercises the production component normalizer over full-width
+        // values, including unknown slots and arithmetic overflow. It is not a
+        // proof of a provider's additive metric contract.
+        let components = ContextComponents {
+            input_tokens: kani::any(),
+            cache_read_tokens: kani::any(),
+            cache_creation_tokens: kani::any(),
+            output_tokens: kani::any(),
+        };
+        let explicit_unknown: bool = kani::any();
+        let mut partial = before;
+        partial.observe_context_components(
+            components,
+            explicit_unknown.then_some(ContextReason::NullComponent),
+        );
+        let complete = components
+            .input_tokens
+            .zip(components.cache_read_tokens)
+            .zip(components.cache_creation_tokens)
+            .zip(components.output_tokens)
+            .and_then(|(((input, read), creation), output)| {
+                input
+                    .checked_add(read)?
+                    .checked_add(creation)?
+                    .checked_add(output)
+            });
+        assert_eq!(
+            partial.reported_context(),
+            complete.filter(|_| !explicit_unknown),
+            "partial component evidence is never complete context"
+        );
+        assert_eq!(partial.lifetime_input_tokens, before.lifetime_input_tokens);
+        assert_eq!(
+            partial.lifetime_cached_tokens,
+            before.lifetime_cached_tokens
+        );
+        assert_eq!(partial.lifetime_scope, before.lifetime_scope);
+        assert_eq!(partial.model_context_window, before.model_context_window);
+        if partial.reported_context().is_none() {
+            assert_eq!(partial.context_tokens, 0);
+            assert!(partial.context_reason.is_some());
+            assert_eq!(partial.context_components, Some(components));
+        } else {
+            assert_eq!(partial.context_reason, None);
+            assert_eq!(partial.context_components, None);
+        }
+        kani::cover!(
+            components.input_tokens == Some(7)
+                && components.cache_creation_tokens.is_none()
+                && partial.measured_component_subtotal() == Some(7),
+            "known components survive unknown cache creation"
+        );
+        kani::cover!(
+            components.input_tokens == Some(u64::MAX)
+                && components.output_tokens == Some(1)
+                && partial.context_reason == Some(ContextReason::Overflow),
+            "component overflow is unavailable"
+        );
+        kani::cover!(
+            partial.reported_context() == Some(0),
+            "complete component zero remains measured zero"
+        );
+        partial.reset_context();
+        assert_eq!(partial.measured_component_subtotal(), None);
+        assert_eq!(partial.context_components, None);
+        assert_eq!(partial.context_reason, None);
     }
 }

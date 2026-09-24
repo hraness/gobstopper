@@ -11,6 +11,7 @@ mod mcp;
 mod native_operations;
 mod report;
 mod secrets;
+mod telemetry;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -272,6 +273,9 @@ enum Cmd {
     Vault {
         /// Optional session id prefix or path to filter by.
         session: Option<String>,
+        /// Inspect bounded storage sizes and index counts without reading object contents.
+        #[arg(long, conflicts_with = "session")]
+        stats: bool,
         #[arg(long)]
         json: bool,
     },
@@ -652,76 +656,21 @@ fn recent_applied(handle: &SessionHandle) -> Vec<(u64, u64)> {
 }
 
 fn recent_applied_from(events: &[CompactionEvent], handle: &SessionHandle) -> Vec<(u64, u64)> {
-    let Ok(canonical) = std::fs::canonicalize(&handle.path) else {
+    let Ok(identity) = detect::source_identity(handle) else {
         return Vec::new();
     };
-    if !canonical.is_file() {
-        return Vec::new();
-    }
-    // Match eval::token_observation's canonical provider/session/store binding.
-    let Ok(identity) = serde_json::to_vec(&(handle.provider, &handle.session_id, &canonical))
-    else {
-        return Vec::new();
-    };
-    let identity = copy::sha256(&identity);
-    let mut pairs = std::collections::BTreeMap::new();
-    for (index, event) in events.iter().enumerate() {
-        if event.provider != handle.provider
-            || event.session_id != handle.session_id
-            || event.source_identity_sha256.as_ref() != Some(&identity)
-            || !matches!(
-                event.action.as_str(),
-                "provider_compact" | "transcript_compact"
-            )
-        {
-            continue;
-        }
-        // This helper requires error-free application, valid positive context
-        // reports, matching identities and matching retained snapshot pairs.
-        let Some(reduction) = event.recorded_context_reduction_tokens() else {
-            continue;
-        };
-        let (Some(before), Some(after)) = (
-            event.before_observation.as_ref(),
-            event.after_observation.as_ref(),
-        ) else {
-            continue;
-        };
-        let (Some(before_tokens), Some(before_manifest), Some(after_manifest)) = (
-            before.context_tokens,
-            before.snapshot_manifest_sha256.as_ref(),
-            after.snapshot_manifest_sha256.as_ref(),
-        ) else {
-            continue;
-        };
-        let evidence = (
-            before_tokens,
-            reduction,
-            &before.source_sha256,
-            &after.source_sha256,
-        );
-        let entry = pairs
-            .entry((before_manifest, after_manifest))
-            .or_insert((Some(index), evidence));
-        if entry.1 != evidence {
-            entry.0 = None;
-        }
-    }
-    // Replayed duplicates neither multiply history nor move an old pair ahead
-    // of newer distinct measurements. Conflicts stay excluded after replay.
-    let mut samples: Vec<_> = pairs
-        .values()
-        .filter_map(|(index, evidence)| {
-            index
-                .filter(|_| evidence.1 > 0)
-                .map(|index| (index, (evidence.0, evidence.1)))
-        })
-        .collect();
-    samples.sort_unstable_by_key(|(index, _)| std::cmp::Reverse(*index));
-    samples
+    gobstopper_core::events::qualified_reductions(events)
+        .reductions
         .into_iter()
+        .rev()
+        .filter(|row| {
+            row.event.provider == handle.provider
+                && row.event.session_id == handle.session_id
+                && row.event.source_identity_sha256.as_ref() == Some(&identity)
+                && row.reduction_tokens > 0
+        })
         .take(3)
-        .map(|(_, sample)| sample)
+        .map(|row| (row.before_tokens, row.reduction_tokens))
         .collect()
 }
 
@@ -1109,7 +1058,9 @@ fn snapshot_before_edit(d: &Discovered, strategy: &str) -> Result<vault::VaultEn
 /// Build a numeric compaction telemetry record (v1 schema). Callers that
 /// attach optional evidence fields (snapshot refs, realized retention)
 /// build first, mutate, then append themselves.
+#[allow(clippy::too_many_arguments)]
 fn build_event(
+    event_context: &telemetry::EventContext<'_>,
     d: &Discovered,
     plan: &CompactionPlan,
     action: &str,
@@ -1118,7 +1069,7 @@ fn build_event(
     duration_ms: u64,
     error_code: Option<&str>,
 ) -> CompactionEvent {
-    CompactionEvent::new(
+    let mut event = CompactionEvent::new(
         d.handle.provider,
         &d.handle.session_id,
         &plan.strategy,
@@ -1138,12 +1089,16 @@ fn build_event(
             .fold(0u64, u64::saturating_add),
         duration_ms,
         error_code.map(|s| s.to_string()),
-    )
+    );
+    event_context.annotate(&mut event, &d.handle);
+    event
 }
 
 /// Emit a numeric compaction telemetry record (v1 schema). Telemetry is
 /// best-effort: a logging failure must never fail a compaction.
+#[allow(clippy::too_many_arguments)]
 fn emit_event(
+    event_context: &telemetry::EventContext<'_>,
     d: &Discovered,
     plan: &CompactionPlan,
     action: &str,
@@ -1153,6 +1108,7 @@ fn emit_event(
     error_code: Option<&str>,
 ) {
     let ev = build_event(
+        event_context,
         d,
         plan,
         action,
@@ -1189,6 +1145,7 @@ pub(crate) fn realized_retention(
 /// counter is missing measurement, not proof that all context was reclaimed.
 /// Return whether an applied change was actually observed.
 fn record_native_completion(
+    event_context: &telemetry::EventContext<'_>,
     d: &Discovered,
     plan: &CompactionPlan,
     before: &vault::VaultEntry,
@@ -1253,6 +1210,7 @@ fn record_native_completion(
         ..plan.clone()
     };
     let mut event = build_event(
+        event_context,
         d,
         &done,
         "provider_compact",
@@ -1329,6 +1287,7 @@ fn prepare_native_operation(
 }
 
 fn record_native_admission_failure(
+    event_context: &telemetry::EventContext<'_>,
     d: &Discovered,
     strategy: &str,
     context: u64,
@@ -1350,10 +1309,15 @@ fn record_native_admission_failure(
         context_tokens_after: context,
     };
     emit_event(
+        event_context,
         d,
         &refused,
         "provider_compact",
-        "failed",
+        if native_operations::activation_unqualified(error) {
+            "blocked"
+        } else {
+            "failed"
+        },
         trigger,
         0,
         Some(code),
@@ -1888,19 +1852,33 @@ fn session_rows(cli: &Cli, all: bool) -> Vec<serde_json::Value> {
     };
     detect::discover(&roots(cli), max_age)
         .iter()
-        .map(|d| {
-            serde_json::json!({
-                "provider": d.handle.provider,
-                "session_id": d.handle.session_id,
-                "path": d.handle.path,
-                "cwd": d.handle.cwd,
-                "active": d.handle.is_active(),
-                "context_tokens": d.usage.context_tokens,
-                "lifetime_input_tokens": d.usage.lifetime_input_tokens,
-                "model_context_window": d.usage.model_context_window,
-            })
-        })
+        .map(session_row)
         .collect()
+}
+
+fn session_row(d: &detect::Discovered) -> serde_json::Value {
+    serde_json::json!({
+        "provider": d.handle.provider,
+        "session_id": d.handle.session_id,
+        "path": d.handle.path.to_str(),
+        "path_encoding": if d.handle.path.to_str().is_some() { "utf8" } else { "non_utf8" },
+        "cwd": d.handle.cwd.as_deref().and_then(Path::to_str),
+        "cwd_encoding": d.handle.cwd.as_deref().map(|path| if path.to_str().is_some() { "utf8" } else { "non_utf8" }),
+        "active": d.handle.is_active(),
+        "context_tokens": d.usage.context_tokens,
+        "context_state": d.usage.context_state,
+        "reported_context_tokens": d.usage.reported_context(),
+        "context_components": d.usage.context_components,
+        "context_reason": d.usage.context_reason,
+        "measured_component_subtotal": d.usage.measured_component_subtotal(),
+        "component_subtotal_basis": "known_numeric_components_not_complete_occupancy",
+        "lifetime_scope": d.usage.lifetime_scope,
+        "lifetime_input_tokens": d.usage.lifetime_input_tokens,
+        "lifetime_cached_tokens": d.usage.lifetime_cached_tokens,
+        "source_identity_sha256": detect::source_identity(&d.handle).ok(),
+        "usage_basis": "recorded_provider_accounting_not_billing",
+        "model_context_window": d.usage.model_context_window,
+    })
 }
 
 /// Shorten display-only text without splitting UTF-8 or exceeding the existing
@@ -1934,8 +1912,15 @@ fn cmd_detect(cli: &Cli, all: bool, json: bool) -> Result<()> {
             d.handle.provider.as_str(),
             display_prefix(&d.handle.session_id, 38),
             if d.handle.is_active() { "live" } else { "idle" },
-            d.usage.context_tokens,
-            d.usage.lifetime_input_tokens,
+            d.usage
+                .reported_context()
+                .map(|tokens| tokens.to_string())
+                .unwrap_or_else(|| "unknown".into()),
+            if d.usage.lifetime_scope == gobstopper_core::model::LifetimeScope::Full {
+                d.usage.lifetime_input_tokens.to_string()
+            } else {
+                "unknown".into()
+            },
             d.handle.path.display(),
         );
     }
@@ -2069,8 +2054,44 @@ fn cmd_undo(
     Ok(())
 }
 
-fn cmd_vault(cli: &Cli, cfg: &config::Config, session: Option<&str>, json: bool) -> Result<()> {
+fn cmd_vault(
+    cli: &Cli,
+    cfg: &config::Config,
+    session: Option<&str>,
+    stats: bool,
+    json: bool,
+) -> Result<()> {
     let root = vault::default_root();
+    if stats {
+        let accounting = vault::accounting::inspect(&root);
+        if json {
+            println!("{}", serde_json::to_string_pretty(&accounting)?);
+        } else {
+            println!(
+                "vault accounting: {:?}; non-atomic metadata observation",
+                accounting.status
+            );
+            for (kind, row) in &accounting.directories {
+                let count = row
+                    .files
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "unavailable".into());
+                let bytes = row
+                    .logical_bytes
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| "unavailable".into());
+                println!(
+                    "{kind:?}: {count} files, {bytes} logical bytes ({:?})",
+                    row.status
+                );
+            }
+            println!(
+                "index: {:?}; physical and reclaimable bytes unmeasured",
+                accounting.index.status
+            );
+        }
+        return Ok(());
+    }
     let mut entries = vault::list(&root)?;
     if let Some(q) = session {
         let d = find_session(cli, cfg, q)?;
@@ -2561,24 +2582,29 @@ fn cmd_report(cli: &Cli, strict: bool, active_only: bool, context_only: bool) ->
     } else {
         0
     };
-    let sessions = if context_only {
-        detect::discover_cached(
-            &roots(cli),
-            max_age_secs,
-            &mut detect::DiscoveryCache::default(),
-            None,
-            true,
-        )
-    } else {
-        detect::discover(&roots(cli), max_age_secs)
-    };
-    let events = match gobstopper_core::events::read_events(&default_log_path()) {
+    let discovery = detect::discover_cached_with_status(
+        &roots(cli),
+        max_age_secs,
+        &mut detect::DiscoveryCache::default(),
+        None,
+        context_only,
+    );
+    let events = match gobstopper_core::events::read_events_with_status(&default_log_path()) {
         Ok(events) => events,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Default::default(),
         Err(error) => return Err(error).context("compaction telemetry unavailable"),
     };
-    let mut report = report::build_report(&sessions, &events);
+    let evidence_available = events.invalid_records == 0 && events.oversized_records == 0;
+    let mut report = report::build_report(&discovery.sessions, &events.events, evidence_available);
+    report["gobstopper"]["discovery"] = serde_json::to_value(discovery.providers)?;
+    report["gobstopper"]["eventRead"] = serde_json::json!({
+        "validRecords": events.events.len(), "invalidRecords": events.invalid_records,
+        "oversizedRecords": events.oversized_records, "generations": events.generations,
+    });
     if strict {
+        report
+            .as_object_mut()
+            .map(|object| object.remove("gobstopper"));
         if let Some(list) = report["sessions"].as_array_mut() {
             for s in list {
                 s.as_object_mut().map(|o| o.remove("gobstopper"));
@@ -2645,7 +2671,7 @@ fn cmd_events(
                 .as_u64()
                 .map(|v| format!("{v}%"))
                 .unwrap_or_else(|| "-".to_string());
-            println!("\n{provider} (rollout {rollout})");
+            println!("\n{provider} (current rollout {rollout})");
             println!(
                 "  {:<10} {:>8} {:>6} {:>6} {:>10} {:>7} {:>10} {:>10} {:>10}",
                 "cohort",
@@ -2658,7 +2684,7 @@ fn cmd_events(
                 "unresolved",
                 "events"
             );
-            for cohort_name in ["treatment", "control", "ungated"] {
+            for cohort_name in ["treatment", "control", "ungated", "unknown"] {
                 let c = &p["cohorts"][cohort_name];
                 if c["events"].as_u64().unwrap_or(0) == 0 {
                     continue;
@@ -3297,6 +3323,7 @@ fn cmd_apply(
     no_backup: bool,
     experimental_compacted: bool,
 ) -> Result<()> {
+    let event_context = &telemetry::EventContext::new(cfg, false);
     if no_backup {
         bail!("snapshots are mandatory; --no-backup is no longer supported");
     }
@@ -3436,6 +3463,7 @@ fn cmd_apply(
         match file_result {
             Ok(receipt) => {
                 emit_event(
+                    event_context,
                     &d,
                     &plan,
                     "transcript_compact",
@@ -3454,6 +3482,7 @@ fn cmd_apply(
             }
             Err(e) => {
                 emit_event(
+                    event_context,
                     &d,
                     &plan,
                     "transcript_compact",
@@ -3488,6 +3517,7 @@ fn cmd_apply(
         match file_result {
             Ok(reclaimed) => {
                 emit_event(
+                    event_context,
                     &d,
                     &plan,
                     "transcript_compact",
@@ -3500,6 +3530,7 @@ fn cmd_apply(
             }
             Err(e) => {
                 emit_event(
+                    event_context,
                     &d,
                     &plan,
                     "transcript_compact",
@@ -3542,7 +3573,16 @@ fn cmd_apply(
         // result with this exact fork, while retaining the original snapshot
         // above as the recovery point for fork creation itself.
         let native_snapshot = snapshot_before_edit(&d, "pre-compact")?;
-        emit_event(&d, &plan, "provider_compact", "planned", trigger, 0, None);
+        emit_event(
+            event_context,
+            &d,
+            &plan,
+            "provider_compact",
+            "planned",
+            trigger,
+            0,
+            None,
+        );
         let binary = resolve_codex_bin(cli.codex_bin.as_deref());
         let policy_sha256 =
             copy::sha256(format!("{cfg:?}:{:?}:{plan:?}", resolved.policy).as_bytes());
@@ -3551,8 +3591,14 @@ fn cmd_apply(
         operation.dispatch()?;
         match provider_compact(&d, operation.binary(), &roots(cli).codex_home) {
             Ok(terminal) => {
-                let observed =
-                    record_native_completion(&d, &plan, &native_snapshot, trigger, started);
+                let observed = record_native_completion(
+                    event_context,
+                    &d,
+                    &plan,
+                    &native_snapshot,
+                    trigger,
+                    started,
+                );
                 operation.finish(observed, Some(terminal))?;
             }
             Err(error) => {
@@ -3563,6 +3609,7 @@ fn cmd_apply(
                     ..plan.clone()
                 };
                 let mut event = build_event(
+                    event_context,
                     &d,
                     &failed,
                     "provider_compact",
@@ -3583,10 +3630,9 @@ fn cmd_apply(
 }
 
 /// Cheap per-session decision version for watch suppression caching:
-/// file length+mtime for JSONL providers, chain head+node count for
-/// Devin's shared store, plus the live/idle bit the planner keys on. An
-/// unchanged fingerprint means the plan outcome is deterministic-repeat:
-/// no provider append, no Gobstopper write, no live→idle transition.
+/// file identity+change clocks for JSONL providers, chain head+node count for
+/// Devin's shared store, and observed usage plus the live/idle bit. This is a
+/// cheap decision version, not a byte-integrity proof or dispatch authority.
 fn session_fingerprint(d: &Discovered) -> Option<String> {
     let content = if d.handle.provider == Provider::Devin {
         devin::chain_fingerprint(&d.handle.path, &d.handle.session_id)?
@@ -3598,9 +3644,22 @@ fn session_fingerprint(d: &Discovered) -> Option<String> {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_nanos())
             .unwrap_or(0);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::MetadataExt;
+            format!(
+                "{}:{mtime}:{}:{}:{}:{}",
+                m.len(),
+                m.dev(),
+                m.ino(),
+                m.ctime(),
+                m.ctime_nsec(),
+            )
+        }
+        #[cfg(not(unix))]
         format!("{}:{mtime}", m.len())
     };
-    Some(format!("{content}:{}", d.handle.is_active()))
+    Some(format!("{content}:{:?}:{}", d.usage, d.handle.is_active()))
 }
 
 /// Cheap per-pass cost estimate for ordering watch work: Devin sessions
@@ -3627,6 +3686,24 @@ fn session_cost_hint(d: &Discovered) -> u64 {
 /// day are dropped rather than trusted across unknown downtime.
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 struct WatchState {
+    /// Additive, numeric-only pass receipt. Old generation-9 readers ignore
+    /// these fields. An incomplete pass always has a null completion time.
+    #[serde(default)]
+    checkpoint_schema: u32,
+    #[serde(default)]
+    artifact_sha256: String,
+    #[serde(default)]
+    pass_started_at_ms: Option<u64>,
+    #[serde(default)]
+    pass_completed_at_ms: Option<u64>,
+    #[serde(default)]
+    interval_secs: u64,
+    #[serde(default)]
+    active_only: bool,
+    #[serde(default)]
+    native_activation: String,
+    #[serde(default)]
+    decisions: WatchDecisions,
     /// Decision-vocabulary version. `settled` records *why* a session was
     /// suppressed only implicitly — entries written under an older lever
     /// set (e.g. before Devin ACP compact existed) would suppress the new
@@ -3659,6 +3736,19 @@ struct WatchState {
     delegated_ctx: std::collections::HashMap<String, u64>,
 }
 
+/// Counts describe the latest pass only; they are not lifetime effectiveness or
+/// provider coverage. No session IDs, paths or policy commands are added here.
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+struct WatchDecisions {
+    discovered: u64,
+    legacy_unresolved: u64,
+    native_unresolved: u64,
+    settled: u64,
+    cooldown: u64,
+    below_trigger: u64,
+    native_unqualified: u64,
+}
+
 /// Current decision vocabulary. v1: initial watch state. v2: Devin ACP
 /// provider-native compact added — pre-v2 suppressions may encode "no
 /// lever existed" verdicts that are no longer true. v3: ACP requests
@@ -3677,11 +3767,19 @@ struct WatchState {
 /// v8: native no-ops expire on a cooldown; Claude native dispatch precedes
 /// planner acceptance; all providers preserve unknown usage as unmeasured.
 const WATCH_STATE_GENERATION: u32 = 9;
+const MAX_WATCH_STATE_BYTES: u64 = 4 * 1024 * 1024;
 
 fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+fn now_millis() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis().min(u64::MAX as u128) as u64)
         .unwrap_or(0)
 }
 
@@ -3773,13 +3871,13 @@ fn load_watch_state(path: &Path) -> Result<WatchState> {
             return Err(e).context("watch state unavailable; repair required before dispatch")
         }
     };
-    const MAX_STATE_BYTES: u64 = 4 * 1024 * 1024;
-    if !file.metadata()?.is_file() || file.metadata()?.len() > MAX_STATE_BYTES {
+    if !file.metadata()?.is_file() || file.metadata()?.len() > MAX_WATCH_STATE_BYTES {
         bail!("watch state must be a bounded regular file; repair required");
     }
     let mut bytes = Vec::new();
-    file.take(MAX_STATE_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_STATE_BYTES {
+    file.take(MAX_WATCH_STATE_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_WATCH_STATE_BYTES {
         bail!("watch state exceeds byte bound");
     }
     let mut state: WatchState = serde_json::from_slice(&bytes).map_err(|_| {
@@ -3833,6 +3931,9 @@ fn save_watch_state(path: &Path, state: &WatchState) -> Result<()> {
     let result = (|| -> Result<()> {
         let mut file = options.open(&tmp)?;
         serde_json::to_writer(&mut file, state)?;
+        if file.metadata()?.len() > MAX_WATCH_STATE_BYTES {
+            bail!("watch state exceeds byte bound; prior checkpoint preserved for repair");
+        }
         file.sync_all()?;
         std::fs::rename(&tmp, path)?;
         #[cfg(unix)]
@@ -3871,6 +3972,13 @@ fn cmd_watch(
     if double_buffer {
         bail!("in-place double-buffer swapping is retired; use copy-only watch without --double-buffer");
     }
+    // Stable artifact identity participates in decision invalidation. It is
+    // retained for this process and revalidated at both ends of every pass.
+    let artifact_sha256 = if dry_run {
+        native_operations::artifact_sha256().unwrap_or("")
+    } else {
+        native_operations::artifact_sha256()?
+    };
     // Persisted watch state (watch-state-<provider>.json beside the
     // telemetry log): fingerprints, settle arms, and rate-limit clocks
     // survive restarts so a relaunch does not re-plan every session.
@@ -3880,7 +3988,11 @@ fn cmd_watch(
     // targets. Migrate uncertainty from every legacy lane before dispatch.
     let mut legacy_unresolved = legacy_native_uncertainty()?;
     legacy_unresolved.extend(persisted.legacy_unresolved);
-    let mut decision_config = persisted.config_sha256;
+    let mut decision_config = if persisted.artifact_sha256 == artifact_sha256 {
+        persisted.config_sha256
+    } else {
+        String::new()
+    };
     let boot_secs = now_secs();
     let mut last_fire: std::collections::HashMap<String, std::time::Instant> = persisted
         .last_fire
@@ -3929,6 +4041,9 @@ fn cmd_watch(
     // provider_compact/skipped events are not re-logged every pass.
     let mut delegated_ctx = persisted.delegated_ctx;
     let mut discovery_cache = detect::DiscoveryCache::default();
+    let mut pass_started_at_ms;
+    let mut pass_completed_at_ms;
+    let mut decisions;
     // Every native dispatch first checkpoints a conservative hold. A restart
     // during a provider call must not forget that its outcome is unknown.
     macro_rules! persist_watch_state {
@@ -3937,6 +4052,14 @@ fn cmd_watch(
             save_watch_state(
                 &state_path,
                 &WatchState {
+                    checkpoint_schema: 1,
+                    artifact_sha256: artifact_sha256.to_owned(),
+                    pass_started_at_ms,
+                    pass_completed_at_ms,
+                    interval_secs: interval,
+                    active_only,
+                    native_activation: native_operations::artifact_activation_status().to_owned(),
+                    decisions: decisions.clone(),
                     generation: WATCH_STATE_GENERATION,
                     config_sha256: decision_config.clone(),
                     settled: settled.clone(),
@@ -3963,7 +4086,15 @@ fn cmd_watch(
     let claude_bin = claude_bin();
     let devin_bin = devin_bin();
     loop {
+        if !dry_run {
+            native_operations::artifact_sha256()?;
+        }
+        pass_started_at_ms = Some(now_millis());
+        pass_completed_at_ms = None;
+        decisions = WatchDecisions::default();
         let cfg = config::load()?;
+        let event_context = &telemetry::EventContext::new(&cfg, false);
+        let native_event_context = &telemetry::EventContext::new(&cfg, true);
         legacy_unresolved.extend(legacy_native_uncertainty()?);
         holddown.retain(|_, until| *until > now_secs());
         // An unchanged transcript can have a different decision after a
@@ -3979,7 +4110,7 @@ fn cmd_watch(
                 "{:x}",
                 Sha256::digest(
                     format!(
-                        "{}:{cfg:?}:{:?}:{:?}:{environment:?}",
+                        "{}:{artifact_sha256}:{cfg:?}:{:?}:{:?}:{environment:?}",
                         env!("CARGO_PKG_VERSION"),
                         roots(cli),
                         cli.codex_bin,
@@ -3993,6 +4124,11 @@ fn cmd_watch(
             settle_pass.clear();
             delegated_ctx.clear();
             decision_config = config_sha256;
+        }
+        // Discovery may be slow. Publish a fresh in-progress receipt rather
+        // than presenting the prior pass's completion as this pass's health.
+        if !dry_run {
+            persist_watch_state!()?;
         }
         let mut found: Vec<Discovered> = detect::discover_cached(
             &roots(cli),
@@ -4008,6 +4144,7 @@ fn cmd_watch(
         // Cheapest sessions first: a multi-minute apply on one giant
         // session would otherwise delay every session behind it.
         found.sort_by_key(session_cost_hint);
+        decisions.discovered = found.len() as u64;
         for d in found {
             if provider.is_some_and(|p| p != d.handle.provider) {
                 continue;
@@ -4029,6 +4166,7 @@ fn cmd_watch(
                 continue;
             };
             if legacy_unresolved.contains(&session_key) {
+                decisions.legacy_unresolved += 1;
                 eprintln!("legacy native outcome unresolved; automatic dispatch remains blocked");
                 continue;
             }
@@ -4042,13 +4180,15 @@ fn cmd_watch(
                 match native_operations::Operation::pending(&d.handle, home) {
                     Ok(false) => {}
                     _ => {
+                        decisions.native_unresolved += 1;
                         eprintln!("native dispatch blocked: existing operation needs reconciliation or repair");
                         continue;
                     }
                 }
             }
-            // Suppression: a session whose content fingerprint matches its
-            // last terminal decision is byte-identical — skip the load.
+            // Suppression: a session whose decision version matches its
+            // last terminal decision can skip the load. This is not authority
+            // to dispatch; unknown operations above always take precedence.
             // This check precedes the context fallback load so suppressed
             // sessions cost one metadata/SQL read, not a transcript parse.
             if settled.len() >= 4096 {
@@ -4057,6 +4197,7 @@ fn cmd_watch(
             }
             let fp = session_fingerprint(&d);
             if fp.is_some() && settled.get(&session_key) == fp.as_ref() {
+                decisions.settled += 1;
                 continue;
             }
             // Cooldown from a terminal provider outcome — suppresses the
@@ -4065,6 +4206,7 @@ fn cmd_watch(
                 .get(&session_key)
                 .is_some_and(|&until| now_secs() < until)
             {
+                decisions.cooldown += 1;
                 continue;
             }
             holddown.remove(&session_key);
@@ -4076,6 +4218,7 @@ fn cmd_watch(
             // fingerprint read.
             if let Some(t) = last_apply.get(&session_key) {
                 if t.elapsed().as_secs() < resolved.policy.apply_hold_secs {
+                    decisions.cooldown += 1;
                     continue;
                 }
             }
@@ -4089,18 +4232,77 @@ fn cmd_watch(
             } else {
                 resolved.policy.effective_trigger()
             };
-            let ctx = if d.usage.context_tokens > 0 {
-                d.usage.context_tokens
-            } else {
-                detect::load(&d)
-                    .map(|t| t.estimated_context_tokens())
-                    .unwrap_or(0)
-            };
-            if ctx < trigger {
+            if d.usage
+                .reported_context()
+                .is_some_and(|context| context < trigger)
+            {
+                decisions.below_trigger += 1;
                 continue;
             }
             if let Some(t) = last_fire.get(&session_key) {
                 if t.elapsed().as_secs() < resolved.policy.min_interval_secs {
+                    decisions.cooldown += 1;
+                    continue;
+                }
+            }
+            // Policy already selects a native-only route for this idle
+            // session. Artifact refusal needs neither transcript estimation nor
+            // a recovery snapshot. Unresolved work was checked above and is
+            // never replaced by this terminal, source-bound decision cache.
+            if !dry_run && !d.handle.is_active() && resolved.auto_compact_closed {
+                let event_context = native_event_context;
+                if hooks::rollout_cohort(&cfg, d.handle.provider.as_str(), &d.handle.session_id)
+                    == Some(false)
+                {
+                    let context = d.usage.reported_context();
+                    let control = CompactionPlan {
+                        strategy: "watch-native:control".into(),
+                        rationale: "control cohort: native compaction suppressed".into(),
+                        edits: vec![],
+                        context_tokens_before: context.unwrap_or(0),
+                        context_tokens_after: context.unwrap_or(0),
+                    };
+                    emit_event(
+                        event_context,
+                        &d,
+                        &control,
+                        "provider_compact",
+                        "skipped",
+                        trigger,
+                        0,
+                        context.is_none().then_some("unresolved_context"),
+                    );
+                    if let Some(fp) = &fp {
+                        settled.insert(session_key.clone(), fp.clone());
+                    }
+                    continue;
+                }
+                let homes = roots(cli);
+                let codex_binary = resolve_codex_bin(cli.codex_bin.as_deref());
+                let (home, binary) = match d.handle.provider {
+                    Provider::Codex => (&homes.codex_home, Some(codex_binary.as_path())),
+                    Provider::ClaudeCode => (&homes.claude_home, claude_bin.as_deref()),
+                    Provider::Devin => (&homes.devin_home, devin_bin.as_deref()),
+                };
+                if let Err(error) =
+                    native_operations::check_artifact_activation(&d.handle, home, binary)
+                {
+                    record_native_admission_failure(
+                        event_context,
+                        &d,
+                        &resolved.strategy,
+                        d.usage.context_tokens,
+                        trigger,
+                        &error,
+                    );
+                    if native_operations::activation_unqualified(&error) {
+                        decisions.native_unqualified += 1;
+                        if let Some(fp) = &fp {
+                            settled.insert(session_key.clone(), fp.clone());
+                        }
+                    } else {
+                        last_fire.insert(session_key.clone(), std::time::Instant::now());
+                    }
                     continue;
                 }
             }
@@ -4118,6 +4320,8 @@ fn cmd_watch(
                 && resolved.command.is_none()
                 && resolved.plugin.is_none()
             {
+                let context = d.usage.reported_context();
+                let ctx = context.unwrap_or(0);
                 let delegated = CompactionPlan {
                     strategy: resolved.strategy.clone(),
                     rationale: "auto (live session): delegated to provider".to_string(),
@@ -4133,19 +4337,21 @@ fn cmd_watch(
                     context_tokens_after: ctx,
                 };
                 last_fire.insert(session_key.clone(), std::time::Instant::now());
-                // A churning live session re-plans to delegation every
-                // pass; log only when the context actually moved so the
-                // event stream is deltas, not a per-pass heartbeat.
-                if delegated_ctx.get(&session_key) != Some(&ctx) {
+                // Known context counts deduplicate churning provider records.
+                // Unknown context is source-version bound by `settled`, not
+                // the legacy numeric zero: changed partial evidence can emit
+                // another honest unknown decision without parsing a transcript.
+                if context.is_none() || delegated_ctx.get(&session_key) != Some(&ctx) {
                     delegated_ctx.insert(session_key.clone(), ctx);
                     emit_event(
+                        event_context,
                         &d,
                         &delegated,
                         "provider_compact",
                         "skipped",
                         trigger,
                         0,
-                        None,
+                        context.is_none().then_some("unresolved_context"),
                     );
                     eprintln!(
                         "deferred native compaction: session owner required; source unchanged"
@@ -4156,6 +4362,17 @@ fn cmd_watch(
                 }
                 continue;
             }
+            let ctx = if let Some(context) = d.usage.reported_context() {
+                context
+            } else {
+                detect::load(&d)
+                    .map(|t| t.estimated_context_tokens())
+                    .unwrap_or(0)
+            };
+            if ctx < trigger {
+                decisions.below_trigger += 1;
+                continue;
+            }
             // Provider-native Devin compaction needs nothing from our
             // planner — the provider summarizes the session itself. For
             // an idle treatment session with `auto_compact_closed`, try
@@ -4163,6 +4380,7 @@ fn cmd_watch(
             // export+evaluate cost. Native dispatch never falls through into
             // store surgery after an uncertain outcome. Live sessions defer.
             if !dry_run && d.handle.provider == Provider::Devin && resolved.auto_compact_closed {
+                let event_context = native_event_context;
                 if d.handle.is_active() {
                     continue;
                 }
@@ -4177,6 +4395,7 @@ fn cmd_watch(
                         context_tokens_after: ctx,
                     };
                     emit_event(
+                        event_context,
                         &d,
                         &control,
                         "provider_compact",
@@ -4234,6 +4453,7 @@ fn cmd_watch(
                         Err(error) => {
                             holddown.remove(&session_key);
                             record_native_admission_failure(
+                                event_context,
                                 &d,
                                 &resolved.strategy,
                                 ctx,
@@ -4282,6 +4502,7 @@ fn cmd_watch(
                             };
                             last_fire.insert(session_key.clone(), std::time::Instant::now());
                             let observed = record_native_completion(
+                                event_context,
                                 &d,
                                 &done,
                                 &pre_snapshot,
@@ -4326,6 +4547,7 @@ fn cmd_watch(
                                 context_tokens_after: ctx,
                             };
                             let mut ev = build_event(
+                                event_context,
                                 &d,
                                 &failed,
                                 "provider_compact",
@@ -4361,6 +4583,7 @@ fn cmd_watch(
             // native lever can compact, and codex rollouts are large
             // enough that re-parsing one every pass is real cost.
             if !dry_run && d.handle.provider == Provider::Codex && resolved.auto_compact_closed {
+                let event_context = native_event_context;
                 if d.handle.is_active() || session_fingerprint(&d) != fp {
                     continue;
                 }
@@ -4377,6 +4600,7 @@ fn cmd_watch(
                         context_tokens_after: ctx,
                     };
                     emit_event(
+                        event_context,
                         &d,
                         &tagged,
                         "provider_compact",
@@ -4400,7 +4624,16 @@ fn cmd_watch(
                         context_tokens_before: ctx,
                         context_tokens_after: ctx,
                     };
-                    emit_event(&d, &tagged, "provider_compact", "skipped", trigger, 0, None);
+                    emit_event(
+                        event_context,
+                        &d,
+                        &tagged,
+                        "provider_compact",
+                        "skipped",
+                        trigger,
+                        0,
+                        None,
+                    );
                     if let Some(fp) = &fp {
                         settled.insert(session_key.clone(), fp.clone());
                     }
@@ -4429,6 +4662,7 @@ fn cmd_watch(
                     Err(error) => {
                         holddown.remove(&session_key);
                         record_native_admission_failure(
+                            event_context,
                             &d,
                             &resolved.strategy,
                             ctx,
@@ -4458,8 +4692,14 @@ fn cmd_watch(
                             context_tokens_after: ctx,
                         };
                         last_fire.insert(session_key.clone(), std::time::Instant::now());
-                        let observed =
-                            record_native_completion(&d, &done, &pre_snapshot, trigger, started);
+                        let observed = record_native_completion(
+                            event_context,
+                            &d,
+                            &done,
+                            &pre_snapshot,
+                            trigger,
+                            started,
+                        );
                         operation.finish(observed, Some(terminal)).map_err(|_| {
                             anyhow::anyhow!(
                                 "native completion checkpoint failed; outcome unresolved"
@@ -4494,6 +4734,7 @@ fn cmd_watch(
                         // provider refusing the compact.
                         let msg = e.to_string();
                         let mut ev = build_event(
+                            event_context,
                             &d,
                             &failed,
                             "provider_compact",
@@ -4534,6 +4775,7 @@ fn cmd_watch(
             // plan. Keep it ahead of load/evaluate, as for Codex and Devin.
             if !dry_run && d.handle.provider == Provider::ClaudeCode && resolved.auto_compact_closed
             {
+                let event_context = native_event_context;
                 if d.handle.is_active() {
                     continue;
                 }
@@ -4551,7 +4793,16 @@ fn cmd_watch(
                         strategy: "watch-apply:control".to_string(),
                         ..done
                     };
-                    emit_event(&d, &tagged, "provider_compact", "skipped", trigger, 0, None);
+                    emit_event(
+                        event_context,
+                        &d,
+                        &tagged,
+                        "provider_compact",
+                        "skipped",
+                        trigger,
+                        0,
+                        None,
+                    );
                     if let Some(fp) = &fp {
                         settled.insert(session_key.clone(), fp.clone());
                     }
@@ -4600,6 +4851,7 @@ fn cmd_watch(
                         Err(error) => {
                             holddown.remove(&session_key);
                             record_native_admission_failure(
+                                event_context,
                                 &d,
                                 &resolved.strategy,
                                 ctx,
@@ -4622,6 +4874,7 @@ fn cmd_watch(
                     match outcome {
                         Ok(()) => {
                             let observed = record_native_completion(
+                                event_context,
                                 &d,
                                 &done,
                                 &pre_snapshot,
@@ -4658,6 +4911,7 @@ fn cmd_watch(
                                 )
                             })?;
                             let mut event = build_event(
+                                event_context,
                                 &d,
                                 &done,
                                 "provider_compact",
@@ -4733,6 +4987,7 @@ fn cmd_watch(
                         if delegated_ctx.get(&session_key) != Some(&plan.context_tokens_before) {
                             delegated_ctx.insert(session_key.clone(), plan.context_tokens_before);
                             emit_event(
+                                event_context,
                                 &d,
                                 &unchanged,
                                 action,
@@ -4761,6 +5016,7 @@ fn cmd_watch(
                             ..plan.clone()
                         };
                         emit_event(
+                            event_context,
                             &d,
                             &blocked,
                             action,
@@ -4786,6 +5042,7 @@ fn cmd_watch(
                         Ok(_) => {
                             last_fire.insert(session_key.clone(), std::time::Instant::now());
                             emit_event(
+                                event_context,
                                 &d,
                                 &plan,
                                 action,
@@ -4803,6 +5060,7 @@ fn cmd_watch(
                         }
                         Err(_) => {
                             emit_event(
+                                event_context,
                                 &d,
                                 &plan,
                                 action,
@@ -4837,6 +5095,8 @@ fn cmd_watch(
         // (e.g. monitor's --once probes) observe only — never mutate
         // persisted state.
         if !dry_run {
+            native_operations::artifact_sha256()?;
+            pass_completed_at_ms = Some(now_millis());
             persist_watch_state!()?;
         }
         if once {
@@ -4987,7 +5247,7 @@ fn cmd_policy_check(
 ) -> Result<()> {
     // `--session` reads the provider's own store so hook scripts and
     // wrappers don't have to measure context themselves.
-    let (context_tokens, session_active) = if let Some(session_id) = session {
+    let (usage, session_active) = if let Some(session_id) = session {
         match provider {
             "devin" => {
                 let root = roots(cli).devin_home;
@@ -5013,7 +5273,7 @@ fn cmd_policy_check(
                 let Some((usage, locked)) = devin::session_observation(&root, &session_id) else {
                     bail!("no devin session '{session_id}' in {}", root.display());
                 };
-                (usage.context_tokens, locked)
+                (usage, locked)
             }
             "claude" | "claude_code" => {
                 let Some(d) = detect::find(&roots(cli), session_id)
@@ -5022,21 +5282,44 @@ fn cmd_policy_check(
                 else {
                     bail!("no claude session '{session_id}'");
                 };
-                (d.usage.context_tokens, d.handle.is_active())
+                (d.usage, d.handle.is_active())
             }
             other => bail!("--session lookup is not supported for provider '{other}'"),
         }
     } else {
-        (context_tokens.unwrap_or(0), session_active)
+        let mut usage = gobstopper_core::UsageSample::default();
+        usage.observe_cumulative_report(context_tokens, None, None, None);
+        (usage, session_active)
     };
-    let decision = policy_decision(
+    let context = usage.reported_context();
+    let mut decision = policy_decision(
         cfg,
         provider,
-        context_tokens,
+        context.unwrap_or(0),
         session_active,
         quota_pressure.map(Into::into),
         preset,
     )?;
+    decision["context_state"] = serde_json::json!(usage.context_state);
+    decision["reported_context_tokens"] = serde_json::json!(context);
+    decision["context_components"] = serde_json::json!(usage.context_components);
+    decision["context_reason"] = serde_json::json!(usage.context_reason);
+    decision["measured_component_subtotal"] =
+        serde_json::json!(usage.measured_component_subtotal());
+    decision["component_subtotal_basis"] =
+        serde_json::json!("known_numeric_components_not_complete_occupancy");
+    decision["decision_available"] = serde_json::json!(context.is_some());
+    decision["decision_reason"] =
+        serde_json::json!(context.is_none().then_some("unresolved_context"));
+    decision["usage_basis"] = serde_json::json!(if session.is_some() {
+        "recorded_provider_accounting_not_billing"
+    } else {
+        "caller_supplied_context"
+    });
+    if context.is_none() {
+        decision["action"] = serde_json::json!("none");
+        decision["control"] = serde_json::Value::Null;
+    }
     if json {
         println!("{}", serde_json::to_string_pretty(&decision)?);
     } else {
@@ -5047,6 +5330,9 @@ fn cmd_policy_check(
         );
         if let Some(control) = decision["control"].as_str() {
             println!("control={control}");
+        }
+        if let Some(reason) = decision["decision_reason"].as_str() {
+            println!("decision_available=false reason={reason}");
         }
     }
     Ok(())
@@ -5332,7 +5618,11 @@ fn main() -> Result<()> {
             since.as_deref(),
             *json,
         ),
-        Cmd::Vault { session, json } => cmd_vault(&cli, &cfg, session.as_deref(), *json),
+        Cmd::Vault {
+            session,
+            stats,
+            json,
+        } => cmd_vault(&cli, &cfg, session.as_deref(), *stats, *json),
         Cmd::Prune { keep, yes, json } => cmd_prune(*keep, *yes, *json),
         Cmd::History { session, json } => cmd_history(&cli, &cfg, session, *json),
         Cmd::Show { target, json } => cmd_show(&cli, &cfg, target, *json),
@@ -5487,6 +5777,50 @@ mod tests {
     }
 
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn session_json_preserves_partial_usage_and_unrepresentable_path_state() {
+        use gobstopper_core::model::{ContextComponents, ContextReason, UsageSample};
+        use std::os::unix::ffi::OsStringExt;
+        let path = PathBuf::from(std::ffi::OsString::from_vec(vec![b'/', 0xff]));
+        let mut discovered = detect::Discovered {
+            handle: SessionHandle {
+                provider: Provider::ClaudeCode,
+                session_id: "synthetic".into(),
+                path: path.clone(),
+                cwd: Some(path),
+                age_secs: 0,
+            },
+            usage: UsageSample::default(),
+        };
+        discovered.usage.observe_context_components(
+            ContextComponents {
+                input_tokens: Some(12),
+                cache_read_tokens: Some(3),
+                cache_creation_tokens: None,
+                output_tokens: Some(2),
+            },
+            Some(ContextReason::NullComponent),
+        );
+        let row = session_row(&discovered);
+        assert!(row["path"].is_null());
+        assert!(row["cwd"].is_null());
+        assert_eq!(row["path_encoding"], "non_utf8");
+        assert_eq!(row["cwd_encoding"], "non_utf8");
+        assert!(row["source_identity_sha256"].is_null());
+        assert!(row["reported_context_tokens"].is_null());
+        assert_eq!(row["context_state"], "unknown");
+        assert_eq!(row["context_reason"], "null_component");
+        assert_eq!(row["measured_component_subtotal"], 17);
+        discovered.handle.path = PathBuf::from("/synthetic-missing-session");
+        discovered.handle.cwd = None;
+        let ordinary = session_row(&discovered);
+        assert_eq!(ordinary["path"], "/synthetic-missing-session");
+        assert_eq!(ordinary["path_encoding"], "utf8");
+        assert!(ordinary["cwd"].is_null());
+        assert!(ordinary["cwd_encoding"].is_null());
+    }
 
     #[test]
     fn adaptive_history_is_store_bound_measured_and_deduplicated() {
@@ -5947,6 +6281,8 @@ mod tests {
                 lifetime_cached_tokens: 0,
                 model_context_window: Some(1_000_000),
                 context_state: gobstopper_core::model::ContextState::Reported,
+                context_components: None,
+                context_reason: None,
                 lifetime_scope: gobstopper_core::model::LifetimeScope::Full,
             },
         }
@@ -6159,6 +6495,36 @@ mod tests {
         fs::remove_file(&path).unwrap();
         assert!(load_watch_state(&path).unwrap().settled.is_empty());
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn watch_state_oversized_save_preserves_prior_uncertainty() {
+        let dir = tempdir("watch-state-size");
+        let path = dir.join("state.json");
+        let mut state = WatchState {
+            generation: WATCH_STATE_GENERATION,
+            ..WatchState::default()
+        };
+        let overhead = serde_json::to_vec(&state).unwrap().len();
+        state
+            .legacy_unresolved
+            .insert("u".repeat(MAX_WATCH_STATE_BYTES as usize - overhead - 32));
+        save_watch_state(&path, &state).unwrap();
+        let before = fs::read(&path).unwrap();
+        assert!(before.len() as u64 <= MAX_WATCH_STATE_BYTES);
+        assert_eq!(
+            load_watch_state(&path).unwrap().legacy_unresolved,
+            state.legacy_unresolved
+        );
+        state.artifact_sha256 = "a".repeat(64);
+        assert!(save_watch_state(&path, &state).is_err());
+        assert_eq!(fs::read(&path).unwrap(), before);
+        assert_eq!(
+            load_watch_state(&path).unwrap().legacy_unresolved,
+            state.legacy_unresolved
+        );
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
