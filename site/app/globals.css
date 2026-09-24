@@ -345,6 +345,6 @@ a { text-underline-offset: 0.2em; }
 
 /* Keep the appearance panel inside the viewport when navigation wraps. */
 @media (max-width: 48rem) {
-  .site-header { position: relative; }
+  [data-hraness-material="lantern"] .site-header.hraness-material-chrome { position: relative; }
   .site-header .hraness-marketing-header__actions { margin-inline-start: auto; }
 }
