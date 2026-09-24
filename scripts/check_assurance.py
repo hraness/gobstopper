@@ -235,7 +235,7 @@ def validate_receipt_contract(root, name, receipt, require):
             # and review here, not merely a nonzero assertion total.
             expected_counts = dict(zip(
                 ("assertions", "covers", "unwind_checks", "unreachable_safety_checks", "unsupported_paths_excluded"),
-                (2, 3, 0, 0, 0) if mutant else (178, 52, 3, 30, 11),
+                (2, 3, 0, 0, 0) if mutant else (178, 54, 3, 30, 11),
             ))
             require(isinstance(counts, dict) and counts == expected_counts
                     and all(integer(value) for value in counts.values()),

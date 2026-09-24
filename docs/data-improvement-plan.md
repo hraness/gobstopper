@@ -296,3 +296,10 @@ monitor passes establish a short observation window, not sustained reliability.
   of a 17 GB store dominate the stack samples. D7 records the follow-ups; the
   stale 14-session monitor allowlist and the 26.4 GB Devin write-ahead log are
   owner items. No product code changed for these findings.
+- 2026-09-24: The `cliff` strategy and the CliffCompaction comparison
+  ([PR 99](https://github.com/hraness/gobstopper/pull/99)) changed core,
+  adapter and CLI sources, so the core, transcript and stress receipts were
+  refreshed on the same Mac against the new sources. The production Kani run
+  reports 54 covers (two new policy-bound covers) and the checker's reviewed
+  count moved with it; the boundary mutant is still killed by exactly one
+  assertion.

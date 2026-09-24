@@ -1,0 +1,306 @@
+{
+  "schema": "gobstopper.assurance-receipt.v1",
+  "raw_receipt_sha256": "af0839f9b4b76e30b14776ffa06b6eebce8a8781e5f7eddb3e73536f32c899e3",
+  "observed_at": "2026-09-24T21:06:30.253038+00:00",
+  "scope": "Unbounded Lean structural list laws plus finite actual Rust dialect correspondence.",
+  "bounds": "27 theorems, 20 synthetic cases, 23 steps per provider; kernel replay and both exact intended mutants.",
+  "exclusions": [
+    "No universal Rust refinement",
+    "No branching/unknown-wire dialect theorem",
+    "No semantic equivalence of lossy output"
+  ],
+  "passed": true,
+  "inputs_unchanged": true,
+  "source_sha256": {
+    "Cargo.lock": "100bbe7e8fe347a390d64f4d556737dcf8b7c243a7a1a6587fb5d51d81135e0d",
+    "Cargo.toml": "22825555bd0f11035fe4f2ba01c6351d7af5e14ee26f04d1ed143ba0db701cf8",
+    "crates/gobstopper-adapters/Cargo.toml": "c412d3b0a6fc095965f20313a06e4f167cdbfc2224cc4738c86315a6a5ae9103",
+    "crates/gobstopper-adapters/src/claude.rs": "d0fe42b50bd536c987cdfff5311fee7d939e4c0dbee08ef9ccea23c2fa6efbfe",
+    "crates/gobstopper-adapters/src/codex.rs": "c32a693ac0fcee559ba858515c30e0a5a951ad715f8987fc6cf72357898dfa3b",
+    "crates/gobstopper-adapters/src/codex_compact.rs": "104ccbdfb90c505118160498b648147d18a1762ab7de113f761d94c1e9b575c2",
+    "crates/gobstopper-adapters/src/copy.rs": "a7d02302400ea612951f9ae3d2e7a71f929d56ec989a994dff3f5185a96e7ed6",
+    "crates/gobstopper-adapters/src/detect.rs": "e3c455640b0dfa9c34708cb055a96f21a41a3fec7c0b0209b578f27de8dbc0b3",
+    "crates/gobstopper-adapters/src/devin.rs": "50e57a914ab2b7cf65886ad302c997b0c8008267ad78ed9e2447f78d39674e12",
+    "crates/gobstopper-adapters/src/eval.rs": "af62b60ac968642d8f8234cc3774e6559b1fb187c076288d9b27037e94faa861",
+    "crates/gobstopper-adapters/src/fork.rs": "e9f7ac308a4fa9a64f389aa6791355d67fee4c91121faa8ac6a05b0e540ee7e9",
+    "crates/gobstopper-adapters/src/lib.rs": "10e907c4cbc8c5ebd05a6241744565c059f68fe9350fb6e3fb0595220b5eb32f",
+    "crates/gobstopper-adapters/src/payload.rs": "46b2ab521ded311618a6b1883afd0d06c445693c1507396821ee5ec30ce767a1",
+    "crates/gobstopper-adapters/src/plugins.rs": "1ff94072f9a60c7224872e0672c256a711070a49d4deaccee3caacf93280dff5",
+    "crates/gobstopper-adapters/src/recovery.rs": "7b778325eaff80aff7397cbd8928cd8247f4da89941c70b8595103bc0b596a3c",
+    "crates/gobstopper-adapters/src/storage_tests.rs": "5e36e0f579c011e25aa7cdd799770d5d34075eab79dd2187f1d9e0ae42bfe0ce",
+    "crates/gobstopper-adapters/src/study.rs": "36754734b9f956e40190ae07416bd780ffa62378e6dac833ba30d5dac7f1c713",
+    "crates/gobstopper-adapters/src/transaction.rs": "40d308b28fd4282f3786265a297b6a39a2641c55de8a6954c84d2b3d65bb9460",
+    "crates/gobstopper-adapters/src/vault/accounting.rs": "1706ad0dcd65b0edf565c12d40fd8f596393fb556e4677270c2f82606dbc3cf9",
+    "crates/gobstopper-adapters/src/vault.rs": "6fc4c04a654f486c37afa0b4d7e6b08f6ac5c4d26cc6f7da22f4ed8a6e63ad4a",
+    "crates/gobstopper-adapters/src/verify.rs": "031d81a799e33f66df3d3498a597725e8624aa9c070666e5731e2f27c693505a",
+    "crates/gobstopper-adapters/tests/lean_correspondence.rs": "bfb2d9aaca096c170adba2ef15f5f625bea4833990bad3fbee8ef54479d3ccfb",
+    "crates/gobstopper-cli/Cargo.toml": "89c24a43d16f0989c04170650bee6d727b9e54df4983ff79eadc60a43b8fdce5",
+    "crates/gobstopper-core/Cargo.toml": "1de61bed40e65fac756fd1529635cda09892ea0482ebdeba6b1e038965116e50",
+    "crates/gobstopper-core/src/admission.rs": "d886b85141879328b3282f22765a96da5986e62b4eeaf2cfe9a16f06b17daa1d",
+    "crates/gobstopper-core/src/estimate.rs": "86c999f925e69ac76b304dd1a1805607e662d91d354fe02afad22939be161672",
+    "crates/gobstopper-core/src/events.rs": "6a222f6738531cb82726d55d8963af5b66b11f644c10585759fe84c54d5cac5d",
+    "crates/gobstopper-core/src/lib.rs": "7a2ed76f6874d539b2ec82bf8912701247ee82a7d45674db0c8971d506572d7a",
+    "crates/gobstopper-core/src/model.rs": "1687347980be057af253946555985b85e567d4bdddc8716f5ab27583eceae212",
+    "crates/gobstopper-core/src/plan.rs": "fcafb6a44a955bd1880b12194560d29371dde40d0a47f6456b9d4f96cb6c67bd",
+    "crates/gobstopper-core/src/policy.rs": "77fa1d849c9d34e0829e8ed009f88ecd508a0d0c22883931f1d2ae492060fd68",
+    "crates/gobstopper-core/src/probe.rs": "77b3814fcec225f6dfcd95e917305cbbaf799424498f08a3c8b7c4e15cad3175",
+    "crates/gobstopper-core/src/strategy/agentic.rs": "2cdce75031567462a8fcc6df5d0c7551235e1dfb14cd9480138ba38a9af7d9a0",
+    "crates/gobstopper-core/src/strategy/auto.rs": "54f9c0334abedeed6c66d70cd4eeb2cbe612a6c090d06aa5e474c749886cb8c2",
+    "crates/gobstopper-core/src/strategy/cache_aware.rs": "72a9dfdffca54a21b13c2ffa786c148a179fd47e144b4dc095c0e047baab3392",
+    "crates/gobstopper-core/src/strategy/cache_edits.rs": "03ec09f5ad36acdbfdb5ef54583243d2721edc092bc3d7b9709afe2dd664acf6",
+    "crates/gobstopper-core/src/strategy/cliff.rs": "0722c8927071ca35134b937d6613e891a9674a75307ceb405e0cb9db6736be61",
+    "crates/gobstopper-core/src/strategy/compacted.rs": "fa57607a7367e8e6ef492ea2ee4cb88178ea069012ba079d12bbb02a2decfb6d",
+    "crates/gobstopper-core/src/strategy/dedupe.rs": "51fbe4f6a381e8bc5657f1a24b1570d0a5d5f51a1c5acd2beeabf61fa2bcca7f",
+    "crates/gobstopper-core/src/strategy/elide.rs": "a008b66213f7d6f239db83e5ce3bf6965b5b85b00cd6862ec43ec1d036cf9b79",
+    "crates/gobstopper-core/src/strategy/micro.rs": "026e582a11b08fb5e779134a4ee8ca7d3065f9cd06c00f19b48bda94a636393e",
+    "crates/gobstopper-core/src/strategy/middle.rs": "e03bd8d80ea87d521425f1c8f6af575d545a1ea908a0c2c8635f39070e0aa31d",
+    "crates/gobstopper-core/src/strategy/mod.rs": "7cfe8517c0a1144259f21a1abf94336b8f467410cb4e6e950b9bcf3c06a376b9",
+    "crates/gobstopper-core/src/strategy/sawtooth.rs": "57da8d11980c57294cfd6c499bfe85f83d205975c09c3d993a7507f31923d063",
+    "crates/gobstopper-core/src/strategy/scored.rs": "ba3c13121045ed669bceb7e590668afde0c888ebdb4425e7d8c7dbf6b5c178de",
+    "crates/gobstopper-core/src/strategy/structured.rs": "032114f60b92f9bf41646b8d1459c2717bf7becd032e89bd87bcc0660ce98157",
+    "crates/gobstopper-core/src/validation.rs": "f7735d12c5af9d86a2964ce9ab6502159a5dfe97ff74f2ef5bee07f42698219e",
+    "verify/tools.lock.json": "face7de8e2a9aa8394973b9d335a0414d334642294dceccaddb3f6fe7575ebf7",
+    "verify/transcript/Audit.lean": "7537b5f8eed4e4915a4a074ddefc039f0da36de426d9787e88c872418bcf7b8d",
+    "verify/transcript/README.md": "ae7d7a7263911d60ed0d3baae5aed78f7a6f33291d1004364037a36181cea478",
+    "verify/transcript/Transcript.lean": "f633aa55525e6be28dc49ceb19b95d6392c56809603d65783d7315d22f0aeaf5",
+    "verify/transcript/Vectors.lean": "db68fd28e4773416835088c4b67beeb4127427cd7031833c9c5a2bf32b88ca76",
+    "verify/transcript/check.py": "47aaf9bae71891fd586b7df94187b27a38667dac20a7986be532cc2bd4c2ed64",
+    "verify/transcript/lake-manifest.json": "0f449acec768995dc308c9e487f3957fb85198ebdfa5e1ed4315ece926403200",
+    "verify/transcript/lakefile.toml": "1f2918976ef68b681199c6286d5595cd87d501ae6bd8d57174273b2a18db431a",
+    "verify/transcript/lean-toolchain": "8733782dc070a99b312039cda424f601b80f3be6f6f512627da5ba25adc27632",
+    "verify/transcript/test_check.py": "e552335469d08058211e203c4ec12f22f4e75f744959df683c4491884ddaba48",
+    "verify/transcript/vectors.json": "eb565cf59e176f458f078973bad0cede2fa49041f43148443524f66194ba1b60",
+    "verify/watch/check.py": "97ce34ea1926af465cfd242074ad80d9941311c9f412ee163923a90b7bfaebad"
+  },
+  "tool_sha256": {
+    "lake": "c8c24f1398162ab4004e2a869952d8469f54293651151feaad4526f2b8474c6e",
+    "lean": "1b370cfcbf44e80d1b004ab1b1ab9a4c73951f9f7c242140bcff9bc577576554",
+    "leanchecker": "cfde41cb11dde58c84e9c60c551fd104bb2fc1104ad44dca932a923120272a35",
+    "cargo-dispatcher": "b7a341737d8777ef0e21a71f0af90723ccf692914255110c12bbcfed79d75a53",
+    "rustc-dispatcher": "d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd",
+    "python": "b502cb4c5b46b8d4192ec6bcb600ce8922f1afc396fcf646e8765c6eba74a0bf",
+    "cargo": "b7a341737d8777ef0e21a71f0af90723ccf692914255110c12bbcfed79d75a53",
+    "rustc": "d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd"
+  },
+  "results": [
+    {
+      "case": "rust-sysroot",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "847d7ac7f933b46e8c43448239a79c704197305fbbac1a630bef9f038e5fb835",
+      "passed": true
+    },
+    {
+      "case": "lean-version",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "ef292bc08ba85881f3b660d4f1ab1143de776aae5d1c392cff9d8c3221407c2b",
+      "passed": true
+    },
+    {
+      "case": "lake-version",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "242bb637d740597febf655395478ffc9020e35e53e3040d8a7055bf3de6f0541",
+      "passed": true
+    },
+    {
+      "case": "rust-version",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "eaf195daced7a434718b67881bed97c02440b2b6196dad18db476478c66b1c36",
+      "passed": true
+    },
+    {
+      "case": "cargo-version",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "22cf38b38044f7e66c130e80d546028773672b549ec7bb81bf1e7652ede0c8ac",
+      "passed": true
+    },
+    {
+      "case": "lean-build",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "21be5d8b1abbcee3f9209144d7240dbd5cd11593298c58ad52d5e8aacc6f09aa",
+      "passed": true
+    },
+    {
+      "case": "axioms",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "dda3328b0c0312ee5f810fc619efbefca013e907cc5220b638a3a1c56caa2dcc",
+      "passed": true
+    },
+    {
+      "case": "kernel-replay",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "passed": true
+    },
+    {
+      "case": "vectors",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "eb565cf59e176f458f078973bad0cede2fa49041f43148443524f66194ba1b60",
+      "passed": true
+    },
+    {
+      "case": "rust-correspondence",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "0de58f2f9cf6db070f9d15c264d594ffb2acce39b676bd889e11f4fa3c3f27eb",
+      "passed": true
+    },
+    {
+      "case": "oracle-mutant-build",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "f1e7f0595cc083b17f2d49a5137f2c2a2ee4a581f0770d8cc45b55b569b88836",
+      "passed": true
+    },
+    {
+      "case": "oracle-mutant-vectors",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "836381383afee063723b6446c0b1c4b96bc56d659fbbb4707248336b256c0582",
+      "passed": true
+    },
+    {
+      "case": "oracle-mutant-correspondence",
+      "exit_code": 101,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "5c27bc2703894f5794567fecb016b17c79cde9e70af15fdb61acfff195b0a4c2",
+      "passed": true
+    },
+    {
+      "case": "rust-mutant-correspondence",
+      "exit_code": 101,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "4aacca86d6c96a6ecb55ae2b9a4308d0c67178b1993351af13ea9d65821ae9db",
+      "passed": true
+    }
+  ],
+  "axioms": {
+    "maskOne_key": [],
+    "maskOne_live": [],
+    "maskOne_protected": [],
+    "maskOne_event": [],
+    "protected_identity": [
+      "propext",
+      "Quot.sound"
+    ],
+    "inactive_identity": [
+      "propext",
+      "Quot.sound"
+    ],
+    "selected_is_masked": [],
+    "unselected_identity": [],
+    "maskOne_empty": [
+      "propext",
+      "Quot.sound"
+    ],
+    "mask_empty": [
+      "propext",
+      "Quot.sound"
+    ],
+    "length_preserved": [
+      "propext"
+    ],
+    "order_and_identity_preserved": [
+      "propext",
+      "Quot.sound"
+    ],
+    "links_preserved": [
+      "propext",
+      "Quot.sound"
+    ],
+    "effective_commutes": [
+      "propext",
+      "Quot.sound"
+    ],
+    "protected_projection_preserved": [
+      "propext",
+      "Quot.sound"
+    ],
+    "maskOne_compose": [
+      "propext",
+      "Quot.sound"
+    ],
+    "composition": [
+      "propext",
+      "Quot.sound"
+    ],
+    "idempotence": [
+      "propext",
+      "Quot.sound"
+    ],
+    "admitted_targets_known_safe": [
+      "propext",
+      "Quot.sound"
+    ],
+    "rejection_identity": [
+      "propext"
+    ],
+    "admitted_execution": [
+      "propext"
+    ],
+    "tool_wellformedness_preserved": [
+      "propext",
+      "Quot.sound"
+    ],
+    "digest_keeps_prior_order": [
+      "propext"
+    ],
+    "digest_keeps_prior_records": [
+      "propext"
+    ],
+    "digest_fresh_identity": [
+      "propext",
+      "Quot.sound"
+    ],
+    "quiet_append": [
+      "propext",
+      "Quot.sound"
+    ],
+    "digest_preserves_tool_links": [
+      "propext",
+      "Quot.sound"
+    ]
+  },
+  "vectors": {
+    "cases": 20,
+    "steps_per_provider": 23,
+    "accepted_per_provider": 12,
+    "refused_per_provider": 11,
+    "digests_per_provider": 3
+  },
+  "mutations": {
+    "oracle": {
+      "old": "(\"content\", toJson r.content)",
+      "new": "(\"content\", toJson (if r.content == 0 then (1 : Nat) else r.content))",
+      "source_sha256": "296bd803002e7692a71069278672d1576d27b2c7c392a9bf9169aaa80087216f"
+    },
+    "rust": {
+      "old": "raw = apply_elide(&raw, &targets, stub_template, per_item_stubs).0;",
+      "new": "raw = apply_elide(&raw, &std::collections::HashSet::new(), stub_template, per_item_stubs).0;",
+      "uncompiled_cli_metadata_target": true,
+      "source_sha256": "f155cd91fa296bed0237e3257cb0710957f3c4c25d07290d5f93eaaed9faf884"
+    }
+  }
+}
