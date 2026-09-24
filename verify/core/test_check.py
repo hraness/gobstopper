@@ -76,9 +76,11 @@ class AdmissionTests(unittest.TestCase):
 
     def test_mutant_requires_only_the_intended_assertion_failure(self):
         data = document()
-        data["harness_metadata"] = data["harness_metadata"][:1]
+        data["harness_metadata"] = [row for row in data["harness_metadata"]
+                                    if row["pretty_name"] == check.BOUNDARY_HARNESS]
         verification = data["verification_results"]
-        verification["results"] = verification["results"][:1]
+        verification["results"] = [row for row in verification["results"]
+                                   if row["harness_id"] == check.BOUNDARY_HARNESS]
         verification["summary"] = {"total_harnesses": 1, "executed": 1, "status": "completed",
                                     "successful": 0, "failed": 1}
         result = verification["results"][0]

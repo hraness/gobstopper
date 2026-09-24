@@ -35,10 +35,11 @@ one previous log. Reports include the executable's SHA-256 and command duration,
 exit code, and closed error code. Freeform command output is discarded. The
 watch command's known per-session load/plan failure diagnostics are classified as
 `watch_evaluation_failed` even when that command exits zero; plan count is then
-unavailable. Both commands restrict JSONL discovery to files updated within
-180 seconds before reading their usage; Devin also includes sessions with an
-observed held provider lock. These observations do not establish mutation
-custody. The report is capped at 2,000 sessions. `sessions` contains
+unavailable. Both commands use a 180-second file-recency window for JSONL
+discovery. Claude also includes older files whose bounded metadata scan finds
+a live process; Devin also includes sessions with an observed held provider
+lock. These observations do not establish mutation custody. The report is
+capped at 2,000 sessions. `sessions` contains
 only exact allowlisted Codex rows; `context_samples` also includes explicitly
 selected IDs or provider opt-ins from other providers. A missing or idle row is
 unavailable, never a zero-valued measurement. Context-only reporting omits Devin
@@ -48,6 +49,36 @@ to be exported for an observation of current context. The regular `report`
 command still requests complete Devin usage accounting. This distinction keeps
 the monitor's requested measurements explicit; its shared deadline and the
 separate dry-run evaluation are unchanged.
+
+The additive `coverage` summary reports selected Codex overlap, unavailable
+selected IDs, eligible versus exported samples, measurement states/reasons,
+provider discovery status and truncation. Its closed `issues` list distinguishes
+empty selected overlap, incomplete measurements and discovery gaps from command
+failure. A successful command does not establish complete observation coverage.
+Discovery counts are bounded; `omitted` is a lower bound when a directory or row
+limit prevents enumeration. Provider status is available only when every expected
+provider has one valid status record.
+
+`context_components` retains known input, cache-read, cache-creation and output
+counters when a provider leaves a component unavailable. `context_reason` names
+the closed failure category. `measured_component_subtotal` sums only known
+components with overflow checks; it is neither complete occupancy nor an
+unqualified lower bound on provider usage. Complete context remains null for
+partial, malformed, reset or unknown observations. Explicit reported zero is a
+measurement, but does not establish a positive before/after reduction. Claude
+usage scans validate a compact ancestry projection over at most 64 MiB, 100,000
+records and 4 MiB per record. A limit, ambiguous ancestry or observed source
+change remains unavailable; a long file is never assumed complete from its tail.
+
+`watcher_checkpoints` separately reads the three private provider checkpoint
+files, with no provider/configuration execution. It reports missing/unavailable,
+artifact mismatch, in-progress, stale or fresh completion using recorded pass
+times and the selected executable digest. Freshness is not a liveness probe or
+proof of successful compaction. Decision counts describe the latest pass only;
+they are not cumulative provider coverage. `native_activation` remains
+`unqualified` in release builds. The checkpoint config fingerprint includes
+watch decision inputs; it differs from the versioned parsed-config digest on
+new event records. Neither digest reveals private configuration strings.
 
 Each command also includes an additive `resources` object with `user_cpu_us`,
 `system_cpu_us`, `minor_page_faults`, `major_page_faults`,
@@ -102,11 +133,14 @@ snapshots. Its provider, native session ID and source identity must match a
 selected context sample. Exact before/after snapshot pairs count once;
 conflicting counts or source hashes for one pair exclude it. The reader follows the same `XDG_DATA_HOME` as the
 child commands, refuses symlinks and special files, rejects duplicate JSON keys,
-and bounds the log to 16 MiB and each record to 64 KiB. Missing, unreadable,
+and bounds the log to 16 MiB and each record to 16 KiB. Missing, unreadable,
 oversized or torn logs have `available: false` and a closed `error`; malformed
-complete records increment `invalid_records`. `conflicting_pairs` reports
-ambiguous tallies. Legacy count fields remain zero when unavailable, so
-consumers must check availability. This covers one local log generation, not
+complete records increment `invalid_records`, and oversized records increment
+`oversized_records`. Either makes retention unavailable with `event_log_invalid`:
+discarding a bad record could hide a contradiction of an otherwise valid pair.
+Valid noncompaction events and incomplete legacy evidence remain unqualified.
+`conflicting_pairs` reports ambiguous tallies. Legacy count fields remain zero
+when unavailable, so consumers must check availability. This covers one local log generation, not
 lifetime retention. Absent coverage is unmeasured.
 
 Released CLI native dispatch remains guarded even with an old opt-in. The

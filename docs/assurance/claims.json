@@ -309,18 +309,18 @@
       "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
     },
     {
-      "id": "CLAIM-VAULT",
+      "id": "CLAIM-CORE",
       "owner": "integration owner",
       "status": "bounded_check",
-      "assertion": "Finite custody and publication model; 11 safety/control/witness configurations.",
-      "bounds": "Two publishers/one reader/one prune in custody; one publisher/one reader/two prune cycles/one restart in publication; 256 MiB JVM, 45 seconds per case, 32 MiB logs.",
+      "assertion": "Selected production Rust admission, arithmetic, usage and evidence-agreement kernels under Kani.",
+      "bounds": "Full scalar numeric domains; index lengths 0/1/2/4 and four-edit sequence; production limits unchanged.",
       "public_sources": [
         {
-          "path": "verify/vault/README.md"
+          "path": "verify/core/README.md"
         }
       ],
       "evidence": [
-        "E-VAULT-CURRENT"
+        "E-CORE-CURRENT"
       ],
       "assumptions": [
         "A-RECEIPT",
@@ -328,9 +328,9 @@
         "A-MODEL"
       ],
       "exclusions": [
-        "No production refinement",
-        "No power-loss or network filesystem theorem",
-        "No fairness or unbounded actor theorem"
+        "No parsing/OS/allocation theorem",
+        "No whole-core or whole-system proof",
+        "Unsupported paths must be shown unreachable"
       ],
       "next_gate": "C15",
       "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."
@@ -363,18 +363,18 @@
       "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."
     },
     {
-      "id": "CLAIM-CORE",
+      "id": "CLAIM-VAULT",
       "owner": "integration owner",
       "status": "bounded_check",
-      "assertion": "Selected production Rust admission, arithmetic and usage kernels under Kani.",
-      "bounds": "Full scalar numeric domains; index lengths 0/1/2/4 and four-edit sequence; production limits unchanged.",
+      "assertion": "Finite custody and publication model; 11 safety/control/witness configurations.",
+      "bounds": "Two publishers/one reader/one prune in custody; one publisher/one reader/two prune cycles/one restart in publication; 256 MiB JVM, 45 seconds per case, 32 MiB logs.",
       "public_sources": [
         {
-          "path": "verify/core/README.md"
+          "path": "verify/vault/README.md"
         }
       ],
       "evidence": [
-        "E-CORE-CURRENT"
+        "E-VAULT-CURRENT"
       ],
       "assumptions": [
         "A-RECEIPT",
@@ -382,9 +382,9 @@
         "A-MODEL"
       ],
       "exclusions": [
-        "No parsing/OS/allocation theorem",
-        "No whole-core or whole-system proof",
-        "Unsupported paths must be shown unreachable"
+        "No production refinement",
+        "No power-loss or network filesystem theorem",
+        "No fairness or unbounded actor theorem"
       ],
       "next_gate": "C15",
       "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."

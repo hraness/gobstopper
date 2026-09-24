@@ -32,6 +32,10 @@ MUTANT_NEW = "edits < MAX_EDITS && items <= MAX_ITEMS"
 # Every harness must have these specification assertions proved reachable and
 # successful; every cover, including any added later, must be SATISFIED.
 HARNESSES = {
+    "events::proofs::evidence_agreement_is_order_independent_and_conflict_absorbing": [
+        "evidence join is commutative", "evidence join is associative",
+        "identical evidence replay is idempotent", "conflicting evidence cannot recover through replay",
+        "only identical evidence remains agreed"],
     BOUNDARY_HARNESS: [BOUNDARY_ASSERTION],
     "admission::proofs::digest_byte_admission": ["digest byte bound agrees with wide oracle"],
     "admission::proofs::eligibility_and_protection": ["only live positive unprotected payload is eligible"],
@@ -56,7 +60,8 @@ HARNESSES = {
         "only cumulative input establishes full lifetime scope",
         "only reported context is a measured value including zero",
         "explicit reset is not measured empty context",
-        "invalidated context is unavailable rather than measured empty"],
+        "invalidated context is unavailable rather than measured empty",
+        "partial component evidence is never complete context"],
     "policy::admission_proofs::policy_bounds_full_domain": [
         "production policy admission agrees with independent bounds"],
 }
@@ -168,7 +173,10 @@ def source_paths() -> list[Path]:
     # executed by these core harnesses. Bind those exact callers separately.
     paths += [ROOT / path for path in (
         "crates/gobstopper-cli/src/config.rs", "crates/gobstopper-adapters/src/codex.rs",
-        "crates/gobstopper-adapters/src/payload.rs")]
+        "crates/gobstopper-adapters/src/payload.rs", "crates/gobstopper-adapters/src/claude.rs",
+        "crates/gobstopper-adapters/src/devin.rs", "crates/gobstopper-adapters/src/eval.rs",
+        "crates/gobstopper-cli/src/main.rs", "crates/gobstopper-cli/src/hooks.rs",
+        "crates/gobstopper-cli/src/report.rs", "crates/gobstopper-cli/src/telemetry.rs")]
     return paths
 
 

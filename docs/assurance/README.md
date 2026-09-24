@@ -40,12 +40,27 @@ assertion does not count as a successful negative control. The models assume ato
 durable abstract actions, stable cooperating custody and no fairness; correspondence
 tables are reviewed arguments, not machine-checked whole-program refinements.
 
+The native model starts at target acquisition and does not model early artifact
+eligibility or transcript export cost. Release-mode and poisoned-payload regressions
+check that disabled native and live-delegation decisions avoid unnecessary reads
+and snapshots. The evidence-agreement kernel is proved over scalar equality;
+record-key construction, record equality and its report/adaptive callers retain
+ordinary regression and source-review obligations.
+
 Storage fault injection, killed-process fixtures, protocol scripts and longer
 command sequences test implementation behavior separately. Synthetic data does not
 qualify a proprietary provider/version/account, physical power-loss recovery or
 network filesystem semantics. Registered retention controls distinguish literal
 presence, judge estimates, task-specific labels, missing data and incomplete arms.
 Recorded occupancy reduction is not billed savings.
+
+Event-history qualification fails closed when a retained record is malformed or
+oversized: a discarded record could contradict an accepted pair. Reports retain
+valid event counts and expose unavailable reduction evidence explicitly; cohort,
+retention and adaptive consumers cannot silently use the readable subset.
+Availability means no records were lost within the bounded observed generations.
+It does not establish complete lifetime history or the present existence of the
+referenced snapshot objects.
 
 ## Structural admission
 
@@ -97,3 +112,14 @@ unqualified native/provider-store path. Any later activation requires exact prov
 mode, version, custody/correlation, bounded outcome and continuation evidence plus a
 reviewed guard change. The [phase plan](../correctness-plan.md) records implementation,
 review, validation and delivery status separately.
+
+The [data improvement plan](../data-improvement-plan.md) tracks the next measurement
+and runtime fixes. Current source builds add `vault --stats --json` for a bounded
+observation of known
+vault directories and index records. It opens existing shared locks without waiting,
+reads only index content and file metadata, and reports missing, busy or incomplete
+results explicitly. Its 3-second budget is checked between filesystem operations;
+it cannot preempt a blocked kernel operation. Counts are logical sizes within a
+non-atomic observation window, with explicit entry/byte limits. No payload integrity,
+recovery-reference, physical-space or reclaimability claim follows from a complete
+metadata scan. It makes no deletion or automatic retention decision.

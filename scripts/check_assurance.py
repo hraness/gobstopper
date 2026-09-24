@@ -118,7 +118,10 @@ def receipt_sources(root, family, cases):
             paths += list((root / "crates/gobstopper-core/src").rglob("*.rs"))
             paths += [root / name for name in (
                 "crates/gobstopper-cli/src/config.rs", "crates/gobstopper-adapters/src/codex.rs",
-                "crates/gobstopper-adapters/src/payload.rs")]
+                "crates/gobstopper-adapters/src/payload.rs", "crates/gobstopper-adapters/src/claude.rs",
+                "crates/gobstopper-adapters/src/devin.rs", "crates/gobstopper-adapters/src/eval.rs",
+                "crates/gobstopper-cli/src/main.rs", "crates/gobstopper-cli/src/hooks.rs",
+                "crates/gobstopper-cli/src/report.rs", "crates/gobstopper-cli/src/telemetry.rs")]
         else:
             paths += [path for path in here.iterdir() if path.is_file() and not path.name.startswith(".")]
             if family == "transcript":
@@ -232,7 +235,7 @@ def validate_receipt_contract(root, name, receipt, require):
             # and review here, not merely a nonzero assertion total.
             expected_counts = dict(zip(
                 ("assertions", "covers", "unwind_checks", "unreachable_safety_checks", "unsupported_paths_excluded"),
-                (2, 3, 0, 0, 0) if mutant else (159, 46, 3, 30, 11),
+                (2, 3, 0, 0, 0) if mutant else (178, 52, 3, 30, 11),
             ))
             require(isinstance(counts, dict) and counts == expected_counts
                     and all(integer(value) for value in counts.values()),

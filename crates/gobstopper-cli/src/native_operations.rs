@@ -14,6 +14,7 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 const MAX_LOG_BYTES: u64 = 4 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 512 * 1024 * 1024;
@@ -37,6 +38,120 @@ pub(super) fn activation_unqualified(error: &anyhow::Error) -> bool {
 
 pub(super) fn executable_unavailable(error: &anyhow::Error) -> bool {
     error.downcast_ref::<ExecutableUnavailable>().is_some()
+}
+
+/// A retained startup executable, not a version string or a newly replaced path.
+/// Keep the descriptor so unlink/replacement cannot recycle its identity while
+/// the daemon runs. This is an owner-controlled-filesystem assumption, not an
+/// attestation of a process launched from an already replaced executable.
+struct ArtifactIdentity {
+    path: PathBuf,
+    file: File,
+    metadata: fs::Metadata,
+    sha256: String,
+}
+
+fn same_artifact_metadata(left: &fs::Metadata, right: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        left.is_file()
+            && right.is_file()
+            && left.dev() == right.dev()
+            && left.ino() == right.ino()
+            && left.len() == right.len()
+            && left.mtime() == right.mtime()
+            && left.mtime_nsec() == right.mtime_nsec()
+            && left.ctime() == right.ctime()
+            && left.ctime_nsec() == right.ctime_nsec()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (left, right);
+        false
+    }
+}
+
+impl ArtifactIdentity {
+    fn open(path: PathBuf) -> Result<Self> {
+        let file = open_regular(&path, false, false)?;
+        let metadata = file.metadata()?;
+        if metadata.len() > MAX_BINARY_BYTES {
+            bail!("running artifact exceeds identity hash bound");
+        }
+        let mut hash = Sha256::new();
+        let mut limited = (&file).take(MAX_BINARY_BYTES + 1);
+        let mut buffer = [0u8; 64 * 1024];
+        let mut total = 0u64;
+        loop {
+            let n = limited.read(&mut buffer)?;
+            if n == 0 {
+                break;
+            }
+            total += n as u64;
+            if total > MAX_BINARY_BYTES {
+                bail!("running artifact grew beyond identity hash bound");
+            }
+            hash.update(&buffer[..n]);
+        }
+        let artifact = Self {
+            path,
+            file,
+            metadata,
+            sha256: format!("{:x}", hash.finalize()),
+        };
+        artifact.validate()?;
+        Ok(artifact)
+    }
+
+    fn validate(&self) -> Result<()> {
+        if !same_artifact_metadata(&self.metadata, &self.file.metadata()?)
+            || !same_artifact_metadata(&self.metadata, &fs::symlink_metadata(&self.path)?)
+        {
+            bail!("running artifact identity changed or is unsupported; restart required");
+        }
+        Ok(())
+    }
+}
+
+/// Hash once, then refuse stale provenance after an in-place write or path
+/// replacement. Call again at each pass boundary and before recording a receipt.
+pub(super) fn artifact_sha256() -> Result<&'static str> {
+    static ARTIFACT: OnceLock<Option<ArtifactIdentity>> = OnceLock::new();
+    let artifact = ARTIFACT
+        .get_or_init(|| ArtifactIdentity::open(std::env::current_exe().ok()?).ok())
+        .as_ref()
+        .context("running artifact identity unavailable; restart required")?;
+    artifact
+        .validate()
+        .map_err(|_| anyhow::anyhow!("running artifact identity changed; restart required"))?;
+    Ok(&artifact.sha256)
+}
+
+pub(super) fn artifact_activation_status() -> &'static str {
+    if cfg!(debug_assertions) {
+        "isolated_fixtures_only"
+    } else {
+        "unqualified"
+    }
+}
+
+/// Early eligibility is independent of snapshot/export and never authorizes a
+/// dispatch. Released artifacts reject without touching the provider binary.
+/// Exact target/binary, recovery and custody checks remain in `prepare`.
+pub(super) fn check_artifact_activation(
+    handle: &SessionHandle,
+    provider_home: &Path,
+    binary: Option<&Path>,
+) -> Result<()> {
+    #[cfg(debug_assertions)]
+    if std::env::var_os("GOBSTOPPER_NATIVE_FIXTURE_ROOT").is_some()
+        && matches!(handle.provider.as_str(), "codex" | "claude_code")
+    {
+        return check_activation(handle, provider_home, binary.ok_or(ExecutableUnavailable)?);
+    }
+    let _ = (handle, provider_home, binary);
+    Err(ActivationUnqualified.into())
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1208,5 +1323,27 @@ mod tests {
         assert!(open_regular(&link, true, true).is_err());
         assert!(open_regular(Path::new("/dev/null"), false, false).is_err());
         assert_eq!(fs::read_to_string(target).unwrap(), "preserved");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_identity_detects_replacement_and_same_size_writes() {
+        for replacement in [false, true] {
+            let f = Fixture::new();
+            let path = f.0.join("artifact");
+            fs::write(&path, b"first").unwrap();
+            let artifact = ArtifactIdentity::open(path.clone()).unwrap();
+            assert_eq!(artifact.sha256, sha(b"first"));
+            artifact.validate().unwrap();
+            if replacement {
+                let candidate = f.0.join("candidate");
+                // Even byte-identical replacement must invalidate the receipt.
+                fs::write(&candidate, b"first").unwrap();
+                fs::rename(candidate, path).unwrap();
+            } else {
+                fs::write(path, b"other").unwrap();
+            }
+            assert!(artifact.validate().is_err());
+        }
     }
 }

@@ -23,6 +23,8 @@ the complete application is verified.
 | `estimate::add_tokens` | Model totals, auto preserved-prefix totals, structured strategy savings, digest overhead | All two-`u64` inputs; independent wide saturating-sum oracle |
 | `estimate::elision_savings` | `TranscriptItem::estimated_elision_savings` | Full `u64`, optional bytes and `u32` part count; no overflow/truncation, live payload required, saving no larger than item estimate |
 | `UsageSample::observe_cumulative_report` | Codex cumulative usage ingestion | Arbitrary old/new scalar state and all provenance enums; preserve absent reports, distinguish reported zero from explicit reset/unavailable context, cumulative input establishes full accounting, cached <= known input, positive window updates, idempotent repeated report |
+| `UsageSample::observe_context_components` | Devin metrics and Claude usage projection | Optional full-width components with an absent or explicit null reason; partial numbers never establish complete context, overflow remains unavailable, complete zero is measured |
+| `EvidenceAgreement::join` | Shared event-pair qualification for reports and adaptive history | Arbitrary states and full-width scalar evidence; commutative, associative, idempotent, absorbing conflicts; JSON parsing, collection/key construction and evidence equality on records remain regression-tested |
 | `policy::validate_policy` | CLI `config::validate_policy` | Full integer and optional `f64` domain, including NaN/infinity; exact policy admission boundaries |
 
 Every harness requires reachable boundary/branch covers, including real maximum
@@ -76,8 +78,10 @@ must be new. The production invocation is `cargo-kani -p gobstopper-core
 limit and 32 MiB log bound, using the bounded Unix reactor in
 [`../watch/check.py`](../watch/check.py); that dependency is evidence-hashed.
 
-The 15 named harnesses use bounds 2/3/4/6 for empty/one/two/four-index cases and 5
-for four-edit composition. Scalar kernels have no input-length bound. Every
+The 16 named harnesses use bounds 2/3/4/6 for empty/one/two/four-index cases and 5
+for four-edit composition. Scalar kernels have no input-length bound. Evidence
+agreement is proved for scalar equality; its use with complete observation
+records relies on Rust-derived equality and the tested pair-key construction. Every
 reported unwind check must succeed; missing harnesses, timeouts, unsupported
 reachable behavior, undetermined checks, a missing/unknown JSON schema, or any
 unsatisfied/unreachable cover fail admission. Named specification assertions
@@ -97,7 +101,8 @@ killed mutant. The positive run checks the actual workspace; the mutant never
 modifies it. Source and tool hashes are checked again before receipt admission.
 
 `receipt.json` binds all core sources, manifests/lockfile, reviewed CLI/adapter
-callers, runner/tests/docs, versioned tool hashes, commands and complete Kani
+callers (including usage ingestion and report/adaptive event consumers),
+runner/tests/docs, versioned tool hashes, commands and complete Kani
 reports. It is valid only for those exact inputs. It is not a Rust refinement
 proof for the TLA+ model, an unbounded theorem for arbitrary sequences, a proof
 of sorting/hash collections, or a substitute for final integration gates.

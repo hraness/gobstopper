@@ -20,7 +20,10 @@ use std::path::{Path, PathBuf};
 
 use crate::AdapterError;
 
-const TAIL_SCAN_BYTES: u64 = 512 * 1024;
+/// Discovery inspects a complete structural/usage projection under these
+/// limits. Payloads are decoded one record at a time and are not retained.
+pub const USAGE_SCAN_MAX_BYTES: u64 = 64 * 1024 * 1024;
+pub const USAGE_SCAN_MAX_RECORD_BYTES: u64 = 4 * 1024 * 1024;
 
 fn value_len(v: &Value) -> usize {
     match v {
@@ -256,50 +259,219 @@ fn tool_result_metadata(
     (parts, ids, label, payload_sha256)
 }
 
-fn usage_parts(line: &Value) -> Option<(u64, u64, u64)> {
-    if line.get("type").and_then(Value::as_str) != Some("assistant") {
-        return None;
-    }
-    let usage = line.pointer("/message/usage")?.as_object()?;
-    let component = |key: &str| match usage.get(key) {
-        None => Some(0),
-        Some(value) => value.as_u64(),
+fn context_usage(line: &Value) -> UsageSample {
+    use gobstopper_core::model::{ContextComponents, ContextReason};
+    let mut sample = UsageSample::default();
+    let Some(metrics) = line.pointer("/message/usage").and_then(Value::as_object) else {
+        sample.invalidate_context_because(if line.pointer("/message/usage").is_some() {
+            ContextReason::MalformedComponent
+        } else {
+            ContextReason::MissingComponent
+        });
+        sample.lifetime_scope = gobstopper_core::model::LifetimeScope::Partial;
+        return sample;
     };
-    let input = usage
-        .get("input_tokens")?
-        .as_u64()?
-        .saturating_add(component("cache_read_input_tokens")?)
-        .saturating_add(component("cache_creation_input_tokens")?);
-    Some((
-        input,
-        component("cache_read_input_tokens")?,
-        input.saturating_add(component("output_tokens")?),
-    ))
-}
-
-fn context_usage(line: &Value) -> Option<u64> {
-    usage_parts(line).map(|(_, _, context)| context)
+    let mut reason = None;
+    let mut component = |key: &str, optional: bool| match metrics.get(key) {
+        // Preserve the existing omission convention for optional counters;
+        // explicit null has no established zero semantics.
+        None if optional => Some(0),
+        Some(value) if value.is_null() => {
+            if reason != Some(ContextReason::MalformedComponent) {
+                reason = Some(ContextReason::NullComponent);
+            }
+            None
+        }
+        Some(value) if value.as_u64().is_some() => value.as_u64(),
+        Some(_) => {
+            reason = Some(ContextReason::MalformedComponent);
+            None
+        }
+        None => {
+            reason.get_or_insert(ContextReason::MissingComponent);
+            None
+        }
+    };
+    let components = ContextComponents {
+        input_tokens: component("input_tokens", false),
+        cache_read_tokens: component("cache_read_input_tokens", true),
+        cache_creation_tokens: component("cache_creation_input_tokens", true),
+        output_tokens: component("output_tokens", true),
+    };
+    sample.observe_context_components(components, reason);
+    let input = components
+        .input_tokens
+        .unwrap_or(0)
+        .checked_add(components.cache_read_tokens.unwrap_or(0))
+        .and_then(|n| n.checked_add(components.cache_creation_tokens.unwrap_or(0)));
+    sample.lifetime_input_tokens = input.unwrap_or(0);
+    sample.lifetime_cached_tokens = components
+        .cache_read_tokens
+        .unwrap_or(0)
+        .min(sample.lifetime_input_tokens);
+    sample.lifetime_scope = if sample.reported_context().is_some() && input.is_some() {
+        gobstopper_core::model::LifetimeScope::Full
+    } else {
+        gobstopper_core::model::LifetimeScope::Partial
+    };
+    sample
 }
 
 fn absorb_usage(line: &Value, sample: &mut UsageSample) {
-    use gobstopper_core::model::{ContextState, LifetimeScope};
+    use gobstopper_core::model::LifetimeScope;
     if line.get("type").and_then(Value::as_str) != Some("assistant") {
         return;
     }
-    let Some((input, cached, context)) = usage_parts(line) else {
-        sample.lifetime_scope = LifetimeScope::Partial;
-        sample.invalidate_context();
-        return;
-    };
-    sample.context_tokens = context;
-    sample.context_state = ContextState::Reported;
-    sample.lifetime_input_tokens = sample.lifetime_input_tokens.saturating_add(input);
-    sample.lifetime_cached_tokens = sample
+    let reading = context_usage(line);
+    let input = sample
+        .lifetime_input_tokens
+        .checked_add(reading.lifetime_input_tokens);
+    let cached = sample
         .lifetime_cached_tokens
-        .saturating_add(cached)
-        .min(sample.lifetime_input_tokens);
-    if sample.lifetime_scope != LifetimeScope::Partial {
+        .checked_add(reading.lifetime_cached_tokens);
+    if let Some(input) = input {
+        sample.lifetime_input_tokens = input;
+    }
+    if let Some(cached) = cached {
+        sample.lifetime_cached_tokens = cached.min(sample.lifetime_input_tokens);
+    }
+    if reading.lifetime_scope == LifetimeScope::Partial || input.is_none() || cached.is_none() {
+        sample.lifetime_scope = LifetimeScope::Partial;
+    } else if sample.lifetime_scope != LifetimeScope::Partial {
         sample.lifetime_scope = LifetimeScope::Full;
+    }
+}
+
+type ClaudeLinks = Vec<(usize, String, Option<String>)>;
+
+/// Structural evidence retained by both discovery and full loading. No
+/// message text or tool payload survives a push into this projection.
+#[derive(Default)]
+struct UsageProjection {
+    usage: UsageSample,
+    links: ClaudeLinks,
+    context_samples: Vec<(usize, UsageSample)>,
+    context_resets: Vec<usize>,
+    last_prompt_leaf: Option<String>,
+    fallback_leaf: Option<String>,
+    invalid_record: bool,
+    ambiguous: bool,
+}
+
+fn valid_link_id(value: &Value) -> bool {
+    value
+        .as_str()
+        .is_some_and(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
+}
+
+impl UsageProjection {
+    fn push(&mut self, line: usize, record: &Value) {
+        if !record.is_object() {
+            self.invalid_record = true;
+            return;
+        }
+        absorb_usage(record, &mut self.usage);
+        if record.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
+            self.context_resets.push(line);
+        }
+        if record.get("type").and_then(Value::as_str) == Some("assistant") {
+            self.context_samples.push((line, context_usage(record)));
+        }
+        if record.get("uuid").is_none()
+            && (matches!(
+                record.get("type").and_then(Value::as_str),
+                Some("user" | "assistant")
+            ) || record.get("subtype").and_then(Value::as_str) == Some("compact_boundary"))
+        {
+            // A message without a link cannot be classified as live or dead;
+            // it must not silently preserve an older reading. Unlinked
+            // attachments and system notices are permitted by this dialect:
+            // they remain protected context without changing message ancestry.
+            self.ambiguous = true;
+        }
+        if let Some(uuid) = record.get("uuid") {
+            if !valid_link_id(uuid)
+                || !record
+                    .get("parentUuid")
+                    .is_none_or(|v| v.is_null() || valid_link_id(v))
+            {
+                self.ambiguous = true;
+                return;
+            }
+            let uuid = uuid.as_str().expect("validated link");
+            self.links.push((
+                line,
+                uuid.to_string(),
+                record
+                    .get("parentUuid")
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
+            ));
+            if matches!(
+                record.get("type").and_then(Value::as_str),
+                Some("user" | "assistant" | "attachment")
+            ) {
+                self.fallback_leaf = Some(uuid.to_string());
+            }
+        }
+        if record.get("type").and_then(Value::as_str) == Some("last-prompt") {
+            match record
+                .get("leafUuid")
+                .filter(|v| valid_link_id(v))
+                .and_then(Value::as_str)
+            {
+                Some(uuid) => self.last_prompt_leaf = Some(uuid.to_string()),
+                None => self.ambiguous = true,
+            }
+        }
+    }
+
+    fn finish(mut self) -> (UsageSample, ClaudeLinks, std::collections::HashSet<usize>) {
+        use gobstopper_core::model::{ContextReason, ContextState, LifetimeScope};
+        let leaf = self.last_prompt_leaf.or(self.fallback_leaf);
+        let live = leaf
+            .as_deref()
+            .filter(|_| !self.ambiguous && !self.invalid_record)
+            .map(|leaf| live_branch(&self.links, leaf))
+            .unwrap_or_default();
+        self.usage.context_tokens = 0;
+        self.usage.context_state = ContextState::Absent;
+        if self.invalid_record
+            || self.ambiguous
+            || (live.is_empty() && (leaf.is_some() || !self.links.is_empty()))
+        {
+            self.usage
+                .invalidate_context_because(if self.invalid_record {
+                    ContextReason::InvalidRecord
+                } else {
+                    ContextReason::InvalidAncestry
+                });
+            self.usage.lifetime_scope = LifetimeScope::Partial;
+        } else if let Some((_, context)) = self
+            .context_samples
+            .iter()
+            .rev()
+            .find(|(line, _)| live.contains(line))
+        {
+            self.usage.context_tokens = context.context_tokens;
+            self.usage.context_state = context.context_state;
+            self.usage.context_components = context.context_components;
+            self.usage.context_reason = context.context_reason;
+        }
+        let newest = self
+            .context_samples
+            .iter()
+            .rev()
+            .find(|(line, _)| live.contains(line))
+            .map(|(line, _)| *line);
+        if self
+            .context_resets
+            .iter()
+            .any(|line| live.contains(line) && newest.is_none_or(|sample| *line > sample))
+        {
+            self.usage.reset_context();
+        }
+        (self.usage, self.links, live)
     }
 }
 
@@ -318,14 +490,8 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
     if bytes.len() as u64 > crate::transaction::max_transcript_bytes() {
         return Err(AdapterError::InvalidEdit("transcript exceeds byte limit"));
     }
-    let mut usage = UsageSample::default();
-    let mut links: Vec<(usize, String, Option<String>)> = Vec::new();
-    let mut context_samples = Vec::new();
-    let mut context_resets = Vec::new();
-    let mut last_prompt_leaf = None;
-    let mut fallback_leaf = None;
+    let mut projection = UsageProjection::default();
     let mut tool_uses = std::collections::HashMap::new();
-    let mut ambiguous = false;
     for (line_index, line) in BufReader::new(std::io::Cursor::new(bytes))
         .lines()
         .enumerate()
@@ -337,98 +503,15 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
             path: handle.path.clone(),
             source: e,
         })?;
-        let Ok(record) = crate::payload::decode_record(&line) else {
-            ambiguous |= !line.trim().is_empty();
+        if line.trim().is_empty() {
             continue;
-        };
-        ambiguous |= !record.is_object();
-        absorb_usage(&record, &mut usage);
-        if record.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
-            context_resets.push(line_index);
         }
-        if record.get("type").and_then(Value::as_str) == Some("assistant") {
-            context_samples.push((line_index, context_usage(&record)));
-        }
-        if record.get("uuid").is_some() {
-            ambiguous |= !record
-                .get("uuid")
-                .and_then(Value::as_str)
-                .is_some_and(|id| {
-                    !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
-                });
-            ambiguous |= !record.get("parentUuid").is_none_or(|v| {
-                v.is_null()
-                    || v.as_str().is_some_and(|id| {
-                        !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
-                    })
-            });
-        }
-        if let Some(uuid) = record.get("uuid").and_then(Value::as_str) {
-            links.push((
-                line_index,
-                uuid.to_string(),
-                record
-                    .get("parentUuid")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            ));
-            if matches!(
-                record.get("type").and_then(Value::as_str),
-                Some("user") | Some("assistant") | Some("attachment")
-            ) {
-                fallback_leaf = Some(uuid.to_string());
-            }
-        }
-        if record.get("type").and_then(Value::as_str) == Some("last-prompt") {
-            if let Some(uuid) = record
-                .get("leafUuid")
-                .and_then(Value::as_str)
-                .filter(|id| !id.is_empty())
-            {
-                last_prompt_leaf = Some(uuid.to_string());
-            } else {
-                ambiguous = true;
-            }
+        match crate::payload::decode_record(&line) {
+            Ok(record) => projection.push(line_index, &record),
+            Err(_) => projection.invalid_record = true,
         }
     }
-    let leaf_uuid = last_prompt_leaf.or(fallback_leaf);
-    let live = leaf_uuid
-        .as_deref()
-        .filter(|_| !ambiguous)
-        .map(|leaf| live_branch(&links, leaf))
-        .unwrap_or_default();
-    usage.context_tokens = 0;
-    usage.context_state = gobstopper_core::model::ContextState::Absent;
-    if live.is_empty() && (!links.is_empty() || ambiguous) {
-        usage.invalidate_context();
-        usage.lifetime_scope = gobstopper_core::model::LifetimeScope::Partial;
-    } else if let Some((_, context)) = context_samples
-        .iter()
-        .rev()
-        .find(|(line, _)| live.contains(line))
-    {
-        match context {
-            Some(context) => {
-                usage.context_tokens = *context;
-                usage.context_state = gobstopper_core::model::ContextState::Reported;
-            }
-            None => usage.invalidate_context(),
-        }
-    }
-    let newest_live_sample = context_samples
-        .iter()
-        .rev()
-        .find(|(line, _)| live.contains(line))
-        .map(|(line, _)| *line);
-    if context_resets
-        .iter()
-        .any(|line| live.contains(line) && newest_live_sample.is_none_or(|sample| *line > sample))
-    {
-        usage.reset_context();
-    }
-    if ambiguous {
-        usage.lifetime_scope = gobstopper_core::model::LifetimeScope::Partial;
-    }
+    let (mut usage, links, live) = projection.finish();
 
     let mut items = Vec::new();
     for (line_index, line) in BufReader::new(std::io::Cursor::new(bytes))
@@ -575,77 +658,112 @@ pub(crate) fn live_branch(
     live
 }
 
-/// Cheap usage pass for `detect`: read only the tail of the file.
+/// Read a complete bounded structural projection, retaining only graph links
+/// and numeric usage. An incomplete suffix cannot prove ancestry or lifetime
+/// totals. Normal source writes/replacements observed during the read invalidate
+/// the complete result; this does not claim custody against a hostile writer.
 pub fn scan_usage(path: &Path) -> UsageSample {
-    let mut sample = UsageSample::default();
-    let Some((records, complete)) = crate::tail_records(path, TAIL_SCAN_BYTES) else {
-        sample.invalidate_context();
-        return sample;
-    };
-    let mut links = Vec::new();
-    for (line, record) in records.iter().enumerate() {
-        absorb_usage(record, &mut sample);
-        if let Some(uuid) = record.get("uuid").and_then(Value::as_str) {
-            links.push((
-                line,
-                uuid.to_string(),
-                record
-                    .get("parentUuid")
-                    .and_then(Value::as_str)
-                    .map(str::to_string),
-            ));
-        }
-    }
-    let leaf = records
-        .iter()
-        .rev()
-        .find(|record| record.get("type").and_then(Value::as_str) == Some("last-prompt"))
-        .and_then(|record| record.get("leafUuid").and_then(Value::as_str))
-        .or_else(|| {
-            records.iter().rev().find_map(|record| {
-                matches!(
-                    record.get("type").and_then(Value::as_str),
-                    Some("user") | Some("assistant") | Some("attachment")
-                )
-                .then(|| record.get("uuid").and_then(Value::as_str))
-                .flatten()
-            })
-        });
-    sample.context_tokens = 0;
-    sample.context_state = gobstopper_core::model::ContextState::Absent;
-    if !complete && sample.lifetime_scope != gobstopper_core::model::LifetimeScope::Absent {
-        sample.lifetime_scope = gobstopper_core::model::LifetimeScope::Partial;
-    }
-    if let Some(leaf) = leaf {
-        let live = live_branch(&links, leaf);
-        if live.is_empty() {
-            sample.invalidate_context();
-            sample.lifetime_scope = gobstopper_core::model::LifetimeScope::Partial;
-        } else if let Some((_, record)) = records.iter().enumerate().rev().find(|(line, record)| {
-            live.contains(line) && record.get("type").and_then(Value::as_str) == Some("assistant")
-        }) {
-            if let Some(context) = context_usage(record) {
-                sample.context_tokens = context;
-                sample.context_state = gobstopper_core::model::ContextState::Reported;
-            } else {
-                sample.invalidate_context();
-            }
-        }
-    }
-    if let Some(leaf) = leaf {
-        let live = live_branch(&links, leaf);
-        if let Some((_, latest)) = records.iter().enumerate().rev().find(|(line, record)| {
-            live.contains(line)
-                && (record.get("type").and_then(Value::as_str) == Some("assistant")
-                    || record.get("subtype").and_then(Value::as_str) == Some("compact_boundary"))
-        }) {
-            if latest.get("subtype").and_then(Value::as_str) == Some("compact_boundary") {
-                sample.reset_context();
-            }
-        }
-    }
+    scan_usage_checked(path, || {})
+}
 
-    sample
+fn scan_usage_checked(path: &Path, after_read: impl FnOnce()) -> UsageSample {
+    use gobstopper_core::model::ContextReason;
+    let result = (|| {
+        let mut options = fs::OpenOptions::new();
+        options.read(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+        }
+        // A platform without Unix inode/ctime identity cannot bind this scan.
+        #[cfg(not(unix))]
+        return Err(ContextReason::SourceUnavailable);
+        #[allow(unreachable_code)]
+        let mut file = options
+            .open(path)
+            .map_err(|_| ContextReason::SourceUnavailable)?;
+        let before = file
+            .metadata()
+            .map_err(|_| ContextReason::SourceUnavailable)?;
+        if !before.is_file() {
+            return Err(ContextReason::SourceUnavailable);
+        }
+        let limit = USAGE_SCAN_MAX_BYTES.min(crate::transaction::max_transcript_bytes());
+        if before.len() > limit {
+            return Err(ContextReason::ReadLimit);
+        }
+        if !fs::symlink_metadata(path).is_ok_and(|named| same_scan_source(&before, &named)) {
+            return Err(ContextReason::SourceChanged);
+        }
+        let mut projection = UsageProjection::default();
+        let mut consumed = 0u64;
+        {
+            use std::io::Read;
+            let mut reader = BufReader::new((&mut file).take(before.len() + 1));
+            let mut line = Vec::new();
+            let mut line_index = 0usize;
+            loop {
+                line.clear();
+                let bytes = (&mut reader)
+                    .take(USAGE_SCAN_MAX_RECORD_BYTES + 1)
+                    .read_until(b'\n', &mut line)
+                    .map_err(|_| ContextReason::SourceUnavailable)?;
+                if bytes == 0 {
+                    break;
+                }
+                consumed += bytes as u64;
+                if line_index >= gobstopper_core::validation::MAX_ITEMS
+                    || bytes as u64 > USAGE_SCAN_MAX_RECORD_BYTES
+                    || consumed > limit
+                {
+                    return Err(ContextReason::ReadLimit);
+                }
+                let raw = std::str::from_utf8(&line).map_err(|_| ContextReason::InvalidRecord)?;
+                if !raw.trim().is_empty() {
+                    let record = crate::payload::decode_record(raw)
+                        .map_err(|_| ContextReason::InvalidRecord)?;
+                    projection.push(line_index, &record);
+                }
+                line_index += 1;
+            }
+        }
+        after_read();
+        if consumed != before.len()
+            || !file
+                .metadata()
+                .is_ok_and(|after| same_scan_source(&before, &after))
+            || !fs::symlink_metadata(path).is_ok_and(|named| same_scan_source(&before, &named))
+        {
+            return Err(ContextReason::SourceChanged);
+        }
+        Ok(projection.finish().0)
+    })();
+    result.unwrap_or_else(|reason| {
+        let mut sample = UsageSample::default();
+        sample.invalidate_context_because(reason);
+        sample
+    })
+}
+
+fn same_scan_source(before: &fs::Metadata, after: &fs::Metadata) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        after.is_file()
+            && before.dev() == after.dev()
+            && before.ino() == after.ino()
+            && before.len() == after.len()
+            && before.mtime() == after.mtime()
+            && before.mtime_nsec() == after.mtime_nsec()
+            && before.ctime() == after.ctime()
+            && before.ctime_nsec() == after.ctime_nsec()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (before, after);
+        false
+    }
 }
 
 /// Read session identity from any line that carries it.
@@ -1299,5 +1417,317 @@ mod ownership_tests {
         assert!(start.elapsed() < std::time::Duration::from_secs(30));
         assert!(err.to_string().contains("timed out"), "got: {err}");
         fs::remove_dir_all(&dir).ok();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gobstopper_core::model::{ContextReason, ContextState, LifetimeScope};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct Fixture(PathBuf);
+    impl Fixture {
+        fn new() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            let dir = std::env::temp_dir().join(format!(
+                "gobstopper-claude-usage-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            fs::create_dir(&dir).unwrap();
+            Self(dir)
+        }
+        fn path(&self) -> PathBuf {
+            self.0.join("session.jsonl")
+        }
+        fn write(&self, records: &[Value]) -> Vec<u8> {
+            let bytes = records
+                .iter()
+                .map(|r| format!("{r}\n"))
+                .collect::<String>()
+                .into_bytes();
+            fs::write(self.path(), &bytes).unwrap();
+            bytes
+        }
+        fn handle(&self) -> SessionHandle {
+            SessionHandle {
+                provider: Provider::ClaudeCode,
+                session_id: "s".into(),
+                path: self.path(),
+                cwd: None,
+                age_secs: 0,
+            }
+        }
+    }
+    impl Drop for Fixture {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+    fn reading(id: &str, parent: Option<&str>, n: u64) -> Value {
+        json!({"type":"assistant","uuid":id,"parentUuid":parent,"message":{"role":"assistant","content":[],"usage":{"input_tokens":n,"output_tokens":1}}})
+    }
+
+    #[test]
+    fn long_valid_history_recovers_complete_ancestry_and_lifetime() {
+        let fx = Fixture::new();
+        let mut records = vec![reading("root", None, 10)];
+        let mut parent = "root".to_string();
+        for i in 0..40 {
+            let id = format!("user-{i}");
+            records.push(json!({"type":"user","uuid":id,"parentUuid":parent,"message":{"role":"user","content":"x".repeat(20_000)}}));
+            parent = id;
+        }
+        records.push(reading("live", Some(&parent), 100));
+        records.push(reading("dead", Some("root"), 900));
+        records.push(json!({"type":"last-prompt","leafUuid":"live"}));
+        let bytes = fx.write(&records);
+        assert!(bytes.len() > 512 * 1024);
+        let scanned = scan_usage(&fx.path());
+        assert_eq!(scanned.reported_context(), Some(101));
+        assert_eq!(scanned.lifetime_scope, LifetimeScope::Full);
+        assert_eq!(scanned.lifetime_input_tokens, 1010);
+        assert_eq!(scanned, load_bytes(fx.handle(), &bytes).unwrap().usage);
+        // Breaking an ancestor outside the old suffix is still a hard failure.
+        records[1]["parentUuid"] = json!("missing-interior-parent");
+        fx.write(&records);
+        let invalid = scan_usage(&fx.path());
+        assert_eq!(invalid.context_reason, Some(ContextReason::InvalidAncestry));
+        assert_eq!(invalid.reported_context(), None);
+        assert_eq!(invalid.lifetime_scope, LifetimeScope::Partial);
+    }
+
+    #[test]
+    fn complete_projection_rejects_ambiguous_and_invalid_linkage() {
+        let fx = Fixture::new();
+        let base = vec![
+            reading("root", None, 10),
+            reading("leaf", Some("root"), 100),
+        ];
+        let mut variants = Vec::new();
+        let mut duplicate = base.clone();
+        duplicate.push(reading("root", None, 9));
+        variants.push(duplicate);
+        let mut cycle = base.clone();
+        cycle[0]["parentUuid"] = json!("leaf");
+        variants.push(cycle);
+        let mut missing = base.clone();
+        missing[1]["parentUuid"] = json!("missing");
+        variants.push(missing);
+        let mut malformed = base.clone();
+        malformed[1]["parentUuid"] = json!(42);
+        variants.push(malformed);
+        let mut unlinked = base.clone();
+        unlinked[1].as_object_mut().unwrap().remove("uuid");
+        variants.push(unlinked);
+        let mut oversized = base.clone();
+        oversized[1]["uuid"] = json!("x".repeat(257));
+        variants.push(oversized);
+        let mut last_prompt = base;
+        last_prompt.push(json!({"type":"last-prompt","leafUuid":null}));
+        variants.push(last_prompt);
+        for records in variants {
+            let bytes = fx.write(&records);
+            let sample = scan_usage(&fx.path());
+            assert_eq!(sample.reported_context(), None);
+            assert_eq!(sample.context_reason, Some(ContextReason::InvalidAncestry));
+            assert_eq!(sample, load_bytes(fx.handle(), &bytes).unwrap().usage);
+        }
+        fs::write(fx.path(), b"{\"uuid\":\"root\",\"uuid\":\"other\"}\n").unwrap();
+        assert_eq!(
+            scan_usage(&fx.path()).context_reason,
+            Some(ContextReason::InvalidRecord)
+        );
+    }
+
+    #[test]
+    fn selected_leaf_without_any_graph_is_unknown_not_absent() {
+        let fx = Fixture::new();
+        let bytes = fx.write(&[json!({"type":"last-prompt","leafUuid":"missing-leaf"})]);
+        for sample in [
+            scan_usage(&fx.path()),
+            load_bytes(fx.handle(), &bytes).unwrap().usage,
+        ] {
+            assert_eq!(sample.context_state, ContextState::Unknown);
+            assert_eq!(sample.context_reason, Some(ContextReason::InvalidAncestry));
+            assert_eq!(sample.lifetime_scope, LifetimeScope::Partial);
+            assert_eq!(sample.reported_context(), None);
+            assert_eq!(sample.measured_component_subtotal(), None);
+        }
+        fx.write(&[]);
+        assert_eq!(scan_usage(&fx.path()).context_state, ContextState::Absent);
+    }
+
+    #[test]
+    fn unlinked_attachments_preserve_valid_graph_and_discovery_usage() {
+        let fx = Fixture::new();
+        let bytes = include_bytes!("../tests/fixtures/dialects-v1/claude-branch.jsonl");
+        fs::write(fx.path(), bytes).unwrap();
+        let transcript = load_bytes(fx.handle(), bytes).unwrap();
+        let discovered = scan_usage(&fx.path());
+        assert_eq!(discovered.reported_context(), Some(112));
+        assert_eq!(discovered, transcript.usage);
+        let attachment = transcript
+            .items
+            .iter()
+            .find(|item| item.line_index == 8)
+            .unwrap();
+        assert!(attachment.est_tokens > 0);
+        assert!(attachment.elidable_bytes.is_none());
+        let live_tool = transcript
+            .items
+            .iter()
+            .find(|item| item.line_index == 3)
+            .unwrap();
+        assert_eq!(live_tool.elidable_bytes, Some(304));
+        let dead_tool = transcript
+            .items
+            .iter()
+            .find(|item| item.line_index == 2)
+            .unwrap();
+        assert!(dead_tool.elidable_bytes.is_none());
+    }
+
+    #[test]
+    fn reset_and_partial_readings_follow_the_selected_branch() {
+        let fx = Fixture::new();
+        let mut partial = reading("partial", Some("root"), 100);
+        partial["message"]["usage"]["cache_creation_input_tokens"] = Value::Null;
+        let records = vec![reading("root", None, 10), partial];
+        let bytes = fx.write(&records);
+        let sample = scan_usage(&fx.path());
+        assert_eq!(sample.reported_context(), None);
+        assert_eq!(sample.measured_component_subtotal(), Some(101));
+        assert_eq!(sample.context_reason, Some(ContextReason::NullComponent));
+        assert_eq!(sample, load_bytes(fx.handle(), &bytes).unwrap().usage);
+        let mut reset = records;
+        reset.push(json!({"type":"system","subtype":"compact_boundary","uuid":"reset","parentUuid":"partial"}));
+        reset.push(json!({"type":"last-prompt","leafUuid":"reset"}));
+        fx.write(&reset);
+        let sample = scan_usage(&fx.path());
+        assert_eq!(sample.context_state, ContextState::Reset);
+        assert_eq!(sample.context_components, None);
+        assert_eq!(sample.measured_component_subtotal(), None);
+        reset.push(reading("after", Some("reset"), 0));
+        reset.push(json!({"type":"last-prompt","leafUuid":"after"}));
+        fx.write(&reset);
+        assert_eq!(scan_usage(&fx.path()).reported_context(), Some(1));
+    }
+
+    #[test]
+    fn missing_metrics_and_overflow_cannot_establish_full_usage() {
+        let fx = Fixture::new();
+        let mut missing = reading("last", Some("root"), 100);
+        missing["message"].as_object_mut().unwrap().remove("usage");
+        let mut overflow = reading("last", Some("root"), u64::MAX);
+        overflow["message"]["usage"]["output_tokens"] = json!(1);
+        for (last, reason) in [
+            (missing, ContextReason::MissingComponent),
+            (overflow, ContextReason::Overflow),
+        ] {
+            let bytes = fx.write(&[reading("root", None, 10), last]);
+            let sample = scan_usage(&fx.path());
+            assert_eq!(sample.context_reason, Some(reason));
+            assert_eq!(sample.reported_context(), None);
+            assert_eq!(sample.lifetime_scope, LifetimeScope::Partial);
+            assert_eq!(sample, load_bytes(fx.handle(), &bytes).unwrap().usage);
+        }
+    }
+
+    #[test]
+    fn usage_scan_enforces_total_record_and_count_limits() {
+        let fx = Fixture::new();
+        let file = fs::File::create(fx.path()).unwrap();
+        file.set_len(USAGE_SCAN_MAX_BYTES + 1).unwrap();
+        assert_eq!(
+            scan_usage(&fx.path()).context_reason,
+            Some(ContextReason::ReadLimit)
+        );
+        fx.write(&[
+            json!({"type":"progress","padding":"x".repeat(USAGE_SCAN_MAX_RECORD_BYTES as usize)}),
+        ]);
+        assert_eq!(
+            scan_usage(&fx.path()).context_reason,
+            Some(ContextReason::ReadLimit)
+        );
+        fs::write(
+            fx.path(),
+            vec![b'\n'; gobstopper_core::validation::MAX_ITEMS],
+        )
+        .unwrap();
+        assert_eq!(scan_usage(&fx.path()).context_state, ContextState::Absent);
+        fs::write(
+            fx.path(),
+            vec![b'\n'; gobstopper_core::validation::MAX_ITEMS + 1],
+        )
+        .unwrap();
+        assert_eq!(
+            scan_usage(&fx.path()).context_reason,
+            Some(ContextReason::ReadLimit)
+        );
+    }
+
+    #[test]
+    fn source_change_or_replacement_invalidates_the_whole_reading() {
+        use std::io::Write;
+        let fx = Fixture::new();
+        let records = [reading("root", None, 10)];
+        for kind in ["append", "rewrite", "replace", "truncate"] {
+            fx.write(&records);
+            let changed = scan_usage_checked(&fx.path(), || match kind {
+                "append" => fs::OpenOptions::new()
+                    .append(true)
+                    .open(fx.path())
+                    .unwrap()
+                    .write_all(b"\n")
+                    .unwrap(),
+                "rewrite" => {
+                    fx.write(&[reading("root", None, 11)]);
+                }
+                "replace" => {
+                    let next = fx.0.join("replacement");
+                    fs::write(&next, fs::read(fx.path()).unwrap()).unwrap();
+                    fs::rename(next, fx.path()).unwrap();
+                }
+                _ => {
+                    fs::File::create(fx.path()).unwrap();
+                }
+            });
+            assert_eq!(
+                changed.context_reason,
+                Some(ContextReason::SourceChanged),
+                "{kind}"
+            );
+            assert_eq!(changed.reported_context(), None);
+            assert_eq!(changed.lifetime_scope, LifetimeScope::Absent);
+            assert_eq!(changed.lifetime_input_tokens, 0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn scan_refuses_symlinks_special_files_and_unavailable_sources() {
+        use std::os::unix::fs::symlink;
+        let fx = Fixture::new();
+        let path = fx.path();
+        assert_eq!(
+            scan_usage(&path).context_reason,
+            Some(ContextReason::SourceUnavailable)
+        );
+        let target = fx.0.join("target");
+        fs::write(&target, "{}\n").unwrap();
+        symlink(&target, &path).unwrap();
+        assert_eq!(
+            scan_usage(&path).context_reason,
+            Some(ContextReason::SourceUnavailable)
+        );
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert_eq!(
+            scan_usage(&path).context_reason,
+            Some(ContextReason::SourceUnavailable)
+        );
     }
 }

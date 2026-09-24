@@ -456,6 +456,7 @@ fn hook_source(payload: &Value, roots: &detect::Roots) -> Option<(SessionHandle,
 }
 
 fn record_hook_snapshot(
+    cfg: &crate::config::Config,
     handle: &SessionHandle,
     bytes: &[u8],
     before: bool,
@@ -497,6 +498,7 @@ fn record_hook_snapshot(
         0,
         Some("unattributed_provider_hook".into()),
     );
+    crate::telemetry::EventContext::new(cfg, false).annotate(&mut event, handle);
     event.source_identity_sha256 = Some(source_identity(
         handle.provider,
         &handle.session_id,
@@ -513,6 +515,7 @@ fn record_hook_snapshot(
 }
 
 fn snapshot_and_log(
+    cfg: &crate::config::Config,
     payload: &Value,
     before: bool,
     roots: &detect::Roots,
@@ -520,14 +523,20 @@ fn snapshot_and_log(
     log_path: &Path,
 ) -> Option<SessionHandle> {
     let (handle, bytes) = hook_source(payload, roots)?;
-    record_hook_snapshot(&handle, &bytes, before, vault_root, log_path);
+    record_hook_snapshot(cfg, &handle, &bytes, before, vault_root, log_path);
     Some(handle)
 }
 
 /// Devin lacks a pre-compaction callback and an operation identifier here.
 /// Export only the exact session from the explicit store. Do not pair it with
 /// historical snapshots or report applied/retention/savings from this callback.
-fn postcompact_devin(payload: &Value, roots: &detect::Roots, vault_root: &Path, log_path: &Path) {
+fn postcompact_devin(
+    cfg: &crate::config::Config,
+    payload: &Value,
+    roots: &detect::Roots,
+    vault_root: &Path,
+    log_path: &Path,
+) {
     let Some(session_id) = safe_session_id(payload) else {
         return;
     };
@@ -549,7 +558,7 @@ fn postcompact_devin(payload: &Value, roots: &detect::Roots, vault_root: &Path, 
         cwd: None,
         age_secs: 0,
     };
-    record_hook_snapshot(&handle, &bytes, false, vault_root, log_path);
+    record_hook_snapshot(cfg, &handle, &bytes, false, vault_root, log_path);
 }
 
 fn verified_archive(handle: &SessionHandle, vault_root: &Path) -> Option<String> {
@@ -626,7 +635,7 @@ fn prompt_policy(
             if let Ok(path) =
                 fs::canonicalize(gobstopper_adapters::devin::db_path(&roots.devin_home))
             {
-                observations.push((Provider::Devin, usage.context_tokens, locked, path));
+                observations.push((Provider::Devin, usage.reported_context(), locked, path));
             }
         }
     }
@@ -646,7 +655,7 @@ fn prompt_policy(
                     }
                     Some((
                         Provider::ClaudeCode,
-                        d.usage.context_tokens,
+                        d.usage.reported_context(),
                         d.handle.is_active(),
                         path,
                     ))
@@ -656,7 +665,8 @@ fn prompt_policy(
     if observations.len() != 1 {
         return Ok(None);
     }
-    let (provider, context_tokens, session_active, path) = observations.remove(0);
+    let (provider, context, session_active, path) = observations.remove(0);
+    let context_tokens = context.unwrap_or(0);
     let identity = source_identity(provider, session_id, &path);
     let decision = crate::policy_decision(
         cfg,
@@ -666,7 +676,7 @@ fn prompt_policy(
         None,
         None,
     )?;
-    let over_trigger = decision["action"].as_str() == Some("provider_compact");
+    let over_trigger = context.is_some() && decision["action"].as_str() == Some("provider_compact");
     let trigger = decision["effective_trigger_tokens"].as_u64().unwrap_or(0);
     let treatment = rollout_cohort(cfg, provider.as_str(), session_id).unwrap_or(true);
     // Repeat throttle: an over-trigger session that keeps prompting
@@ -683,13 +693,15 @@ fn prompt_policy(
     // experiment); every block is logged — a denied prompt is the
     // signal, not noise.
     let block_at = decision["block_tokens"].as_u64().unwrap_or(0);
-    let blocked =
-        provider == Provider::ClaudeCode && treatment && block_at > 0 && context_tokens >= block_at;
+    let blocked = context.is_some()
+        && provider == Provider::ClaudeCode
+        && treatment
+        && block_at > 0
+        && context_tokens >= block_at;
     // Closed-vocab telemetry: cohort rides in the strategy tag, emission
     // state in the outcome. Under-trigger prompts still log so cohort
-    // denominators are complete. A zero context means the provider has
-    // not reported usage yet — tag it so readouts can exclude
-    // non-decisions from the denominator.
+    // denominators are complete. A missing complete context is unresolved;
+    // a reported zero remains a measured under-trigger decision.
     let mut event = CompactionEvent::new(
         provider,
         session_id,
@@ -714,10 +726,20 @@ fn prompt_policy(
         context_tokens,
         0,
         0,
-        if context_tokens == 0 {
+        if context.is_none() {
             Some("unresolved_context".to_string())
         } else {
             None
+        },
+    );
+    crate::telemetry::EventContext::new(cfg, true).annotate(
+        &mut event,
+        &SessionHandle {
+            provider,
+            session_id: session_id.into(),
+            path: path.clone(),
+            cwd: None,
+            age_secs: 0,
         },
     );
     event.source_identity_sha256 = Some(identity);
@@ -859,11 +881,11 @@ fn handle_inner(
     }
     match event {
         "precompact" => {
-            snapshot_and_log(&payload, true, roots, vault_root, log_path);
+            snapshot_and_log(cfg, &payload, true, roots, vault_root, log_path);
             Ok(None)
         }
         "postcompact" => {
-            postcompact_devin(&payload, roots, vault_root, log_path);
+            postcompact_devin(cfg, &payload, roots, vault_root, log_path);
             Ok(None)
         }
         "session-start" => {
@@ -872,7 +894,7 @@ fn handle_inner(
             if payload["source"].as_str() != Some("compact") {
                 return Ok(None);
             }
-            let Some(handle) = snapshot_and_log(&payload, false, roots, vault_root, log_path)
+            let Some(handle) = snapshot_and_log(cfg, &payload, false, roots, vault_root, log_path)
             else {
                 return Ok(None);
             };
@@ -1501,6 +1523,54 @@ mod tests {
         assert_eq!(events.last().unwrap().strategy, "prompt-policy:treatment");
         assert_eq!(events.last().unwrap().outcome, "planned");
         fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn prompt_policy_distinguishes_reported_zero_from_missing_usage() {
+        let dir = tmpdir("pp-measured-zero");
+        let roots = test_roots(&dir);
+        let cfg = crate::config::Config::default();
+        let log = dir.join("events.jsonl");
+        for (id, usage, expected_error) in [
+            (
+                "measuredzero",
+                json!({"input_tokens": 0, "output_tokens": 0}),
+                None,
+            ),
+            (
+                "missinginput",
+                json!({"output_tokens": 0}),
+                Some("unresolved_context"),
+            ),
+        ] {
+            write(
+                &roots
+                    .claude_home
+                    .join("projects/proj")
+                    .join(format!("{id}.jsonl")),
+                &(json!({"sessionId": id, "uuid": "a1", "type": "assistant",
+                    "message": {"role": "assistant", "content": [], "usage": usage}})
+                .to_string()
+                    + "\n"),
+            );
+            let answer = handle_inner(
+                "prompt-policy:claude",
+                &json!({"session_id": id, "prompt": "continue"}).to_string(),
+                &dir.join("vault"),
+                &log,
+                &roots,
+                &cfg,
+            )
+            .unwrap();
+            assert!(answer.is_none());
+            let events = gobstopper_core::events::read_events(&log).unwrap();
+            let event = events.last().unwrap();
+            assert_eq!(event.context_tokens_before, 0);
+            assert_eq!(event.error_code.as_deref(), expected_error);
+            assert_eq!(event.outcome, "skipped");
+            assert_eq!(event.action, "none");
+        }
+        fs::remove_dir_all(dir).unwrap();
     }
 
     /// Over-trigger Claude transcript at `projects/proj/<id>.jsonl`.

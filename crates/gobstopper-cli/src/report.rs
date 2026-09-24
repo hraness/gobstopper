@@ -10,7 +10,7 @@
 #![allow(dead_code)]
 
 use gobstopper_adapters::detect::Discovered;
-use gobstopper_core::events::CompactionEvent;
+use gobstopper_core::events::{qualified_reductions, Cohort, CompactionEvent};
 use gobstopper_core::model::LifetimeScope;
 use gobstopper_core::Provider;
 use serde_json::{json, Value};
@@ -104,14 +104,26 @@ struct Agg {
     est_reclaimed: u64,
     qualified_reductions: u64,
     unqualified_applied: u64,
-    seen_reductions: HashSet<(String, String)>,
     last_applied_ts: u64,
     last_strategy: Option<String>,
 }
 
-fn aggregate<'a>(events: &'a [CompactionEvent]) -> HashMap<(Provider, &'a str, &'a str), Agg> {
+fn aggregate<'a>(
+    events: &'a [CompactionEvent],
+    evidence_available: bool,
+) -> HashMap<(Provider, &'a str, &'a str), Agg> {
     let mut map: HashMap<(Provider, &'a str, &'a str), Agg> = HashMap::new();
-    for e in events {
+    let evidence = if evidence_available {
+        qualified_reductions(events)
+    } else {
+        Default::default()
+    };
+    let qualified: HashMap<_, _> = evidence
+        .reductions
+        .iter()
+        .map(|row| (row.first_index, row.reduction_tokens))
+        .collect();
+    for (index, e) in events.iter().enumerate() {
         let Some(identity) = e.source_identity_sha256.as_deref() else {
             continue;
         };
@@ -124,15 +136,9 @@ fn aggregate<'a>(events: &'a [CompactionEvent]) -> HashMap<(Provider, &'a str, &
         agg.max_ts = agg.max_ts.max(e.ts);
         if e.outcome == "applied" {
             agg.applied = agg.applied.saturating_add(1);
-            if let Some(reduction) = e.recorded_context_reduction_tokens() {
-                let pair = (
-                    e.snapshot_before_sha256.clone().unwrap(),
-                    e.snapshot_after_sha256.clone().unwrap(),
-                );
-                if agg.seen_reductions.insert(pair) {
-                    agg.qualified_reductions = agg.qualified_reductions.saturating_add(1);
-                    agg.est_reclaimed = agg.est_reclaimed.saturating_add(reduction);
-                }
+            if let Some(reduction) = qualified.get(&index) {
+                agg.qualified_reductions = agg.qualified_reductions.saturating_add(1);
+                agg.est_reclaimed = agg.est_reclaimed.saturating_add(*reduction);
             } else {
                 agg.unqualified_applied = agg.unqualified_applied.saturating_add(1);
             }
@@ -148,21 +154,35 @@ fn aggregate<'a>(events: &'a [CompactionEvent]) -> HashMap<(Provider, &'a str, &
 /// Build a session-observations-v1 report from detected sessions +
 /// the gobstopper events log. Numeric and identifier fields only —
 /// never transcript content, prompts, or freeform strings.
-pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Value {
+pub fn build_report(
+    sessions: &[Discovered],
+    events: &[CompactionEvent],
+    evidence_available: bool,
+) -> Value {
     let now_ms = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    let aggs = aggregate(events);
+    let aggs = aggregate(events, evidence_available);
+    let evidence_unavailable_reason = (!evidence_available).then_some("event_history_incomplete");
     let mut seen: HashSet<(Provider, String)> = HashSet::new();
     let mut out = Vec::new();
+    let mut omitted = 0usize;
 
     for d in sessions {
         let handle = &d.handle;
-        let source_identity = gobstopper_adapters::copy::sha256(
-            &serde_json::to_vec(&(handle.provider, &handle.session_id, &handle.path))
+        let canonical_identity = gobstopper_adapters::detect::source_identity(handle).ok();
+        let source_identity = canonical_identity.clone().unwrap_or_else(|| {
+            gobstopper_adapters::copy::sha256(
+                &serde_json::to_vec(&(
+                    "unavailable-source-path-v1",
+                    handle.provider,
+                    &handle.session_id,
+                    handle.path.as_os_str().as_encoded_bytes(),
+                ))
                 .expect("serializable source identity"),
-        );
+            )
+        });
         // Store identity participates in the exported id so foreign stores with
         // the same native id remain separate even across successive reports.
         let session_id = source_identity[..32].to_string();
@@ -172,13 +192,16 @@ pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Valu
             continue;
         }
         if out.len() >= MAX_SESSIONS {
-            break;
+            omitted += 1;
+            continue;
         }
-        let agg = aggs.get(&(
-            handle.provider,
-            handle.session_id.as_str(),
-            source_identity.as_str(),
-        ));
+        let agg = canonical_identity.as_ref().and_then(|identity| {
+            aggs.get(&(
+                handle.provider,
+                handle.session_id.as_str(),
+                identity.as_str(),
+            ))
+        });
 
         // Last activity: file mtime age at scan time. `u64::MAX` is the
         // detect sentinel for "mtime unreadable" — not a real age.
@@ -254,6 +277,19 @@ pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Valu
             _ => "unqualified",
         };
 
+        let compactions = json!({
+            "evidenceAvailable": evidence_available,
+            "evidenceUnavailableReason": evidence_unavailable_reason,
+            "applied": applied,
+            "nativeHookApplied": agg.map(|a| a.native_hook_applied).unwrap_or(0),
+            "estReclaimedTokens": est_reclaimed,
+            "recordedContextReductionTokens": agg.filter(|a| a.qualified_reductions > 0).map(|a| a.est_reclaimed),
+            "qualifiedReductionEvents": agg.map(|a| a.qualified_reductions).unwrap_or(0),
+            "unqualifiedAppliedEvents": agg.map(|a| a.unqualified_applied).unwrap_or(0),
+            "reductionBasis": "positive_reported_context_same_source_retained_bytes_not_billing",
+            "lastAppliedMs": last_applied_ms,
+            "lastStrategy": last_strategy,
+        });
         out.push(json!({
             "provider": handle.provider.as_str(),
             "sessionId": session_id,
@@ -264,13 +300,17 @@ pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Valu
             "spans": [],
             "gobstopper": {
                 "sessionIdNative": native,
-                "sourceIdentitySha256": source_identity,
-                "sessionIdBasis": "canonical_provider_store_session_sha256_prefix",
+                "sourceIdentitySha256": canonical_identity,
+                "sessionIdBasis": if canonical_identity.is_some() { "canonical_provider_store_session_sha256_prefix" } else { "unavailable_source_path_hash_fallback" },
                 "sampling": "bounded_discovered_sessions",
                 "legacyEventsQualified": false,
                 "contextTokens": d.usage.context_tokens,
                 "contextState": d.usage.context_state,
                 "reportedContextTokens": d.usage.reported_context(),
+                "contextComponents": d.usage.context_components,
+                "contextReason": d.usage.context_reason,
+                "measuredComponentSubtotal": d.usage.measured_component_subtotal(),
+                "componentSubtotalBasis": "known_numeric_components_not_complete_occupancy",
                 "lifetimeScope": d.usage.lifetime_scope,
                 "tokenUnits": "tokens",
                 "usageBasis": "recorded_provider_accounting_not_billing",
@@ -282,17 +322,7 @@ pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Valu
                 "closedSessionCompact": closed_session_compact,
                 "qualificationStatus": "unqualified",
                 "nativeActivation": false,
-                "compactions": {
-                    "applied": applied,
-                    "nativeHookApplied": agg.map(|a| a.native_hook_applied).unwrap_or(0),
-                    "estReclaimedTokens": est_reclaimed,
-                    "recordedContextReductionTokens": agg.filter(|a| a.qualified_reductions > 0).map(|a| a.est_reclaimed),
-                    "qualifiedReductionEvents": agg.map(|a| a.qualified_reductions).unwrap_or(0),
-                    "unqualifiedAppliedEvents": agg.map(|a| a.unqualified_applied).unwrap_or(0),
-                    "reductionBasis": "positive_reported_context_same_source_retained_bytes_not_billing",
-                    "lastAppliedMs": last_applied_ms,
-                    "lastStrategy": last_strategy,
-                },
+                "compactions": compactions,
             },
         }));
     }
@@ -301,14 +331,19 @@ pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Valu
         "schemaVersion": SCHEMA_VERSION,
         "profile": PROFILE,
         "sessions": out,
+        "gobstopper": {
+            "coverage": {"discovered": sessions.len(), "exported": out.len(),
+                "omitted": omitted, "limit": MAX_SESSIONS, "truncated": omitted > 0},
+            "evidence": {"available": evidence_available,
+                "unavailableReason": evidence_unavailable_reason,
+                "conflictingPairs": evidence_available.then(|| qualified_reductions(events).conflicting_pairs)},
+        },
     })
 }
 
 /// `events --cohort` readout: per-provider, per-rollout-arm aggregation
-/// of compaction telemetry so the A/B effect is readable. The cohort is
-/// recomputed from the session id — the same deterministic bucket
-/// `hooks` and `watch` gate on — rather than trusting the strategy tag,
-/// so untagged `auto`/`watch` events still attribute to the right arm.
+/// of compaction telemetry. Arm identity is the recorded decision-time value;
+/// old events cannot be relabeled using a changed current configuration.
 pub fn cohort_summary(cfg: &crate::config::Config, events: &[CompactionEvent]) -> Value {
     #[derive(Default)]
     struct Acc {
@@ -327,14 +362,13 @@ pub fn cohort_summary(cfg: &crate::config::Config, events: &[CompactionEvent]) -
         watch_suppressed: u64,
         applies: u64,
         reclaimed_tokens: u64,
-        seen_reductions: HashSet<(String, String, String)>,
         /// error_code == unresolved_context; not a policy decision.
         unresolved_context: u64,
         first_ts: u64,
         last_ts: u64,
     }
     impl Acc {
-        fn observe(&mut self, e: &CompactionEvent, cohort: &'static str) {
+        fn observe(&mut self, e: &CompactionEvent, cohort: &'static str, reduction: Option<u64>) {
             self.sessions.insert(
                 e.source_identity_sha256
                     .clone()
@@ -365,20 +399,16 @@ pub fn cohort_summary(cfg: &crate::config::Config, events: &[CompactionEvent]) -
                     _ => {}
                 }
             }
-            if e.strategy == "watch-apply:control" {
+            if matches!(
+                e.strategy.as_str(),
+                "watch-apply:control" | "watch-native:control"
+            ) {
                 self.watch_suppressed = self.watch_suppressed.saturating_add(1);
             }
             if e.outcome == "applied" {
                 self.applies = self.applies.saturating_add(1);
-                if let Some(reduction) = e.recorded_context_reduction_tokens() {
-                    let pair = (
-                        e.source_identity_sha256.clone().unwrap(),
-                        e.snapshot_before_sha256.clone().unwrap(),
-                        e.snapshot_after_sha256.clone().unwrap(),
-                    );
-                    if self.seen_reductions.insert(pair) {
-                        self.reclaimed_tokens = self.reclaimed_tokens.saturating_add(reduction);
-                    }
+                if let Some(reduction) = reduction {
+                    self.reclaimed_tokens = self.reclaimed_tokens.saturating_add(reduction);
                 }
             }
         }
@@ -403,19 +433,29 @@ pub fn cohort_summary(cfg: &crate::config::Config, events: &[CompactionEvent]) -
         treatment: Acc,
         control: Acc,
         ungated: Acc,
+        unknown: Acc,
     }
     let mut providers: HashMap<&'static str, ProviderAcc> = HashMap::new();
-    for e in events {
+    let evidence = qualified_reductions(events);
+    let qualified: HashMap<_, _> = evidence
+        .reductions
+        .iter()
+        .map(|row| (row.first_index, row.reduction_tokens))
+        .collect();
+    for (index, e) in events.iter().enumerate() {
         let pa = providers.entry(e.provider.as_str()).or_default();
-        let cohort = match crate::hooks::rollout_cohort(cfg, e.provider.as_str(), &e.session_id) {
-            Some(true) => "treatment",
-            Some(false) => "control",
-            None => "ungated",
+        let cohort = match e.decision_cohort {
+            Some(Cohort::Treatment) => "treatment",
+            Some(Cohort::Control) => "control",
+            Some(Cohort::Ungated) => "ungated",
+            None => "unknown",
         };
+        let reduction = qualified.get(&index).copied();
         match cohort {
-            "treatment" => pa.treatment.observe(e, cohort),
-            "control" => pa.control.observe(e, cohort),
-            _ => pa.ungated.observe(e, cohort),
+            "treatment" => pa.treatment.observe(e, cohort, reduction),
+            "control" => pa.control.observe(e, cohort, reduction),
+            "ungated" => pa.ungated.observe(e, cohort, reduction),
+            _ => pa.unknown.observe(e, cohort, reduction),
         }
     }
     let mut out = serde_json::Map::new();
@@ -424,15 +464,19 @@ pub fn cohort_summary(cfg: &crate::config::Config, events: &[CompactionEvent]) -
             pname.to_string(),
             json!({
                 "rollout_pct": cfg.rollout.get(pname).copied(),
+                "rollout_pct_basis": "current_configuration_not_historical_assignment",
                 "cohorts": {
                     "treatment": pa.treatment.json(),
                     "control": pa.control.json(),
                     "ungated": pa.ungated.json(),
+                    "unknown": pa.unknown.json(),
                 },
             }),
         );
     }
     json!({ "schema": "gobstopper-cohort-readout-v1", "providers": out,
+        "assignment_basis": "recorded_decision_time_unknown_for_legacy",
+        "conflicting_reduction_pairs": evidence.conflicting_pairs,
         "interpretation": "descriptive_selected_cohorts_not_causal_effect", "reclaimed_tokens_basis": "qualified_recorded_context_reduction_not_billing" })
 }
 
@@ -447,11 +491,20 @@ mod tests {
     const UUID_B: &str = "aa11bb22-cc33-4d44-8e55-ff6677889900";
 
     fn discovered(provider: Provider, session_id: &str, age_secs: u64) -> Discovered {
+        static SOURCE: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+        let path = SOURCE
+            .get_or_init(|| {
+                let path = std::env::temp_dir()
+                    .join(format!("gobstopper-report-unit-{}", std::process::id()));
+                fs::write(&path, b"synthetic report identity fixture").unwrap();
+                path.canonicalize().unwrap()
+            })
+            .clone();
         Discovered {
             handle: SessionHandle {
                 provider,
                 session_id: session_id.to_string(),
-                path: PathBuf::from("/private/tmp/secret/rollout-x.jsonl"),
+                path,
                 cwd: Some(PathBuf::from("/private/tmp/secret/worktree")),
                 age_secs,
             },
@@ -462,6 +515,7 @@ mod tests {
                 model_context_window: Some(1_000_000),
                 context_state: gobstopper_core::model::ContextState::Reported,
                 lifetime_scope: LifetimeScope::Full,
+                ..UsageSample::default()
             },
         }
     }
@@ -490,6 +544,7 @@ mod tests {
             None,
         );
         event.ts = ts;
+        event.decision_cohort = Some(Cohort::Ungated);
         let source = discovered(provider, session_id, 0).handle;
         let identity = gobstopper_adapters::copy::sha256(
             &serde_json::to_vec(&(provider, session_id, &source.path)).unwrap(),
@@ -538,6 +593,7 @@ mod tests {
                 "auto",
                 20,
             )],
+            true,
         );
         let sessions = report["sessions"].as_array().unwrap();
         assert_eq!(sessions.len(), 2);
@@ -564,7 +620,7 @@ mod tests {
         let mut legacy = event(Provider::Codex, UUID_A, 1, "applied", "auto", 50_000);
         legacy.before_observation = None;
         legacy.after_observation = None;
-        let report = build_report(&[session], &[legacy]);
+        let report = build_report(&[session], &[legacy], true);
         let compactions = &report["sessions"][0]["gobstopper"]["compactions"];
         assert_eq!(compactions["applied"], 1);
         assert_eq!(compactions["estReclaimedTokens"], 0);
@@ -577,7 +633,7 @@ mod tests {
         let session = discovered(Provider::Codex, UUID_A, 0);
         let event = event(Provider::Codex, UUID_A, 1, "applied", "auto", 20);
         let events = [event.clone(), event];
-        let report = build_report(&[session], &events);
+        let report = build_report(&[session], &events, true);
         let compactions = &report["sessions"][0]["gobstopper"]["compactions"];
         assert_eq!(compactions["recordedContextReductionTokens"], 20);
         assert_eq!(compactions["qualifiedReductionEvents"], 1);
@@ -589,10 +645,40 @@ mod tests {
     }
 
     #[test]
-    fn cohort_summary_attributes_events_to_deterministic_arms() {
+    fn contradictory_pairs_stay_excluded_and_legacy_cohort_stays_unknown() {
+        let source = discovered(Provider::Codex, UUID_A, 0);
+        let mut a = event(Provider::Codex, UUID_A, 1, "applied", "auto", 20);
+        a.decision_cohort = None;
+        let mut b = a.clone();
+        b.after_observation.as_mut().unwrap().source_sha256 = "f".repeat(64);
+        for events in [
+            vec![a.clone(), b.clone(), a.clone()],
+            vec![b.clone(), a.clone(), b.clone()],
+        ] {
+            let report = build_report(std::slice::from_ref(&source), &events, true);
+            assert!(report["sessions"][0]["gobstopper"]["compactions"]
+                ["recordedContextReductionTokens"]
+                .is_null());
+            assert_eq!(report["gobstopper"]["evidence"]["conflictingPairs"], 1);
+            let mut config = crate::config::Config::default();
+            config.rollout.insert("codex".into(), 100);
+            let cohorts = cohort_summary(&config, &events);
+            assert_eq!(
+                cohorts["providers"]["codex"]["cohorts"]["unknown"]["events"],
+                3
+            );
+            assert_eq!(
+                cohorts["providers"]["codex"]["cohorts"]["treatment"]["events"],
+                0
+            );
+        }
+    }
+
+    #[test]
+    fn cohort_summary_uses_recorded_arms_independent_of_current_configuration() {
         let mut cfg = crate::config::Config::default();
         cfg.rollout.insert("claude_code".to_string(), 100);
-        let events = vec![
+        let mut events = vec![
             event(Provider::ClaudeCode, UUID_A, 100, "applied", "auto", 5_000),
             event(
                 Provider::ClaudeCode,
@@ -603,6 +689,10 @@ mod tests {
                 0,
             ),
         ];
+        for event in &mut events {
+            event.decision_cohort = Some(Cohort::Treatment);
+            event.rollout_percent = Some(100);
+        }
         let summary = cohort_summary(&cfg, &events);
         let t = &summary["providers"]["claude_code"]["cohorts"]["treatment"];
         assert_eq!(t["applies"], 1);
@@ -615,7 +705,14 @@ mod tests {
             0
         );
 
-        // 0% rollout: everyone is control; a prompt-policy skip recorded
+        cfg.rollout.insert("claude_code".to_string(), 0);
+        let changed = cohort_summary(&cfg, &events);
+        assert_eq!(
+            changed["providers"]["claude_code"]["cohorts"],
+            summary["providers"]["claude_code"]["cohorts"]
+        );
+
+        // 0% rollout: newly recorded events are control; a prompt-policy skip recorded
         // while over trigger is a genuinely suppressed advisory.
         cfg.rollout.insert("claude_code".to_string(), 0);
         let mut suppressed = event(
@@ -626,6 +723,8 @@ mod tests {
             "prompt-policy:control",
             0,
         );
+        suppressed.decision_cohort = Some(Cohort::Control);
+        suppressed.rollout_percent = Some(0);
         suppressed.context_tokens_before = 300_000; // >= trigger 250_000
         suppressed.context_tokens_after = 300_000;
         let summary = cohort_summary(&cfg, &[suppressed]);
@@ -642,6 +741,8 @@ mod tests {
             "prompt-policy:control",
             0,
         );
+        unresolved.decision_cohort = Some(Cohort::Control);
+        unresolved.rollout_percent = Some(0);
         unresolved.context_tokens_before = 0;
         unresolved.context_tokens_after = 0;
         unresolved.error_code = Some("unresolved_context".to_string());
@@ -657,6 +758,61 @@ mod tests {
         let u = &summary["providers"]["codex"]["cohorts"]["ungated"];
         assert_eq!(u["applies"], 1);
         assert_eq!(u["reclaimed_tokens"], 7);
+    }
+
+    #[test]
+    fn native_control_decisions_are_counted_as_suppressed_watch_work() {
+        let mut blocked = event(
+            Provider::Devin,
+            UUID_A,
+            100,
+            "skipped",
+            "watch-native:control",
+            0,
+        );
+        blocked.decision_cohort = Some(Cohort::Control);
+        blocked.rollout_percent = Some(0);
+        let result = cohort_summary(&crate::config::Config::default(), &[blocked]);
+        assert_eq!(
+            result["providers"]["devin"]["cohorts"]["control"]["watch_suppressed"],
+            1
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn non_utf8_source_paths_have_distinct_unqualified_fallback_ids() {
+        use std::os::unix::ffi::OsStringExt;
+        let root =
+            std::env::temp_dir().join(format!("gobstopper-report-non-utf8-{}", std::process::id()));
+        fs::create_dir(&root).unwrap();
+        let mut sessions = Vec::new();
+        for suffix in [0xfe, 0xff] {
+            let mut d = discovered(Provider::Codex, UUID_A, 0);
+            d.handle.path = root.join(std::ffi::OsString::from_vec(vec![b's', suffix]));
+            // Missing non-UTF8 paths exercise the serialization fallback on
+            // platforms that cannot create such filesystem names (e.g. APFS).
+            assert!(gobstopper_adapters::detect::source_identity(&d.handle).is_err());
+            sessions.push(d);
+        }
+        let report = build_report(
+            &sessions,
+            &[event(Provider::Codex, UUID_A, 1, "applied", "auto", 7)],
+            true,
+        );
+        let rows = report["sessions"].as_array().unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_ne!(rows[0]["sessionId"], rows[1]["sessionId"]);
+        for row in rows {
+            assert!(row["gobstopper"]["sourceIdentitySha256"].is_null());
+            assert_eq!(
+                row["gobstopper"]["sessionIdBasis"],
+                "unavailable_source_path_hash_fallback"
+            );
+            assert_eq!(row["gobstopper"]["compactions"]["applied"], 0);
+        }
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 0);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -705,7 +861,7 @@ mod tests {
                 1,
             ),
         ];
-        let report = build_report(&sessions, &events);
+        let report = build_report(&sessions, &events, true);
 
         assert_eq!(report["schemaVersion"], 1);
         assert_eq!(report["profile"], "session-observations-v1");
@@ -779,7 +935,7 @@ mod tests {
         let mut skipped = native.clone();
         skipped.outcome = "skipped".into();
         let other = event(Provider::Codex, UUID_A, 1, "applied", "elide", 100);
-        let report = build_report(&sessions, &[native, planned, skipped, other]);
+        let report = build_report(&sessions, &[native, planned, skipped, other], true);
         let counts = &report["sessions"][0]["gobstopper"]["compactions"];
         assert_eq!(counts["applied"], 2);
         assert_eq!(counts["nativeHookApplied"], 0); // a hook label is not a causal operation receipt
@@ -798,7 +954,7 @@ mod tests {
         .unwrap();
         let mut d = discovered(Provider::Codex, UUID_A, 0);
         d.handle.path = path.clone();
-        let report = build_report(&[d], &[]);
+        let report = build_report(&[d], &[], true);
         assert_eq!(
             report["sessions"][0]["gobstopper"]["closedSessionCompact"],
             "unavailable:sub-agent"
@@ -809,8 +965,8 @@ mod tests {
     #[test]
     fn non_uuid_ids_get_stable_hex_digests() {
         let sessions = vec![discovered(Provider::Codex, "rollout-no-uuid-here", 0)];
-        let a = build_report(&sessions, &[]);
-        let b = build_report(&sessions, &[]);
+        let a = build_report(&sessions, &[], true);
+        let b = build_report(&sessions, &[], true);
         let id = a["sessions"][0]["sessionId"].as_str().unwrap();
         assert_eq!(id.len(), 32);
         assert!(id.bytes().all(|b| b.is_ascii_hexdigit()));
@@ -828,7 +984,7 @@ mod tests {
             discovered(Provider::Codex, UUID_A, 10),
             discovered(Provider::Codex, UUID_A, 20),
         ];
-        let report = build_report(&sessions, &[]);
+        let report = build_report(&sessions, &[], true);
         assert_eq!(report["sessions"].as_array().unwrap().len(), 1);
     }
 
@@ -838,7 +994,7 @@ mod tests {
         // echoed, and its digest keeps the sessionId shape.
         let mut d = discovered(Provider::ClaudeCode, "/private/tmp/secret/evil.jsonl", 5);
         d.handle.cwd = Some(PathBuf::from("/private/tmp/secret/worktree"));
-        let report = build_report(&[d], &[]);
+        let report = build_report(&[d], &[], true);
         let text = serde_json::to_string(&report).unwrap();
         assert!(!text.contains("/private"));
         assert!(!text.contains("evil.jsonl"));
@@ -854,7 +1010,7 @@ mod tests {
     #[test]
     fn underivable_timestamps_yield_zero_window_and_no_usage() {
         let sessions = vec![discovered(Provider::Codex, UUID_A, u64::MAX)];
-        let report = build_report(&sessions, &[]);
+        let report = build_report(&sessions, &[], true);
         let s = &report["sessions"][0];
         assert_eq!(s["window"]["startMs"], 0);
         assert_eq!(s["window"]["endMs"], 0);
@@ -880,7 +1036,7 @@ mod tests {
             ),
             event(Provider::Codex, UUID_A, 1_700_050_000, "skipped", "auto", 0),
         ];
-        let report = build_report(&sessions, &events);
+        let report = build_report(&sessions, &events, true);
         let s = &report["sessions"][0];
         assert_eq!(s["window"]["startMs"], 1_700_000_000_000u64);
         assert_eq!(s["window"]["endMs"], 1_700_050_000_000u64);
@@ -899,7 +1055,7 @@ mod tests {
             "elide",
             1,
         )];
-        let report = build_report(&sessions, &events);
+        let report = build_report(&sessions, &events, true);
         let s = &report["sessions"][0];
         let start = s["window"]["startMs"].as_u64().unwrap();
         let end = s["window"]["endMs"].as_u64().unwrap();

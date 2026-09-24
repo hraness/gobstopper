@@ -849,6 +849,7 @@ mod usage_tests {
                 model_context_window: Some(258400),
                 context_state: gobstopper_core::model::ContextState::Reported,
                 lifetime_scope: gobstopper_core::model::LifetimeScope::Full,
+                ..Default::default()
             },
         );
     }
@@ -881,6 +882,7 @@ mod usage_tests {
                 model_context_window: Some(258400),
                 context_state: gobstopper_core::model::ContextState::Reported,
                 lifetime_scope: gobstopper_core::model::LifetimeScope::Full,
+                ..Default::default()
             },
         );
     }
@@ -899,6 +901,7 @@ mod usage_tests {
                 model_context_window: None,
                 context_state: gobstopper_core::model::ContextState::Reported,
                 lifetime_scope: gobstopper_core::model::LifetimeScope::Full,
+                ..Default::default()
             },
         );
     }
@@ -922,6 +925,7 @@ mod usage_tests {
                 model_context_window: Some(258400),
                 context_state: gobstopper_core::model::ContextState::Reset,
                 lifetime_scope: gobstopper_core::model::LifetimeScope::Full,
+                ..Default::default()
             },
         );
     }
@@ -945,6 +949,7 @@ mod usage_tests {
                 model_context_window: Some(1000000),
                 context_state: gobstopper_core::model::ContextState::Reported,
                 lifetime_scope: gobstopper_core::model::LifetimeScope::Full,
+                ..Default::default()
             },
         );
     }

@@ -1,0 +1,193 @@
+{
+  "schema": "gobstopper.assurance-receipt.v1",
+  "raw_receipt_sha256": "224673634a83cb343a95eee78dad6e35858e2d41c631a85a59a30302ed23ee62",
+  "observed_at": "2026-09-24T14:24:35.603828+00:00",
+  "scope": "Finite custody and publication model; 11 safety/control/witness configurations.",
+  "bounds": "Two publishers/one reader/one prune in custody; one publisher/one reader/two prune cycles/one restart in publication; 256 MiB JVM, 45 seconds per case, 32 MiB logs.",
+  "exclusions": [
+    "No production refinement",
+    "No power-loss or network filesystem theorem",
+    "No fairness or unbounded actor theorem"
+  ],
+  "passed": true,
+  "inputs_unchanged": true,
+  "source_sha256": {
+    "verify/vault/Publication.tla": "279e23e33ac3f91067a8546de5825a702be3c74b2501cdad3d397ccb9025c5a5",
+    "verify/vault/README.md": "c4c35d72150efca3035df4e4f86c2dd39d8df754e030d07f5c76a8d32ba7038c",
+    "verify/vault/Vault.tla": "4f14d12f4e66d408aa5d8de5556a7b0e9858a4f5db1079142735d9e3c6dfb32f",
+    "verify/vault/check.py": "eb45745d7c7888a5ba0eae94f01b87bb8f7ed76da8c0dd9b167b2ffd1673e5bd",
+    "verify/vault/no-custody.cfg": "c697ff404a97a155fb64e32ca6ada58f53f62cfc114c7c75eec38d322fa5fde4",
+    "verify/vault/no-pins.cfg": "7c0bcb89abd24612b21bc13408a013cbe9d6b6f959fecb4808ae8b9a8b083271",
+    "verify/vault/publication-ignore-damage.cfg": "63cfc7c95331a1b06c8e4542987205abb522f1b76d5733fdc863c89793a97606",
+    "verify/vault/publication-ignore-unlink.cfg": "c33ded2af7cb0869a8032493f1535edb0bcd7673e420af7b6a1b0ae386202f72",
+    "verify/vault/publication-no-intent.cfg": "0d704e2809b82eb7b9520ebef783992c5a065e8b74c0861064e7e56072c8f789",
+    "verify/vault/publication-no-sync.cfg": "26c1f32e378c8e793c22883e3d3f1c09907e7bfc0565e1560ab8871d65175e2c",
+    "verify/vault/publication-recovery.cfg": "5d5949bc408b9581cd4b6b30f165cb196debe3cd2ebc68bd006afff045b3c895",
+    "verify/vault/publication-safe.cfg": "2779a51c8897bd81658e79d77e67b74d1b91b4f5198f32a894c7836e0e50c1f3",
+    "verify/vault/safe.cfg": "2b57baad1c04dc942c7124be947e94b165bcab2bb96b13615f6571a02f8015fb",
+    "verify/vault/test_check.py": "fde6552546d6dd2034896cc80db3ea1213277e073dd4643c7eddc77fbaf6fc98",
+    "verify/vault/witness-completion.cfg": "ae4e53e5ae2388494a9625d21bafcd95cf3ccccc219c93316c2ba585e74a58d1",
+    "verify/vault/witness-pending.cfg": "6d927e58b044fe69776a8344d7c34cf8d0eb45c099af09ef1b2de852f73572e2",
+    "verify/watch/check.py": "97ce34ea1926af465cfd242074ad80d9941311c9f412ee163923a90b7bfaebad"
+  },
+  "tool_sha256": {
+    "java": "2a207f5e7d075afa01d97f8048389a64432a44c4a5af0f5e77d6e286ec5f401d",
+    "tlc.jar": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88"
+  },
+  "results": [
+    {
+      "case": "safe",
+      "expected_invariant_violation": null,
+      "passed": true,
+      "states": {
+        "generated": 53608,
+        "distinct": 25810,
+        "queued": 0
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 0,
+      "log_sha256": "7289346cf6f00b6bf5293c79833f1054d326b120f663a5d0062121c0e3c5d6f6"
+    },
+    {
+      "case": "no-custody",
+      "expected_invariant_violation": "IndexedData",
+      "passed": true,
+      "states": {
+        "generated": 22217,
+        "distinct": 7646,
+        "queued": 3868
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "15fc3684a7827354a9758c72c8b8b4b01c75319a97f95aba971e8bbb5d6cdc28"
+    },
+    {
+      "case": "no-pins",
+      "expected_invariant_violation": "PinnedRecoveryData",
+      "passed": true,
+      "states": {
+        "generated": 4722,
+        "distinct": 2312,
+        "queued": 874
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "451fd02cd338ef2c41f476b57a979378c6b5e03b539187d22f06565560b774b3"
+    },
+    {
+      "case": "witness-completion",
+      "expected_invariant_violation": "NoSuccessfulComposition",
+      "passed": true,
+      "states": {
+        "generated": 52289,
+        "distinct": 25163,
+        "queued": 1715
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "5c1782a1a73914157d886d078d2593cd204faf7c6cedaa0139551016d856196f"
+    },
+    {
+      "case": "witness-pending",
+      "expected_invariant_violation": "NoPendingRecovery",
+      "passed": true,
+      "states": {
+        "generated": 868,
+        "distinct": 479,
+        "queued": 224
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "82d06ef4f4468fee7f147674476c8b2c2fb45d12698ebe15b143ede98e389b09"
+    },
+    {
+      "case": "publication-safe",
+      "expected_invariant_violation": null,
+      "passed": true,
+      "states": {
+        "generated": 59790,
+        "distinct": 28082,
+        "queued": 0
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 0,
+      "log_sha256": "e1b555e9ec66bf1aaad495e3d0b4804de83ab551082f4323b6da1ac9d95056ec"
+    },
+    {
+      "case": "publication-no-intent",
+      "expected_invariant_violation": "OutputHasIntent",
+      "passed": true,
+      "states": {
+        "generated": 468,
+        "distinct": 315,
+        "queued": 147
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "33e286933d9873141148eda23302143002b624387444fefc26201b9d0b0b48c7"
+    },
+    {
+      "case": "publication-no-sync",
+      "expected_invariant_violation": "CompletedDurable",
+      "passed": true,
+      "states": {
+        "generated": 1502,
+        "distinct": 940,
+        "queued": 387
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "e067e52bbe4590f2fa90817cf9e86da88d029c2ee455a57ebbc15ed180a1ad16"
+    },
+    {
+      "case": "publication-ignore-damage",
+      "expected_invariant_violation": "DamageBlocksCollection",
+      "passed": true,
+      "states": {
+        "generated": 130,
+        "distinct": 87,
+        "queued": 47
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "afd8b9bba3b54bfdf93ea3474c861ae037d30396bd20dc724d54c0371bfd6d1e"
+    },
+    {
+      "case": "publication-ignore-unlink",
+      "expected_invariant_violation": "AllManifestsValid",
+      "passed": true,
+      "states": {
+        "generated": 75,
+        "distinct": 60,
+        "queued": 34
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "7579d5541384fc76efaaeffe10d191e37318271a9dd2091decfc9c522d2d15db"
+    },
+    {
+      "case": "publication-recovery",
+      "expected_invariant_violation": "NoRecoveryWitness",
+      "passed": true,
+      "states": {
+        "generated": 6379,
+        "distinct": 3592,
+        "queued": 1191
+      },
+      "timeout": false,
+      "log_limit": false,
+      "exit_code": 12,
+      "log_sha256": "1b562471f2e28809581fc9307aa1e13d93ca9bb94f3876873a633a9039d9662e"
+    }
+  ]
+}

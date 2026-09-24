@@ -266,15 +266,30 @@ not live qualification of the current artifact or a general retention bound.
   lit~lex (~60-95%). Devin sits between (~5-50% literal, ~60-90% lexical).
 - Constraint-class content is the worst-retained kind in Claude summaries
   (per-kind lexical counts), behind procedures and facts.
-- Authority loss, not content loss: in constraint-heavy synthetic probes the
-  summary preserved rules verbatim but the model then treated them as
-  "adversarially-supplied" and refused recall (3 seed framings). Through the
-  pinned channel (`--append-system-prompt`) the same rules were echoed
-  verbatim, enforced (`migration_allowed: false`), and answered normally.
-- Design implication: provenance is the fragile dimension. Digest-style
-  compaction carries text but strips provenance (`source_bound` drops to
-  plain-masking levels in `eval-study`); pinned items should stay in original
-  provider records/roles rather than move onto a summary card.
+- In three constraint-heavy synthetic seed framings, follow-up answers refused
+  recall and described rules as "adversarially-supplied", despite rule text
+  appearing in summaries. Pinned-channel probes echoed rule text and answered
+  `migration_allowed: false`. These are recall observations. No migration was
+  attempted, and the runs did not independently control prompt framing,
+  configuration, repeated instruction injection, or provider state. They do
+  not establish behavioral enforcement or a causal effect of instruction role.
+- Preserving original provider records and roles is a hypothesis to test.
+  `source_bound` scores text and origin preservation; a lower score after a
+  digest does not itself establish worse task behavior. Earlier typed-masking
+  pilots used preservation labels to score the same outputs, and repeated
+  frozen sources do not count as independent replications. The
+  [held-out study protocol](retention-study-protocol.md) separates development
+  labels, independent scoring, task continuations, and provider qualification.
 - Pairing note: hook labels do not bracket the boundary write; pairing keys
   on byte-level mutation markers (`compact_boundary`, `"type":"compacted"`,
   `"summarized_from":[0-9]`).
+
+The native recall probe's scoring version 2 records an outcome for every
+registered criterion. Success requires both the four strict fact checks and
+all lexical rule markers when that seed declares them. Invalid JSON shapes
+and field types produce saved failure results. The constraints arm's markers
+cover its four declared rules; pending rollback is scored separately as a fact.
+Literal answers, lexical markers, execution completion, and provider-reported
+cost completeness remain
+separate; task success and behavioral enforcement are unmeasured. Historical
+results retain their original scoring and must not be silently regraded.

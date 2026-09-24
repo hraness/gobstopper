@@ -153,26 +153,92 @@ fn now_secs() -> u64 {
 /// bounds each session's usage read to its newest rows — callers that
 /// need `lifetime_*` counters (report/export) must pass false.
 pub fn discover(root: &Path, max_age_secs: u64, context_only: bool) -> Vec<Discovered> {
+    discover_with_status(root, max_age_secs, context_only).0
+}
+
+pub fn discover_with_status(
+    root: &Path,
+    max_age_secs: u64,
+    context_only: bool,
+) -> (Vec<Discovered>, crate::detect::ProviderDiscovery) {
+    let mut status = crate::detect::ProviderDiscovery::new(Provider::Devin);
     let db = db_path(root);
+    match std::fs::symlink_metadata(&db) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            status.source_state = "missing";
+            return (Vec::new(), status);
+        }
+        Ok(meta) if meta.is_file() => {}
+        _ => {
+            status.source_state = "unavailable";
+            status.io_errors = 1;
+            return (Vec::new(), status);
+        }
+    }
     let Ok(conn) = open_readonly(&db) else {
-        return Vec::new();
+        status.source_state = "unavailable";
+        status.io_errors = 1;
+        return (Vec::new(), status);
     };
     let mut stmt = match conn.prepare(
-        "SELECT id, working_directory, last_activity_at FROM sessions ORDER BY last_activity_at DESC",
+        "SELECT id, working_directory, last_activity_at FROM sessions ORDER BY last_activity_at DESC LIMIT ?1",
     ) {
         Ok(stmt) => stmt,
-        Err(_) => return Vec::new(),
+        Err(_) => {
+            status.source_state = "unavailable";
+            status.io_errors = 1;
+            return (Vec::new(), status);
+        }
     };
-    let rows = stmt
-        .query_map([], |r| {
+    let mut query = match stmt.query([(gobstopper_core::validation::MAX_ITEMS + 1) as i64]) {
+        Ok(query) => query,
+        Err(_) => {
+            status.source_state = "unavailable";
+            status.io_errors = 1;
+            return (Vec::new(), status);
+        }
+    };
+    let mut rows = Vec::new();
+    loop {
+        let row = match query.next() {
+            Ok(Some(row)) => row,
+            Ok(None) => break,
+            Err(_) => {
+                status.io_errors += 1;
+                status.truncated = true;
+                break;
+            }
+        };
+        if status.scanned == gobstopper_core::validation::MAX_ITEMS {
+            status.omitted += 1;
+            status.truncated = true;
+            break;
+        }
+        status.scanned += 1;
+        let decoded = (|| -> rusqlite::Result<_> {
             Ok((
-                r.get::<_, String>(0)?,
-                r.get::<_, Option<String>>(1)?,
-                r.get::<_, Option<i64>>(2)?,
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<i64>>(2)?,
             ))
-        })
-        .map(|it| it.flatten().collect::<Vec<_>>())
-        .unwrap_or_default();
+        })();
+        match decoded {
+            Ok((id, cwd, activity))
+                if !id.is_empty()
+                    && id.len() <= 256
+                    && !id.chars().any(char::is_control)
+                    && cwd.as_ref().is_none_or(|cwd| cwd.len() <= 4096) =>
+            {
+                rows.push((id, cwd, activity))
+            }
+            _ => {
+                status.invalid_records += 1;
+                status.omitted += 1;
+            }
+        }
+    }
+    drop(query);
+    drop(stmt);
     let limit = if max_age_secs == 0 {
         u64::MAX
     } else {
@@ -210,7 +276,8 @@ pub fn discover(root: &Path, max_age_secs: u64, context_only: bool) -> Vec<Disco
             usage,
         });
     }
-    found
+    status.selected = found.len();
+    (found, status)
 }
 
 /// Cheap lookup by session-id prefix or title substring.
@@ -441,7 +508,8 @@ fn scan_context(conn: &Connection, session_id: &str) -> UsageSample {
             }
             absorb_usage(&message, &mut usage, true);
         }
-        if usage.context_state != gobstopper_core::model::ContextState::Reported {
+        if usage.context_state != gobstopper_core::model::ContextState::Reported
+            && usage.context_components.is_none() {
             if let Some(n) = preceding { usage.context_tokens = n; usage.context_state = gobstopper_core::model::ContextState::Unknown; }
         }
         usage.lifetime_input_tokens = 0;
@@ -1367,44 +1435,77 @@ fn live_nodes(rows: &[NodeRow], head: Option<i64>) -> std::collections::HashSet<
 /// gates `context_tokens` (the latest live assistant reading wins) while
 /// lifetime counters accumulate across every assistant message.
 fn absorb_usage(message: &Value, usage: &mut UsageSample, on_live: bool) {
-    use gobstopper_core::model::{ContextState, LifetimeScope};
+    use gobstopper_core::model::{ContextComponents, ContextReason, LifetimeScope};
     if message.get("role").and_then(Value::as_str) != Some("assistant") {
         return;
     }
-    let parts = (|| {
-        let metrics = message.pointer("/metadata/metrics")?.as_object()?;
-        let component = |key: &str| match metrics.get(key) {
-            None => Some(0),
-            Some(value) => value.as_u64(),
-        };
-        let input = metrics
-            .get("input_tokens")?
-            .as_u64()?
-            .saturating_add(component("cache_read_tokens")?)
-            .saturating_add(component("cache_creation_tokens")?);
-        Some((
-            input,
-            component("cache_read_tokens")?,
-            input.saturating_add(component("output_tokens")?),
-        ))
-    })();
-    let Some((input, cached, context)) = parts else {
+    let Some(metrics) = message
+        .pointer("/metadata/metrics")
+        .and_then(Value::as_object)
+    else {
         usage.lifetime_scope = LifetimeScope::Partial;
         if on_live {
-            usage.invalidate_context();
+            usage.invalidate_context_because(if message.pointer("/metadata/metrics").is_some() {
+                ContextReason::MalformedComponent
+            } else {
+                ContextReason::MissingComponent
+            });
         }
         return;
     };
+    let mut reason = None;
+    let mut component = |key: &str, optional: bool| match metrics.get(key) {
+        // Compatibility with the inspected additive dialect: omitted optional
+        // counters historically mean no recorded contribution. Explicit null
+        // has no verified zero semantics and must retain its uncertainty.
+        None if optional => Some(0),
+        Some(value) if value.is_null() => {
+            if reason != Some(ContextReason::MalformedComponent) {
+                reason = Some(ContextReason::NullComponent);
+            }
+            None
+        }
+        Some(value) if value.as_u64().is_some() => value.as_u64(),
+        Some(_) => {
+            reason = Some(ContextReason::MalformedComponent);
+            None
+        }
+        None => {
+            reason.get_or_insert(ContextReason::MissingComponent);
+            None
+        }
+    };
+    let components = ContextComponents {
+        input_tokens: component("input_tokens", false),
+        cache_read_tokens: component("cache_read_tokens", true),
+        cache_creation_tokens: component("cache_creation_tokens", true),
+        output_tokens: component("output_tokens", true),
+    };
     if on_live {
-        usage.context_tokens = context;
-        usage.context_state = ContextState::Reported;
+        usage.observe_context_components(components, reason);
     }
-    usage.lifetime_input_tokens = usage.lifetime_input_tokens.saturating_add(input);
-    usage.lifetime_cached_tokens = usage
+    let input = components
+        .input_tokens
+        .unwrap_or(0)
+        .checked_add(components.cache_read_tokens.unwrap_or(0))
+        .and_then(|n| n.checked_add(components.cache_creation_tokens.unwrap_or(0)));
+    let total = input.and_then(|n| usage.lifetime_input_tokens.checked_add(n));
+    let cached = usage
         .lifetime_cached_tokens
-        .saturating_add(cached)
-        .min(usage.lifetime_input_tokens);
-    if usage.lifetime_scope != LifetimeScope::Partial {
+        .checked_add(components.cache_read_tokens.unwrap_or(0));
+    if let Some(input) = total {
+        usage.lifetime_input_tokens = input;
+    }
+    if let Some(cached) = cached {
+        usage.lifetime_cached_tokens = cached.min(usage.lifetime_input_tokens);
+    }
+    if reason.is_some()
+        || total.is_none()
+        || cached.is_none()
+        || components.complete_total().is_none()
+    {
+        usage.lifetime_scope = LifetimeScope::Partial;
+    } else if usage.lifetime_scope != LifetimeScope::Partial {
         usage.lifetime_scope = LifetimeScope::Full;
     }
 }
@@ -1613,7 +1714,9 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
             payload_sha256,
         });
     }
-    if usage.context_state != gobstopper_core::model::ContextState::Reported {
+    if usage.context_state != gobstopper_core::model::ContextState::Reported
+        && usage.context_components.is_none()
+    {
         if let Some(n) = preceding_on_live {
             // This excludes the current message, so it is an estimator only.
             usage.context_tokens = n;
@@ -1754,6 +1857,170 @@ mod tests {
             "content": content,
             "metadata": { "num_tokens": 100, "metrics": metrics.unwrap_or(Value::Null) },
         })
+    }
+
+    #[test]
+    fn nullable_metrics_retain_components_without_complete_context() {
+        use gobstopper_core::model::{ContextReason, ContextState, LifetimeScope};
+        let metrics = serde_json::json!({"input_tokens":100, "cache_read_tokens":900,
+            "cache_creation_tokens":null, "output_tokens":5});
+        let fx = Fixture::new("nullable-metrics");
+        fx.add_session("s", "metrics", 0, 1_790_006_000);
+        fx.add_node(
+            "s",
+            0,
+            None,
+            assistant("answer", Some(metrics)),
+            Some(r#"{"num_tokens_preceding":42}"#),
+        );
+        let conn = open_readonly(&db_path(&fx.root)).unwrap();
+        for sample in [
+            scan_context(&conn, "s"),
+            scan_usage(&conn, "s"),
+            load(fx.handle("s")).unwrap().usage,
+        ] {
+            assert_eq!(sample.context_state, ContextState::Unknown);
+            assert_eq!(sample.context_tokens, 0);
+            assert_eq!(sample.reported_context(), None);
+            assert_eq!(sample.measured_component_subtotal(), Some(1005));
+            assert_eq!(sample.context_reason, Some(ContextReason::NullComponent));
+            assert_eq!(
+                sample.context_components.unwrap().cache_creation_tokens,
+                None
+            );
+        }
+        let full = scan_usage(&conn, "s");
+        assert_eq!(full.lifetime_input_tokens, 1000);
+        assert_eq!(full.lifetime_cached_tokens, 900);
+        assert_eq!(full.lifetime_scope, LifetimeScope::Partial);
+        assert_eq!(
+            scan_context(&conn, "s").lifetime_scope,
+            LifetimeScope::Absent
+        );
+    }
+
+    #[test]
+    fn metric_absence_zero_malformed_and_overflow_have_explicit_semantics() {
+        use gobstopper_core::model::ContextReason;
+        let fixtures = [
+            (
+                serde_json::json!({"input_tokens":100,"output_tokens":5}),
+                Some(105),
+                None,
+                None,
+            ),
+            (
+                serde_json::json!({"input_tokens":0,"cache_creation_tokens":0}),
+                Some(0),
+                None,
+                None,
+            ),
+            (
+                serde_json::json!({"input_tokens":100,"cache_creation_tokens":null}),
+                None,
+                Some(100),
+                Some(ContextReason::NullComponent),
+            ),
+            (
+                serde_json::json!({"input_tokens":100,"cache_creation_tokens":"bad"}),
+                None,
+                Some(100),
+                Some(ContextReason::MalformedComponent),
+            ),
+            (
+                serde_json::json!({"input_tokens":100,"cache_creation_tokens":-1}),
+                None,
+                Some(100),
+                Some(ContextReason::MalformedComponent),
+            ),
+            (
+                serde_json::json!({"output_tokens":5}),
+                None,
+                Some(5),
+                Some(ContextReason::MissingComponent),
+            ),
+            (
+                serde_json::json!({"input_tokens":u64::MAX,"output_tokens":1}),
+                None,
+                None,
+                Some(ContextReason::Overflow),
+            ),
+        ];
+        for (metrics, complete, subtotal, reason) in fixtures {
+            let mut sample = UsageSample::default();
+            absorb_usage(&assistant("answer", Some(metrics)), &mut sample, true);
+            assert_eq!(sample.reported_context(), complete);
+            assert_eq!(sample.measured_component_subtotal(), subtotal);
+            assert_eq!(sample.context_reason, reason);
+            if complete.is_none() {
+                assert_eq!(sample.context_tokens, 0);
+            }
+            absorb_usage(
+                &assistant("next", Some(serde_json::json!({"input_tokens":0}))),
+                &mut sample,
+                true,
+            );
+            assert_eq!(sample.reported_context(), Some(0));
+            assert_eq!(sample.context_components, None);
+            assert_eq!(sample.context_reason, None);
+        }
+    }
+
+    #[test]
+    fn dead_partial_metrics_cannot_replace_live_context() {
+        use gobstopper_core::model::LifetimeScope;
+        let mut sample = UsageSample::default();
+        absorb_usage(
+            &assistant("live", Some(serde_json::json!({"input_tokens":9}))),
+            &mut sample,
+            true,
+        );
+        absorb_usage(
+            &assistant(
+                "dead",
+                Some(serde_json::json!({"input_tokens":100,"cache_creation_tokens":null})),
+            ),
+            &mut sample,
+            false,
+        );
+        assert_eq!(sample.reported_context(), Some(9));
+        assert_eq!(sample.context_components, None);
+        assert_eq!(sample.lifetime_scope, LifetimeScope::Partial);
+        assert_eq!(sample.lifetime_input_tokens, 109);
+    }
+
+    #[test]
+    fn discovery_reports_missing_unreadable_invalid_and_capped_rows() {
+        let fx = Fixture::new("discovery-status");
+        let (_, missing) = discover_with_status(&fx.root.join("missing"), 0, true);
+        assert_eq!(missing.source_state, "missing");
+        let conn = Connection::open(db_path(&fx.root)).unwrap();
+        conn.execute_batch(
+            "INSERT INTO sessions(id,last_activity_at) VALUES ('ok',0),('bad','wrong'),('',0)",
+        )
+        .unwrap();
+        let (found, status) = discover_with_status(&fx.root, 0, true);
+        assert_eq!(found.len(), 1);
+        assert_eq!(status.source_state, "available");
+        assert_eq!(status.scanned, 3);
+        assert_eq!(status.selected, 1);
+        assert_eq!(status.invalid_records, 2);
+        assert_eq!(status.omitted, 2);
+        assert!(!status.truncated);
+        conn.execute_batch("DELETE FROM sessions").unwrap();
+        // Age filtering avoids any per-session context reads in this resource
+        // test, while the real SQLite iterator still reaches the row cap.
+        conn.execute("WITH RECURSIVE ids(id) AS (VALUES(0) UNION ALL SELECT id+1 FROM ids WHERE id < ?1) INSERT INTO sessions(id,last_activity_at) SELECT 's-'||id,0 FROM ids", [gobstopper_core::validation::MAX_ITEMS as i64]).unwrap();
+        let (found, status) = discover_with_status(&fx.root, 1, true);
+        assert!(found.is_empty());
+        assert_eq!(status.scanned, gobstopper_core::validation::MAX_ITEMS);
+        assert_eq!(status.omitted, 1);
+        assert!(status.truncated);
+        conn.execute_batch("DROP TABLE sessions").unwrap();
+        let (found, status) = discover_with_status(&fx.root, 0, true);
+        assert!(found.is_empty());
+        assert_eq!(status.source_state, "unavailable");
+        assert_eq!(status.io_errors, 1);
     }
 
     #[test]

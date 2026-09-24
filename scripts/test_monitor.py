@@ -54,12 +54,21 @@ def bind_event(event):
         return event
     return {"schema": "gobstopper/compaction-events-v1", "provider": "codex",
             "action": "provider_compact", "error_code": None,
+            "strategy": "auto", "ts": 1, "trigger_tokens": 100,
+            "context_tokens_before": 100, "context_tokens_after": 50,
+            "est_reclaimed_tokens": 50, "items_covered": 0, "duration_ms": 1,
             "outcome": "applied", "source_identity_sha256": "a" * 64,
             "snapshot_before_sha256": "b" * 64, "snapshot_after_sha256": "c" * 64,
             "before_observation": {"source_identity_sha256": "a" * 64, "source_sha256": "d" * 64,
-                                   "snapshot_manifest_sha256": "b" * 64},
+                                   "snapshot_manifest_sha256": "b" * 64, "context_state": "reported",
+                                   "context_tokens": 100, "estimated_context_tokens": 100,
+                                   "lifetime_scope": "absent", "lifetime_input_tokens": None,
+                                   "lifetime_cached_tokens": None},
             "after_observation": {"source_identity_sha256": "a" * 64, "source_sha256": "e" * 64,
-                                  "snapshot_manifest_sha256": "c" * 64}, **event}
+                                  "snapshot_manifest_sha256": "c" * 64, "context_state": "reported",
+                                  "context_tokens": 50, "estimated_context_tokens": 50,
+                                  "lifetime_scope": "absent", "lifetime_input_tokens": None,
+                                  "lifetime_cached_tokens": None}, **event}
 
 
 def selected_sources(*sessions):
@@ -67,6 +76,130 @@ def selected_sources(*sessions):
 
 
 class MonitorTests(unittest.TestCase):
+    def test_partial_components_never_become_complete_context(self):
+        fields = monitor.accounting_fields({"contextState": "unknown", "contextReason": "null_component",
+            "reportedContextTokens": 9999, "contextComponents": {"input_tokens": 100,
+            "cache_read_tokens": 200, "cache_creation_tokens": None, "output_tokens": 5}})
+        self.assertIsNone(fields["context_tokens"])
+        self.assertEqual(fields["measured_component_subtotal"], 305)
+        self.assertEqual(fields["context_reason"], "null_component")
+        fields = monitor.accounting_fields({"contextState": "reported", "reportedContextTokens": 99,
+                                           "contextReason": {"private": "must not appear"}})
+        self.assertNotIn("private", json.dumps(fields))
+        self.assertIsNone(fields["context_tokens"])
+        self.assertEqual(fields["context_state"], "unknown")
+        fields = monitor.accounting_fields({"contextState": "unknown", "contextComponents": {
+            "input_tokens": 2**64 - 1, "output_tokens": 1}})
+        self.assertIsNone(fields["measured_component_subtotal"])
+
+    def test_malformed_measurement_metadata_cannot_become_complete_context(self):
+        for extra in ({"contextReason": "future_unknown_reason"}, {"contextComponents": []},
+                      {"contextComponents": {"input_tokens": True}}, {"reportedContextTokens": True},
+                      {"contextComponents": {"input_tokens": 100, "output_tokens": "private"}}):
+            with self.subTest(extra=extra):
+                fields = monitor.accounting_fields({"contextState": "reported", "reportedContextTokens": 99, **extra})
+                self.assertEqual(fields["context_state"], "unknown")
+                self.assertIsNone(fields["context_tokens"])
+                self.assertNotIn("private", json.dumps(fields))
+        zero = monitor.accounting_fields({"contextState": "reported", "reportedContextTokens": 0})
+        self.assertEqual(zero["context_state"], "reported")
+        self.assertEqual(zero["context_tokens"], 0)
+        with self.assertRaises(ValueError):
+            monitor.strict_json('{"extra":1e999}')
+
+    def test_coverage_distinguishes_empty_selection_unknown_usage_and_caps(self):
+        value = report()
+        value["gobstopper"] = {"coverage": {"truncated": True}, "discovery": [
+            {"provider": provider, "source_state": "unavailable" if provider == "devin" else "available",
+             "scanned": 1, "selected": 1, "invalid_records": 0, "io_errors": int(provider == "devin"),
+             "omitted": 0, "truncated": False} for provider in ("codex", "claude_code", "devin")]}
+        coverage = monitor.coverage_summary(value, [B], ["codex"], monitor.context_samples(value, [B], ["codex"]))
+        self.assertEqual(coverage["selected_active_overlap"], 0)
+        self.assertEqual(coverage["selected_unavailable"], 1)
+        self.assertEqual(coverage["complete_context_samples"], 2)
+        self.assertTrue(coverage["report_truncated"])
+        self.assertTrue(coverage["discovery_available"])
+        self.assertIn("selected_overlap_empty", coverage["issues"])
+        self.assertIn("discovery_gaps", coverage["issues"])
+        self.assertIn("coverage_truncated", coverage["issues"])
+        value["gobstopper"]["discovery"][2] = value["gobstopper"]["discovery"][0]
+        duplicate = monitor.coverage_summary(value, [B], ["codex"], [])
+        self.assertFalse(duplicate["discovery_available"])
+        value["gobstopper"]["discovery"][2] = {
+            "provider": "devin", "source_state": "available", "scanned": 0, "selected": 0,
+            "invalid_records": 0, "io_errors": "private", "omitted": 0, "truncated": False}
+        invalid = monitor.coverage_summary(value, [B], ["codex"], [])
+        self.assertFalse(invalid["discovery_available"])
+        self.assertIn("discovery_status_unavailable", invalid["issues"])
+        self.assertNotIn("private", json.dumps(invalid))
+        value["sessions"] *= 150
+        samples = monitor.context_samples(value, [A], ["codex"])
+        coverage = monitor.coverage_summary(value, [A], ["codex"], samples)
+        self.assertEqual(coverage["eligible_context_samples"], 300)
+        self.assertEqual(len(samples), 256)
+        self.assertTrue(coverage["samples_truncated"])
+
+    def test_checkpoint_freshness_is_separate_from_process_and_command_health(self):
+        runtime = self.root / "runtime"
+        runtime.mkdir(mode=0o700)
+        path = runtime / "watch-state-codex.json"
+        checkpoint = {"generation": 9, "checkpoint_schema": 1, "artifact_sha256": "a" * 64,
+                      "config_sha256": "b" * 64, "pass_started_at_ms": 1000,
+                      "pass_completed_at_ms": 1200, "interval_secs": 60, "active_only": False,
+                      "native_activation": "unqualified", "decisions": {
+                          "discovered": 2, "legacy_unresolved": 0, "native_unresolved": 0,
+                          "settled": 0, "cooldown": 0, "below_trigger": 0, "native_unqualified": 2},
+                      "settled": {"PRIVATE_SESSION_AND_PATH": "ignored"}}
+        def write():
+            path.write_text(json.dumps(checkpoint))
+            path.chmod(0o600)
+        write()
+        rows = monitor.watcher_checkpoints(runtime, "a" * 64, 1500)
+        self.assertEqual([row["status"] for row in rows], ["fresh", "missing", "missing"])
+        self.assertNotIn("PRIVATE", json.dumps(rows))
+        self.assertEqual(rows[0]["decisions"]["native_unqualified"], 2)
+        checkpoint["settled"] = {"ignored": "x" * monitor.WATCH_STATE_BYTES}
+        write()
+        self.assertEqual(monitor.watcher_checkpoints(runtime, "a" * 64, 1500)[0]["status"], "unavailable")
+        checkpoint["settled"] = {}
+        write()
+        self.assertEqual(monitor.watcher_checkpoints(runtime, "c" * 64, 1500)[0]["status"], "artifact_mismatch")
+        self.assertEqual(monitor.watcher_checkpoints(runtime, "a" * 64, 200000)[0]["status"], "stale")
+        checkpoint["pass_completed_at_ms"] = None
+        write()
+        self.assertEqual(monitor.watcher_checkpoints(runtime, "a" * 64, 1500)[0]["status"], "in_progress")
+        checkpoint["decisions"]["settled"] = 1
+        write()
+        self.assertEqual(monitor.watcher_checkpoints(runtime, "a" * 64, 1500)[0]["status"], "unavailable")
+        checkpoint["decisions"]["settled"] = 0
+        checkpoint["interval_secs"] = 0
+        write()
+        self.assertEqual(monitor.watcher_checkpoints(runtime, "a" * 64, 1500)[0]["status"], "unavailable")
+        checkpoint["interval_secs"] = 60
+        checkpoint["pass_completed_at_ms"] = "PRIVATE_INVALID_TIME"
+        write()
+        self.assertEqual(monitor.watcher_checkpoints(runtime, "a" * 64, 1500)[0]["status"], "unavailable")
+        checkpoint["pass_completed_at_ms"] = None
+        checkpoint["pass_started_at_ms"] = 1600
+        write()
+        self.assertEqual(monitor.watcher_checkpoints(runtime, "a" * 64, 1500)[0]["status"], "unavailable")
+        path.unlink()
+        os.mkfifo(path, 0o600)
+        started = time.monotonic()
+        self.assertEqual(monitor.watcher_checkpoints(runtime, "a" * 64, 1500)[0]["status"], "unavailable")
+        self.assertLess(time.monotonic() - started, 1)
+
+    def test_coverage_records_identifier_omissions_without_exposing_values(self):
+        value = report()
+        value["sessions"][0]["gobstopper"]["sessionIdNative"] = "PRIVATE.with.unsupported.syntax"
+        samples = monitor.context_samples(value, [A], ["codex"])
+        coverage = monitor.coverage_summary(value, [A], ["codex"], samples)
+        self.assertEqual(coverage["identifier_omissions"], 1)
+        self.assertIn("unsupported_session_identifiers", coverage["issues"])
+        self.assertNotIn("PRIVATE", json.dumps(coverage))
+        value["sessions"][0]["provider"] = []
+        self.assertEqual(monitor.coverage_summary(value, [A], ["codex"], samples)["identifier_omissions"], 0)
+
     def setUp(self):
         self.scratch = tempfile.TemporaryDirectory(prefix="gob-monitor-test-")
         self.root = Path(self.scratch.name).resolve()
@@ -300,13 +433,8 @@ else:
             # measured but not allowlisted — skipped
             {"session_id": UNRELATED, "retention_total": 5,
              "retention_retained": 5, "retention_lexical": 5},
-            # malformed + out-of-range — skipped
-            {"session_id": A, "retention_total": "big"},
-            {"session_id": A, "retention_total": 10**9},
-            "not json",
         ]
-        log.write_text("".join(json.dumps(bind_event(e)) + "\n" if not isinstance(e, str)
-                              else e + "\n" for e in events))
+        log.write_text("\n \t\r\n" + "".join(json.dumps(bind_event(e)) + "\n" for e in events))
         out = monitor.retention_summary(log, selected_sources(A, B))
         self.assertEqual(out["measured"], 2)
         self.assertEqual(out["checks"], 30)
@@ -314,7 +442,8 @@ else:
         self.assertEqual(out["lexical"], 12)
         self.assertEqual(out["lossy_sessions"], [B])
         self.assertTrue(out["available"])
-        self.assertEqual(out["invalid_records"], 1)
+        self.assertEqual(out["invalid_records"], 0)
+        self.assertEqual(out["oversized_records"], 0)
         missing = monitor.retention_summary(log.with_name("nope"), selected_sources(A))
         self.assertEqual(missing["measured"], 0)
         self.assertFalse(missing["available"])
@@ -326,7 +455,7 @@ else:
                  "retention_retained": 6, "retention_lexical": 8}
         invalid = []
         for field in ("retention_total", "retention_retained", "retention_lexical"):
-            for value in (None, False, True, [], {}, "", -1, 100_001):
+            for value in (None, False, True, [], {}, "", -1, 2**64, 1.0):
                 invalid.append({**valid, field: value})
             missing = dict(valid)
             del missing[field]
@@ -335,11 +464,16 @@ else:
                         {**valid, "retention_lexical": 11},
                         {**valid, "session_id": []},
                         {**valid, "session_id": {}}])
-        log.write_text("".join(json.dumps(bind_event(event)) + "\n" for event in [valid, *invalid]))
-        expected = {"measured": 1, "checks": 10, "literal": 6,
-                    "lexical": 8, "lossy_sessions": [], "available": True,
-                    "error": None, "invalid_records": 0, "conflicting_pairs": 0}
-        self.assertEqual(monitor.retention_summary(log, selected_sources(A)), expected)
+        for row in invalid:
+            for events in ([valid, row], [row, valid], [valid, row, valid]):
+                with self.subTest(row=row, order=events):
+                    log.write_text("".join(json.dumps(bind_event(event)) + "\n" for event in events))
+                    out = monitor.retention_summary(log, selected_sources(A))
+                    self.assertFalse(out["available"])
+                    self.assertEqual(out["error"], "event_log_invalid")
+                    self.assertEqual(out["invalid_records"], 1)
+                    self.assertEqual([out[key] for key in ("measured", "checks", "literal", "lexical")],
+                                     [0, 0, 0, 0])
 
     def test_retention_read_is_bounded_and_invalid_utf8_is_unavailable(self):
         log = self.root / "retention.jsonl"
@@ -347,7 +481,8 @@ else:
         result = monitor.retention_summary(log, selected_sources(A))
         self.assertEqual(result["measured"], 0)
         self.assertFalse(result["available"])
-        self.assertEqual(result["error"], "event_log_unavailable")
+        self.assertEqual(result["error"], "event_log_invalid")
+        self.assertEqual(result["invalid_records"], 1)
         log.write_bytes(b"x" * 33)
         with patch.object(monitor, "EVENTS_LOG_BYTES", 32):
             result = monitor.retention_summary(log, selected_sources(A))
@@ -372,11 +507,61 @@ else:
 
     def test_legacy_or_foreign_retention_pairs_are_unqualified(self):
         log = self.root / "retention.jsonl"
-        legacy = {"session_id": A, "retention_total": 2, "retention_retained": 2, "retention_lexical": 2}
-        foreign = bind_event(legacy)
+        valid = bind_event({"session_id": A, "retention_total": 2,
+                            "retention_retained": 2, "retention_lexical": 2})
+        legacy = {key: value for key, value in valid.items()
+                  if key not in ("source_identity_sha256", "snapshot_before_sha256",
+                                 "snapshot_after_sha256", "before_observation", "after_observation")}
+        foreign = json.loads(json.dumps(valid))
         foreign["after_observation"]["source_identity_sha256"] = "f" * 64
         log.write_text(json.dumps(legacy) + "\n" + json.dumps(foreign) + "\n")
-        self.assertEqual(monitor.retention_summary(log, selected_sources(A))["measured"], 0)
+        result = monitor.retention_summary(log, selected_sources(A))
+        self.assertTrue(result["available"])
+        self.assertEqual(result["invalid_records"], 0)
+        self.assertEqual(result["measured"], 0)
+
+    def test_retention_requires_valid_observations_and_event_provenance(self):
+        log = self.root / "retention.jsonl"
+        valid = bind_event({"session_id": A, "retention_total": 2,
+                            "retention_retained": 1, "retention_lexical": 1})
+        invalid = []
+        for side in ("before", "after"):
+            for key, value in (("context_state", "unknown"), ("context_tokens", True),
+                               ("context_tokens", None), ("estimated_context_tokens", -1),
+                               ("estimated_context_tokens", 2**64), ("lifetime_scope", "full"),
+                               ("lifetime_cached_tokens", 1), ("unknown_field", "private")):
+                row = json.loads(json.dumps(valid))
+                row[f"{side}_observation"][key] = value
+                invalid.append(row)
+            for key in ("context_state", "lifetime_scope", "estimated_context_tokens"):
+                row = json.loads(json.dumps(valid))
+                del row[f"{side}_observation"][key]
+                invalid.append(row)
+            row = json.loads(json.dumps(valid))
+            row[f"{side}_observation"].update(lifetime_scope="full",
+                                             lifetime_input_tokens=1, lifetime_cached_tokens=2)
+            invalid.append(row)
+        for key, value in (("ts", None), ("items_covered", True), ("duration_ms", 2**64),
+                           ("strategy", "private/field"), ("est_reclaimed_tokens", 100),
+                           ("binary_sha256", "private"), ("config_sha256", []),
+                           ("experiment_sha256", {}), ("decision_cohort", "future"),
+                           ("decision_cohort", "control"), ("rollout_percent", 50)):
+            invalid.append({**valid, key: value})
+        for row in invalid:
+            with self.subTest(row=row):
+                log.write_text(json.dumps(row) + "\n")
+                result = monitor.retention_summary(log, selected_sources(A))
+                self.assertEqual(result["measured"], 0)
+                self.assertFalse(result["available"])
+                self.assertEqual(result["invalid_records"], 1)
+        # Retention can use exact retained bytes even without provider context.
+        # A real zero report also remains valid; neither is context savings.
+        for state, count in (("unknown", None), ("reported", 0)):
+            row = json.loads(json.dumps(valid))
+            for side in ("before", "after"):
+                row[f"{side}_observation"].update(context_state=state, context_tokens=count)
+            log.write_text(json.dumps(row) + "\n")
+            self.assertEqual(monitor.retention_summary(log, selected_sources(A))["measured"], 1)
 
     def test_retention_matches_selected_store_rejects_errors_and_deduplicates_pairs(self):
         log = self.root / "retention.jsonl"
@@ -407,6 +592,124 @@ else:
         self.assertEqual(result["measured"], 0)
         self.assertEqual(result["conflicting_pairs"], 1)
 
+    def test_schema_invalid_counterparts_make_qualification_unavailable_in_any_order(self):
+        log = self.root / "retention.jsonl"
+        valid = bind_event({"session_id": A, "retention_total": 2,
+                            "retention_retained": 1, "retention_lexical": 1})
+        invalid = []
+        required = ("schema", "provider", "session_id", "strategy", "action", "outcome",
+                    "ts", "trigger_tokens", "context_tokens_before", "context_tokens_after",
+                    "est_reclaimed_tokens", "items_covered", "duration_ms")
+        for key in required:
+            missing = dict(valid)
+            del missing[key]
+            invalid.append(missing)
+            for value in (None, False, [], {}):
+                invalid.append({**valid, key: value})
+        for key in required[6:]:
+            for value in (-1, 2**64, 1.0, "1"):
+                invalid.append({**valid, key: value})
+        for key, value in (("schema", "future"), ("provider", "future"),
+                           ("action", "future"), ("outcome", "future"),
+                           ("error_code", "private-response"), ("error_code", True),
+                           ("session_id", "private/path"), ("session_id", "x" * 257),
+                           ("strategy", "x" * 129), ("strategy", "private/path"),
+                           ("source_identity_sha256", "invalid"),
+                           ("binary_sha256", "invalid"), ("config_sha256", "invalid"),
+                           ("experiment_sha256", "invalid"),
+                           ("snapshot_before_sha256", "invalid"),
+                           ("snapshot_after_sha256", "invalid"),
+                           ("before_observation", False), ("after_observation", []),
+                           ("decision_cohort", "future"), ("rollout_percent", True)):
+            invalid.append({**valid, key: value})
+        for row in invalid:
+            for events in ([valid, row], [row, valid], [valid, row, valid]):
+                with self.subTest(row=row, first_invalid=events[0] is row):
+                    log.write_text("".join(json.dumps(event) + "\n" for event in events))
+                    result = monitor.retention_summary(log, selected_sources(A))
+                    self.assertFalse(result["available"])
+                    self.assertEqual(result["error"], "event_log_invalid")
+                    self.assertEqual(result["invalid_records"], 1)
+                    self.assertEqual(result["oversized_records"], 0)
+                    self.assertEqual([result[key] for key in ("measured", "checks", "literal", "lexical")],
+                                     [0, 0, 0, 0])
+                    self.assertEqual(result["lossy_sessions"], [])
+                    self.assertNotIn("private-response", json.dumps(result))
+
+    def test_malformed_or_oversized_history_cannot_keep_a_valid_counterpart(self):
+        log = self.root / "retention.jsonl"
+        valid = bind_event({"session_id": A, "retention_total": 2,
+                            "retention_retained": 1, "retention_lexical": 1})
+        raw = json.dumps(valid).encode()
+        malformed = (b"{torn}", b"true", b"[]", b"null", b"\xff", b"\v",
+                     json.dumps({**valid, "\ud800": 1}).encode(),
+                     raw.replace(b'"items_covered": 0', b'"items_covered": -0'),
+                     raw.replace(b'"items_covered": 0', b'"items_covered": 1e0'),
+                     raw.replace(b'"items_covered": 0', b'"items_covered": 1e400'))
+        for invalid in (*malformed, b"x" * (monitor.EVENT_RECORD_BYTES + 1)):
+            oversized = int(len(invalid) > monitor.EVENT_RECORD_BYTES)
+            for lines in ((raw, invalid), (invalid, raw), (raw, invalid, raw)):
+                with self.subTest(invalid=invalid[:32], order=lines[0] is invalid):
+                    log.write_bytes(b"\n".join(lines) + b"\n")
+                    result = monitor.retention_summary(log, selected_sources(A))
+                    self.assertFalse(result["available"])
+                    self.assertEqual(result["error"], "event_log_invalid")
+                    self.assertEqual(result["invalid_records"], 1 - oversized)
+                    self.assertEqual(result["oversized_records"], oversized)
+                    self.assertEqual(result["measured"], 0)
+        # Invalid unrelated history cannot be assumed harmless without parsing it.
+        invalid = {**valid, "session_id": UNRELATED, "binary_sha256": "invalid"}
+        log.write_bytes(raw + b"\n" + json.dumps(invalid).encode() + b"\n")
+        self.assertFalse(monitor.retention_summary(log, selected_sources(A))["available"])
+
+    def test_valid_noncompaction_and_optional_legacy_events_are_unqualified_not_invalid(self):
+        log = self.root / "retention.jsonl"
+        valid = bind_event({"session_id": A, "retention_total": 2,
+                            "retention_retained": 1, "retention_lexical": 1})
+        rows = [{**valid, "action": "none"}]
+        rows.extend({**valid, "outcome": outcome} for outcome in ("planned", "failed", "skipped", "blocked"))
+        rows.extend({**valid, "error_code": code} for code in (
+            "io", "provider_rejected", "apply_failed", "verification_failed", "custody_unavailable",
+            "unattributed_provider_hook", "unresolved_context", "native_unqualified", "spawn_failed",
+            "parent_thread", "provider_noop", "quota_limited"))
+        for key in ("source_identity_sha256", "snapshot_before_sha256", "snapshot_after_sha256",
+                    "before_observation", "after_observation"):
+            rows.append({**valid, key: None})
+            rows.append({name: value for name, value in valid.items() if name != key})
+        rows.append({**valid, "retention_total": None, "retention_retained": None, "retention_lexical": None})
+        rows.append({name: value for name, value in valid.items() if not name.startswith("retention_")})
+        log.write_text("".join(json.dumps(row) + "\n" for row in rows))
+        result = monitor.retention_summary(log, selected_sources(A))
+        self.assertTrue(result["available"])
+        self.assertIsNone(result["error"])
+        self.assertEqual(result["invalid_records"], 0)
+        self.assertEqual(result["measured"], 0)
+        # Serde Option defaults, additive event fields, legal extended IDs and
+        # full u64 retention denominators do not invent schema failures.
+        for total in (0, 100_001, 2**64 - 1):
+            row = {**valid, "session_id": "a." + "x" * 254, "strategy": "a:._-",
+                   "retention_total": total, "retention_retained": total, "retention_lexical": total,
+                   "unknown_additive_field": {"nested": True}, "binary_sha256": None,
+                   "config_sha256": None, "experiment_sha256": None,
+                   "decision_cohort": "ungated", "rollout_percent": None}
+            del row["error_code"]
+            for side in ("before", "after"):
+                row[f"{side}_observation"] = {key: value for key, value in row[f"{side}_observation"].items()
+                                               if key not in ("lifetime_input_tokens", "lifetime_cached_tokens")}
+            log.write_text(json.dumps(row) + "\n")
+            result = monitor.retention_summary(log, selected_sources(row["session_id"]))
+            self.assertTrue(result["available"])
+            self.assertEqual(result["measured"], 1)
+            self.assertEqual(result["checks"], total)
+        second = json.loads(json.dumps(row))
+        second["snapshot_before_sha256"] = "f" * 64
+        second["before_observation"]["snapshot_manifest_sha256"] = "f" * 64
+        log.write_text(json.dumps(row) + "\n" + json.dumps(second) + "\n")
+        result = monitor.retention_summary(log, selected_sources(row["session_id"]))
+        self.assertTrue(result["available"])
+        self.assertEqual(result["measured"], 2)
+        self.assertEqual([result[key] for key in ("checks", "literal", "lexical")], [2**64 - 1] * 3)
+
     def test_retention_strict_duplicates_and_torn_tail_never_gain_credit(self):
         log = self.root / "retention.jsonl"
         valid = bind_event({"session_id": A, "retention_total": 2,
@@ -417,7 +720,9 @@ else:
                              '"source_sha256": "' + "d" * 64 + '", "source_sha256": "' + "e" * 64 + '"')
         log.write_text(duplicate + "\n" + nested + "\n" + raw + "\n")
         result = monitor.retention_summary(log, selected_sources(A))
-        self.assertEqual(result["measured"], 1)
+        self.assertEqual(result["measured"], 0)
+        self.assertFalse(result["available"])
+        self.assertEqual(result["error"], "event_log_invalid")
         self.assertEqual(result["invalid_records"], 2)
         log.write_text(raw + "\n" + raw[:-1])
         result = monitor.retention_summary(log, selected_sources(A))
@@ -564,12 +869,14 @@ else:
             os.close(directory)
 
     def test_rotation_retains_at_most_two_bounded_logs(self):
-        with patch.object(monitor, "LOG_BYTES", 2048):
+        self.sample([A])
+        log_limit = (self.output / "observations.jsonl").stat().st_size * 2 + 1024
+        with patch.object(monitor, "LOG_BYTES", log_limit):
             for _ in range(5):
                 self.sample([A])
         for name in ("observations.jsonl", "observations.1.jsonl"):
             self.assertTrue((self.output / name).exists())
-            self.assertLessEqual((self.output / name).stat().st_size, 2048)
+            self.assertLessEqual((self.output / name).stat().st_size, log_limit)
         self.assertEqual(len(list(self.output.glob("observations*"))), 2)
 
     def test_child_timeout_and_capture_limit_are_bounded(self):
