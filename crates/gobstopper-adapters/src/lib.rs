@@ -1,9 +1,9 @@
 //! gobstopper-adapters: provider transcript dialects and session discovery.
 //!
 //! This crate is the only component allowed to parse provider session
-//! files. The runtime rule — never parse provider transcripts — is
+//! files. Oompa's own rule — never parse provider transcripts — is
 //! preserved by integrating through the CLI's JSON surface instead of
-//! linking this crate's file logic into the session runtime itself.
+//! linking this crate's file logic into oompa itself.
 
 pub mod claude;
 pub mod codex;
