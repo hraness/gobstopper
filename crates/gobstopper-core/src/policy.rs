@@ -24,8 +24,10 @@ pub fn validate_policy(policy: &PolicyConfig) -> Result<(), &'static str> {
         || policy.apply_hold_secs > crate::admission::MAX_INTERVAL_SECS
         || policy.min_savings_tokens > crate::admission::MAX_POLICY_TOKENS
         || policy.block_tokens > crate::admission::MAX_POLICY_TOKENS
+        || policy.keep_recent_turns > crate::admission::MAX_ITEMS
+        || policy.result_max_bytes > crate::admission::MAX_POLICY_TOKENS
     {
-        return Err("invalid policy bounds: require floor < trigger <= 10000000, min_savings_tokens <= 10000000, block_tokens <= 10000000, keep_recent_tool_outputs <= 100000, and min_interval_secs/apply_hold_secs <= 86400");
+        return Err("invalid policy bounds: require floor < trigger <= 10000000, min_savings_tokens <= 10000000, block_tokens <= 10000000, result_max_bytes <= 10000000, keep_recent_tool_outputs/keep_recent_turns <= 100000, and min_interval_secs/apply_hold_secs <= 86400");
     }
     Ok(())
 }
@@ -45,6 +47,8 @@ mod admission_proofs {
             apply_hold_secs: kani::any(),
             min_savings_tokens: kani::any(),
             block_tokens: kani::any(),
+            keep_recent_turns: kani::any(),
+            result_max_bytes: kani::any(),
             ..PolicyConfig::default()
         };
         let numeric = (1..=10_000_000).contains(&policy.trigger_tokens)
@@ -53,7 +57,9 @@ mod admission_proofs {
             && policy.min_interval_secs <= 86_400
             && policy.apply_hold_secs <= 86_400
             && policy.min_savings_tokens <= 10_000_000
-            && policy.block_tokens <= 10_000_000;
+            && policy.block_tokens <= 10_000_000
+            && policy.keep_recent_turns <= 100_000
+            && policy.result_max_bytes <= 10_000_000;
         let score = match policy.keep_score_threshold {
             None => true,
             Some(score) => score >= 0.0 && score <= 1.0,
@@ -82,6 +88,16 @@ mod admission_proofs {
         kani::cover!(
             accepted && policy.keep_score_threshold == Some(1.0),
             "score upper endpoint admitted"
+        );
+        kani::cover!(
+            accepted
+                && policy.keep_recent_turns == 100_000
+                && policy.result_max_bytes == 10_000_000,
+            "cliff maxima admitted"
+        );
+        kani::cover!(
+            !accepted && policy.keep_recent_turns == usize::MAX,
+            "full width recent turns refused"
         );
     }
 }
@@ -287,6 +303,20 @@ mod tests {
         assert_eq!(first.policy.trigger_tokens, second.policy.trigger_tokens);
         assert_eq!(first.policy.floor_tokens, second.policy.floor_tokens);
         assert_eq!(first.reasons, second.reasons);
+    }
+
+    #[test]
+    fn cliff_knobs_are_bounded_like_the_other_policy_fields() {
+        let mut policy = PolicyConfig::default();
+        assert!(validate_policy(&policy).is_ok());
+        policy.keep_recent_turns = 100_000;
+        policy.result_max_bytes = 10_000_000;
+        assert!(validate_policy(&policy).is_ok());
+        policy.keep_recent_turns = 100_001;
+        assert!(validate_policy(&policy).is_err());
+        policy.keep_recent_turns = 0;
+        policy.result_max_bytes = 10_000_001;
+        assert!(validate_policy(&policy).is_err());
     }
 
     #[test]

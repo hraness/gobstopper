@@ -1,0 +1,200 @@
+import type { Metadata } from "next";
+
+import { SiteHeader, SiteFooter } from "../../_components/site-chrome";
+import { GITHUB_URL } from "../../_lib/site";
+import {
+  CLIFF_BLOG,
+  CLIFF_PAPER,
+  CLIFF_PYPI,
+  CLIFF_REPOSITORY,
+  comparisonQuestions,
+  comparisonRows,
+} from "./comparison";
+
+const title = "Compared with CliffCompaction";
+const socialTitle = "Gobstopper compared with CliffCompaction";
+const description =
+  "CliffCompaction compacts API requests through a local proxy. Gobstopper prepares compacted copies of session files. This page compares what each keeps, drops, and measures.";
+
+export const metadata: Metadata = {
+  title,
+  description,
+  alternates: { canonical: "/compare/cliffcompaction" },
+  openGraph: {
+    title: socialTitle,
+    description,
+    siteName: "Gobstopper",
+    type: "article",
+    url: "/compare/cliffcompaction",
+    images: [{ url: "/opengraph-image", width: 1200, height: 630, alt: socialTitle }],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: socialTitle,
+    description,
+    images: [{ url: "/opengraph-image", alt: socialTitle }],
+  },
+};
+
+function withCode(text: string) {
+  return text.split("`").map((part, index) => (index % 2 === 1 ? <code key={index}>{part}</code> : part));
+}
+
+const structuredData = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  mainEntity: comparisonQuestions.map(({ answer, question }) => ({
+    "@type": "Question",
+    acceptedAnswer: { "@type": "Answer", text: answer.replaceAll("`", "") },
+    name: question,
+  })),
+};
+
+export default function CompareCliffCompaction() {
+  return (
+    <>
+      <script
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
+        type="application/ld+json"
+      />
+      <SiteHeader path="/compare/cliffcompaction" />
+      <main id="main" tabIndex={-1} className="document-page">
+        <article>
+          <h1>Gobstopper compared with CliffCompaction</h1>
+          <p>
+            Both tools shrink a coding agent&apos;s context without asking a
+            model to summarize it, and both keep the newest turns untouched.
+            CliffCompaction does it to each API request through a proxy while
+            the session runs. Gobstopper does it to a copy of the session file
+            that you inspect and then resume. The <code>cliff</code> strategy
+            in the current source build applies CliffCompaction&apos;s drop rule
+            to that copy. Install from source to use it; the latest tagged
+            release predates it.
+          </p>
+
+          <h2>What CliffCompaction does</h2>
+          <p>
+            <a href={CLIFF_REPOSITORY}>CliffCompaction</a> is an open-source
+            (MIT) API proxy for coding agents by Trang Nguyen, Eulrang Cho,
+            Bingqing Chen, and Tim Dettmers, described in{" "}
+            <a href={CLIFF_PAPER}>arXiv:2609.26779</a> (September 2026) and
+            published on PyPI as <a href={CLIFF_PYPI}><code>cliffcompaction</code></a>.
+            You point an agent&apos;s base URL at it. When a request exceeds a
+            token threshold, the proxy sends the system prompt and task
+            verbatim, then one mechanical summary of the older turns, then the
+            last three turns verbatim. The summary keeps tool results of at
+            most 500 characters, drops longer ones because the files behind
+            them are still readable, reduces tool calls to one-line signatures,
+            and keeps assistant text. Each later compaction is rebuilt from the
+            original history the agent resends, and the previous summary is
+            discarded; the authors call this never compacting a compaction.
+          </p>
+          <p>
+            The paper reports up to 50% lower cost at a bounded context with
+            maintained or improved Terminal-Bench 2.0 results for the Kimi and
+            GLM models the authors tested, plus SWE-bench Verified and
+            KernelBench results. Those are the authors&apos; figures for their
+            proxy. Gobstopper has not run those benchmarks.
+          </p>
+
+          <h2>What Gobstopper does</h2>
+          <p>
+            Gobstopper inspects Claude Code, Codex, and Devin sessions and
+            prepares compacted transcript copies. You choose a threshold and a
+            strategy, preview the plan, and compare strategies on the same
+            frozen bytes. Before it writes a Claude Code or Codex copy, it
+            archives the source and candidate bytes in a local vault, so an
+            exact archived record can be searched and read later. It does not
+            sit between the agent and the API, and the source build does not
+            ask a provider to compact a running session.
+          </p>
+
+          <h2>How they compare</h2>
+          <table>
+            <caption>Read from each tool&apos;s documentation and source on September 24, 2026</caption>
+            <thead>
+              <tr>
+                <th scope="col">Aspect</th>
+                <th scope="col">CliffCompaction</th>
+                <th scope="col">Gobstopper</th>
+              </tr>
+            </thead>
+            <tbody>
+              {comparisonRows.map((row) => (
+                <tr key={row.aspect}>
+                  <th scope="row">{row.aspect}</th>
+                  <td>{withCode(row.cliff)}</td>
+                  <td>{withCode(row.gobstopper)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <h2>The cliff strategy</h2>
+          <p>
+            <code>cliff</code> keeps the head (the system prompt and the first
+            user prompt) and the newest <code>keep_recent_turns</code> assistant
+            steps byte-for-byte, drops every older tool result larger than{" "}
+            <code>result_max_bytes</code>, and leaves smaller results, user
+            prompts, assistant text, and reasoning in place. The defaults are
+            three steps and 500 bytes, the proxy&apos;s defaults. A step starts
+            where the assistant side resumes after a user prompt or a tool
+            result and includes the tool results that answer it. Nothing is
+            summarized, no state card is added, and there is no floor to reach:
+            the copy is as small as the rule makes it.
+          </p>
+          <p>
+            Because the strategy only removes payloads by class, compacting a{" "}
+            <code>cliff</code> copy again at a later point selects the same
+            records a single compaction from the source would. That is the
+            file-side form of never compacting a compaction, and a unit test
+            in the repository pins it. Two parts of the proxy&apos;s rule are not
+            part of the copy: tool-call signatures and reasoning caps, because
+            Gobstopper&apos;s copy transforms replace tool-result payloads only.
+            Codex <code>compacted</code> records count as one result.
+          </p>
+          <pre tabIndex={0}><code>{`gobstopper plan <session> --strategy cliff
+gobstopper eval <session>      # cliff appears beside the other strategies
+
+# ~/.config/gobstopper/config.toml
+[presets.cliff]
+strategy = "cliff"
+keep_recent_turns = 3
+result_max_bytes = 500`}</code></pre>
+
+          <h2>Which one fits</h2>
+          <p>
+            Use CliffCompaction when you want request-time compaction of a
+            live session for any client that speaks the Anthropic Messages,
+            OpenAI Chat Completions, or OpenAI Responses API, with no change to
+            the agent. Use Gobstopper when you want to see what a compaction
+            would remove before it happens, compare strategies on frozen input,
+            keep the exact source, and resume a smaller copy of a Claude Code
+            or Codex session. The two tools have not been tested together.
+          </p>
+
+          <h2>Questions</h2>
+          {comparisonQuestions.map(({ answer, question }) => (
+            <section key={question}>
+              <h3>{question}</h3>
+              <p>{withCode(answer)}</p>
+            </section>
+          ))}
+
+          <h2>Sources</h2>
+          <ul>
+            <li>
+              Trang Nguyen, Eulrang Cho, Bingqing Chen, and Tim Dettmers,{" "}
+              <a href={CLIFF_PAPER}>CliffCompaction: Cost-Efficient Compaction for Long-Horizon Coding Agents</a>,
+              arXiv:2609.26779, September 2026.
+            </li>
+            <li><a href={CLIFF_REPOSITORY}>CliffCompaction source and README</a> (MIT).</li>
+            <li><a href={CLIFF_BLOG}>The authors&apos; project page</a>.</li>
+            <li><a href={`${GITHUB_URL}/blob/main/README.md`}>Gobstopper README</a>, which carries the same comparison table.</li>
+          </ul>
+        </article>
+      </main>
+      <SiteFooter path="/compare/cliffcompaction" />
+    </>
+  );
+}

@@ -7,6 +7,7 @@ When to use this site:
 - Use /docs for the full reference: installation, strategies, configuration, the watcher, hooks, the snapshot vault, and the MCP server.
 - Use /methodology for the occupancy model behind the projections and what each strategy does.
 - Use /benchmarks for dated results, cohort sizes, limitations, and aggregate downloads.
+- Use /compare/cliffcompaction to see how Gobstopper differs from CliffCompaction, the API-proxy compactor, and what the cliff strategy does.
 
 ## Pages
 
@@ -14,6 +15,7 @@ When to use this site:
 - [Gobstopper documentation](https://gobstopper.sh/docs): the README, with every command, strategy, and configuration setting it documents.
 - [Gobstopper methodology](https://gobstopper.sh/methodology): the occupancy model, the strategies, and the limits of the published benchmarks.
 - [Gobstopper benchmarks](https://gobstopper.sh/benchmarks): offline replays of 729 archived sessions, a synthetic snapshot-recovery study, and historical single-session resume trials.
+- [Gobstopper compared with CliffCompaction](https://gobstopper.sh/compare/cliffcompaction): where each tool runs, what each keeps and drops, what evidence each publishes, and the cliff strategy that applies CliffCompaction's rule to a transcript copy.
 
 ## Optional
 

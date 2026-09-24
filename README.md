@@ -133,6 +133,7 @@ the strategy and where it cuts matter as much as the timing.
 | `sawtooth` | provider | proposes provider-native compaction to the session owner; released CLI dispatch is blocked pending qualification |
 | `cache_edits` | provider | emits bounded Claude `tool_use_id` values for API-layer context editing; never rewrites a transcript |
 | `elide` | transcript | stubs stale tool outputs oldest-first until the floor |
+| `cliff` | transcript | keeps the head and the newest three assistant steps byte-for-byte and drops every older tool result over 500 bytes; no floor seeking and no state card (see [CliffCompaction](#how-gobstopper-compares-with-cliffcompaction)) |
 | `cache_aware` | transcript | elides a tailward stale-output window and injects a bounded state card while preserving the longest practical prefix |
 | `compacted` | transcript | elides stale outputs and injects the state card; synthetic Codex `compacted` records require `--experimental-compacted` |
 | `scored` | transcript | ranks candidates with deterministic recency, error, reference, TF-IDF, duplicate, and tool-type signals before elision |
@@ -387,6 +388,11 @@ trigger_tokens = 120_000
 strategy = "elide"
 trigger_tokens = 150_000
 
+[presets.cliff]              # CliffCompaction's rule on a transcript copy
+strategy = "cliff"
+keep_recent_turns = 3        # newest assistant steps kept byte-for-byte
+result_max_bytes = 500       # older tool results above this are dropped
+
 [presets.custom-script]      # legacy userspace code preset
 command = "python3 ~/bin/my_compactor.py"
 trusted_legacy_command = true
@@ -613,6 +619,60 @@ recent compactions reclaimed too little to be worth a cycle, and
 tightened when most of the window is reclaimable tool output. The
 adjustment is deterministic and its reasons appear in plan output and
 telemetry. `gobstopper tune <session>` previews it.
+
+## How Gobstopper compares with CliffCompaction
+
+[CliffCompaction](https://github.com/nguyenvuthientrang/cliffcompaction) is
+an open-source (MIT) API proxy for coding agents by Trang Nguyen, Eulrang Cho,
+Bingqing Chen, and Tim Dettmers, described in
+[arXiv:2609.26779](https://arxiv.org/abs/2609.26779) (September 2026). You
+point an agent's base URL at it. When a request exceeds a token threshold, the
+proxy sends the system prompt and task verbatim, then one mechanical summary of
+the older turns, then the last three turns verbatim. The summary keeps tool
+results of at most 500 characters, drops longer ones because the files behind
+them are still readable, reduces tool calls to one-line signatures, and keeps
+assistant text. Each later compaction is rebuilt from the original history the
+agent resends, and the previous summary is discarded: the authors call this
+never compacting a compaction. Their paper reports up to 50% lower cost at a
+bounded context with maintained or improved Terminal-Bench 2.0 results for the
+Kimi and GLM models they tested; those are the authors' benchmark figures, not
+measurements of Gobstopper.
+
+The two tools work at different layers and can be described side by side:
+
+| | CliffCompaction | Gobstopper |
+|---|---|---|
+| Where it runs | A local HTTP proxy between the agent and the Anthropic or OpenAI API | A CLI over the session files Claude Code, Codex, and Devin write |
+| What it changes | Each outgoing request, transparently, while the session runs | A separate compacted copy of a session you then resume; the source file is unchanged |
+| How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | Strategies that drop or stub stale tool results by rule; `structured` and `compacted` add a metadata state card; no strategy paraphrases |
+| Recompaction | Rebuilt from the original history; the prior summary is discarded | `cliff` composes the same way; strategies that inject a state card carry it forward into the next copy |
+| What holds the originals | The agent's own history and the files on disk; the proxy keeps only an in-memory cache of compacted prefixes | A content-addressed vault with `search-snapshot` and `read-snapshot` for the exact archived record |
+| Evidence published | Terminal-Bench 2.0, SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models | Offline replays of 729 archived sessions, literal retention probes, and dated single-session trials; no task-success or billing claims |
+| Model needed | None; the summary is mechanical | None for built-in strategies; optional model scorers |
+
+The `cliff` strategy applies CliffCompaction's rule to a transcript copy:
+the head and the newest `keep_recent_turns` assistant steps stay
+byte-for-byte, older tool results over `result_max_bytes` are dropped, smaller
+ones stay, and nothing is summarized or added. A step starts where the
+assistant side resumes after a user prompt or a tool result and includes the
+tool results that answer it. Two parts of the proxy's rule are not part of the
+file transform: tool-call signatures and reasoning caps, because Gobstopper's
+copy transforms only replace tool-result payloads. Codex `compacted` records
+count as one result. Because the strategy only removes payloads by class,
+compacting a `cliff` copy again selects the same records a single compaction
+from the source would; a unit test pins that property. The dropped bytes stay
+in the vault, not in the copy.
+
+```sh
+gobstopper plan <session> --strategy cliff
+gobstopper eval <session>               # cliff appears beside the other strategies
+```
+
+`auto` does not select `cliff`; choose it explicitly or through a preset. The
+two tools have not been tested together, and Gobstopper does not proxy API
+requests. The comparison page at
+[gobstopper.sh/compare/cliffcompaction](https://gobstopper.sh/compare/cliffcompaction)
+carries the same table.
 
 ## Integrating with a session runtime
 

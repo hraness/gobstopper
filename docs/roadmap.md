@@ -78,8 +78,14 @@ workspace plus the retained XCB compatibility package in
 ## 2. Landscape position (why this is a real niche)
 
 Cross-provider auto-compaction daemons exist only as **proxies**
-(Headroom, Compresr, kompact) — they shrink the wire but leave the
-on-disk transcript bloated, so resume/fork still pays full context.
+(Headroom, Compresr, kompact, and since September 2026 CliffCompaction,
+[arXiv:2609.26779](https://arxiv.org/abs/2609.26779)) — they shrink the
+wire but leave the on-disk transcript bloated, so resume/fork still pays
+full context. CliffCompaction's rule (head and last turns verbatim, long
+tool results dropped, nothing paraphrased, every compaction rebuilt from
+the original history) is the closest published design to gobstopper's
+elision strategies; the `cliff` strategy carries it onto the file layer
+and the README's comparison section records the differences.
 File-layer tools (cc-session, coldxx, claude-journal, compactdiff,
 claude-streaming-compactor) are manual or single-provider/single-
 strategy. Nobody composes: watch → policy → transcript surgery →
