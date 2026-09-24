@@ -1,6 +1,6 @@
 //! Compaction telemetry: numeric-only records appended to a local JSONL
 //! log (schema `gobstopper/compaction-events-v1`) for downstream
-//! consumers such as aicharts.
+//! consumers such as aicharts and oompa.
 //!
 //! Hard rule: these records carry counts, durations, closed enum-like
 //! strings, and identifiers only. Transcript content, file paths, and

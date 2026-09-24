@@ -90,7 +90,7 @@ fn plan_score(transcript: &Transcript, plan: &CompactionPlan) -> f64 {
 
 impl AutoStrategy {
     /// Which concrete strategy `auto` would select. Exposed so `plan`
-    /// output and the runtime seam can report the decision, not just the plan.
+    /// output and the oompa seam can report the decision, not just the plan.
     pub fn select<'a>(transcript: &Transcript) -> &'a str {
         let total = transcript.context_tokens().max(1);
         let tool_tokens = transcript.elidable_tokens();
