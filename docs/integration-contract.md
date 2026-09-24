@@ -1,11 +1,11 @@
-# Historical OOMPA integration contract
+# Historical integration contract
 
-This records the proposed numeric interface for OOMPA, which was retired on
-2026-09-19 and replaced by xcb. The owner obligations below still apply to any
-runtime that integrates Gobstopper: Gobstopper evaluates policy, while the
+This records the proposed numeric interface for the session runtime that
+preceded xcb, retired on 2026-09-19. The owner obligations below still apply to
+any runtime that integrates Gobstopper: Gobstopper evaluates policy, while the
 runtime retains provider-process custody and must qualify any operation it
 executes. A policy response transfers neither ownership nor mutation authority.
-This document does not establish that OOMPA, xcb, or another runtime meets those
+This document does not establish that xcb or another runtime meets those
 obligations.
 
 ## Policy input → `gobstopper policy-check`

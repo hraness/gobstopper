@@ -3,7 +3,7 @@
 - `crates/gobstopper-core/` holds the normalized transcript model, the `Edit` IR, the `Strategy` trait, all built-in strategies, and the `compaction-events-v1` telemetry schema. No I/O beyond event-log append.
 - `crates/gobstopper-adapters/` holds session discovery, Codex and Claude Code JSONL parsing and pure byte transforms, separate-copy publication, the Devin session-store reader/exporter (`devin.rs`), structural verification, and the `vault` content-addressed snapshot store. Direct provider-file replacement and Devin store write/restore APIs refuse mutation.
 - `crates/gobstopper-cli/` holds the `gobstopper` binary, layered config/preset resolution, and the read-only `mcp` stdio server (`mcp.rs`) that exposes vault/recall/plan/verify as agent tools; it must never surface a mutating operation.
-- `docs/design.md` is the architecture and research record; `docs/roadmap.md` is the phased plan; `docs/devin.md` documents Devin support; `docs/oompa-contract.md` is the historical OOMPA integration contract (OOMPA was retired on 2026-09-19 and replaced by xcb).
+- `docs/design.md` is the architecture and research record; `docs/roadmap.md` is the phased plan; `docs/devin.md` documents Devin support; `docs/integration-contract.md` is the historical integration contract for the runtime that preceded xcb (retired 2026-09-19).
 - `STYLE.md` and `WRITING.md` are synced from hraness/.github. Their “Repository additions” list the Gobstopper facts that public copy most often gets wrong.
 
 # Guidelines

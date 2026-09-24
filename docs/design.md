@@ -144,8 +144,8 @@ interface is numeric:
 - File strategies prepare separate candidates. Observed idleness does not
   authorize replacing a provider file.
 
-This interface was designed for OOMPA, a session runtime that was retired on
-2026-09-19 and replaced by xcb. xcb embeds `gobstopper-core` as a library
+This interface was designed for the session runtime that preceded xcb,
+retired on 2026-09-19. xcb embeds `gobstopper-core` as a library
 instead; see [the plugin protocol](plugin-protocol.md).
 
 Ordinary copies use the portable digest form. Structural tests cover supported
@@ -161,7 +161,7 @@ chain faithfully, so this path is experimental and runs only with
 `gobstopper apply --experimental-compacted`.
 
 See `docs/roadmap.md` for the phased plan and its history: transcript
-surgery and the undo vault, the retired OOMPA `session.compact` effect path,
+surgery and the undo vault, the retired runtime's `session.compact` effect path,
 xcb's native `gobstopper-core` projection and its compatible editor backend,
 the AI Charts measurement loop, and the proposed `transcript-foundation`
 shared crate.

@@ -692,11 +692,11 @@ must establish that it controls the selected session and test the provider's
 operation before executing it on its own connection. File preparation publishes
 separate copies for an explicit resume; provider acceptance is a separate check.
 
-This numeric interface was designed for OOMPA, which was retired on 2026-09-19
-and replaced by xcb. xcb embeds `gobstopper-core` as a library; see the
+This numeric interface was designed for the session runtime that preceded
+xcb, retired on 2026-09-19. xcb embeds `gobstopper-core` as a library; see the
 [plugin protocol](docs/plugin-protocol.md). The
-[historical integration contract](docs/oompa-contract.md) records the original
-interface and the obligations of a runtime that uses it.
+[historical integration contract](docs/integration-contract.md) records the
+original interface and the obligations of a runtime that uses it.
 
 ## Provider levers observed in earlier versions
 
