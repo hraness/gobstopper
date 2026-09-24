@@ -316,3 +316,7 @@ monitor passes establish a short observation window, not sustained reliability.
   reading; its 26.4 GB on-disk size is unreclaimed space rather than live
   frames, and reclaiming it stays a Devin-side item. Fresh observation after
   the next guarded install remains pending.
+  Current-source receipts for this change: stress r4 from a local macOS run,
+  transcript r3 summarized from the change's own Linux proof job after two
+  local kernel replays timed out at the reviewed 120-second limit, which was
+  not changed.
