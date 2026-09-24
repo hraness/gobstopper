@@ -8,7 +8,7 @@ not a proof of the whole application.
 
 gobstopper is the context-compaction layer for the Hraness agent stack.
 This document is the engineering map: what exists, what comes next, and
-how the work shares foundations with **oompa** (session control plane),
+how the work shares foundations with the retired session control plane,
 **aicharts** (usage measurement + evidence), **textbutler** (local agent
 runtime + skill distribution), and **XCB (Excalibur)** (native local agent
 workspace plus the retained XCB compatibility package in
@@ -26,7 +26,7 @@ workspace plus the retained XCB compatibility package in
                                     │ compaction events,
                                     │ context-occupancy series
  ┌──────────────┐   policy-check    │        ┌────────────────────────┐
- │   oompa      │ ◄──────────────►  │        │      gobstopper        │
+ │   runtime    │ ◄──────────────►  │        │      gobstopper        │
  │ control plane│   (numbers→action)│        │  transcript surgery ·  │
  │ owns live    │                   │        │  strategy engine ·     │
  │ sessions     │ ──executes native─►        │  watch daemon          │
@@ -156,15 +156,15 @@ assurance ledger define the current evidence and remaining storage/custody gaps.
   `usageLimitExceeded` — compaction is itself a provider call.
   gobstopper reports the observed turn outcome within a 90s bound and
   records it honestly in telemetry.
-- **oompa managed sessions** (the primary integration):
-  - ✅ 2026-09-16 — `oompa session compact <session>` is live
-    (oompa `devin/session-compaction` @ `5501d83a`): Codex dispatches
+- **Runtime managed sessions** (the primary integration):
+  - ✅ 2026-09-16 — `session compact <session>` went live in the session
+    runtime (`devin/session-compaction` @ `5501d83a`): Codex dispatches
     `thread/compact/start` on the daemon's own connection, Claude gets a
     `/compact` steering write, both behind receipt-before-dispatch +
     idempotency. A provider-neutral `compaction` timeline event records
     `outcome`/`trigger` (`manual`/`policy`/`provider`), and uncertain
     dispatches reconcile against the event stream without replay.
-  - ✅ 2026-09-17 — opt-in auto-compaction open as hraness/oompa#252
+  - ✅ 2026-09-17 — opt-in auto-compaction opened upstream as hraness/oompa#252
     (main-based; schema v62 `session_compact_policies` since main's v61
     is the Devin readmission): `evaluateAutoCompact` + per-session
     `session.compact-policy` config (`enabled` default off,
@@ -173,11 +173,11 @@ assurance ledger define the current evidence and remaining storage/custody gaps.
     `session.compact` per usage bucket with `trigger: "policy"`, never
     mid-turn. Devin sessions compact via the pinned CLI's `/compact`
     slash command over ACP `session/prompt`.
-  - oompa already records `token_usage` (`totalTokens`,
+  - the session runtime already records `token_usage` (`totalTokens`,
     `modelContextWindow`) into its neutral timeline; the insertion point
     is `#persistSessionEventWrites` — one `policy-check` call per event,
-    or an external watcher on `oompa session events --jsonl`.
-  - Known gap: Claude's `modelContextWindow` is `null` in oompa events —
+    or an external watcher on `session events --jsonl`.
+  - Known gap: Claude's `modelContextWindow` is `null` in runtime events —
     gobstopper's trigger needs an absolute token threshold anyway, so
     this is acceptable, but worth fixing upstream.
 - **XCB integration** has two bounded paths. Native XCB pins
@@ -239,7 +239,7 @@ Nobody ships a compaction eval. gobstopper should.
 
 ## 7. Shared foundations — the extraction plan
 
-Three repos now parse the same JSONL dialects: oompa (TS, read-neutral),
+Three repos now parse the same JSONL dialects: the retired session runtime (TS, read-neutral),
 aicharts (`aicharts-core`, metadata-only), gobstopper (`-adapters`,
 read+write). The hraness rule — extract a shared package once two
 consumers need the same interface — is met.
@@ -252,15 +252,15 @@ consumers need the same interface — is met.
   gobstopper-owned).
 - **Shared event schema** `hraness/compaction-events-v1`: the numeric
   compaction record all three tools understand — emitted by gobstopper,
-  recorded by oompa's timeline, measured by aicharts.
-- oompa stays transcript-free by design: it consumes `policy-check`
+  recorded by the session runtime's timeline, measured by aicharts.
+- the session runtime stays transcript-free by design: it consumes `policy-check`
   numbers and compaction events, never files.
 
 ## 8. Distribution & operations
 
 - v0.2+: `cargo install gobstopper-cli` / homebrew tap; signed release
   binaries once `verify` lands.
-- Agent-skill packaging (textbutler/oompa marketplace pattern):
+- Agent-skill packaging (the retired runtime's marketplace pattern):
   `gobstopper` presets + SKILL.md so any agent session can reason about
   its own context policy.
 - Menubar presence later via `hraness/desktop-foundation` (aicharts
@@ -272,7 +272,7 @@ consumers need the same interface — is met.
   **answered (verified on 2.1.270)**: a `user` message carrying
   `/compact` is accepted as a real slash command — the stream emits
   `system/status: "compacting"`, then `compact_result` + a post-compact
-  `init`. Oompa can drive live Claude compaction as a steering write on
+  `init`. The session runtime can drive live Claude compaction as a steering write on
   its existing client; no argv or restart needed.
 - Codex `compacted`-record acceptance rules on resume (window-id chain
   validation) — partially answered 2026-09-15: rollout-level acceptance

@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::{claude, codex, devin};
 
 /// Where to look for provider state. Overridable because managed
-/// runtimes (e.g. oompa profiles) relocate these roots.
+/// runtimes relocate these roots.
 #[derive(Debug, Clone)]
 pub struct Roots {
     /// `~/.codex` or `$CODEX_HOME`.
