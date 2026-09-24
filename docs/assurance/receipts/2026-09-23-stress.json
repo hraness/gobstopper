@@ -1,7 +1,7 @@
 {
   "schema": "gobstopper.assurance-receipt.v1",
-  "raw_receipt_sha256": "24378e76545c9e0d89fe5386403bde8fff45c51c4714ce1849b3d055b8934772",
-  "observed_at": "2026-09-24T00:15:23.858640+00:00",
+  "raw_receipt_sha256": "abe817e57771d3927cc7060a94b84a5a876241bfc019426e6b33cba3cb7868b1",
+  "observed_at": "2026-09-24T00:42:02.452095+00:00",
   "scope": "Bounded synthetic operation, process and fault suites.",
   "bounds": "See retained exact suite inventory and receipt bounds; fixed sequence seed and finite capacities.",
   "exclusions": [
@@ -42,7 +42,7 @@
     "crates/gobstopper-adapters/tests/lean_correspondence.rs": "bfb2d9aaca096c170adba2ef15f5f625bea4833990bad3fbee8ef54479d3ccfb",
     "crates/gobstopper-adapters/tests/measurement.rs": "9ee638670726f868c56893cd03a71f9440c5c1d9cd8010ee1c9ecd3fb760dcfc",
     "crates/gobstopper-adapters/tests/native_process.rs": "7a97e59a030509edaf94190aab8b6a0dba86dc2ae8c4a0b11b574a0268a729e6",
-    "crates/gobstopper-adapters/tests/plugin_contract.rs": "551308fa2a7f5ee95e8a300593077be0f34811bc216d6e075b8b3e501a985ccf",
+    "crates/gobstopper-adapters/tests/plugin_contract.rs": "3961b3f0edc41310102c04eae8fe7f62b359e166fff969b39379391bce0b03f7",
     "crates/gobstopper-adapters/tests/recovery.rs": "4d8d9e27aae631dcb85917e116642dc94d7b45108bda86a90a2d6cf681c525c7",
     "crates/gobstopper-adapters/tests/sequence.rs": "b038625979fab7096947db343c090e08938678e0b575f3546904096d62d57d42",
     "crates/gobstopper-adapters/tests/surgery_hegel.rs": "f7461875feaa0660c2858d0410aee11353ceb5e1423c6b05e688a2cf534da359",
@@ -118,16 +118,16 @@
         "steps": 64,
         "corruption_recoveries": 16,
         "peak_files": 402,
-        "peak_bytes": 338376,
-        "elapsed_ms": 36913
+        "peak_bytes": 338505,
+        "elapsed_ms": 36164
       },
       "case": "sequence",
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "f2716e5504630198e5751941811fb4bf6edc898ba821d9153272707b21975b33",
-      "elapsed_seconds": 67.00298762496095,
-      "largest_reaped_child_rss_bytes": 316211200
+      "log_sha256": "50c2d674a661363fa0a18bee9f72de453f7cbceea21401f5a0dbc17422114b67",
+      "elapsed_seconds": 64.91369200008921,
+      "largest_reaped_child_rss_bytes": 316899328
     },
     {
       "passed": true,
@@ -154,9 +154,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "981ff7a497ede032ab7f88d994ec8289567aecfd42ef67f959b1f7a605e7d51b",
-      "elapsed_seconds": 6.012091749929823,
-      "largest_reaped_child_rss_bytes": 316211200
+      "log_sha256": "79d96da26d1e89cf31a7e7b8dba119b5e1f628de4e5cfc51d78b1d4c8aa2eb29",
+      "elapsed_seconds": 6.591094749979675,
+      "largest_reaped_child_rss_bytes": 316899328
     },
     {
       "passed": true,
@@ -176,9 +176,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "0ca71e9089822914ba5f935c5cfe36c7dac30b5bcd79a14796cb7b69960936b6",
-      "elapsed_seconds": 18.401427375036292,
-      "largest_reaped_child_rss_bytes": 316211200
+      "log_sha256": "56465e202780705e967f6d379117b7c365ec2949976c4b3aa6ac552d065a4f8b",
+      "elapsed_seconds": 16.048296249937266,
+      "largest_reaped_child_rss_bytes": 316899328
     },
     {
       "passed": true,
@@ -213,9 +213,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "27b99e314420a0a1925ca4154307ba494103fdcbe248757a4025c9848c5d6efc",
-      "elapsed_seconds": 11.824353499920107,
-      "largest_reaped_child_rss_bytes": 316211200
+      "log_sha256": "2f48ca7b1b7306ad4c75c1f7431485d5d852b3a79d6cbdc4be21c88dbd7a7865",
+      "elapsed_seconds": 9.852237457991578,
+      "largest_reaped_child_rss_bytes": 316899328
     },
     {
       "passed": true,
@@ -228,9 +228,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "95ccb8b190f4d8e1ad1c5e44e6721fc97fa0db7b723ab5dd3f7fc35f40cd9eb7",
-      "elapsed_seconds": 7.07111216604244,
-      "largest_reaped_child_rss_bytes": 316211200
+      "log_sha256": "51af5e56f61b4391a878926d59f334f713448b5cb784693bc406bba97013b3cc",
+      "elapsed_seconds": 6.377398042008281,
+      "largest_reaped_child_rss_bytes": 316899328
     },
     {
       "passed": true,
@@ -251,9 +251,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "98790449466b9bfe15dd03965be7bef856e78c982c6f818965b6270cc874ab8c",
-      "elapsed_seconds": 5.17537945904769,
-      "largest_reaped_child_rss_bytes": 316211200
+      "log_sha256": "1ee92dff139d124689e361f321691647a7b07f969b3277d399733c3ef09840a3",
+      "elapsed_seconds": 4.570293582975864,
+      "largest_reaped_child_rss_bytes": 316899328
     },
     {
       "passed": true,
@@ -275,9 +275,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "27059e376f4c9ccf39c2c92713aa1d749821ad60f97ef331f65db2db5c6ce923",
-      "elapsed_seconds": 2.5043220419902354,
-      "largest_reaped_child_rss_bytes": 316211200
+      "log_sha256": "fc5b1e9e1c66dda0b8be0afc35bee2122fe616de5c69c6f87b05f5f5846731ff",
+      "elapsed_seconds": 2.3528042919933796,
+      "largest_reaped_child_rss_bytes": 316899328
     },
     {
       "passed": true,
@@ -299,9 +299,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "358504f5457970214b807cb0c83df8b7d9226b960da6d5bdb5bc8c19d129037d",
-      "elapsed_seconds": 7.260828959057108,
-      "largest_reaped_child_rss_bytes": 316211200
+      "log_sha256": "0c4aaa3d314488fcc27ce2716bdaefce3455cc13f70b849239da86d5c7f7c971",
+      "elapsed_seconds": 6.080152707989328,
+      "largest_reaped_child_rss_bytes": 316899328
     },
     {
       "passed": true,
@@ -324,9 +324,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "95d48d4577790dba82d9350bb19507d61b1cdc1e8a49206debc6e2149e625e2f",
-      "elapsed_seconds": 4.2713588329497725,
-      "largest_reaped_child_rss_bytes": 316211200
+      "log_sha256": "1b757c24aa82e813840fe471515e537e765d2dc7a4202af9b78ba2e2f8a82731",
+      "elapsed_seconds": 3.211280415998772,
+      "largest_reaped_child_rss_bytes": 316899328
     },
     {
       "passed": true,
@@ -368,9 +368,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "9ce1b6a54fddf360f071e24fa80cf7b6d149c86da15883645b513176d8523edf",
-      "elapsed_seconds": 13.55275112495292,
-      "largest_reaped_child_rss_bytes": 316211200
+      "log_sha256": "762440bcca1e6c1bd799619563d737adfcaecb623bd579bce9be2fc03586a495",
+      "elapsed_seconds": 13.244933874928392,
+      "largest_reaped_child_rss_bytes": 316899328
     }
   ],
   "platform": "darwin",
@@ -379,7 +379,7 @@
     "cargo-version.log": "22cf38b38044f7e66c130e80d546028773672b549ec7bb81bf1e7652ede0c8ac",
     "rust-version.log": "eaf195daced7a434718b67881bed97c02440b2b6196dad18db476478c66b1c36"
   },
-  "elapsed_seconds": 143.2941697909264,
+  "elapsed_seconds": 133.41597641597036,
   "raw_bounds": {
     "total_seconds": 900,
     "max_log_bytes_per_command": 8388608,
