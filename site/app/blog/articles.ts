@@ -191,7 +191,7 @@ const vault: BlogPost = {
     harmIfWrong: "A reader could trust the archive through failures the models do not cover, such as a power cut that loses unsynced writes.",
     refreshTriggers: [
       "A new gobstopper release tag (the status sentence says the release does not include the TLA+ models)",
-      "Any change to verify/vault/Vault.tla, Publication.tla, verify/watch/Watch.tla or their configs, or a new receipt in docs/assurance/receipts",
+      "Any change to verify/vault/Vault.tla, Publication.tla, verify/watch/Watch.tla or their configs, or a new receipt in docs/assurance/receipts (state counts 25,810 / 28,082 / 32,251, variant and witness counts)",
       "Change to the save order, lock scheme, pin rule or prune retention default (newest 10 per session) in the vault code",
       "Change to surgery_hegel.rs command range (1 to 12), case count (64) or the two regression tests",
       "Native compaction requests enabled in released builds",
