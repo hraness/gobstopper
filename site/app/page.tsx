@@ -137,8 +137,8 @@ export default function Home() {
       <main id="main" tabIndex={-1}>
         <MarketingPage>
           <div className="hraness-material-wall gob-opening">
-            <HeroField />
             <ProductHero
+              backdrop={<HeroField />}
               align="start"
               actions={[
                 { href: "#install", label: "Install Gobstopper" },
