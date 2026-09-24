@@ -373,30 +373,53 @@ fn with_read_snapshot<T>(conn: &Connection, read: impl FnOnce() -> Option<T>) ->
     result
 }
 
-/// Context-only discovery validates the bounded identity graph, then reads at
-/// most 32 live-chain payloads. A newer dead sibling is never a context sample.
-/// Lifetime counters are unavailable in this deliberately partial payload scan.
+// The provider's (session_id, node_id) index covers this projection. Adding
+// parent_node_id would require fetching every row from the payload-bearing
+// table, even when only a short ancestry belongs to the selected live chain.
+const CONTEXT_NODE_IDS_SQL: &str =
+    "SELECT node_id FROM message_nodes WHERE session_id = ?1 ORDER BY node_id LIMIT ?2";
+
+/// Context-only discovery validates every node identity and the complete live
+/// ancestry, then reads at most 32 live-chain payloads. Unreachable parent and
+/// payload fields have no context authority; this is not a whole-forest check.
+/// A newer dead sibling is never a context sample. Lifetime counters are absent.
 fn scan_context(conn: &Connection, session_id: &str) -> UsageSample {
     with_read_snapshot(conn, || {
         let head: Option<i64> = conn.query_row(
             "SELECT main_chain_id FROM sessions WHERE id = ?1", [session_id], |r| r.get(0),
         ).ok()?;
-        let mut stmt = conn.prepare(
-            "SELECT node_id, parent_node_id FROM message_nodes WHERE session_id = ?1 ORDER BY node_id LIMIT ?2",
-        ).ok()?;
-        let mut query = stmt.query(rusqlite::params![session_id, (gobstopper_core::validation::MAX_ITEMS + 1) as i64]).ok()?;
-        let mut graph = Vec::new();
-        while let Some(row) = query.next().ok()? {
-            if graph.len() >= gobstopper_core::validation::MAX_ITEMS { return None; }
-            graph.push(NodeRow {
-                line_index: graph.len(), node_id: row.get(0).ok()?, parent_node_id: row.get(1).ok()?,
-                message: Value::Null, num_tokens_preceding: None,
-            });
+        let mut node_ids = Vec::new();
+        {
+            let mut stmt = conn.prepare(CONTEXT_NODE_IDS_SQL).ok()?;
+            let mut query = stmt.query(rusqlite::params![session_id, (gobstopper_core::validation::MAX_ITEMS + 1) as i64]).ok()?;
+            while let Some(row) = query.next().ok()? {
+                if node_ids.len() >= gobstopper_core::validation::MAX_ITEMS { return None; }
+                let id: i64 = row.get(0).ok()?;
+                // Do not assume that an unfamiliar store has the provider's
+                // unique index: duplicate or malformed dead IDs are ambiguous.
+                if id < 0 || node_ids.last().is_some_and(|last| *last >= id) { return None; }
+                node_ids.push(id);
+            }
         }
-        let live = live_nodes(&graph, head);
-        if live.is_empty() { return None; }
-        let ids: Vec<_> = graph.iter().rev().filter(|row| live.contains(&row.node_id))
-            .take(32).map(|row| row.node_id).collect();
+        let mut ids = Vec::with_capacity(32);
+        let mut cursor = head;
+        let mut visited = 0;
+        let mut parents = conn.prepare(
+            "SELECT parent_node_id FROM message_nodes WHERE session_id = ?1 AND node_id = ?2 LIMIT 2",
+        ).ok()?;
+        while let Some(id) = cursor {
+            if visited >= node_ids.len() || node_ids.binary_search(&id).is_err() { return None; }
+            let mut rows = parents.query(rusqlite::params![session_id, id]).ok()?;
+            let parent: Option<i64> = rows.next().ok()??.get(0).ok()?;
+            if rows.next().ok()?.is_some() { return None; }
+            // IDs are strictly ordered above, so this is the same ancestor
+            // ordering required by live_nodes. It also rejects every cycle.
+            if parent.is_some_and(|parent| parent >= id) { return None; }
+            if ids.len() < 32 { ids.push(id); }
+            visited += 1;
+            cursor = parent;
+        }
+        if ids.is_empty() { return None; }
         let mut stmt = conn.prepare(
             "SELECT chat_message, metadata FROM message_nodes WHERE session_id = ?1 AND node_id = ?2",
         ).ok()?;
@@ -1842,6 +1865,222 @@ mod tests {
         assert_eq!(tail[0].usage.context_tokens, 2000 + 3000 + 100);
         assert_eq!(full[0].usage.lifetime_input_tokens, 111 + 2000 + 3000);
         assert_eq!(tail[0].usage.lifetime_input_tokens, 0);
+    }
+
+    #[test]
+    fn context_scan_reads_parent_pages_only_on_selected_ancestry() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, main_chain_id INTEGER);
+             INSERT INTO sessions VALUES ('s', 39);
+             CREATE TABLE context_rows (
+                 session_id TEXT, node_id INTEGER, parent_node_id INTEGER,
+                 chat_message TEXT, metadata TEXT, UNIQUE(session_id, node_id)
+             );
+             WITH RECURSIVE ids(id) AS (
+                 VALUES(0) UNION ALL SELECT id + 1 FROM ids WHERE id < 4095
+             )
+             INSERT INTO context_rows
+             SELECT 's', id, CASE WHEN id = 0 THEN NULL ELSE id - 1 END,
+                    CASE WHEN id = 39
+                         THEN '{\"role\":\"assistant\",\"metadata\":{\"metrics\":{\"input_tokens\":100,\"output_tokens\":2}}}'
+                         ELSE '{\"role\":\"user\",\"content\":\"goal\"}' END,
+                    NULL FROM ids;
+             CREATE VIEW message_nodes AS
+             SELECT session_id, node_id,
+                    CASE WHEN node_id < 40 THEN parent_node_id
+                         ELSE json('unreachable parent must not be read') END AS parent_node_id,
+                    CASE WHEN node_id >= 8 AND node_id < 40 THEN chat_message
+                         ELSE json('payload outside live tail must not be read') END AS chat_message,
+                    metadata FROM context_rows;",
+        )
+        .unwrap();
+        let plan: Vec<String> = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {CONTEXT_NODE_IDS_SQL}"))
+            .unwrap()
+            .query_map(
+                params!["s", (gobstopper_core::validation::MAX_ITEMS + 1) as i64],
+                |row| row.get(3),
+            )
+            .unwrap()
+            .collect::<Result<_, _>>()
+            .unwrap();
+        assert!(
+            plan.iter()
+                .any(|step| step.contains("USING COVERING INDEX")),
+            "{plan:?}"
+        );
+        assert!(
+            !plan.iter().any(|step| step.contains("TEMP B-TREE")),
+            "{plan:?}"
+        );
+        // These expressions fail if a scan touches an unused row field. This
+        // checks actual reads without relying on host speed or elapsed time.
+        assert!(conn
+            .query_row(
+                "SELECT parent_node_id FROM message_nodes WHERE session_id = 's' AND node_id = 40",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .is_err());
+        assert!(conn
+            .query_row(
+                "SELECT chat_message FROM message_nodes WHERE session_id = 's' AND node_id = 7",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .is_err());
+        let usage = scan_context(&conn, "s");
+        assert_eq!(usage.context_tokens, 102);
+        assert_eq!(
+            usage.context_state,
+            gobstopper_core::model::ContextState::Reported
+        );
+        assert_eq!(
+            usage.lifetime_scope,
+            gobstopper_core::model::LifetimeScope::Absent
+        );
+        assert_eq!(usage.lifetime_input_tokens, 0);
+        assert_eq!(usage.lifetime_cached_tokens, 0);
+        // The walk must validate ancestry older than the 32 payload records.
+        conn.execute_batch("UPDATE context_rows SET parent_node_id = -1 WHERE node_id = 0")
+            .unwrap();
+        assert_eq!(scan_context(&conn, "s").context_tokens, 0);
+        conn.execute_batch("UPDATE context_rows SET parent_node_id = NULL WHERE node_id = 0")
+            .unwrap();
+
+        // The global identity cap still applies even when every added node is
+        // dead and its parent/payload is deliberately unreadable.
+        let max_items = gobstopper_core::validation::MAX_ITEMS as i64;
+        conn.execute(
+            "WITH RECURSIVE ids(id) AS (
+                 VALUES(4096) UNION ALL SELECT id + 1 FROM ids WHERE id + 1 < ?1
+             )
+             INSERT INTO context_rows (session_id, node_id) SELECT 's', id FROM ids",
+            [max_items],
+        )
+        .unwrap();
+        assert_eq!(scan_context(&conn, "s").context_tokens, 102);
+        conn.execute(
+            "INSERT INTO context_rows (session_id, node_id) VALUES ('s', ?1)",
+            [max_items],
+        )
+        .unwrap();
+        let over_limit = scan_context(&conn, "s");
+        assert_eq!(over_limit.context_tokens, 0);
+        assert_eq!(
+            over_limit.context_state,
+            gobstopper_core::model::ContextState::Unknown
+        );
+    }
+
+    #[test]
+    fn context_scan_rejects_ambiguous_ids_and_invalid_live_ancestry() {
+        let conn = Connection::open_in_memory().unwrap();
+        // No uniqueness constraint: admission must not depend on the observed
+        // provider schema also being present in an unfamiliar or damaged store.
+        conn.execute_batch(
+            "CREATE TABLE sessions (id TEXT PRIMARY KEY, main_chain_id INTEGER);
+             INSERT INTO sessions VALUES ('s', 20);
+             CREATE TABLE message_nodes (
+                 session_id TEXT, node_id INTEGER, parent_node_id INTEGER,
+                 chat_message TEXT, metadata TEXT
+             );
+             INSERT INTO message_nodes VALUES
+                 ('s', 10, NULL, '{\"role\":\"user\",\"content\":\"goal\"}', NULL),
+                 ('s', 20, 10, '{\"role\":\"assistant\",\"metadata\":{\"metrics\":{\"input_tokens\":100,\"output_tokens\":2}}}', NULL),
+                 ('s', 30, 10, '{\"role\":\"assistant\",\"metadata\":{\"metrics\":{\"input_tokens\":9000}}}', NULL);",
+        )
+        .unwrap();
+        assert_eq!(scan_context(&conn, "s").context_tokens, 102);
+
+        for (name, mutation) in [
+            (
+                "negative dead ID",
+                "UPDATE message_nodes SET node_id = -1 WHERE node_id = 30",
+            ),
+            (
+                "duplicate dead ID",
+                "INSERT INTO message_nodes SELECT * FROM message_nodes WHERE node_id = 30",
+            ),
+            (
+                "duplicate live ID",
+                "INSERT INTO message_nodes SELECT * FROM message_nodes WHERE node_id = 20",
+            ),
+            (
+                "null dead ID",
+                "UPDATE message_nodes SET node_id = NULL WHERE node_id = 30",
+            ),
+            (
+                "text dead ID",
+                "UPDATE message_nodes SET node_id = 'invalid' WHERE node_id = 30",
+            ),
+            (
+                "real dead ID",
+                "UPDATE message_nodes SET node_id = 30.5 WHERE node_id = 30",
+            ),
+            ("missing head", "UPDATE sessions SET main_chain_id = 99"),
+            ("negative head", "UPDATE sessions SET main_chain_id = -1"),
+            ("null head", "UPDATE sessions SET main_chain_id = NULL"),
+            (
+                "malformed head",
+                "UPDATE sessions SET main_chain_id = 'invalid'",
+            ),
+            (
+                "dangling ancestor",
+                "UPDATE message_nodes SET parent_node_id = 5 WHERE node_id = 10",
+            ),
+            (
+                "reversed parent",
+                "UPDATE message_nodes SET parent_node_id = 30 WHERE node_id = 20",
+            ),
+            (
+                "self cycle",
+                "UPDATE message_nodes SET parent_node_id = 20 WHERE node_id = 20",
+            ),
+            (
+                "two-node cycle",
+                "UPDATE message_nodes SET parent_node_id = 20 WHERE node_id = 10",
+            ),
+            (
+                "malformed live parent",
+                "UPDATE message_nodes SET parent_node_id = 'invalid' WHERE node_id = 20",
+            ),
+            (
+                "negative live parent",
+                "UPDATE message_nodes SET parent_node_id = -1 WHERE node_id = 10",
+            ),
+        ] {
+            conn.execute_batch("SAVEPOINT context_case").unwrap();
+            conn.execute_batch(mutation).unwrap();
+            let usage = scan_context(&conn, "s");
+            assert_eq!(usage.context_tokens, 0, "{name}");
+            assert_eq!(
+                usage.context_state,
+                gobstopper_core::model::ContextState::Unknown,
+                "{name}"
+            );
+            // A caller-owned read transaction is not committed or rolled back
+            // by either an admitted scan or an unavailable observation.
+            assert!(!conn.is_autocommit(), "{name}");
+            conn.execute_batch("ROLLBACK TO context_case; RELEASE context_case")
+                .unwrap();
+        }
+
+        // Parent typing and JSON validation apply only to the selected live
+        // projection. Malformed dead fields cannot supply or erase its metrics.
+        conn.execute_batch(
+            "SAVEPOINT valid_context;
+             UPDATE message_nodes SET parent_node_id = 'invalid', chat_message = 'invalid', metadata = 'invalid' WHERE node_id = 30",
+        )
+        .unwrap();
+        assert_eq!(scan_context(&conn, "s").context_tokens, 102);
+        assert!(!conn.is_autocommit());
+        conn.execute_batch("UPDATE sessions SET main_chain_id = 30")
+            .unwrap();
+        assert_eq!(scan_context(&conn, "s").context_tokens, 0);
+        conn.execute_batch("ROLLBACK TO valid_context; RELEASE valid_context")
+            .unwrap();
     }
 
     #[test]

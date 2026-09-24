@@ -47,3 +47,27 @@ changes, independent repair reviews and integration results are tracked in
 source change requires another review. Current enforced rules always take
 precedence over a source disposition; the repository's additive security review
 never bypasses its required integration or protection gates.
+
+## Main scan follow-up
+
+The scan of `refs/heads/main` at
+`ef8f06f976b256f5fd828226df7b19e38807d67c` reported 20 open
+`rust/cleartext-logging` alerts: #8, #12, #13, #14, #15, #26, #27, #30,
+#31, #33, #34, #35, #36, #63, #77, #78, #79, #80, #81 and #82. This is the
+19-alert set reviewed above plus [#12](https://github.com/hraness/gobstopper/security/code-scanning/12).
+The earlier count remains the result for the recorded `dcd702c` PR scan.
+
+Alert #12 points to `crates/gobstopper-adapters/src/fork.rs:441`, the failure
+diagnostic in `generated_id_is_uuid_v4_shaped`. The test module is gated by
+`#[cfg(test)]` at line 399. It calls `generate_session_id(Path::new("seed"))`
+at line 440 and prints the generated value only if the shape assertion fails.
+The generator at lines 47–77 hashes test-process time, PID, counter, the literal
+seed and a stack address; this call reads no provider session, transcript or
+credential. The same assertion is present in the earlier reviewed revision.
+
+The [baseline triage](codeql-triage.json) already classifies #12 as
+`synthetic_test_only`. Retaining this test diagnostic does not authorize logging
+real session identities or establish that those identities are nonsensitive.
+No source repair, dismissal or suppression was made for this finding. The
+20-alert scanner state remains open; this source assessment is not scanner
+closure.

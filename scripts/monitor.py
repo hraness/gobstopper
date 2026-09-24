@@ -574,7 +574,9 @@ def observe(binary, output_dir, sessions, providers=()):
             # Even dry-run can execute configured extensions. Empty config
             # guarantees the deterministic built-in policy and no plugins.
             environment["XDG_CONFIG_HOME"] = config
-            report_status, stdout, _ = run_command([str(executable), "report", "--active-only"], environment, deadline)
+            report_status, stdout, _ = run_command(
+                [str(executable), "report", "--active-only", "--context-only"],
+                environment, deadline)
             report = {}
             if report_status["error"] is None:
                 try:
