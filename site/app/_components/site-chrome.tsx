@@ -3,6 +3,7 @@ import {
   MarketingSiteFooter,
   MarketingSiteHeader,
 } from "@hraness/design-kit/react/server";
+import { ThemeMenuButton } from "@hraness/design-kit/react";
 import { AskAiAboutThis } from "@hraness/ui";
 
 import {
@@ -25,6 +26,7 @@ export function SiteHeader({ path }: Readonly<{ path?: CanonicalPagePath }>) {
       <MarketingSiteHeader
         action={{ href: "/#install", label: "Install Gobstopper" }}
         ariaLabel="Primary navigation"
+        trailing={<ThemeMenuButton aria-label="Appearance" />}
         brand="Gobstopper"
         brandMark="/marks/gobstopper.svg"
         brandLabel="Gobstopper home"

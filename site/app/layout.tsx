@@ -1,4 +1,7 @@
 import type { Metadata, Viewport } from "next";
+import { getDesignPaletteTheme } from "@hraness/design-kit";
+import { DesignPaletteProvider, ThemeColorSync } from "@hraness/design-kit/react";
+import { siteDefaultPalette } from "../palette";
 
 import { FoilController } from "./foil-controller";
 
@@ -12,6 +15,8 @@ import {
 } from "./_lib/site";
 import "@hraness/design-kit/fonts.css";
 import "./globals.css";
+
+const initialPalette = getDesignPaletteTheme("tokyo-night", "light");
 
 const title = `${SITE_NAME}: earlier context compaction for coding agents`;
 const description = SITE_DESCRIPTION;
@@ -82,8 +87,8 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   colorScheme: "light dark",
   themeColor: [
-    { color: "#f8f7f4", media: "(prefers-color-scheme: light)" },
-    { color: "#12100f", media: "(prefers-color-scheme: dark)" },
+    { color: "#e1e2e7", media: "(prefers-color-scheme: light)" },
+    { color: "#1a1b26", media: "(prefers-color-scheme: dark)" },
   ],
 };
 
@@ -133,14 +138,21 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" data-hraness-theme="paper" data-hraness-material="lantern">
+    <html lang="en" data-hraness-theme="paper" data-hraness-material="lantern" data-hraness-pattern="mesh" data-palette="tokyo-night" className={initialPalette.className} suppressHydrationWarning>
+      <head>
+        {/* eslint-disable-next-line @next/next/no-sync-scripts */}
+        <script src="/theme-bootstrap.js" />
+      </head>
       <body>
+        <DesignPaletteProvider defaultPreference={siteDefaultPalette}>
+        <ThemeColorSync />
         <FoilController />
         <script
           dangerouslySetInnerHTML={{ __html: serializeJsonLd(structuredData) }}
           type="application/ld+json"
         />
         {children}
+        </DesignPaletteProvider>
       </body>
     </html>
   );
