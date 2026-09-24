@@ -449,7 +449,7 @@
       ],
       "receipt": {
         "path": "docs/assurance/receipts/2026-09-23-transcript.json",
-        "sha256": "c0464a0e7163baf3393441aafd4c51fca268ea175ef52f513049706270dc977a"
+        "sha256": "730a72688d827ee8b07465cf9407ec8deba46db0442414dda1b26e918ccb4495"
       }
     },
     {
@@ -470,7 +470,7 @@
       ],
       "receipt": {
         "path": "docs/assurance/receipts/2026-09-23-stress.json",
-        "sha256": "c24aebfde6ec0432f3f8e6f6c5e822864bd729062ac84c9ecb51f863e895fc6f"
+        "sha256": "e509dfdc20128b6c6b6ed5b6b29916f3470746d920c8561d15618a6c5249f87b"
       }
     }
   ],

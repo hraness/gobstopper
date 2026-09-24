@@ -92,7 +92,7 @@ if os.environ.get("STUB_PID"):
     Path(os.environ["STUB_PID"]).write_text(str(os.getpid()))
 if os.environ.get("STUB_SLEEP"):
     time.sleep(float(os.environ["STUB_SLEEP"]))
-if sys.argv[1:] == ["report", "--active-only"]:
+if sys.argv[1:] == ["report", "--active-only", "--context-only"]:
     sys.stdout.write(Path(os.environ["STUB_REPORT"]).read_text())
 elif sys.argv[1:] == ["watch", "--dry-run", "--active-only", "--once"]:
     if os.environ.get("STUB_WATCH_FAILURE"):
@@ -164,7 +164,7 @@ else:
         before = monitor.child_resources()
         with patch.object(monitor.resource, "getrusage", side_effect=[before, RuntimeError("PRIVATE_METRIC_ERROR")]):
             result, _, _ = monitor.run_command(
-                [str(self.binary), "report", "--active-only"], environment, time.monotonic() + 0.5)
+                [str(self.binary), "report", "--active-only", "--context-only"], environment, time.monotonic() + 0.5)
         self.assertEqual(result["error"], "timeout")
         self.assertIsNone(result["resources"])
         with self.assertRaises(ProcessLookupError):
@@ -198,7 +198,11 @@ else:
 
     def test_realistic_samples_are_private_allowlisted_and_nonmutating(self):
         source = self.transcript.read_bytes()
-        first = self.sample()
+        with patch.object(monitor, "run_command", wraps=monitor.run_command) as commands:
+            first = self.sample()
+        self.assertEqual(monitor.TIMEOUT_SECONDS, 45)
+        self.assertEqual(len(commands.call_args_list), 2)
+        self.assertEqual(commands.call_args_list[0].args[2], commands.call_args_list[1].args[2])
         self.assertEqual(first["binary_sha256"], hashlib.sha256(self.binary.read_bytes()).hexdigest())
         self.assertEqual(first["watch"]["plan_count"], 1)
         self.assertEqual(first["sessions"][0]["context_tokens"], 100000)
@@ -227,7 +231,10 @@ else:
         self.assertEqual(len(calls), 6)
         self.assertTrue(all(call["empty_config"] for call in calls))
         self.assertTrue(all(call["gobstopper_env"] == {"GOBSTOPPER_SCORER": "heuristic"} for call in calls))
-        self.assertTrue(all(call["arguments"] in (["report", "--active-only"], ["watch", "--dry-run", "--active-only", "--once"]) for call in calls))
+        self.assertEqual([call["arguments"] for call in calls], [
+            ["report", "--active-only", "--context-only"],
+            ["watch", "--dry-run", "--active-only", "--once"],
+        ] * 3)
 
     def test_context_samples_respect_allowlist_and_provider_opt_in(self):
         value = report()
@@ -568,7 +575,7 @@ else:
     def test_child_timeout_and_capture_limit_are_bounded(self):
         environment = dict(os.environ, XDG_CONFIG_HOME=str(self.root), STUB_SLEEP="2")
         started = time.monotonic()
-        result, _, _ = monitor.run_command([str(self.binary), "report", "--active-only"], environment, started + 0.05)
+        result, _, _ = monitor.run_command([str(self.binary), "report", "--active-only", "--context-only"], environment, started + 0.05)
         self.assertEqual(result["error"], "timeout")
         self.assertLess(time.monotonic() - started, 1)
         environment.pop("STUB_SLEEP")
