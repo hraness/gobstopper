@@ -49,7 +49,7 @@ monitor passes establish a short observation window, not sustained reliability.
 
 ## D1: Usage and ancestry
 
-- **Status:** In progress
+- **Status:** Complete
 - **Depends on:** none
 - **Objective:** retain measured components when Devin optional metrics are null;
   recover valid Claude usage beyond the discovery tail without accepting broken
@@ -111,7 +111,7 @@ monitor passes establish a short observation window, not sustained reliability.
 
 ## D4: Evidence and monitoring
 
-- **Status:** In progress
+- **Status:** Complete
 - **Depends on:** D1/D2 API handoff
 - **Objective:** consumers agree on qualified evidence and distinguish command
   health, selected coverage, measurement scope, watcher freshness and activation.
@@ -209,3 +209,10 @@ monitor passes establish a short observation window, not sustained reliability.
   an invalid duplicate before qualification preserved the other record's claim.
   D4 is reopened to reject qualification from incomplete event histories across
   reports, adaptive history, cohort/retention readouts and the independent monitor.
+- 2026-09-24: Reopened D1/D4 repairs passed independent review. Focused
+  checks passed Claude 9, core events 15, report CLI 5 and monitor 40. Strict
+  event reads now refuse incomplete histories; diagnostic reports retain counts
+  with explicit unavailable qualification. The stress inventory now requires
+  158 named tests. Final aggregate and fresh Linux receipts remain pending.
+- 2026-09-24: Main advanced through site-only PR 93; integration preserves those
+  changes. This task changes no site source or deployment target.

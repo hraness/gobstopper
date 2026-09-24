@@ -1291,9 +1291,16 @@ mod tests {
         assert!(rotated.exists());
         assert!(std::fs::metadata(&rotated).unwrap().len() > ROTATE_BYTES);
 
-        let events = read_events(&log).unwrap();
-        // The padding is one giant unparseable line — skipped — so only
-        // the two real events survive, oldest generation first.
+        // The padding is one oversized record: strict evidence reading must
+        // refuse it even after rotation, while diagnostics keep both events.
+        assert_eq!(
+            read_events(&log).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        let diagnostic = read_events_with_status(&log).unwrap();
+        assert_eq!(diagnostic.invalid_records, 0);
+        assert_eq!(diagnostic.oversized_records, 1);
+        let events = diagnostic.events;
         assert_eq!(
             events
                 .iter()
@@ -1306,6 +1313,7 @@ mod tests {
         let small = dir.join("small.jsonl");
         append_event(&small, &new).unwrap();
         assert!(!dir.join("small.1.jsonl").exists());
+        assert_eq!(read_events(&small).unwrap().len(), 1);
 
         std::fs::remove_dir_all(&dir).ok();
     }

@@ -341,6 +341,7 @@ fn lossy_event_history_cannot_qualify_report_cohort_retention_or_adaptive_input(
 
     let fixture = Fixture::new();
     let source = fixture.0.join("codex/sessions/codex.jsonl");
+    let source_selector = source.to_str().unwrap();
     let original_source = fs::read(&source).unwrap();
     let handle = SessionHandle {
         provider: Provider::Codex,
@@ -410,7 +411,7 @@ fn lossy_event_history_cannot_qualify_report_cohort_retention_or_adaptive_input(
     );
     json_command(&["events", "--retention", "--json"]);
     assert_eq!(
-        json_command(&["tune", "codex-synthetic", "--json"])["recent_applied"],
+        json_command(&["tune", source_selector, "--json"])["recent_applied"],
         1
     );
 
@@ -469,7 +470,7 @@ fn lossy_event_history_cannot_qualify_report_cohort_retention_or_adaptive_input(
                 assert!(!String::from_utf8_lossy(&output.stderr).contains(&invalid));
             }
             assert_eq!(
-                json_command(&["tune", "codex-synthetic", "--json"])["recent_applied"],
+                json_command(&["tune", source_selector, "--json"])["recent_applied"],
                 0
             );
             assert_eq!(fs::read(&log).unwrap(), bytes.as_bytes());
