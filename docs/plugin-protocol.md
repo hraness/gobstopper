@@ -10,7 +10,7 @@ A manifest declares one or more closed capabilities:
 - `provider_read`: inspects a bounded source file and returns normalized items and usage, with no edit proposals. This is a protocol restriction on the response; a trusted subprocess can still have operating-system side effects.
 - `read_content`: allows source lines or normalized summaries to be included for an operation that also declares it.
 
-A provider plugin does not grant Gobstopper permission to rewrite that provider's files. External agents should expose native compaction through `policy-check`/MCP and use `provider_read` for exported or idle analysis.
+A provider plugin does not grant Gobstopper permission to rewrite that provider's files. External runtimes can request policy advice through `policy-check`/MCP and use `provider_read` for export inspection. The runtime must separately test and control any provider operation it executes. MCP does not execute plugins or external strategies.
 
 ## Manifest
 
@@ -108,7 +108,7 @@ Strategy proposals may use `elide` and `inject_digest`. External plugins cannot 
 - edits that do not reduce projected context by `min_savings_tokens`;
 - candidates that add structural verification findings.
 
-Standalone application still snapshots the exact source and publishes a separate no-clobber fork.
+Applying a plugin's file plan works like any other file `apply`: Gobstopper retains the exact source and candidate bytes, then publishes a separate Claude Code or Codex fork without overwriting an existing file. Direct Devin store writes are disabled; Devin export bytes can be inspected and evaluated without changing its database (see [Devin integration](devin.md)). Host validation does not sandbox the trusted plugin process itself.
 
 ## Resource and failure contract
 
@@ -126,4 +126,4 @@ A new provider integration should include:
 6. documentation of the provider-owned native compaction control;
 7. no direct mutation until a separate, reviewed write protocol exists.
 
-Built-in adapter proposals must additionally preserve provider resume invariants and pass the workspace regression/property suite. Native XCB is a concrete library consumer: it pins `gobstopper-core` immutably and applies a strategy only to an in-memory prompt projection while retaining full local history. Its XCB compatibility editor uses the bounded command seam. Other adjacent runtimes have no implicit privileged access: use numeric policy/MCP or this plugin protocol unless a provider-owned contract is documented and tested.
+Built-in adapter proposals must additionally preserve the supported structural invariants and pass the workspace regression/property suite. Provider resume acceptance requires separate testing. xcb is a library consumer: it pins `gobstopper-core` to an exact Git commit and applies a strategy only to the prompt it builds in memory, keeping the full local history. Its compatibility editor uses the preset command interface. Other adjacent runtimes have no implicit privileged access: use numeric policy/MCP or this plugin protocol unless a provider-owned contract is documented and tested.

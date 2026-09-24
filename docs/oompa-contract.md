@@ -1,10 +1,12 @@
-# oompa integration contract
+# Historical OOMPA integration contract
 
-This is the proposed numeric seam for an owning runtime such as oompa.
-Gobstopper evaluates policy; the runtime retains provider-process custody and
-must qualify any operation it executes. A policy response transfers neither
-ownership nor mutation authority. This document does not certify oompa's
-current implementation.
+This records the proposed numeric interface for OOMPA, which was retired on
+2026-09-19 and replaced by xcb. The owner obligations below still apply to any
+runtime that integrates Gobstopper: Gobstopper evaluates policy, while the
+runtime retains provider-process custody and must qualify any operation it
+executes. A policy response transfers neither ownership nor mutation authority.
+This document does not establish that OOMPA, xcb, or another runtime meets those
+obligations.
 
 ## Policy input → `gobstopper policy-check`
 

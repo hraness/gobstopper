@@ -1,54 +1,57 @@
 <!-- hraness:gobstopper-landing:start -->
 # gobstopper
 
-Gobstopper inspects Claude Code, Codex, and Devin sessions, previews compaction
-at a context size you choose, and prepares separate Codex and Claude Code
-copies. It archives the exact source and candidate bytes and measures supported
-structural and retention properties.
+Gobstopper inspects Claude Code, Codex, and Devin sessions and prepares compacted transcript copies.
+
+Preview compaction at a context size you choose, then prepare a separate Codex
+or Claude Code copy. Gobstopper archives the exact source and candidate bytes
+and checks supported structural and retention properties.
 
 Use `gobstopper watch --dry-run` to inspect threshold decisions, or prepare a
-copy with an explicit file strategy. Released CLI native dispatch is blocked
-pending provider qualification, including existing `auto_compact_closed`
-opt-ins. Direct provider-store and in-place rewrites are disabled. Copy
-preparation preserves the source; accepting a copy on provider resume remains
-unqualified. See the [activation matrix](docs/assurance/qualification.json)
-and [recovery runbook](docs/assurance/operations.md). Plugins can add strategies
-and providers when explicitly trusted.
+copy with a file strategy. Released CLI builds cannot ask providers to compact,
+even when `auto_compact_closed` is enabled. Direct provider-store and in-place
+rewrites are disabled. Copy preparation preserves the source; resuming a copy
+with a live provider requires separate compatibility testing. See the
+[activation matrix](docs/assurance/qualification.json) and
+[recovery runbook](docs/assurance/operations.md). Plugins can add strategies
+and providers when you explicitly trust them.
 
 <!-- hraness:gobstopper-landing:end -->
 
 ## Why
 
 Long coding sessions mix stale tool output with details the next turn may
-need: an exact error, a constraint, or unfinished work. A smaller context is
-useful only if the agent can still do the job.
+need: an exact error, a constraint, or unfinished work. A smaller context
+helps only if the agent can still do the job.
 
-Gobstopper makes that tradeoff inspectable. Preview a compaction, preserve
-the exact source, and recover a specific archived record when a summary
-isn't enough. Local rules work without a model; optional scorers change
-selection without replacing the snapshot and verification safeguards.
+Gobstopper lets you check that tradeoff. You can preview a compaction, keep
+the exact source in a local vault, and recover a specific archived record when
+a summary leaves it out. The built-in strategies use local rules and need no
+model. Optional model scorers change what gets selected; they do not skip the
+snapshot or the verification step.
 
-Codex and Claude file-copy compaction prepares a separate fork. Each provider runtime owns
-its loaded context; a background observer cannot replace it. Context
-reduction, successful continuation, recovery overhead, and billed usage are
-different measurements. The [published studies](https://gobstopper.sh/benchmarks)
-report their cohorts, no-ops, retention tradeoffs, and limitations separately.
+A running session's context belongs to the provider process that loaded it.
+Gobstopper can suggest `/compact`, or tell the program that runs the session
+which provider control to call. File compaction prepares a separate copy.
+A smaller context is not the same as a successful continuation or a lower bill.
+The [published studies](https://gobstopper.sh/benchmarks) report context reduction,
+retention, no-op cases, and limitations separately.
 
 ## Recoverable history
 
-Codex and Claude file-copy compaction writes the exact source bytes into a
-content-addressed vault (`~/.local/share/gobstopper/vault/`) before publishing
-a fork. Snapshots use deduplicated 1 MiB chunks, so appended versions reuse
+Before publishing a Claude Code or Codex copy, Gobstopper stores the exact
+source and candidate bytes in a content-addressed vault
+(`~/.local/share/gobstopper/vault/`). Snapshots use deduplicated 1 MiB chunks,
+so appended versions reuse
 unchanged prefix storage without creating one filesystem object per JSONL
 record. Devin snapshots instead contain a canonical per-session export, not
 the shared database or every provider-owned artifact.
 
-`gobstopper recall --query <q>` turns that vault into agent-addressable
-memory: it searches every archived state-card digest, ranks results by
-query relevance, and returns the high-level state of the matching turns.
-The agent does not need to remember session IDs — it can ask for the last
-time it worked on a file, a goal, or a decision and get a ranked summary
-with a snapshot SHA it can `show` or `diff`.
+`gobstopper recall --query <q>` searches the state cards in every archived
+snapshot, ranks matches by relevance to the query, and returns the high-level
+state of the matching turns. An agent does not need to remember session IDs:
+it can ask for the last time it worked on a file, a goal, or a decision and
+get a ranked summary with a snapshot SHA to pass to `show` or `diff`.
 
 ### Recover a specific detail
 
@@ -71,36 +74,38 @@ as searched.
 
 Search returns at most 50 references and reports the full match count; narrow
 the query when results are truncated. Each search or read verifies and
-reconstructs the bounded snapshot, up to 512 MiB by default
-(`GOBSTOPPER_MAX_TRANSCRIPT_BYTES` overrides this bound). Paging a large record repeats
-that work; this is not an indexed random-access or semantic search service.
+reconstructs the whole snapshot, up to the transcript size limit (512 MiB by
+default, configurable with `GOBSTOPPER_MAX_TRANSCRIPT_BYTES`). Paging a large
+record repeats that work, and search matches literal text only; there is no
+index or semantic search.
 
 Use the full object SHA from `history`, the native hook recovery pointer, or
-the new `snapshot_manifest_sha256` field in copy receipts. The older
-`snapshot_sha256` receipt field retains its source-byte-digest meaning.
-Older receipts can still be resolved through vault history. State-card recall
-also recognizes default portable Codex cards and searches every state field,
-including unresolved errors and current work; a new fork's card becomes
+the `snapshot_manifest_sha256` field in copy receipts. The `snapshot_sha256`
+receipt field is the digest of the source bytes; receipts that lack the
+manifest field can be resolved through vault history. State-card recall
+recognizes default portable Codex cards and searches every state field,
+including unresolved errors and current work. A new fork's card becomes
 searchable after that fork is snapshotted.
 
-For agents, snapshot search and content reads are available only when the MCP
-server is explicitly started with `gobstopper mcp --allow-transcript-content`.
-The default MCP registration does not advertise or permit either new tool.
-Opting in makes retrieved archived text visible to the connected agent/model
-service. Retrieved text is untrusted historical data, and may describe an old
-or superseded state; it is never an instruction to follow.
+Agents can search and read snapshots over MCP only when you start the server
+with `gobstopper mcp --allow-transcript-content`. Without that flag, the
+server neither lists nor accepts either tool. With it, archived text an agent
+retrieves becomes visible to that agent and its model provider. Treat
+retrieved text as historical data that may describe a superseded state, not
+as instructions.
 
-Exact recovery is a capability, not proof that an agent will recognize a
-missing fact, choose a useful query, or complete its task more accurately.
-Measure those outcomes separately from context reduction and literal retention.
+These commands return a record when asked. They do not make an agent notice
+that a fact is missing, choose a useful query, or finish its task more
+accurately; measure those outcomes separately from context reduction and
+literal retention.
 
-`gobstopper mcp` exposes inspection tools through a Model Context Protocol server on stdio —
-tools `policy_check`, `list_sessions`, `recall`, `history`, `show`, `diff`,
-`plan`, and `verify`. Register it once and an agent can inspect policy and
-archived state without a transcript mutation tool. MCP inspection uses
-deterministic built-ins and rejects executable strategy selection; it does not
-invoke configured plugins, remote scorers, or model digests. The separate
-explicit plugin commands execute trusted code without an OS sandbox:
+`gobstopper mcp` runs a read-only Model Context Protocol server on stdio with
+the tools `policy_check`, `list_sessions`, `recall`, `history`, `show`,
+`diff`, `plan`, and `verify`. Register it once, and an agent can inspect
+policy and archived state without a tool that changes a transcript. MCP uses
+deterministic built-ins, rejects executable strategies, and does not call
+configured plugins, model scorers, or model digests. Explicit plugin commands
+run code you trust with your user permissions, without an OS sandbox:
 
 ```sh
 claude mcp add gobstopper -- gobstopper mcp
@@ -115,9 +120,8 @@ provider's `/compact` or inspect a canonical export instead. See
 [docs/devin.md](docs/devin.md). `devin --export out.json` can be inspected
 through a trusted provider-reader plugin when offline analysis is needed.
 
-Compaction isn't free. Each cycle costs one large input call and risks losing
-detail, so the strategy and the boundary matter as much as the timing.
-Choosing them well is what Gobstopper is for.
+Provider-generated summaries can cost a large input call and lose detail, so
+the strategy and where it cuts matter as much as the timing.
 
 ## Strategies
 
@@ -134,18 +138,22 @@ Choosing them well is what Gobstopper is for.
 | `micro` | transcript | keeps the newest configured outputs per stable tool label and stubs older ones |
 | `middle` | transcript | protects both ends of the transcript and elides eligible middle outputs |
 | `structured` | transcript | emits a bounded metadata-derived state card; it is not semantic summarization |
-| `agentic` | extension | accepts bounded edit proposals from an explicitly trusted command or versioned plugin; host validation remains authoritative |
+| `agentic` | extension | accepts bounded edit proposals from a command or versioned plugin you trust; Gobstopper still validates every edit |
 
 Custom strategies are userspace code: a preset can name a `command` that
 receives the normalized transcript as JSON on stdin and returns an edit
 plan on stdout, or install a versioned `gobstopper-plugin.json` bundle
-(see `gobstopper plugin check`). Host-side validation bounds every
-proposal: eligible payloads, protected recent output, edit combinations, digest
-size and projected token reduction are checked. File candidates must not
-introduce supported structural findings. These are bounded checks, not proof of
-semantic preservation or provider acceptance.
+(see `gobstopper plugin check`). A `command` runs only with
+`trusted_legacy_command = true`. Gobstopper checks eligible payloads, protected
+recent output, edit combinations, digest size, and projected token reduction.
+File candidates must not introduce supported structural findings. These checks
+cover edit structure and size, not semantic preservation or provider acceptance.
 
 ## Install & use
+
+This builds the current `main` branch, which the commands below describe.
+Check the [release notes](https://github.com/hraness/gobstopper/releases) for
+what a tagged release includes.
 
 ```sh
 cargo install --git https://github.com/hraness/gobstopper gobstopper
@@ -160,10 +168,11 @@ gobstopper verify <session>        # supported structural checks (exit 1 on erro
 gobstopper fork <session>          # clone under a fresh session id + resume cmd
 gobstopper undo <session>          # Codex/Claude: restore a snapshot into a new fork
 gobstopper vault                   # list snapshots in the undo vault
-gobstopper install-hooks --output ./hook-candidates.json  # private, inert settings candidates
+gobstopper prune                   # preview keeping the newest 10 snapshots per session
+gobstopper install-hooks --output ./hook-candidates.json  # private settings candidates
 gobstopper watch --dry-run         # inspect threshold decisions without preparing copies
 gobstopper watch --dry-run --active-only --once  # bounded recent-session inspection
-gobstopper explain                 # the occupancy math above
+gobstopper explain                 # the occupancy model behind the defaults
 gobstopper recall --query <q>      # search state-card digests across all archived sessions
 gobstopper history <session>       # every archived state of one session
 gobstopper diff <sha-a> <sha-b>    # structural comparison of two vault snapshots
@@ -210,7 +219,7 @@ The reason identifies the decision actually reached:
 Projections are present only when a rejected proposal supplied them.
 The target is a policy setting, not a measured
 minimum context size, and projected savings are not billed savings. Invalid
-configuration, invalid proposals, and execution failures remain command errors.
+configuration, invalid proposals, and execution failures are command errors.
 
 Gobstopper's copy paths require retained source and candidate bytes before
 publication. File-copy paths publish a separate candidate after structural
@@ -237,13 +246,13 @@ fields, not counted as measured zeroes or task success.
 
 ### Typed-retention experiments (opt-in)
 
-`eval-study` replays four arms on isolated in-memory candidates — an unchanged
+`eval-study` replays four arms on isolated in-memory candidates: an unchanged
 `no_compaction` baseline; plain
 observation masking; typed masking (constraints, procedures, and open tasks
-stay pinned in their original records and roles; retrieved text never becomes
-a higher-authority instruction); and `typed_digest` (pinned records are elided
-but their spans are carried verbatim on an injected state card — the same
-provenance downgrade a summary imposes, measured explicitly). It does not
+stay pinned in their original records and roles, and retrieved text never
+becomes a higher-authority instruction); and `typed_digest` (pinned records
+are elided but their spans are carried verbatim on an injected state card,
+which loses the original record and role just as a summary does). It does not
 change `auto`, call a model, emit live compaction telemetry, or modify the
 provider session. A requested floor may remain unreachable rather than
 dropping a pinned item.
@@ -255,7 +264,7 @@ gobstopper eval-study /private/source.jsonl --manifest /private/checks.json --ro
 
 Preparation refuses an existing destination and writes only hashes, byte spans,
 JSON pointers, types, and opaque check IDs, not transcript text. Its labels are
-**heuristic candidates, not audited truth**: at most 16 complete lines per type,
+heuristic candidates that nobody has reviewed: at most 16 complete lines per type,
 with elidable records considered first and source order breaking ties. Reviewed
 manifests can instead use `label_source = "reviewed"`; classification coverage
 is not measured by retention. The JSON schema is `gobstopper-retention-v1`, with
@@ -264,16 +273,16 @@ is not measured by retention. The JSON schema is `gobstopper-retention-v1`, with
 UTF-8 span. Types are `constraint`, `procedure`, `open_task`, `fact`, `preference`,
 and `episode`. Only the first three are pinned. Source identity, live context,
 text-only pointers, span boundaries, duplicate IDs, and hashes are checked
-before any replay. Limits: 64 MiB of source for replay (512 MiB — the vault
-transit bound — for score-only manifest prep and `--against` audits),
+before any replay. Limits: 64 MiB of source for replay (512 MiB, the vault
+limit, for score-only manifest prep and `--against` audits),
 1 MiB of manifest, 256 checks, 4 KiB per span, and 1–10 rounds.
 
 The report separates text presence, same-origin presence, and preservation at
 the original source record/pointer. `lexical_retained` is a paraphrase-sensitive
 middle tier: a check counts when ≥75% of its normalized content tokens
 (lowercase alphanumeric, ≥4 chars, stopwords removed) appear together in one
-live slot — useful when a provider summary rephrases rather than repeats, but
-it is token coverage, not semantic equivalence. `by_kind` holds `[total,
+live slot. That helps when a provider summary rephrases rather than repeats,
+but it measures token coverage, not semantic equivalence. `by_kind` holds `[total,
 source-bound retained, lexical retained]`; the elidable subset is reported
 separately. Dead
 branches and metadata cannot satisfy a check. Pre-existing source verification
@@ -284,17 +293,17 @@ protected recent tool-output tail.
 
 `--against AFTER` switches to a score-only realized audit: the manifest binds
 to the session's before-state and retention is scored against independent
-after-bytes — no replay, no mutation. Either spec may be a `vault:<sha256>`
+after-bytes, with no replay and no mutation. Either spec may be a `vault:<sha256>`
 snapshot reference (Devin store snapshots are exported to the transcript
 dialect first). `scripts/retention-audit.py` scans the vault for consecutive
 snapshots whose provider compaction-marker count increased (Claude
-`compact_boundary`, Codex `"type":"compacted"` — hook bracket labels alone can
+`compact_boundary`, Codex `"type":"compacted"`; hook bracket labels alone can
 miss the actual write), pairs surgery-labeled snapshots with the next
-snapshot, and runs the audit over each pair: realized, per-kind retention of
-compactions that already happened — including provider-native ones. Devin's
-marker is `metadata.summarized_from` — its `/compact` appends a summary node
-rather than rewriting history, so expect flat context deltas and nonzero
-source-bound retention.
+snapshot, and runs the audit over each pair. The result is realized, per-kind
+retention of compactions that already happened, including provider-native
+ones. Devin's marker is `metadata.summarized_from`: its `/compact` appends a
+summary node rather than rewriting history, so expect flat context deltas and
+nonzero source-bound retention.
 
 Without new work, replay is explicitly `static_stress`; unchanged passes do not
 count as applied compactions. For Codex/Claude fixtures, optional `growth`
@@ -303,11 +312,11 @@ rounds and are verified before use. Checks still refer to the initial source;
 this is not a test of revised tasks, independent tasks, or agent reasoning.
 Devin growth is rejected until provider-authored chain progression is supported.
 Provider-native compaction, semantic summarization, continuation success, cost,
-and retrieval are explicitly **unmeasured**, not successful or zero-cost
-comparators. The built-in `structured` strategy is not used as a substitute for
-a semantic summarizer.
+and retrieval are not measured, and the report does not score them as
+successful or free. The built-in `structured` strategy is not used as a
+substitute for a semantic summarizer.
 
-A bounded pilot can freeze up to eight selected session exports and register its
+A pilot can freeze up to eight selected session exports and register its
 protocol before outcomes. Choose a new private output directory outside Git:
 
 ```sh
@@ -319,18 +328,18 @@ keeps content private; uses isolated config/telemetry paths; and checks that the
 frozen inputs remain unchanged. There are no provider calls. Commands have
 output/deadline limits and the study has a 900-second overall deadline.
 
-The separate synthetic-only provider qualification probe makes at most three
+The separate synthetic provider probe makes at most three
 Claude commands, capped at $0.25 each, using an isolated configuration directory,
 no tools, safe mode, and no MCP servers. It requires explicit opt-in and stops
 if that isolated profile is not authenticated; it never copies credentials.
 It checks for a persisted native compaction boundary before testing recall.
 `--seed-style baseline` uses explicit test framing; `--seed-style naturalistic`
 embeds the identical facts in a plausible work narrative; `constraints` makes
-the seed rule-dense; `pinned` keeps the rules out of the transcript entirely —
+the seed rule-dense; `pinned` keeps the rules out of the transcript entirely:
 they ride in `--append-system-prompt`, the provider's own pinned-context
 channel (safe mode disables CLAUDE.md discovery), while conversational facts
 still go through the summarizer. `claude_md` exercises the production pin
-channel instead — the same rules land in a workspace `CLAUDE.md` and the arm
+channel instead: the same rules land in a workspace `CLAUDE.md` and the arm
 drops `--safe-mode` so project memory loads (the isolated config home and
 scratch workspace remain the boundary). Rule-bearing styles add a `rules[]`
 recall scored per-marker as `constraint_rules_recalled`. Recall is scored twice:
@@ -345,8 +354,8 @@ python3 scripts/provider-retention-probe.py --claude-bin /absolute/path/to/claud
 ```
 
 A passing synthetic probe is not a four-arm real-session comparison or evidence
-of billed savings. No new strategy is activated in the watch daemon by these
-commands. Design references: [Knowledge Triage](https://arxiv.org/abs/2608.22752),
+of billed savings. These commands do not change the strategies the watch
+daemon uses. Design references: [Knowledge Triage](https://arxiv.org/abs/2608.22752),
 [The Complexity Trap](https://arxiv.org/abs/2508.21433),
 [SelfCompact](https://arxiv.org/abs/2606.23525),
 [ACON](https://arxiv.org/abs/2510.00615), and
@@ -360,12 +369,12 @@ strategy = "auto"
 trigger_tokens = 250_000
 floor_tokens = 40_000
 min_savings_tokens = 4_096   # reject ineffective plans
-adaptive = true              # derive trigger/floor per session — see `gobstopper tune`
+adaptive = true              # derive trigger/floor per session; see `gobstopper tune`
 
 [provider.codex]             # per-provider overrides
 trigger_tokens = 200_000
 
-[provider.devin]             # numeric policy only; action is native /compact
+[provider.devin]             # policy can advise /compact; see docs/devin.md
 trigger_tokens = 200_000
 
 [sessions."01a08d7c-…"]      # per-session overrides
@@ -381,17 +390,17 @@ command = "python3 ~/bin/my_compactor.py"
 trusted_legacy_command = true
 ```
 
-Managed sessions (oompa profiles, sandboxed homes) use different roots:
-point gobstopper at them with `--codex-home` / `--claude-home`.
+For sessions stored outside the default directories, such as in a sandboxed
+home, pass `--codex-home`, `--claude-home`, or `--devin-home`.
 
 ### Monitoring an existing Codex desktop session
 
 Standalone `watch` cannot compact the context already held by another Codex
 process. It reports native delegation as `skipped`, with zero credited savings;
-the owning runtime must perform that operation. `--active-only` limits discovery
+the program running that session has to request the compaction. `--active-only` limits discovery
 to files updated within the last 180 seconds (a recency heuristic, not proof of
 an owning process), and `--once` exits after one pass. A dry run writes no forks
-or compaction events. Existing provider-managed lifecycle hooks can archive
+or compaction events. Installed provider-managed lifecycle hooks can archive
 observations and provide a recovery pointer. They do not establish an applied
 Gobstopper operation or a matched before/after pair.
 
@@ -413,8 +422,8 @@ content excerpts are disabled. Apple scoring runs on-device. All model
 scorers retain deterministic heuristic scores whenever a model omits an
 answer or a request fails. Hosted LLM settings are hard-capped
 at 256 candidates, 64 items per batch, 16 batches, and a 100–30,000 ms
-timeout. The built-in heuristic remains the recommended published path because
-current live trials did not show a better plan from the LLM scorer.
+timeout. The built-in heuristic is the recommended default because the
+recorded live trials did not show a better plan from the LLM scorer.
 
 The `scored` strategy also supports an optional keep-score cutoff. For example,
 add this named preset to your config:
@@ -436,10 +445,10 @@ partial or failed responses, so the cutoff does not guarantee provider
 confidence. Set `strategy = "scored"` explicitly: `auto`, `compacted`, and other
 strategies ignore the cutoff. Omitting it in a later configuration layer
 inherits an earlier value rather than clearing it. The default configuration
-has no cutoff and retains its existing behavior.
+has no cutoff.
 
-`GOBSTOPPER_SCORER=jev` scores with TypeSafe's System One API — typed
-`noul` keep-probabilities without prose generation. Onboarding vaults the key
+`GOBSTOPPER_SCORER=jev` scores with TypeSafe's System One API, which returns
+typed `noul` keep-probabilities instead of generated prose. Onboarding vaults the key
 in the OS credential store
 (macOS Keychain, Windows Credential Manager, Linux kernel keyring):
 
@@ -486,7 +495,7 @@ elapsed). In a historical trial recorded on September 19, 2026, one three-batch
 afterward (about 7.6×). This single-session latency observation does not
 establish current or provider-wide performance.
 
-`eval` and `bench` now honor `GOBSTOPPER_SCORER` for their `scored` row, so
+`eval` and `bench` honor `GOBSTOPPER_SCORER` for their `scored` row, so
 an A/B run measures the same Jev or Apple ranking used by `plan` rather than
 silently substituting the heuristic. `GOBSTOPPER_EVAL_JUDGE=jev` adds a
 separate model-judged retention estimate to `eval`. Verbatim survivors are
@@ -516,8 +525,8 @@ establish semantic equivalence, instruction authority, or task success. In one
 historical 80k-token A/B run, Jev chose five smaller records where the heuristic chose four larger
 ones, reclaimed about 649 more tokens, and both retained all 38 extracted
 probes. At a more aggressive floor, one probe lost verbatim was not falsely
-credited by the semantic judge (37/38 on both scores). This is single-session
-observation, not current activation qualification or a general ranking-quality claim.
+credited by the semantic judge (37/38 on both scores). This is one session,
+not a general measure of ranking quality.
 
 Successful Jev answers are cached in-process for five minutes under two
 scopes. The scorer caches each question together with the complete scoring
@@ -531,8 +540,8 @@ state or full request text; values are
 parsed probabilities only (never transcript text), evict oldest-first at
 512 questions and 64 requests, and failures are never cached. The
 question layer also persists to
-`~/.local/share/gobstopper/jev-cache.json` — only sha256 key digests
-mapped to probability + timestamp, never text — so a cold `plan` inside
+`~/.local/share/gobstopper/jev-cache.json` as sha256 key digests mapped to
+a probability and timestamp, never text, so a cold `plan` inside
 the TTL can reuse an answer when its question and scoring state match.
 The version 2 disk format rejects malformed, duplicate, future-dated and
 out-of-range entries. Publication uses a new private temporary file, sync and
@@ -576,8 +585,8 @@ token overhead, and falls back to the mechanical card on any failure.
 excerpt budget, hard-capped at 32 records, 2,048 bytes per record, and 16,000
 bytes total; zero disables the model digest and preserves the mechanical card.
 
-The same call also writes a one-line stub per excerpted record — e.g.
-`Script completed Wall time 4.4 seconds` — stored in the elide edit's
+The same call also writes a one-line stub per excerpted record, such as
+`Script completed Wall time 4.4 seconds`, stored in the elide edit's
 `per_item_stubs` map and rendered verbatim in place of the `{bytes}`/`{kind}`
 template where the payload was removed. Records the model did not cover
 keep the generic stub; invalid or oversized stubs are dropped by validation.
@@ -603,12 +612,12 @@ tightened when most of the window is reclaimable tool output. The
 adjustment is deterministic and its reasons appear in plan output and
 telemetry. `gobstopper tune <session>` previews it.
 
-## The oompa seam
+## Integrating with a session runtime
 
-oompa never parses provider transcript files — that boundary stays intact.
-Integration is the `policy-check` subcommand: oompa already records
-`token_usage` events (`totalTokens`, `modelContextWindow`) in its neutral
-timeline, so it asks gobstopper what to do with them:
+A program that runs agent sessions can ask Gobstopper what to do without
+giving it transcript access. `policy-check` takes the numbers the runtime
+already tracks, such as current context tokens and whether the session is
+active, and returns an action:
 
 ```sh
 gobstopper policy-check --provider codex --context-tokens 300000 \
@@ -616,11 +625,16 @@ gobstopper policy-check --provider codex --context-tokens 300000 \
 # {"action":"provider_compact","control":"thread/compact/start", ...}
 ```
 
-The owning runtime must separately qualify and execute any proposed provider
-control on its own connection. Gobstopper's numeric recommendation neither
-performs that operation nor establishes provider custody. File preparation
-publishes separate copies for explicit resume; provider acceptance remains a
-separate check. See the [integration contract](docs/oompa-contract.md).
+`policy-check` returns a decision; it does not call the provider. The runtime
+must establish that it controls the selected session and test the provider's
+operation before executing it on its own connection. File preparation publishes
+separate copies for an explicit resume; provider acceptance is a separate check.
+
+This numeric interface was designed for OOMPA, which was retired on 2026-09-19
+and replaced by xcb. xcb embeds `gobstopper-core` as a library; see the
+[plugin protocol](docs/plugin-protocol.md). The
+[historical integration contract](docs/oompa-contract.md) records the original
+interface and the obligations of a runtime that uses it.
 
 ## Provider levers observed in earlier versions
 
@@ -633,12 +647,13 @@ records current status; there are no qualified live native cells.
 | auto-compact threshold | `model_auto_compact_token_limit` (config; ≤90% of window) | `--autocompact <100k–1M>` argv |
 | on-demand trigger | `thread/compact/start` (app-server v2) | `/compact [instructions]` |
 | compaction prompt | `compact_prompt` config | `/compact` instructions |
-| tool output cap | `tool_output_token_limit` | — |
+| tool output cap | `tool_output_token_limit` | none |
 | live usage stream | `thread/tokenUsage/updated` notification | `message.usage` per turn |
 | transcript store | `~/.codex/sessions/**/rollout-*.jsonl` | `~/.claude/projects/*/*.jsonl` |
 
 Codex persists compaction as a `compacted` rollout record carrying
-`replacement_history` — the provider's own resume-time context swap.
+`replacement_history`, the context Codex loads in place of the earlier
+history when it resumes.
 gobstopper's parser and verifier understand that shape, including tool pairs
 inside `replacement_history`. Synthetic records are experimental, pair-aware,
 checked before copy publication, and available only behind `--experimental-compacted`; ordinary
@@ -654,24 +669,29 @@ bytes, and watch restarts cannot automatically replay it. Inspect
 Codex terminal identity, never a caller-supplied success flag. See the
 [recovery runbook](docs/assurance/operations.md).
 
+The compatibility settings `auto_apply_inplace`, `auto_apply_store`, and
+`auto_compact_closed` cannot enable these disabled operations. See
+[config.example.toml](config.example.toml) for their current meanings.
+
 ## Layout
 
-- `crates/gobstopper-core` — normalized transcript model, the `Edit` IR,
-  `Strategy` trait, all built-in strategies, and event-log I/O.
-- `crates/gobstopper-adapters` — bounded session discovery, Codex/Claude
-  JSONL parsing and candidate rewriting, transactional no-clobber publication,
-  verification, plugin hosting, and the snapshot vault.
-- `crates/gobstopper-cli` — `gobstopper` binary: detect / plan / apply /
-  verify / undo / vault / history / show / recall / diff / bench /
-  mcp / watch / policy-check / presets / explain.
+- `crates/gobstopper-core`: the normalized transcript model, the `Edit` IR,
+  the `Strategy` trait, all built-in strategies, and the telemetry schema.
+  Its only file I/O is the telemetry event log.
+- `crates/gobstopper-adapters`: session discovery, Codex and Claude Code JSONL
+  parsing and copy preparation, read-only Devin exports, no-clobber
+  publication, verification, plugin hosting, and the snapshot vault.
+- `crates/gobstopper-cli`: the `gobstopper` binary (run `gobstopper --help`
+  for every subcommand), layered configuration, hooks, and the read-only MCP
+  server.
 
-## Current benchmark evidence
+## Benchmark results
 
 The [September 19, 2026 retrospective](https://gobstopper.sh/benchmarks#retrospective-2026-09-19)
 evaluated 729 frozen sessions on one Mac. Portable `compacted` projected a
-**36.4% median reduction across 73 high-context archived Codex roots**, with
-**76.9% sampled-string retention**. Across all 729 sessions, 637 produced no
-plan and the median reduction was **0%**. These are offline projections, not
+36.4% median reduction across 73 high-context archived Codex roots, with
+76.9% sampled-string retention. Across all 729 sessions, 637 produced no
+plan and the median reduction was 0%. These are offline projections, not
 billing savings or task-accuracy measurements. The page includes all cohorts,
 limitations, and downloadable aggregate results and methodology.
 
@@ -683,10 +703,10 @@ high-context tasks, a `0.35` cutoff increased sampled-string retention from
 77.05% to 80.78% while median projected reduction fell from 36.44% to 34.96%.
 Two tasks produced no plan, and their retention is derived from leaving the
 source unchanged. All three registered cutoffs and both disabled baselines are
-reported; the default remains unchanged. This is a limited retention/size
-tradeoff, not a task-quality result or a recommended optimum.
+reported, and the default has no cutoff. The result is a small trade of
+size for retention; it does not measure task quality or recommend a cutoff.
 
-## Historical live trials — recorded September 17, 2026
+## Historical live trials, recorded September 17, 2026
 
 The following single-session experiments were recorded in the repository on
 September 17 using earlier builds and workflows. They are separate from the
@@ -697,10 +717,10 @@ resume question under four conditions, measuring provider tokens on that turn:
 
 | condition | input tokens on resume | output tokens | recalled the standing task? |
 |---|---|---|---|
-| none (original) | 312,722 | 1,405 | yes — reported npm unification and stalled renames |
-| `gobstopper elide` | 219,167 | 1,052 | yes — same standing task, stalled renames |
-| `gobstopper compacted` | 220,447 | 621 | yes — same standing task from the state-card digest |
-| `claude --autocompact 100` | 56,300 | 416 | no — incorrectly claimed the renames were already done and published |
+| none (original) | 312,722 | 1,405 | yes: reported npm unification and stalled renames |
+| `gobstopper elide` | 219,167 | 1,052 | yes: same standing task, stalled renames |
+| `gobstopper compacted` | 220,447 | 621 | yes: same standing task from the state-card digest |
+| `claude --autocompact 100` | 56,300 | 416 | no: incorrectly claimed the renames were already done and published |
 
 `gobstopper elide` and `compacted` both cut the resume context by about
 30% while keeping the answer accurate. Claude's native `--autocompact 100`
@@ -711,12 +731,12 @@ The same question was then asked on a 101k-token Codex session:
 
 | condition | input tokens on resume | output tokens | recalled the standing task? |
 |---|---|---|---|
-| none (original) | 101,275 | 244 | yes — Oh's memory benchmark and the 0.60 expansion gate |
-| `gobstopper elide` | 57,980 | 83 | yes — same 0.545 score and 0.60 gate |
-| `gobstopper compacted` | 34,503 | 159 | yes — same BEAM experiment and expansion gate |
+| none (original) | 101,275 | 244 | yes: Oh's memory benchmark and the 0.60 expansion gate |
+| `gobstopper elide` | 57,980 | 83 | yes: same 0.545 score and 0.60 gate |
+| `gobstopper compacted` | 34,503 | 159 | yes: same BEAM experiment and expansion gate |
 
-On Codex, `compacted` cut resume input tokens by **66%** and `elide` cut
-them by **43%**, both with accurate answers to that question. Provider-native
+On Codex, `compacted` cut resume input tokens by 66% and `elide` cut
+them by 43%, both with accurate answers to that question. Provider-native
 Codex compaction was not included in this historical trial.
 
 The same-session `cache_aware` A/B (339k-token Claude session, floor 310k,
@@ -724,14 +744,14 @@ real provider cache counters):
 
 | condition | `cache_read` | `cache_creation` | file-level prefix preserved | cost | accurate? |
 |---|---:|---:|---:|---:|---|
-| none (original) | 10,010 | 325,647 | — | $6.53 | yes |
+| none (original) | 10,010 | 325,647 | n/a | $6.53 | yes |
 | `gobstopper cache_aware` | 13,536 | 258,517 | 107,884 tokens | $5.19 | yes |
 | `gobstopper compacted` | 13,536 | 257,505 | 6,639 tokens | $5.18 | yes |
 
 In this trial, `cache_aware` and `compacted` had almost the same API cost and
 both recorded 13,536 cache-read tokens, versus 10,010 in the baseline.
-`cache_aware` preserved **16x more identical transcript prefix**, an
-auditability result; this trial did not establish extra provider cache savings
+`cache_aware` preserved 16x more identical transcript prefix. That makes the
+rewrite easier to audit; this trial did not establish extra provider cache savings
 from the preserved prefix. Current `compacted` uses a portable forked digest;
 synthetic Codex-native records require `--experimental-compacted`.
 
@@ -739,14 +759,14 @@ Snapshots and `gobstopper diff` make compaction inspectable and provide a
 recovery path. They do not guarantee that omitted facts are unimportant or
 that a continuation will retrieve them automatically.
 
-- **Codex custom `compacted` record** — a gobstopper-written `compacted`
-  record with a correct window chain was accepted by `codex exec resume` and
-  the model completed a real API turn recalling the elided commands.
-- **Claude Code digest resume** — an earlier qualification trial on a separate
-  333k-token test copy elided 43 stale tool records and injected a state card;
-  `claude --resume` succeeded and recalled the standing task. Current copy
-  preparation uses no-clobber publication; this older trial does not qualify
-  current provider resume behavior.
+In the same period, a Gobstopper-written Codex `compacted` record with a
+correct window chain was accepted by `codex exec resume`, and the model
+completed a real API turn that recalled the elided commands. In a separate
+Claude Code trial on a 333k-token test copy, Gobstopper elided 43 stale tool
+records and injected a state card, and `claude --resume` succeeded and
+recalled the standing task. These trials used earlier builds and do not establish current provider resume
+compatibility. Current `apply` writes Claude Code compactions to a separate fork.
+
 
 ## Status
 
@@ -780,7 +800,7 @@ than an OS sandbox. The [activation matrix](docs/assurance/qualification.json)
 and [recovery runbook](docs/assurance/operations.md) define the supported modes.
 See [docs/design.md](docs/design.md), [docs/roadmap.md](docs/roadmap.md),
 [docs/plugin-protocol.md](docs/plugin-protocol.md), and
-[docs/devin.md](docs/devin.md) for the boundaries.
+[docs/devin.md](docs/devin.md) for details.
 
 ## License
 

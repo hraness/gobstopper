@@ -9,9 +9,9 @@ change the result.
 
 gobstopper treats compaction as a *policy + strategy* problem:
 
-- **when** to compact (trigger policy — threshold, boundary detection,
+- **when** to compact (trigger policy: threshold, boundary detection,
   rate limits)
-- **how** to compact (strategy — provider delegate, elision, structured
+- **how** to compact (strategy: provider delegate, elision, structured
   digest, agentic editing)
 - **where** to apply it (provider control plane vs. transcript file)
 
@@ -26,51 +26,55 @@ direct provider-file/store writes are disabled. The
 These notes motivated the strategies; they are not correctness or current
 provider-qualification evidence for this implementation.
 
-- **Context rot** (Anthropic, "Effective context engineering"): recall
-  degrades as token count grows. Context is a finite attention budget.
-- **SelfCompact** (arXiv:2606.23525): model-chosen compaction timing beats
-  fixed-interval triggers at 30–70% lower cost — but only when the
-  scaffold supplies both a compaction *tool* and a *rubric*. This is why
-  `agentic` falls back to `auto`'s rubric rather than firing unguided.
-- **Compaction formalization** (arXiv:2608.01326): selection vs.
-  generation strategies; generation is strictly more expressive. `elide`
-  is selection; `structured`/`agentic` are generation.
-- **Observation masking** (SWE-agent / OpenHands condenser line of work):
-  stale tool outputs are the cheapest thing to lose — their conclusions
-  live in surrounding assistant text.
-- **Codex operational guidance**: ~60% of effective window is the
-  recommended `model_auto_compact_token_limit` for long sessions —
-  evidence that earlier-than-default compaction is provider-endorsed.
+- **Context rot** (Anthropic, ["Effective context engineering for AI
+  agents"](https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents),
+  2025): recall degrades as the token count grows, so context is a finite
+  "attention budget".
+- **SelfCompact** (Li et al., ["Self-Compacting Language Model
+  Agents"](https://arxiv.org/abs/2606.23525), 2026): letting the model decide
+  when to compact matches or exceeds fixed-interval summarization, at 30–70%
+  lower per-question cost in the authors' benchmarks, and it needs both a
+  compaction *tool* and a *rubric*. This is why `agentic` falls back to
+  `auto`'s rubric when no editor is configured.
+- **Context Compaction Theory** (Tirmazi et al.,
+  [arXiv:2608.01326](https://arxiv.org/abs/2608.01326), 2026): models
+  compaction as selecting part of the state or generating a bounded message,
+  and proves that for some query sets generation needs strictly less budget
+  than selection. `elide` is selection; `structured` and `agentic` are
+  generation.
+- **Observation masking** (the SWE-agent and OpenHands condenser line of
+  work): stale tool outputs are the cheapest thing to lose, because their
+  conclusions live in the surrounding assistant text.
 
 ## Provider levers (historical version-specific observations)
 
 ### Codex (0.153.2, app-server v2)
 
-- `thread/compact/start {threadId}` — ClientRequest, forces compaction of
-  a live thread.
-- `thread/tokenUsage/updated` — ServerNotification carrying
+- `thread/compact/start {threadId}`: a ClientRequest that forces compaction
+  of a live thread.
+- `thread/tokenUsage/updated`: a ServerNotification carrying
   `ThreadTokenUsage { total, last, modelContextWindow }`.
-- `model_auto_compact_token_limit` — config.toml key, clamped at 90% of
+- `model_auto_compact_token_limit`: a config.toml key, clamped at 90% of
   `model_context_window`; lowering it is supported.
-- `model_auto_compact_token_limit_scope` — `total` | `body_after_prefix`.
-- `compact_prompt` — custom compaction instructions, config-level.
-- `tool_output_token_limit` — per-output cap, config-level.
-- `thread/inject_items` — push items into a thread (digest injection path).
+- `model_auto_compact_token_limit_scope`: `total` or `body_after_prefix`.
+- `compact_prompt`: custom compaction instructions, set in config.
+- `tool_output_token_limit`: a per-output cap, set in config.
+- `thread/inject_items`: pushes items into a thread (the digest injection path).
 - Rollout store: `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` with
   `session_meta`, `response_item`, `token_usage_record`, and `compacted`
-  records. `compacted` carries `replacement_history` — the post-compaction
+  records. `compacted` carries `replacement_history`, the post-compaction
   context Codex rebuilds from on resume.
 
 ### Claude Code (2.1.x)
 
-- `--autocompact <auto|tokens>` — argv, 100k–1M window override.
-- `/compact [instructions]` — in-session command.
-- `PreCompact` hook — fires before native compaction; strategy steering
-  point.
+- `--autocompact <auto|tokens>`: a command-line window override, 100k–1M.
+- `/compact [instructions]`: the in-session command.
+- `PreCompact` hook: fires before native compaction, where a strategy can
+  steer it.
 - Session store: `~/.claude/projects/<cwd-slug>/<session>.jsonl`, a
-  `uuid`/`parentUuid` tree — only the latest leaf's branch is live
-  context (gobstopper computes the live branch; dead branches are never
-  counted or touched). Assistant lines carry `message.usage`.
+  `uuid`/`parentUuid` tree in which only the latest leaf's branch is live
+  context. Gobstopper computes the live branch and never counts or touches
+  dead branches. Assistant lines carry `message.usage`.
 - Usage: `input + cache_read + cache_creation` ≈ context occupancy.
 
 ## The Edit IR
@@ -110,30 +114,42 @@ Idle candidates include `cache_aware`, `scored`, `elide`, `compacted`,
 validation and protected-tail rules as built-ins; an empty proposal means
 defer.
 
-## Oompa integration
+## Integrating with a session runtime
 
-oompa owns live managed sessions (its spawned app-servers, its Claude
-processes). It must never parse provider transcripts — so the seam is
-numeric, not textual:
+A program that runs live sessions (its own app-server connections or
+Claude Code processes) should not have to parse provider transcripts, so the
+interface is numeric:
 
 - `gobstopper policy-check --provider <p> --context-tokens <n>
-  --session-active --json` → `{action, strategy, control}`.
-  Deterministic evaluation of resolved policy and explicit numeric inputs.
-- The session owner must separately qualify and execute any proposed provider
-  operation on its own connection. A policy response performs no compaction.
-- File strategies prepare separate candidates. Idleness does not authorize
-  replacing a provider file, including a non-managed session.
+  --session-active --json` returns `{action, strategy, control}` from the
+  resolved configuration and explicit numeric inputs.
+- The runtime must establish control of the selected session and test the
+  provider operation before executing it on its own connection. A policy
+  response performs no compaction.
+- File strategies prepare separate candidates. Observed idleness does not
+  authorize replacing a provider file.
 
-Experimental copy preparation can emit a synthetic Codex `compacted` record
-with `replacement_history`; ordinary copies use the portable digest form.
-Structural tests cover supported window and pair shapes. Acceptance of either
-candidate by a particular provider version still requires resume qualification.
+This interface was designed for OOMPA, a session runtime that was retired on
+2026-09-19 and replaced by xcb. xcb embeds `gobstopper-core` as a library
+instead; see [the plugin protocol](plugin-protocol.md).
 
-See `docs/roadmap.md` for the full phased plan: transcript surgery +
-undo vault, the oompa `session.compact` effect path, XCB's native
-`gobstopper-core` projection and XCB-compatible editor backend, the
-aicharts measurement loop, and the proposed
-`transcript-foundation` shared crate.
+Ordinary copies use the portable digest form. Structural tests cover supported
+window and tool-pair shapes; acceptance by a particular provider version
+requires separate resume testing.
+
+A deeper option is a Gobstopper-written `compacted` record with a custom
+`replacement_history`, so Codex's own resume mechanism performs a fully
+custom compaction. Gobstopper understands the fields (`window_id`,
+`first/previous_window_id`, `guardian_history`,
+`latest_token_usage_record`). Correctness requires replaying the window
+chain faithfully, so this path is experimental and runs only with
+`gobstopper apply --experimental-compacted`.
+
+See `docs/roadmap.md` for the phased plan and its history: transcript
+surgery and the undo vault, the retired OOMPA `session.compact` effect path,
+xcb's native `gobstopper-core` projection and its compatible editor backend,
+the AI Charts measurement loop, and the proposed `transcript-foundation`
+shared crate.
 
 ## External strategies and providers
 
@@ -169,8 +185,8 @@ effects. Legacy `preset.command` remains available only with
   marker absence alone cannot qualify concurrent startup or provider ownership.
   The prompt-policy hook adds a last-rung `block_tokens` ceiling (default 0
   = off): at/above it, treatment sessions get `decision: "block"` until
-  `/compact` runs. Slash-command prompts are never advised or blocked —
-  they are provider UI control, including the headless `/compact` run.
+  `/compact` runs. Slash-command prompts are never advised or blocked,
+  because they are provider UI controls, including the headless `/compact` run.
 - Before publication, exact source bytes are stored as verified, deduplicated
   1 MiB chunks in the content-addressed vault.
 - Rust multi-object readers and the independent retention reader hold shared

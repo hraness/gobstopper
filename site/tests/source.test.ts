@@ -83,6 +83,8 @@ describe("Gobstopper site source contract", () => {
     const [sitemap, robots] = await Promise.all([read("public/sitemap.xml"), read("public/robots.txt")]);
     expect(sitemap).toContain("<loc>https://gobstopper.sh/</loc>");
     expect(sitemap).toContain("<loc>https://gobstopper.sh/docs</loc>");
+    expect(sitemap).toContain("<loc>https://gobstopper.sh/methodology</loc>");
+    expect(sitemap).toContain("<loc>https://gobstopper.sh/benchmarks</loc>");
     expect(robots).toContain("Sitemap: https://gobstopper.sh/sitemap.xml");
   });
 

@@ -9,7 +9,7 @@ python3 scripts/recovery-study/prepare.py --baseline /path/to/baseline/gobstoppe
 python3 /tmp/gobstopper-recovery-study/run.py /path/to/candidate/gobstopper
 ```
 
-Choose a new output directory: preparation refuses any existing directory, file, or symlink. Use your host's required scheduler for the second command. Preparation only generates fixtures and copies the two scripts and baseline executable into the output directory; it never executes Gobstopper. The runner pins the candidate before its first command. Both executable hashes and the script/fixture hashes are recorded locally.
+Choose a new output directory: preparation refuses any existing directory, file, or symlink. Preparation only generates fixtures and copies the two scripts and baseline executable into the output directory; it never executes Gobstopper. The runner pins the candidate before its first command. Both executable hashes and the script/fixture hashes are recorded locally.
 
 The generated directory contains:
 

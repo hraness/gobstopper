@@ -1,13 +1,12 @@
 import { createSocialImage } from "../../social-image";
 import { siteDomain } from "../../site";
-import { readmeTitle } from "../../readme.generated";
 
 export const dynamic = "force-static";
 
 export function GET() {
   return createSocialImage({
-    description: "The complete Gobstopper README: installation, strategies, configuration, hooks, telemetry, evaluation, and design notes.",
+    description: "The Gobstopper reference: how to install it, choose a compaction strategy, and configure it per provider, per session, or with named presets.",
     domain: siteDomain,
-    title: `${readmeTitle} documentation`,
+    title: "Gobstopper documentation",
   });
 }

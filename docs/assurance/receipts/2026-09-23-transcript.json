@@ -1,7 +1,7 @@
 {
   "schema": "gobstopper.assurance-receipt.v1",
-  "raw_receipt_sha256": "9a354476bcd321811ea16e39f99a9111d24089fcddb0fac90420767855c34943",
-  "observed_at": "2026-09-23T23:13:42.643731+00:00",
+  "raw_receipt_sha256": "322ebf961d75443d0bd70b01f9d3a89d8829221cf401368506da50cc19d417d4",
+  "observed_at": "2026-09-23T23:57:31.395300+00:00",
   "scope": "Unbounded Lean structural list laws plus finite actual Rust dialect correspondence.",
   "bounds": "27 theorems, 20 synthetic cases, 23 steps per provider; kernel replay and both exact intended mutants.",
   "exclusions": [
@@ -14,7 +14,7 @@
   "source_sha256": {
     "Cargo.lock": "100bbe7e8fe347a390d64f4d556737dcf8b7c243a7a1a6587fb5d51d81135e0d",
     "Cargo.toml": "22825555bd0f11035fe4f2ba01c6351d7af5e14ee26f04d1ed143ba0db701cf8",
-    "crates/gobstopper-adapters/Cargo.toml": "96a03f1f759eb0ec08a2ac81f50c38a19c33e0761e6dfdda32d2596d743379f2",
+    "crates/gobstopper-adapters/Cargo.toml": "c412d3b0a6fc095965f20313a06e4f167cdbfc2224cc4738c86315a6a5ae9103",
     "crates/gobstopper-adapters/src/claude.rs": "86e997d80220e0cfadd21e147728bf432b25800dd2c8a8475dc9657fdab26358",
     "crates/gobstopper-adapters/src/codex.rs": "b5a543cac8ac55e5d228c052e67c0b7faea164d969ef06b44b1d8fb359991f84",
     "crates/gobstopper-adapters/src/codex_compact.rs": "104ccbdfb90c505118160498b648147d18a1762ab7de113f761d94c1e9b575c2",
@@ -33,7 +33,7 @@
     "crates/gobstopper-adapters/src/vault.rs": "fbe4b399710a3791a464edf07e084fd25eb72d158d18a4d6a96d8b8cbd812904",
     "crates/gobstopper-adapters/src/verify.rs": "031d81a799e33f66df3d3498a597725e8624aa9c070666e5731e2f27c693505a",
     "crates/gobstopper-adapters/tests/lean_correspondence.rs": "bfb2d9aaca096c170adba2ef15f5f625bea4833990bad3fbee8ef54479d3ccfb",
-    "crates/gobstopper-cli/Cargo.toml": "c4e8c08514065b5207253918edc7a4d89f4230b4642eeec301c4a5245fd83dac",
+    "crates/gobstopper-cli/Cargo.toml": "89c24a43d16f0989c04170650bee6d727b9e54df4983ff79eadc60a43b8fdce5",
     "crates/gobstopper-core/Cargo.toml": "1de61bed40e65fac756fd1529635cda09892ea0482ebdeba6b1e038965116e50",
     "crates/gobstopper-core/src/admission.rs": "d886b85141879328b3282f22765a96da5986e62b4eeaf2cfe9a16f06b17daa1d",
     "crates/gobstopper-core/src/estimate.rs": "86c999f925e69ac76b304dd1a1805607e662d91d354fe02afad22939be161672",
@@ -43,7 +43,7 @@
     "crates/gobstopper-core/src/plan.rs": "fcafb6a44a955bd1880b12194560d29371dde40d0a47f6456b9d4f96cb6c67bd",
     "crates/gobstopper-core/src/policy.rs": "9cf99126dee56ecb78c3ed6f028b439a50f204516626b2f0ef71a2562f230154",
     "crates/gobstopper-core/src/probe.rs": "77b3814fcec225f6dfcd95e917305cbbaf799424498f08a3c8b7c4e15cad3175",
-    "crates/gobstopper-core/src/strategy/agentic.rs": "cf36d38bd53f084879bc796c7a8630043d829c7e6d4a0c7f263d360f1b9dea5d",
+    "crates/gobstopper-core/src/strategy/agentic.rs": "2cdce75031567462a8fcc6df5d0c7551235e1dfb14cd9480138ba38a9af7d9a0",
     "crates/gobstopper-core/src/strategy/auto.rs": "54f9c0334abedeed6c66d70cd4eeb2cbe612a6c090d06aa5e474c749886cb8c2",
     "crates/gobstopper-core/src/strategy/cache_aware.rs": "72a9dfdffca54a21b13c2ffa786c148a179fd47e144b4dc095c0e047baab3392",
     "crates/gobstopper-core/src/strategy/cache_edits.rs": "03ec09f5ad36acdbfdb5ef54583243d2721edc092bc3d7b9709afe2dd664acf6",
@@ -126,7 +126,7 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "13cf83815cab77dee110791fae4ba260e0f31b278a752491b069fcd9890d1679",
+      "log_sha256": "3daf7d7745d372890a9af57012c5149b4c22e8335c27480ca69f517a00199f29",
       "passed": true
     },
     {
@@ -158,7 +158,7 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "250fd16410b17e40df8768cb362f872856437cd0aaa68cffc17289ff473c6c8b",
+      "log_sha256": "663627e60564596b7cd439a5c7be48d5ba06c0c29885b27405265649fa4cb924",
       "passed": true
     },
     {
@@ -166,7 +166,7 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "2e815b70371485c4f9f00f008514d67852f124f72239169b30a2821f0b0af88e",
+      "log_sha256": "9cbd6bc15986a4a56e685779be500e0c6add6879443bc40a741f7e97cd1bdb05",
       "passed": true
     },
     {
@@ -182,7 +182,7 @@
       "exit_code": 101,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "97045fac68fb9385710afbd0f8e6794926427442f3e0e8f8be8c5cd4ca725116",
+      "log_sha256": "8c7867f48877ba7cde5fdb74915d83280c23290017e5334b71f1a7c7fade4964",
       "passed": true
     },
     {
@@ -190,7 +190,7 @@
       "exit_code": 101,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "7cde86b11aad2fbba23b854a3a6ccf668c81db02a8c5c1ee65f5bf624002685a",
+      "log_sha256": "90c9278376d0687208dfd0ca4c4d93a3a6f9ad7670d4f40a2859e0bceb16f94e",
       "passed": true
     }
   ],

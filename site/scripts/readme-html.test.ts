@@ -7,15 +7,17 @@ import { publishedReadme } from "./published-readme.ts";
 
 const repository = join(import.meta.dir, "..", "..");
 
-test("site installation coordinates stay on the admitted release while new source is prepared", () => {
+test("versioned installation references use the admitted release without changing source installs", () => {
   const source = [
     "cargo install --git https://github.com/hraness/gobstopper --tag v0.21.1 gobstopper",
+    "cargo install --git https://github.com/hraness/gobstopper gobstopper --locked",
     "bunx skills add hraness/gobstopper#v0.21.1",
     "Version 0.21.1 and historical v0.20.0 remain prose.",
     "Unrelated hraness/gobstopper#v0.21.10 and hraness/gobstopper#v0.21.1-beta.1 stay literal.",
   ].join("\n");
   const projected = publishedReadme(source, "0.21.1", "0.21.0");
   expect(projected).toContain("--tag v0.21.0 gobstopper");
+  expect(projected).toContain("cargo install --git https://github.com/hraness/gobstopper gobstopper --locked");
   expect(projected).toContain("hraness/gobstopper#v0.21.0");
   expect(projected).toContain("Version 0.21.1 and historical v0.20.0 remain prose.");
   expect(projected).toContain("Unrelated hraness/gobstopper#v0.21.10 and hraness/gobstopper#v0.21.1-beta.1 stay literal.");
@@ -28,7 +30,7 @@ test("renders the repository README with stable heading fragments and repository
   const source = await readFile(join(repository, "README.md"), "utf8");
   const html = renderReadmeHtml(source);
   expect(html).toContain('<h2 id="install--use">Install &amp; use</h2>');
-  expect(html).toContain('<h2 id="the-oompa-seam">The oompa seam</h2>');
+  expect(html).toContain('<h2 id="integrating-with-a-session-runtime">Integrating with a session runtime</h2>');
   expect(html).toContain('href="https://github.com/hraness/gobstopper/blob/main/docs/design.md"');
   expect(html).not.toContain("<script");
 });
@@ -40,7 +42,7 @@ test("extracts the landing block between the shared Hraness markers", async () =
   const landing = readmeLanding(source);
   expect(landing.title).toBe("gobstopper");
   expect(landing.lead).toContain("inspects Claude Code, Codex, and Devin sessions");
-  expect(landing.markdown).toContain("Released CLI native dispatch is blocked");
+  expect(landing.markdown).toMatch(/cannot ask providers to compact,\s+even when `auto_compact_closed` is enabled/u);
 });
 
 test("rejects unsafe README link targets", () => {

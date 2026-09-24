@@ -18,8 +18,8 @@ Devin stores sessions in a SQLite database:
 - `~/.local/share/devin/cli/sessions.db`
 
 `gobstopper detect` lists Devin sessions alongside Codex and Claude Code.
-Sessions are resolved by ID, ID prefix, or title — pass the session ID, never
-the `sessions.db` path (the database is a shared store, not a transcript file).
+Sessions are resolved by ID, ID prefix, or title. Pass the session ID, never
+the `sessions.db` path: the database is a shared store, not a transcript file.
 
 A held `session_locks/<id>.lock` is one signal of an **active** session.
 ACP ownership can also be reported by the provider. A missing or momentarily
@@ -39,7 +39,7 @@ gobstopper export <session-id> > session.jsonl
 `export` writes a deterministic canonical JSONL: a `session_meta` record
 followed by `message_node` records for the session's main conversation chain.
 The export is what `verify` checks (chain linkage, tool-call pairing) and what
-`eval` consumes — hashing or snapshotting the shared database itself would mix
+`eval` consumes. Hashing or snapshotting the shared database would mix
 unrelated sessions, so the canonical per-session bytes are the unit of record.
 `eval` and `bench` capture that export once and run every strategy against the
 same bytes, with an exact source hash. Neither command changes the database.
@@ -47,7 +47,8 @@ Benchmark rows preserve failed discovered sessions with an explicit failure
 category and unavailable measurements; they do not silently remove those
 sessions from coverage.
 
-For an **active** session, `plan` returns a native control proposal. Idle
+For an active session, `plan` returns `provider_compact` with control
+`devin: /compact`. Idle
 sessions may still produce detached elision plans for evaluation, but direct
 `apply` and `undo` refuse before snapshots, confirmation or database writes.
 `compact`/`fork` also refuse store-backed sessions: a detached canonical export
@@ -90,15 +91,15 @@ gobstopper policy-check \
 ```
 
 or by session ID, which reads context usage and lock state directly from the
-store (fast, no full discovery scan — suitable for hooks):
+store. That skips the full discovery scan, so it is fast enough for hooks:
 
 ```sh
 gobstopper policy-check --provider devin --session <session-id> --json
 ```
 
-The session argument accepts an exact id, an id prefix, or a title
-substring — the same resolution `detect`/`plan` use, so
-`--session scarlet-gemini` works as well as a raw store id.
+The session argument accepts an exact ID, an ID prefix, or a title
+substring, the same resolution `detect` and `plan` use, so
+`--session scarlet-gemini` works as well as a raw store ID.
 
 `--session current` resolves the active session bound to the caller's
 working directory: it intersects the store's `working_directory` with the
@@ -137,8 +138,9 @@ but Devin controls the actual post-compaction result.
 
 ## Hook settings candidates
 
-`install-hooks` and `uninstall-hooks` export inert settings bundles; they do
-not change Devin or Claude settings. The destination must be a new file in an
+Devin's `UserPromptSubmit` hook can advise compaction before each turn.
+`install-hooks` and `uninstall-hooks` export settings candidates without
+changing Devin or Claude settings. The destination must be a new file in an
 existing directory:
 
 ```sh
@@ -208,14 +210,14 @@ devin = 50        # half of Devin sessions get the advisory (treatment)
 claude_code = 50  # the other half stays silent (control)
 ```
 
-The bucket is `int(sha256(session_id)[:16], 16) % 100` — stable across
-prompts and machines. Every resolved decision is appended to the telemetry log as a
-`prompt-policy:treatment|control` event — numerator and denominator for an
-A/B readout both land in `events.jsonl`. `gobstopper events --cohort`
-aggregates telemetry per provider per rollout arm — sessions, advisories
-shown/suppressed, watch cohort-skips, applies, and reclaimed tokens —
-recomputing each session's deterministic bucket rather than trusting
-event tags. `--since 24h` windows the readout (so pre-gate data does not
+The bucket is `int(sha256(session_id)[:16], 16) % 100`, which is stable
+across prompts and machines. Every resolved decision is appended to the
+telemetry log as a `prompt-policy:treatment|control` event, so the numerator
+and denominator for an A/B readout both land in `events.jsonl`.
+`gobstopper events --cohort` aggregates telemetry per provider per rollout
+arm (sessions, advisories shown and suppressed, watch cohort skips, applies,
+and reclaimed tokens), recomputing each session's deterministic bucket rather
+than trusting event tags. `--since 24h` windows the readout (so pre-gate data does not
 pollute post-gate reads) and `--json` emits the same table for tooling. `gobstopper report` /
 `scripts/monitor.py --session <exact-id> --provider devin` supply bounded context
 observations; the provider flag broadens collection to active Devin sessions.

@@ -1,7 +1,7 @@
 {
   "schema": "gobstopper.assurance-receipt.v1",
-  "raw_receipt_sha256": "3d6084c89e607b2d0f2fdf06df49b0b487cf0023d4a5825c3f40f90e0e6f16ee",
-  "observed_at": "2026-09-23T22:33:34.041612+00:00",
+  "raw_receipt_sha256": "bdbf6279f5deccd63bac7644ad8f6b8288a0cc24d15cc5c54f9146bfa930d8f3",
+  "observed_at": "2026-09-23T23:57:17.383814+00:00",
   "scope": "Selected production Rust admission, arithmetic and usage kernels under Kani.",
   "bounds": "Full scalar numeric domains; index lengths 0/1/2/4 and four-edit sequence; production limits unchanged.",
   "exclusions": [
@@ -24,7 +24,7 @@
     "crates/gobstopper-core/src/plan.rs": "fcafb6a44a955bd1880b12194560d29371dde40d0a47f6456b9d4f96cb6c67bd",
     "crates/gobstopper-core/src/policy.rs": "9cf99126dee56ecb78c3ed6f028b439a50f204516626b2f0ef71a2562f230154",
     "crates/gobstopper-core/src/probe.rs": "77b3814fcec225f6dfcd95e917305cbbaf799424498f08a3c8b7c4e15cad3175",
-    "crates/gobstopper-core/src/strategy/agentic.rs": "cf36d38bd53f084879bc796c7a8630043d829c7e6d4a0c7f263d360f1b9dea5d",
+    "crates/gobstopper-core/src/strategy/agentic.rs": "2cdce75031567462a8fcc6df5d0c7551235e1dfb14cd9480138ba38a9af7d9a0",
     "crates/gobstopper-core/src/strategy/auto.rs": "54f9c0334abedeed6c66d70cd4eeb2cbe612a6c090d06aa5e474c749886cb8c2",
     "crates/gobstopper-core/src/strategy/cache_aware.rs": "72a9dfdffca54a21b13c2ffa786c148a179fd47e144b4dc095c0e047baab3392",
     "crates/gobstopper-core/src/strategy/cache_edits.rs": "03ec09f5ad36acdbfdb5ef54583243d2721edc092bc3d7b9709afe2dd664acf6",
@@ -70,8 +70,8 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "8bb0b872f48cb686c7ee845169a85d48f659c1fc9f5e113366f8a14fe2c005e6",
-      "report_sha256": "b992cbf3be72de956472452b8b104c903c5a637b91a8abb42e09830a7db37b2d"
+      "log_sha256": "79e14c8cf04b5c65325eb6b0f054eef9d60aabc0ca4b3332278576a63869de24",
+      "report_sha256": "c9a0bcf6279fddb0da1b573523510b342b869a43102c287a89d8516cefe529d0"
     },
     {
       "case": "boundary-mutant",
@@ -89,8 +89,8 @@
       "exit_code": 1,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "c933d9f18c5ece0d186ae20600ea4e0fc2c35c24146a2f92278856a52503167f",
-      "report_sha256": "c36b9ecd8a596280aa2f3db7a0bd0b99b52db40fe6d568ff94754dad6d899746"
+      "log_sha256": "ff8430f574c99cf41d1bfb944041ca6daa248e61a5d5b0bd5438a388ee7bae77",
+      "report_sha256": "c4b5700684115efcfee644825cce7e5f42711d95ee6a609a0ae7c4696264ef99"
     }
   ],
   "versions": {

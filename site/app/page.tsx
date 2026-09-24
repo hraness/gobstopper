@@ -17,6 +17,7 @@ import { SiteHeader, SiteFooter } from "./_components/site-chrome";
 import { HeroField } from "./hero-field";
 import { HeroGraphic } from "./hero-graphic";
 import { publishedRelease } from "./publication";
+import { readmeLead } from "./readme.generated";
 
 
 function TopicIcon({ slug }: Readonly<{ slug: string }>) {
@@ -29,26 +30,27 @@ const releaseVersion = publishedRelease?.version;
 const repository = "https://github.com/hraness/gobstopper";
 
 const heading = "Prepare smaller coding-agent sessions, with a way back.";
-const summary =
-  "Gobstopper inspects Claude Code, Codex, and Devin sessions, previews compaction, and prepares separate Codex and Claude Code copies with retained source bytes. Automatic native compaction stays disabled pending provider qualification.";
+const summary = readmeLead;
+// This published release predates both Devin support and the source-build guards.
+const releasePredatesPage = releaseVersion === "0.2.1";
 const footnote =
-  `Free and open source (MIT or Apache-2.0). Needs Rust 1.85 or newer. Runs on your machine with no account.${releaseVersion === undefined ? " No release yet; install from source." : ` Latest release: v${releaseVersion}.`}`;
+  "Source preview. Install from source for the behavior described here. Free and open source (MIT or Apache-2.0). Needs Rust 1.85 or newer. Local inspection needs no account.";
 
 const primitives = [
   {
     icon: "session-detection",
     label: "Session detection",
-    summary: "Finds sessions in the Codex, Claude Code, and Devin stores. Reported context, estimates, unknown values and partial lifetime counts stay distinct. Recent file activity is an observation, not proof of exclusive ownership.",
+    summary: "Finds sessions in the Codex, Claude Code, and Devin stores. Reports measured context separately from estimates and missing usage. Recent file activity cannot tell you whether another process is using a session.",
   },
   {
     icon: "edit-ir",
     label: "A few kinds of edit",
-    summary: "Strategies propose a small set of edits: hiding stale tool output, inserting a digest, or asking the provider to compact. Gobstopper checks file candidates against its supported parent-link, ordinal and tool-pair rules before publication. Provider resume acceptance is qualified separately.",
+    summary: "Strategies propose replacing stale tool output, inserting a digest, or having the provider compact. Gobstopper checks supported record links, order, and tool-call pairs before writing a copy. Those checks do not establish that a provider can resume it.",
   },
   {
     icon: "strategies",
     label: "Strategies",
-    summary: "The default, auto, picks a strategy from the transcript. Sawtooth proposes provider compaction to the session owner, elide hides eligible stale tool output, and structured writes a mechanical state card. Scored ranks candidates; optional installed on-device inference can score or draft cards. Agentic accepts edits proposed by a program you trust.",
+    summary: "The default, auto, picks a strategy from the transcript. Sawtooth recommends provider compaction, elide replaces eligible stale tool output, and structured writes a state card from metadata. Scored ranks candidates; optional on-device models can score or draft cards. Agentic accepts edits proposed by a program you trust.",
   },
   {
     icon: "presets-config",
@@ -58,27 +60,27 @@ const primitives = [
   {
     icon: "undo-vault",
     label: "Undo vault",
-    summary: "Copy preparation retains exact source and candidate bytes before publication. Snapshot search and reads recover specific records. Claude Code and Codex copies have a new session identity; provider resume acceptance is qualified separately.",
+    summary: "Before writing a separate Claude Code or Codex copy, Gobstopper archives the original and prepared bytes. Search the snapshot for a missing record, read its saved text, or use undo to prepare a restored copy with a new session identity.",
   },
   {
     icon: "telemetry-eval",
     label: "Telemetry and eval",
-    summary: "Best-effort events link snapshots and source-bound observations. Eval compares in-memory candidates using literal probes and structural checks, with explicit missingness and coverage. Optional model judgments, billing and successful task continuation are separate measurements.",
+    summary: "Events link snapshots with observed usage. Eval compares strategies on frozen input, checks supported structures, and counts which sampled details remain. It reports missing measurements and coverage; model judgments, billing, and successful task continuation need separate evidence.",
   },
 ] as const;
 
 const trust = [
   {
-    label: "Source snapshots support recovery",
-    detail: "Copy workflows retain exact source and candidate bytes and check supported structures. Recovery readers coordinate with pruning, and corrupt recovery roots stop collection. Recovery still depends on owner-controlled storage and filesystem behavior; a snapshot alone cannot guarantee provider acceptance.",
+    label: "Source files stay unchanged",
+    detail: "Claude Code and Codex compaction writes a separate copy and archives the original and prepared bytes. Snapshot readers coordinate with cleanup, and damaged recovery data stops cleanup. Keep backups of the vault: local snapshots depend on your storage.",
   },
   {
-    label: "Provider ownership is explicit",
-    detail: "Released CLI native dispatch is blocked pending provider qualification, even with an existing opt-in. File workflows prepare separate copies. Direct provider-store and in-place writes are disabled because an idle check cannot establish lifetime custody.",
+    label: "Automatic provider compaction is disabled",
+    detail: "The source build refuses automatic provider compaction, including auto_compact_closed, and direct Devin-store or in-place edits. An idle check cannot establish that another process has finished using a session. Provider commands need separate testing before they can be enabled.",
   },
   {
     label: "Unknown outcomes stay unknown",
-    detail: "An uncertain native operation is not automatically replayed after a restart or cooldown. Missing usage cannot become zero-cost success. Hook callbacks are unattributed observations, and literal or model-judged retention cannot establish task success or billing savings.",
+    detail: "If a provider operation has an uncertain result, Gobstopper does not retry it automatically after a restart or cooldown. Missing usage stays unmeasured. Hook observations do not establish that Gobstopper caused a compaction.",
   },
 ] as const;
 
@@ -89,7 +91,7 @@ const questions = [
   },
   {
     question: "Does it edit my live session?",
-    answer: "File preparation publishes a separate Claude Code or Codex copy. Direct provider-store and in-place writes are disabled, and released CLI native dispatch is blocked pending qualification. A policy recommendation may tell the existing owner to compact, but does not execute that operation. The activation matrix and recovery runbook describe the supported boundaries.",
+    answer: "The source build prepares separate Claude Code and Codex copies and refuses direct Devin-store edits. It can recommend that you compact through the session's own provider controls, but automatic provider compaction is disabled. The existing session stays under its provider's control.",
   },
   {
     question: "What if a compaction loses something important?",
@@ -97,11 +99,11 @@ const questions = [
   },
   {
     question: "Which agents does it support?",
-    answer: "Inspection supports bounded Codex, Claude Code and Devin dialects. Separate copy preparation supports Codex and Claude Code; Devin exports are inspection data, not resumable replacement stores. New provider versions and adapters need structural fixtures and separate live qualification.",
+    answer: "Gobstopper inspects supported Codex, Claude Code, and Devin session formats and prepares separate Codex and Claude Code copies. Devin exports can be inspected but cannot replace its session store. New provider versions need format tests and separate resume tests.",
   },
   {
     question: "Can I run my own compaction logic?",
-    answer: "Yes. An explicitly trusted `preset.command` or pinned plugin bundle receives normalized transcript data and proposes edits. The host checks eligibility, protected output, edit combinations, projected reduction, digest limits and supported structural findings. These checks do not prove semantic preservation. Explicit plugin commands run ordinary trusted subprocesses; deterministic MCP inspection rejects executable strategies.",
+    answer: "Yes. A trusted `preset.command` or plugin bundle receives normalized transcript data and proposes edits. Gobstopper checks which records may change, protected output, edit combinations, size estimates, digest limits, and supported structures. Your program runs as ordinary local code. Read-only MCP inspection refuses executable strategies.",
   },
   {
     question: "Who made it?",
@@ -187,7 +189,7 @@ autocompact 100    56,300  no`}</code></pre>
             interfaces={[
               {
                 label: "CLI",
-                summary: "Find sessions, preview a plan, and prepare a separate Codex or Claude Code copy. Inspect supported structures and retain the source for recovery; provider resume remains a separate qualification step.",
+                summary: "Find sessions, preview a plan, and prepare a separate Codex or Claude Code copy. Inspect its supported structures and keep the original for recovery.",
                 example: (
                   <>
                     <TopicIcon slug="cli" />
@@ -199,18 +201,18 @@ gobstopper verify <session> && gobstopper undo <session>`}</code></pre>
               },
               {
                 label: "Watcher and hooks",
-                summary: "Dry-run watch previews threshold decisions. File workflows can prepare separate copies, while native dispatch remains guarded. Hook commands export inert settings candidates; existing callbacks record source-bound observations without claiming causality.",
+                summary: "The watcher checks sessions every 30 seconds by default and can prepare separate Claude Code or Codex copies. Dry-run mode previews the decisions. Hook setup writes a settings candidate for you to review; it does not change provider settings.",
                 example: (
                   <>
                     <TopicIcon slug="watcher" />
-                    <pre tabIndex={0}><code>{`gobstopper watch --trigger 250000 --dry-run --once
+                    <pre tabIndex={0}><code>{`gobstopper watch --dry-run --once
 gobstopper install-hooks --output ./hook-candidates.json`}</code></pre>
                   </>
                 ),
               },
               {
                 label: "Your program",
-                summary: "A preset command receives the transcript as normalized JSON and returns edits. Package it as a versioned plugin bundle to reuse it.",
+                summary: "A preset command receives the transcript as normalized JSON and returns edits. It runs only after you mark it trusted. Package it as a versioned plugin bundle to pin the exact executable.",
                 example: (
                   <>
                     <TopicIcon slug="custom-program" />
@@ -219,14 +221,14 @@ strategy = "elide"
 keep_recent_tool_outputs = 4
 
 [presets.custom]
-command = ["node", "my-editor.js"]
+command = "node my-editor.js"
 trusted_legacy_command = true`}</code></pre>
                   </>
                 ),
               },
             ]}
             label=""
-            summary="Host admission applies to file candidates from built-ins and trusted editors. A proposed control operation does not bypass the native activation guard."
+            summary="Built-in strategies and trusted programs go through the same checks before Gobstopper writes a copy."
           />
 
           <MarketingSection
@@ -252,35 +254,33 @@ trusted_legacy_command = true`}</code></pre>
             headingId="install-title"
             id="install"
           >
-            <p className="install-note">{releaseVersion === undefined ? "No release yet. Install from source." : `Latest release: v${releaseVersion}`}</p>
-            {publishedRelease === null ? (
-              <>
-                <pre className="install-command" tabIndex={0}><code>{`cargo install --git ${repository} gobstopper
+            <p className="install-note">Install the current source build to use the behavior described on this page.</p>
+            <pre className="install-command" tabIndex={0}><code>{`cargo install --git ${repository} gobstopper --locked
 gobstopper --help`}</code></pre>
-                <pre className="install-command" tabIndex={0}><code>{`gobstopper detect
+            <pre className="install-command" tabIndex={0}><code>{`gobstopper detect
 gobstopper plan <session> --trigger 250000
 gobstopper watch --dry-run --once`}</code></pre>
-              </>
+            {publishedRelease === null ? (
+              <p className="install-note">No release yet.</p>
             ) : (
               <>
-                <pre className="install-command" tabIndex={0}><code>{`cargo install --git ${repository} --tag v${releaseVersion} gobstopper
-gobstopper --help`}</code></pre>
-                <pre className="install-command" tabIndex={0}><code>{`gobstopper detect
-gobstopper plan <session> --trigger 250000
-gobstopper watch --dry-run --once`}</code></pre>
                 <p className="install-note">
+                  Latest tagged release: <a href={`${repository}/releases/tag/v${releaseVersion}`}>v{releaseVersion}</a>.{" "}
                   <a href={publishedRelease.verificationRun}>See how this release was verified</a>.{" "}
                 </p>
+                {releasePredatesPage && (
+                  <p className="install-note">Version {releaseVersion} predates Devin support and the source build&apos;s safeguards. The source install above includes both.</p>
+                )}
               </>
             )}
             <p className="install-note">
               Needs Rust 1.85 or newer. Gobstopper reads Codex, Claude Code, and Devin session data on your
-              machine. Built-in inspection makes no model call; opt-in remote scorers receive
-              bounded transcript-derived text, and trusted plugins execute your code.{" "}
-              <a href="/docs#install">Read the full reference</a>.
+              machine. Built-in inspection makes no model call. If you enable a remote scorer,
+              it receives selected transcript text; trusted plugins run your code.{" "}
+              <a href="/docs#install--use">Read the full reference</a>.
             </p>
             <p className="install-note">
-              <a href={`${repository}/blob/main/docs/assurance/qualification.json`}>Activation matrix</a>{" · "}
+              <a href={`${repository}/blob/main/docs/assurance/qualification.json`}>Provider support status</a>{" · "}
               <a href={`${repository}/blob/main/docs/assurance/operations.md`}>Recovery runbook</a>{" · "}
               <a href={`${repository}/blob/main/verify/vault/README.md`}>Proof scopes and assumptions</a>
             </p>

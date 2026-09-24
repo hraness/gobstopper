@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import Home from "../app/page";
 import Docs from "../app/docs/page";
 import { publishedRelease } from "../app/publication";
+import { readmeLead } from "../app/readme.generated";
 import RootLayout from "../app/layout";
 
 const SUPPORT_URL = "https://account.hraness.com/support?product=gobstopper&amp;source=web#support";
@@ -30,25 +31,31 @@ test("every public route has one optional support footer without product signup"
   }
 });
 
-test("the homepage leads with the README identity and the verified install command", () => {
+test("the homepage shares the README identity and installs the guarded source build", () => {
   const html = renderToStaticMarkup(<Home />);
   expect(html.match(/<h1\b/gu)).toHaveLength(1);
-  expect(html).toContain("Prepare smaller coding-agent sessions, with a way back.");
+  expect(html).toContain(renderToStaticMarkup(<>{readmeLead}</>));
+  expect(html).toContain("cargo install --git https://github.com/hraness/gobstopper gobstopper --locked");
+  expect(html).not.toContain("--tag v");
   if (publishedRelease === null) {
     expect(html).toContain("No release yet");
-    expect(html).not.toContain("--tag v");
   } else {
-    expect(html).toContain(`--tag v${publishedRelease.version}`);
-    expect(html).toContain("cargo install --git");
+    expect(html).toContain(`href="https://github.com/hraness/gobstopper/releases/tag/v${publishedRelease.version}"`);
     expect(html).toContain(publishedRelease.verificationRun);
+    // This tag predates both Devin support and the guarded source behavior.
+    if (publishedRelease.version === "0.2.1") {
+      expect(html).toMatch(/predates Devin support[^<]+safeguards/u);
+    }
   }
+  expect(html).toMatch(/automatic provider compaction is disabled/iu);
+  expect(html).toMatch(/refuses automatic provider compaction[^.]+auto_compact_closed/u);
   expect(html).not.toContain("hraness.com/gobstopper");
 });
 
 test("the docs page renders the README with its installation anchor", () => {
   const html = renderToStaticMarkup(<Docs />);
   expect(html).toContain('id="install--use"');
-  expect(html).toContain('id="the-oompa-seam"');
+  expect(html).toContain('id="integrating-with-a-session-runtime"');
   expect(html).toContain("gobstopper detect");
   expect(html).not.toContain("data-hraness-marketing-preset");
 });
@@ -67,6 +74,13 @@ test("scopes the editorial preset to the homepage header and real command exampl
   expect(elements).toEqual(["header", "proof"]);
   expect(html).toContain("autocompact 100    56,300  no");
   expect(html).not.toContain("--in-place");
+  // Retired or nonexistent flags must not appear in homepage examples.
+  expect(html).not.toContain("--double-buffer");
+  expect(html).not.toMatch(/gobstopper watch[^\n<]*--trigger/u);
+  // A preset command is a string and runs only once trusted.
+  expect(html).not.toContain("command = [");
+  expect(html).toContain("trusted_legacy_command = true");
+  expect(html).toContain('href="/docs#install--use"');
   expect(html).toContain("On a 333k-token Claude Code session");
 });
 
