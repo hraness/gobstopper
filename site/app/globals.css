@@ -342,3 +342,8 @@ a { text-underline-offset: 0.2em; }
 .gobstopper-marketing-hero .hraness-marketing-hero__heading { font-family: var(--font-text); font-weight: 600; font-size: clamp(2.8rem, 4.8vw, 4.5rem); line-height: 1.06; letter-spacing: -.05em; }
 .document-page { font-size: 1rem; line-height: 1.75; }
 .document-page :is(h1, h2, h3) { font-family: var(--font-text); letter-spacing: -.025em; }
+
+/* Keep the appearance panel inside the viewport when navigation wraps. */
+@media (max-width: 48rem) {
+  .site-header .hraness-marketing-header__actions { margin-inline-start: auto; }
+}
