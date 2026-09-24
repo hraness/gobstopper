@@ -115,6 +115,10 @@ describe("Gobstopper blog", () => {
     const feed = blogAtomFeed();
     expect(Array.from(feed.matchAll(/<entry>\n<id>([^<]+)<\/id>/gu), (match) => match[1]).sort()).toEqual(indexable);
     expect(feed).not.toContain('href="/');
+    for (const post of indexablePosts) {
+      const entry = feed.slice(feed.indexOf(`<id>https://gobstopper.sh${postPath(post)}</id>`));
+      expect(entry.slice(0, entry.indexOf("</entry>"))).toContain(articleProvenanceSentence(postProvenance(post)));
+    }
 
     expect(blogIndexJsonLd().blogPost.map((post) => post.url).sort()).toEqual(indexable);
     const index = renderToStaticMarkup(<BlogIndex />);

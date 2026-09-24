@@ -48,7 +48,7 @@ function rewriteRelativeTargets(html: string): string {
   });
 }
 
-function headingText(html: string): string {
+export function headingText(html: string): string {
   // Parse text nodes instead of trying to remove nested or malformed markup.
   // The extracted text is used only to derive a restricted fragment identifier.
   let text = "";

@@ -11,7 +11,7 @@ import {
   type ArticleParty,
   type SearchSite,
 } from "@hraness/web-discovery";
-import { isArticleIndexable } from "@hraness/design-kit";
+import { isArticleIndexable, renderArticleProvenanceHtml } from "@hraness/design-kit";
 
 import { SITE_DESCRIPTION, SITE_NAME, SITE_ORIGIN } from "../_lib/site";
 import {
@@ -22,6 +22,7 @@ import {
   indexablePosts,
   postHtml,
   postPath,
+  postProvenance,
   publishedTime,
   type BlogPost,
 } from "./articles";
@@ -98,5 +99,10 @@ export function blogAtomFeed(): string {
     homePath: BLOG_PATH,
     path: BLOG_FEED_PATH,
     title: BLOG_TITLE,
-  }, indexablePosts.map((post) => createFeedEntry(postDiscovery(post), { contentHtml: absoluteLinks(postHtml(post)) })));
+  }, indexablePosts.map((post) => createFeedEntry(postDiscovery(post), { contentHtml: feedContent(post) })));
+}
+
+/** Feed readers show the body without the page, so the entry repeats the provenance note first. */
+function feedContent(post: BlogPost): string {
+  return renderArticleProvenanceHtml(postProvenance(post)) + absoluteLinks(postHtml(post));
 }

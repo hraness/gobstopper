@@ -1,19 +1,9 @@
-import { addHeadingIds, assertFragmentsResolve, assertSafeTarget } from "./readme-html.ts";
+import { addHeadingIds, assertFragmentsResolve, assertSafeTarget, headingText } from "./readme-html.ts";
 
 export type RenderedPost = Readonly<{
   html: string;
   toc: readonly Readonly<{ href: `#${string}`; label: string }>[];
 }>;
-
-function decodeText(value: string): string {
-  return value
-    .replace(/<[^>]*>/gu, "")
-    .replaceAll("&quot;", '"')
-    .replaceAll("&#39;", "'")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&amp;", "&");
-}
 
 /**
  * Render one post body from Markdown. Raw HTML is disabled, every link must be
@@ -39,7 +29,7 @@ export function renderPostHtml(source: string): RenderedPost {
   assertFragmentsResolve(rendered);
   const toc = Array.from(rendered.matchAll(/<h2 id="([^"]+)">([\s\S]*?)<\/h2>/gu), ([, id, body]) => ({
     href: `#${id}` as const,
-    label: decodeText(body ?? ""),
+    label: headingText(body ?? "").trim(),
   }));
   return { html: rendered, toc };
 }
