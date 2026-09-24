@@ -1,4 +1,7 @@
-//! Codex `compacted`-record writer (experimental).
+//! Codex `compacted`-record byte transformation (experimental).
+//!
+//! This module prepares detached candidates; it grants no authority to rewrite
+//! a provider path, and provider resume compatibility needs separate qualification.
 //!
 //! Codex persists provider-native compaction as a tail record of
 //! `type == "compacted"` whose `payload.replacement_history` is the
@@ -52,8 +55,8 @@ use gobstopper_core::plan::DigestBlock;
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
+#[cfg(test)]
 use std::fs;
-use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -202,59 +205,62 @@ pub fn read_rollout_lines(path: &Path) -> anyhow::Result<Vec<String>> {
 /// The payloads of the last `n` `response_item` records, in file order —
 /// the "keep tail" half of a custom replacement history.
 pub fn tail_response_items(src_lines: &[String], n: usize) -> Vec<Value> {
-    let mut items: Vec<Value> = src_lines
-        .iter()
-        .rev()
-        .filter_map(|line| {
-            let rec: Value = serde_json::from_str(line).ok()?;
-            if rec.get("type")?.as_str()? != "response_item" {
-                return None;
+    if src_lines.len() > gobstopper_core::validation::MAX_ITEMS {
+        return Vec::new();
+    }
+    let mut items = Vec::new();
+    for line in src_lines.iter().rev() {
+        if items.len() == n {
+            break;
+        }
+        let Ok(record) = crate::payload::decode_record(line) else {
+            break;
+        };
+        if record.get("type").and_then(Value::as_str) == Some("compacted") {
+            break;
+        }
+        if record.get("type").and_then(Value::as_str) == Some("response_item") {
+            if let Some(payload) = record
+                .get("payload")
+                .filter(|p| crate::codex::supported_item(p))
+            {
+                items.push(payload.clone());
             }
-            rec.get("payload").cloned()
-        })
-        .take(n)
-        .collect();
+        }
+    }
     items.reverse();
-    let calls: std::collections::HashSet<String> = items
-        .iter()
-        .filter(|item| {
-            matches!(
-                item.get("type").and_then(Value::as_str),
-                Some("function_call" | "custom_tool_call")
-            )
-        })
-        .filter_map(|item| {
-            item.get("call_id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .collect();
-    let outputs: std::collections::HashSet<String> = items
-        .iter()
-        .filter(|item| {
-            matches!(
-                item.get("type").and_then(Value::as_str),
-                Some("function_call_output" | "custom_tool_call_output")
-            )
-        })
-        .filter_map(|item| {
-            item.get("call_id")
-                .and_then(Value::as_str)
-                .map(str::to_string)
-        })
-        .collect();
+    let mut calls = std::collections::HashMap::new();
+    let mut results = std::collections::HashMap::new();
+    let mut duplicates = std::collections::HashSet::new();
+    for (position, item) in items.iter().enumerate() {
+        let Some(id) = crate::codex::record_call_id(item) else {
+            continue;
+        };
+        let slots = match item.get("type").and_then(Value::as_str) {
+            Some("function_call" | "custom_tool_call" | "local_shell_call") => &mut calls,
+            Some("function_call_output" | "custom_tool_call_output") => &mut results,
+            _ => continue,
+        };
+        if slots.insert(id.to_string(), position).is_some() {
+            duplicates.insert(id.to_string());
+        }
+    }
     items
         .into_iter()
         .filter(|item| match item.get("type").and_then(Value::as_str) {
             Some(
                 "function_call"
                 | "custom_tool_call"
+                | "local_shell_call"
                 | "function_call_output"
                 | "custom_tool_call_output",
-            ) => item
-                .get("call_id")
-                .and_then(Value::as_str)
-                .is_some_and(|id| calls.contains(id) && outputs.contains(id)),
+            ) => crate::codex::record_call_id(item).is_some_and(|id| {
+                !duplicates.contains(id)
+                    && calls
+                        .get(id)
+                        .zip(results.get(id))
+                        .is_some_and(|(call, result)| call < result)
+            }),
             _ => true,
         })
         .collect()
@@ -330,6 +336,12 @@ pub fn build_compacted_record(
     if replacement_history.is_empty() {
         bail!("compacted record needs a non-empty replacement_history");
     }
+    if src_lines.len() >= gobstopper_core::validation::MAX_ITEMS
+        || replacement_history.len() > gobstopper_core::validation::MAX_ITEMS
+        || !replacement_history.iter().all(crate::codex::supported_item)
+    {
+        bail!("compacted record exceeds supported dialect bounds");
+    }
 
     // The last compacted record's payload is the envelope template; the
     // last token_usage_record payload is the freshest usage accounting.
@@ -340,9 +352,8 @@ pub fn build_compacted_record(
         if line.is_empty() {
             continue;
         }
-        let Ok(rec) = serde_json::from_str::<Value>(line) else {
-            continue;
-        };
+        let rec = crate::payload::decode_record(line)
+            .context("compaction source contains invalid or ambiguous JSON")?;
         match rec.get("type").and_then(Value::as_str) {
             Some("compacted") => prev = rec.get("payload").cloned(),
             Some("token_usage_record") => last_usage = rec.get("payload").cloned(),
@@ -356,7 +367,13 @@ pub fn build_compacted_record(
         .unwrap_or(b"gobstopper-empty");
     let (window_number, first_window_id, previous_window_id) = match &prev {
         Some(p) => {
-            let number = p.get("window_number").and_then(Value::as_u64).unwrap_or(0) + 1;
+            let number = match p.get("window_number") {
+                None => 1,
+                Some(value) => value
+                    .as_u64()
+                    .and_then(|n| n.checked_add(1))
+                    .context("compaction window number is invalid or exhausted")?,
+            };
             let first = p
                 .get("first_window_id")
                 .and_then(Value::as_str)
@@ -431,62 +448,59 @@ pub fn build_compacted_record(
     serde_json::to_string(&record).context("serialize compacted record")
 }
 
-/// Append a serialized `compacted` record as the rollout's final line —
-/// compaction is a tail-append: the record points at the history the
-/// provider will use on resume, and records after it replay on top.
-/// Refuses to write a line that is not a well-formed `compacted` record.
-pub(crate) fn append_compacted(path: &Path, record_line: &str) -> anyhow::Result<()> {
-    let rec: Value =
-        serde_json::from_str(record_line).context("compacted line is not valid JSON")?;
+/// Append a validated compacted record to detached bytes in memory. The caller
+/// must separately admit any publication; this function performs no file I/O.
+pub fn append_compacted_bytes(original: &[u8], record_line: &str) -> anyhow::Result<Vec<u8>> {
+    let separators = 1 + usize::from(!original.is_empty() && original.last() != Some(&b'\n'));
+    if !original
+        .len()
+        .checked_add(record_line.len())
+        .and_then(|n| n.checked_add(separators))
+        .is_some_and(|n| (n as u64) <= crate::transaction::max_transcript_bytes())
+    {
+        bail!("compacted rollout exceeds transcript byte limit");
+    }
+    let rec = crate::payload::decode_record(record_line)
+        .context("compacted line is not unambiguous JSON")?;
     if rec.get("type").and_then(Value::as_str) != Some("compacted") {
         bail!("refusing to append a record that is not type=compacted");
     }
     if !rec
         .get("payload")
         .and_then(|p| p.get("replacement_history"))
-        .map(Value::is_array)
-        .unwrap_or(false)
+        .is_some_and(Value::is_array)
     {
         bail!("compacted record lacks a replacement_history array");
     }
-
-    let mut f = fs::OpenOptions::new()
-        .read(true)
-        .append(true)
-        .open(path)
-        .with_context(|| format!("open {}", path.display()))?;
-    // Terminate a torn tail line before writing so the record always
-    // starts on its own line.
-    if f.metadata().map(|m| m.len()).unwrap_or(0) > 0 {
-        f.seek(SeekFrom::End(-1))
-            .with_context(|| format!("seek {}", path.display()))?;
-        let mut last = [0u8; 1];
-        f.read_exact(&mut last)
-            .with_context(|| format!("read {}", path.display()))?;
-        if last[0] != b'\n' {
-            f.write_all(b"\n")
-                .with_context(|| format!("write {}", path.display()))?;
-        }
-    }
-    f.write_all(record_line.as_bytes())
-        .and_then(|()| f.write_all(b"\n"))
-        .with_context(|| format!("append {}", path.display()))
+    Ok(crate::transaction::prepare(
+        gobstopper_core::Provider::Codex,
+        original,
+        |raw| {
+            let mut candidate = raw.to_string();
+            if !candidate.is_empty() && !candidate.ends_with('\n') {
+                candidate.push('\n');
+            }
+            candidate.push_str(record_line);
+            candidate.push('\n');
+            Ok(candidate)
+        },
+    )?)
 }
 
-/// One-call lowering of an `InjectDigest` edit into a provider-native
-/// compaction: read the rollout, keep the last `keep_tail` response
-/// items verbatim after the digest, and append the `compacted` record.
-/// Returns the new record's `ordinal` (its line index).
-///
-/// This is the explicit opt-in path — [`crate::codex::apply`] keeps its
-/// existing `InjectDigest` behavior (a plain appended user message) so
-/// current callers see no change.
-pub fn compact_with_digest(
-    path: &Path,
+/// Prepare an experimental compacted record without changing any file.
+/// Returns the candidate bytes and appended record ordinal. Synthesized
+/// identities use the clock/counter; preserve the returned bytes for retries.
+pub fn transform_with_digest(
+    original: &[u8],
     digest: &DigestBlock,
     keep_tail: usize,
-) -> anyhow::Result<u64> {
-    let lines = read_rollout_lines(path)?;
+) -> anyhow::Result<(Vec<u8>, u64)> {
+    if original.len() as u64 > crate::transaction::max_transcript_bytes() {
+        bail!("rollout exceeds transcript byte limit");
+    }
+    crate::payload::check_digest_bounds(digest)?;
+    let raw = std::str::from_utf8(original).context("rollout is not UTF-8")?;
+    let lines: Vec<String> = raw.lines().map(str::to_string).collect();
     let tail = tail_response_items(&lines, keep_tail);
     let history = digest_to_replacement_history(digest, &tail);
     let line = build_compacted_record(&lines, history)?;
@@ -494,16 +508,17 @@ pub fn compact_with_digest(
         .ok()
         .and_then(|v| v.get("ordinal").and_then(Value::as_u64))
         .unwrap_or(lines.len() as u64);
-    crate::transaction::apply(gobstopper_core::Provider::Codex, path, |raw| {
-        let mut candidate = raw.to_string();
-        if !candidate.is_empty() && !candidate.ends_with('\n') {
-            candidate.push('\n');
-        }
-        candidate.push_str(&line);
-        candidate.push('\n');
-        Ok(candidate)
-    })?;
-    Ok(ordinal)
+    Ok((append_compacted_bytes(original, &line)?, ordinal))
+}
+
+/// Direct provider-path mutation is disabled before any file access. Use
+/// [`transform_with_digest`] and an admitted no-clobber copy publisher instead.
+pub fn compact_with_digest(
+    _path: &Path,
+    _digest: &DigestBlock,
+    _keep_tail: usize,
+) -> anyhow::Result<u64> {
+    Err(crate::AdapterError::DirectMutationDisabled.into())
 }
 
 #[cfg(test)]
@@ -749,7 +764,13 @@ mod tests {
         fs::write(&path, lines.join("\n") + "\n").unwrap();
 
         // Lower an InjectDigest edit and append as a compacted record.
-        compact_with_digest(&path, &digest(), 3).unwrap();
+        fs::write(
+            &path,
+            transform_with_digest(&fs::read(&path).unwrap(), &digest(), 3)
+                .unwrap()
+                .0,
+        )
+        .unwrap();
 
         let raw = fs::read_to_string(&path).unwrap();
         let out_lines: Vec<&str> = raw.lines().collect();
@@ -811,17 +832,24 @@ mod tests {
             digest_to_replacement_history(&digest(), &[]),
         )
         .unwrap();
-        append_compacted(&path, &line).unwrap();
+        fs::write(
+            &path,
+            append_compacted_bytes(&fs::read(&path).unwrap(), &line).unwrap(),
+        )
+        .unwrap();
         let raw = fs::read_to_string(&path).unwrap();
         let out: Vec<&str> = raw.lines().collect();
         assert_eq!(out.len(), 2, "record must start on its own line");
         assert!(out.iter().all(|l| serde_json::from_str::<Value>(l).is_ok()));
 
         // Guard rails: refuse non-compacted or malformed lines.
-        assert!(append_compacted(&path, "{\"type\":\"response_item\"}").is_err());
-        assert!(append_compacted(&path, "not json").is_err());
-        assert!(append_compacted(
-            &path,
+        assert!(
+            append_compacted_bytes(&fs::read(&path).unwrap(), "{\"type\":\"response_item\"}")
+                .is_err()
+        );
+        assert!(append_compacted_bytes(&fs::read(&path).unwrap(), "not json").is_err());
+        assert!(append_compacted_bytes(
+            &fs::read(&path).unwrap(),
             "{\"type\":\"compacted\",\"payload\":{\"type\":\"compaction\"}}"
         )
         .is_err());
@@ -833,8 +861,20 @@ mod tests {
         let path = dir.0.join("rollout-chain.jsonl");
         fs::write(&path, fixture_lines().join("\n") + "\n").unwrap();
 
-        compact_with_digest(&path, &digest(), 2).unwrap();
-        compact_with_digest(&path, &digest(), 1).unwrap();
+        fs::write(
+            &path,
+            transform_with_digest(&fs::read(&path).unwrap(), &digest(), 2)
+                .unwrap()
+                .0,
+        )
+        .unwrap();
+        fs::write(
+            &path,
+            transform_with_digest(&fs::read(&path).unwrap(), &digest(), 1)
+                .unwrap()
+                .0,
+        )
+        .unwrap();
 
         let lines = read_rollout_lines(&path).unwrap();
         let findings = verify(Provider::Codex, lines.join("\n").as_bytes());

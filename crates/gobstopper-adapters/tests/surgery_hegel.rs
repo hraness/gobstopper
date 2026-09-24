@@ -4,8 +4,9 @@
 //! sequence — elide subsets, digest injection, vault snapshot/restore,
 //! provider appends — asserting after every mutation that the transcript
 //! still verifies clean and that order and linkage fields are untouched.
-//! This is the "don't break sessions" property, exercised directly
-//! against the real write paths rather than at the CLI boundary.
+//! These properties exercise production byte transformations and no-clobber
+//! vault restoration. Only this harness rewrites its owned fixture files;
+//! they do not establish authority to mutate provider-owned sessions.
 
 use gobstopper_adapters::{claude, codex, vault, verify};
 use gobstopper_core::plan::{DigestBlock, Edit};
@@ -28,6 +29,26 @@ fn tmpdir(tag: &str) -> PathBuf {
     ));
     fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+// Publish prepared bytes only into a fixture owned by this test harness.
+fn transform_fixture(
+    provider: Provider,
+    path: &Path,
+    edits: &[Edit],
+) -> Result<u64, gobstopper_adapters::AdapterError> {
+    let original = gobstopper_adapters::transaction::read(path)?;
+    let candidate = match provider {
+        Provider::Codex => codex::transform(&original, edits),
+        Provider::ClaudeCode => claude::transform(&original, edits),
+        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
+    }?;
+    let reclaimed = original.len().saturating_sub(candidate.len()) as u64;
+    fs::write(path, candidate).map_err(|source| gobstopper_adapters::AdapterError::Io {
+        path: path.into(),
+        source,
+    })?;
+    Ok(reclaimed)
 }
 
 fn write_lines(path: &Path, lines: &[String]) {
@@ -110,8 +131,14 @@ fn gen_content(tc: &TestCase) -> String {
 fn gen_claude_transcript(tc: &TestCase) -> Vec<String> {
     let session = format!("s{}", tc.draw(gs::integers::<u32>()));
     let n = tc.draw(gs::integers::<usize>().min_value(3).max_value(24));
-    let mut lines = Vec::new();
-    let mut uuids: Vec<String> = Vec::new();
+    // Valid corpus generation always includes explicit source identity; a
+    // bookkeeping-only file is deliberately covered by refusal regressions.
+    let mut lines = vec![serde_json::to_string(&json!({
+        "type":"user", "uuid":"root", "parentUuid":null, "sessionId":session,
+        "message":{"role":"user","content":"initial goal"}
+    }))
+    .unwrap()];
+    let mut uuids: Vec<String> = vec!["root".into()];
     let mut open_calls: Vec<String> = Vec::new();
     for i in 0..n {
         // Occasionally emit a linkage-free bookkeeping line (summary,
@@ -126,12 +153,20 @@ fn gen_claude_transcript(tc: &TestCase) -> Vec<String> {
             continue;
         }
         let uuid = format!("u{i}");
-        let parent = if uuids.is_empty() {
-            Value::Null
-        } else {
+        // Mainline call/result pairs must share one ancestry. Separately add
+        // completed dead text branches; a result on an unrelated sibling is
+        // not an answer to a live call.
+        if !uuids.is_empty() && tc.draw(gs::weighted_booleans(0.2)) {
             let idx = tc.draw(gs::integers::<usize>().max_value(uuids.len() - 1));
-            json!(uuids[idx])
-        };
+            lines.push(
+                serde_json::to_string(&json!({
+                    "type":"assistant", "uuid":format!("dead-{i}"), "parentUuid":uuids[idx],
+                    "sessionId":session, "message":{"role":"assistant","content":"abandoned text"}
+                }))
+                .unwrap(),
+            );
+        }
+        let parent = uuids.last().map_or(Value::Null, |id| json!(id));
         // Draw a record kind: plain user text, assistant text, tool_use,
         // tool_result (only when a call is open), or sidechain note.
         let mut choices = vec!["user_text", "assistant_text", "tool_use"];
@@ -211,7 +246,7 @@ fn gen_claude_transcript(tc: &TestCase) -> Vec<String> {
     }
     // Close every outstanding tool_use so verify sees a finished transcript.
     for call_id in open_calls.drain(..) {
-        let uuid = format!("u{}", uuids.len());
+        let uuid = format!("close-{}", uuids.len());
         let size = tc.draw(gs::integers::<usize>().max_value(1500));
         lines.push(
             serde_json::to_string(&json!({
@@ -426,7 +461,7 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
         .collect();
 
     let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(12));
-    for _ in 0..steps {
+    for step in 0..steps {
         match tc.draw(gs::integers::<u8>().max_value(3)) {
             // Elide a random subset of lines.
             0 => {
@@ -438,8 +473,10 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                     per_item_stubs: Default::default(),
                 }];
                 let reclaimed = match provider {
-                    Provider::Codex => codex::apply(&path, &edits).unwrap(),
-                    Provider::ClaudeCode => claude::apply(&path, &edits).unwrap(),
+                    Provider::Codex => transform_fixture(Provider::Codex, &path, &edits).unwrap(),
+                    Provider::ClaudeCode => {
+                        transform_fixture(Provider::ClaudeCode, &path, &edits).unwrap()
+                    }
                     Provider::Devin => {
                         unreachable!("devin coverage lives in devin.rs fixture tests")
                     }
@@ -458,8 +495,10 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                 }
                 // Re-eliding the same lines is a no-op on the bytes.
                 let again = match provider {
-                    Provider::Codex => codex::apply(&path, &edits).unwrap(),
-                    Provider::ClaudeCode => claude::apply(&path, &edits).unwrap(),
+                    Provider::Codex => transform_fixture(Provider::Codex, &path, &edits).unwrap(),
+                    Provider::ClaudeCode => {
+                        transform_fixture(Provider::ClaudeCode, &path, &edits).unwrap()
+                    }
                     Provider::Devin => {
                         unreachable!("devin coverage lives in devin.rs fixture tests")
                     }
@@ -476,8 +515,10 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                     digest: gen_digest(&tc, before.len()),
                 }];
                 match provider {
-                    Provider::Codex => codex::apply(&path, &edits).unwrap(),
-                    Provider::ClaudeCode => claude::apply(&path, &edits).unwrap(),
+                    Provider::Codex => transform_fixture(Provider::Codex, &path, &edits).unwrap(),
+                    Provider::ClaudeCode => {
+                        transform_fixture(Provider::ClaudeCode, &path, &edits).unwrap()
+                    }
                     Provider::Devin => {
                         unreachable!("devin coverage lives in devin.rs fixture tests")
                     }
@@ -516,18 +557,29 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
                     per_item_stubs: Default::default(),
                 }];
                 match provider {
-                    Provider::Codex => codex::apply(&path, &edits).unwrap(),
-                    Provider::ClaudeCode => claude::apply(&path, &edits).unwrap(),
+                    Provider::Codex => transform_fixture(Provider::Codex, &path, &edits).unwrap(),
+                    Provider::ClaudeCode => {
+                        transform_fixture(Provider::ClaudeCode, &path, &edits).unwrap()
+                    }
                     Provider::Devin => {
                         unreachable!("devin coverage lives in devin.rs fixture tests")
                     }
                 };
-                vault::restore(&entry.sha256, &path, &vault_root).unwrap();
+                let changed = fs::read(&path).unwrap();
+                let restored_path = dir.join(format!("restored-{step}.jsonl"));
+                vault::restore(&entry.sha256, &restored_path, &vault_root).unwrap();
                 assert_eq!(
-                    fs::read(&path).unwrap(),
+                    fs::read(&restored_path).unwrap(),
                     before,
                     "vault restore did not reproduce byte-identical bytes"
                 );
+                assert_eq!(
+                    fs::read(&path).unwrap(),
+                    changed,
+                    "restore changed the source"
+                );
+                // Reset the owned test fixture to continue the generated sequence.
+                fs::write(&path, &before).unwrap();
                 no_errors(provider, &path);
             }
             // The provider keeps writing after our edit: append a fresh
@@ -589,7 +641,8 @@ fn codex_small_output_is_not_stubbed() {
     .unwrap();
     write_lines(&path, &[line]);
     let before = fs::read(&path).unwrap();
-    let reclaimed = codex::apply(
+    let reclaimed = transform_fixture(
+        Provider::Codex,
         &path,
         &[Edit::Elide {
             line_indexes: vec![0],
@@ -621,9 +674,9 @@ fn codex_elide_is_idempotent() {
         stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
         per_item_stubs: Default::default(),
     }];
-    codex::apply(&path, &edits).unwrap();
+    transform_fixture(Provider::Codex, &path, &edits).unwrap();
     let once = fs::read(&path).unwrap();
-    codex::apply(&path, &edits).unwrap();
+    transform_fixture(Provider::Codex, &path, &edits).unwrap();
     assert_eq!(fs::read(&path).unwrap(), once);
 }
 
@@ -640,7 +693,8 @@ fn out_of_range_indexes_leave_file_byte_identical() {
     .unwrap();
     write_lines(&path, &[line]);
     let before = fs::read(&path).unwrap();
-    let reclaimed = codex::apply(
+    let reclaimed = transform_fixture(
+        Provider::Codex,
         &path,
         &[Edit::Elide {
             line_indexes: vec![7, 7, usize::MAX],
@@ -667,7 +721,8 @@ fn malformed_target_line_passes_through() {
         ],
     );
     let before = fs::read(&path).unwrap();
-    claude::apply(
+    transform_fixture(
+        Provider::ClaudeCode,
         &path,
         &[Edit::Elide {
             line_indexes: vec![0, 1],
@@ -679,12 +734,11 @@ fn malformed_target_line_passes_through() {
     assert_eq!(fs::read(&path).unwrap(), before);
 }
 
-/// When the rewrite cannot be staged (read-only directory), apply must
-/// fail and leave the original file byte-identical — never a truncated or
-/// partially written transcript.
+/// A read-only directory is not inspected or staged when direct mutation
+/// has no qualified custody. Refusal leaves the file byte-identical.
 #[cfg(unix)]
 #[test]
-fn failed_write_preserves_original() {
+fn disabled_direct_write_preserves_original_in_readonly_directory() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tmpdir("readonly");
     let path = dir.join("rollout.jsonl");
@@ -706,7 +760,10 @@ fn failed_write_preserves_original() {
         }],
     );
     fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
-    assert!(result.is_err());
+    assert!(matches!(
+        result,
+        Err(gobstopper_adapters::AdapterError::DirectMutationDisabled)
+    ));
     assert_eq!(fs::read(&path).unwrap(), before);
 }
 
@@ -724,7 +781,8 @@ fn missing_trailing_newline_is_preserved() {
     }))
     .unwrap();
     fs::write(&path, &line).unwrap(); // no trailing newline
-    codex::apply(
+    transform_fixture(
+        Provider::Codex,
         &path,
         &[Edit::Elide {
             line_indexes: vec![0],
@@ -816,8 +874,10 @@ fn plans_apply_cleanly(tc: TestCase) {
             .filter(|e| !matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
             .collect();
         match provider {
-            Provider::Codex => codex::apply(&copy, &file_edits).unwrap(),
-            Provider::ClaudeCode => claude::apply(&copy, &file_edits).unwrap(),
+            Provider::Codex => transform_fixture(Provider::Codex, &copy, &file_edits).unwrap(),
+            Provider::ClaudeCode => {
+                transform_fixture(Provider::ClaudeCode, &copy, &file_edits).unwrap()
+            }
             Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
         };
         no_errors(provider, &copy);
@@ -859,8 +919,10 @@ fn plans_apply_cleanly(tc: TestCase) {
                 .filter(|e| !matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
                 .collect();
             match provider {
-                Provider::Codex => codex::apply(&copy, &file_edits2).unwrap(),
-                Provider::ClaudeCode => claude::apply(&copy, &file_edits2).unwrap(),
+                Provider::Codex => transform_fixture(Provider::Codex, &copy, &file_edits2).unwrap(),
+                Provider::ClaudeCode => {
+                    transform_fixture(Provider::ClaudeCode, &copy, &file_edits2).unwrap()
+                }
                 Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
             };
             no_errors(provider, &copy);
@@ -922,7 +984,8 @@ fn dirty_transcript_surgery_adds_no_findings(tc: TestCase) {
             .collect();
     let indexes = draw_line_indexes(&tc, lines.len());
     match provider {
-        Provider::Codex => codex::apply(
+        Provider::Codex => transform_fixture(
+            Provider::Codex,
             &path,
             &[Edit::Elide {
                 line_indexes: indexes,
@@ -931,7 +994,8 @@ fn dirty_transcript_surgery_adds_no_findings(tc: TestCase) {
             }],
         )
         .unwrap(),
-        Provider::ClaudeCode => claude::apply(
+        Provider::ClaudeCode => transform_fixture(
+            Provider::ClaudeCode,
             &path,
             &[Edit::Elide {
                 line_indexes: indexes,
@@ -1013,7 +1077,8 @@ fn stale_plan_survives_provider_appends(tc: TestCase) {
     }
     write_lines(&path, &lines);
     match provider {
-        Provider::Codex => codex::apply(
+        Provider::Codex => transform_fixture(
+            Provider::Codex,
             &path,
             &[Edit::Elide {
                 line_indexes: indexes.clone(),
@@ -1022,7 +1087,8 @@ fn stale_plan_survives_provider_appends(tc: TestCase) {
             }],
         )
         .unwrap(),
-        Provider::ClaudeCode => claude::apply(
+        Provider::ClaudeCode => transform_fixture(
+            Provider::ClaudeCode,
             &path,
             &[Edit::Elide {
                 line_indexes: indexes.clone(),
@@ -1133,8 +1199,8 @@ fn compacted_records_chain_cleanly(tc: TestCase) {
 }
 
 fn compact_with_digest_entry(path: &Path, keep_tail: usize) {
-    gobstopper_adapters::codex_compact::compact_with_digest(
-        path,
+    let (candidate, _) = gobstopper_adapters::codex_compact::transform_with_digest(
+        &fs::read(path).unwrap(),
         &DigestBlock {
             goal: Some("g".to_string()),
             decisions: vec![],
@@ -1146,6 +1212,7 @@ fn compact_with_digest_entry(path: &Path, keep_tail: usize) {
         keep_tail,
     )
     .unwrap();
+    fs::write(path, candidate).unwrap();
 }
 
 /// verify itself is a safety net — it must return findings, never panic,
@@ -1261,7 +1328,7 @@ fn fork_is_additive_and_linkage_preserving(tc: TestCase) {
     write_lines(&path, &lines);
     let original = fs::read(&path).unwrap();
 
-    let result = fork::fork(provider, &path, None).unwrap();
+    let result = fork::fork_with_vault(provider, &path, None, &dir.join("vault")).unwrap();
     assert_eq!(
         fs::read(&path).unwrap(),
         original,
@@ -1316,16 +1383,31 @@ fn fork_is_additive_and_linkage_preserving(tc: TestCase) {
     }
     no_errors(provider, &result.path);
 
-    // A second fork with an explicit colliding id must refuse, not overwrite.
-    let again = fork::fork(provider, &path, Some(result.session_id.clone()));
-    assert!(
-        again.is_err(),
-        "fork silently overwrote an existing sibling"
-    );
+    // An exact retry reconciles the admitted operation without rewriting it.
+    let again = fork::fork_with_vault(
+        provider,
+        &path,
+        Some(result.session_id.clone()),
+        &dir.join("vault"),
+    )
+    .unwrap();
+    assert_eq!(again.path, result.path);
     assert_eq!(read_lines(&result.path), forked);
+    // A different file now occupying the same target must never be replaced.
+    let foreign = b"unrelated provider replacement\n";
+    fs::write(&result.path, foreign).unwrap();
+    assert!(fork::fork_with_vault(
+        provider,
+        &path,
+        Some(result.session_id.clone()),
+        &dir.join("vault")
+    )
+    .is_err());
+    assert_eq!(fs::read(&result.path).unwrap(), foreign);
+    assert_eq!(fs::read(&path).unwrap(), original);
 }
 
-/// Vault: snapshot → mutate → restore reproduces byte-identical bytes;
+/// Vault: snapshot → mutate → restore-to-new reproduces byte-identical bytes;
 /// identical content dedups to the same object; the index keeps both
 /// entries so `latest_for` sees the newest snapshot.
 #[hegel::test(test_cases = 64, suppress_health_check = [hegel::HealthCheck::TooSlow])]
@@ -1353,15 +1435,17 @@ fn vault_roundtrip_dedups_and_restores_exactly(tc: TestCase) {
         "identical content produced different digests"
     );
 
-    // Mutate, then restore — the original bytes come back exactly.
+    // Restore into an absent target; an existing provider path is never replaced.
     fs::write(&path, "garbage-not-jsonl\n").unwrap();
-    let restored = vault::restore(&e1.sha256, &path, &vault_root).unwrap();
+    let restored_path = dir.join("restored.jsonl");
+    let restored = vault::restore(&e1.sha256, &restored_path, &vault_root).unwrap();
     assert_eq!(restored.sha256, e1.sha256);
     assert_eq!(
-        fs::read(&path).unwrap(),
+        fs::read(&restored_path).unwrap(),
         original,
         "restore did not reproduce exact bytes"
     );
+    assert_eq!(fs::read(&path).unwrap(), b"garbage-not-jsonl\n");
 
     // The index holds both snapshots; latest_for finds this path's newest.
     let entries = vault::list(&vault_root).unwrap();
@@ -1457,8 +1541,15 @@ fn hostile_digest_injects_as_one_line(tc: TestCase) {
     };
     let before = read_lines(&path).len();
     match provider {
-        Provider::Codex => codex::apply(&path, &[Edit::InjectDigest { digest }]).unwrap(),
-        Provider::ClaudeCode => claude::apply(&path, &[Edit::InjectDigest { digest }]).unwrap(),
+        Provider::Codex => {
+            transform_fixture(Provider::Codex, &path, &[Edit::InjectDigest { digest }]).unwrap()
+        }
+        Provider::ClaudeCode => transform_fixture(
+            Provider::ClaudeCode,
+            &path,
+            &[Edit::InjectDigest { digest }],
+        )
+        .unwrap(),
         Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     let after = read_lines(&path);
@@ -1724,7 +1815,8 @@ fn compacted_all_small_outputs_never_rewritten() {
         "300 bytes across 3 sub-floor outputs is not elidable"
     );
     let before = fs::read(&path).unwrap();
-    codex::apply(
+    transform_fixture(
+        Provider::Codex,
         &path,
         &[Edit::Elide {
             line_indexes: vec![1],
@@ -1818,7 +1910,7 @@ fn digest_line_carries_no_elided_content() {
             ..Default::default()
         },
     });
-    codex::apply(&path, &edits).unwrap();
+    transform_fixture(Provider::Codex, &path, &edits).unwrap();
 
     let after = read_lines(&path);
     let digest_line = after.last().expect("digest line appended");
@@ -1880,7 +1972,8 @@ fn elide_of_non_output_lines_is_byte_identical(tc: TestCase) {
     write_lines(&path, &lines);
     let before = fs::read(&path).unwrap();
     let indexes = draw_line_indexes(&tc, n);
-    claude::apply(
+    transform_fixture(
+        Provider::ClaudeCode,
         &path,
         &[Edit::Elide {
             line_indexes: indexes,
@@ -1912,7 +2005,8 @@ fn codex_per_item_stub_overrides_template() {
     write_lines(&path, &lines);
     let mut stubs = std::collections::BTreeMap::new();
     stubs.insert(0usize, "read parser.rs: added token enum".to_string());
-    codex::apply(
+    transform_fixture(
+        Provider::Codex,
         &path,
         &[Edit::Elide {
             line_indexes: vec![0, 1],
@@ -1948,7 +2042,8 @@ fn claude_per_item_stub_overrides_template() {
     write_lines(&path, &lines);
     let mut stubs = std::collections::BTreeMap::new();
     stubs.insert(1usize, "test run: 3 lexer failures".to_string());
-    claude::apply(
+    transform_fixture(
+        Provider::ClaudeCode,
         &path,
         &[Edit::Elide {
             line_indexes: vec![0, 1],

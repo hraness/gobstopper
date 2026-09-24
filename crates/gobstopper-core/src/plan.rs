@@ -137,17 +137,21 @@ impl DigestBlock {
     /// keeps every strategy's `context_tokens_after` honest without
     /// duplicating the char-count math in each strategy module.
     pub fn estimate_overhead(&self) -> u64 {
-        let chars = self.goal.as_ref().map(|s| s.len()).unwrap_or(0)
-            + self.summary.as_ref().map(|s| s.len()).unwrap_or(0)
-            + self.concepts.iter().map(|s| s.len()).sum::<usize>()
-            + self.files_touched.iter().map(|s| s.len()).sum::<usize>()
-            + self.decisions.iter().map(|s| s.len()).sum::<usize>()
-            + self.errors.iter().map(|s| s.len()).sum::<usize>()
-            + self.open_tasks.iter().map(|s| s.len()).sum::<usize>()
-            + self.current_work.as_ref().map(|s| s.len()).unwrap_or(0)
-            + self.context.as_ref().map(|s| s.len()).unwrap_or(0)
-            + 64; // state-card framing
-        crate::estimate::estimate_tokens(chars)
+        let bytes = self
+            .goal
+            .iter()
+            .chain(&self.summary)
+            .chain(&self.concepts)
+            .chain(&self.files_touched)
+            .chain(&self.decisions)
+            .chain(&self.errors)
+            .chain(&self.open_tasks)
+            .chain(&self.current_work)
+            .chain(&self.context)
+            .fold(64u64, |total, text| {
+                crate::estimate::add_tokens(total, text.len() as u64)
+            });
+        crate::estimate::estimate_token_bytes(bytes)
     }
 }
 

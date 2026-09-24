@@ -1,6 +1,7 @@
 # Local observation pass
 
-`monitor.py` performs one read-only pass for explicitly selected Codex sessions:
+`monitor.py` performs one read-only pass for explicit session IDs, with Codex
+delta rows and bounded provider context samples:
 
 ```sh
 python3 scripts/monitor.py \
@@ -10,11 +11,20 @@ python3 scripts/monitor.py \
 ```
 
 Repeat `--session` for more exact native session IDs. At least one is required;
-prefixes do not match report rows. Use Python 3.9 or later on macOS/Linux. This
+prefixes do not match report rows. Optional `--provider codex`,
+`--provider claude_code` or `--provider devin` also includes reported active
+sessions of that provider in `context_samples`, up to 256 samples total. That
+option broadens the retained identifier scope; it does not enable compaction.
+Use Python 3.9 or later on macOS/Linux. This
 script does not install a service. A supervisor can invoke it periodically;
 an exclusive lock prevents overlapping passes. Each pass gives both child
 commands a combined 45-second budget, and bounds captured output to 8 MiB per
-command. Timed-out child process groups belong to this invocation and are killed.
+command. Child process groups belong to this invocation and are collected on
+success as well as failure, before reaping their leader. Cleanup allows up to
+one additional second for the leader and 250 ms for nonblocking pipe drain;
+`cleanup_complete` is explicit. A descendant that escapes the group can make
+cleanup incomplete, but cannot hold the reader indefinitely. The runner trusts
+the selected binary not to detach or change privileges; it is not a sandbox.
 SIGTERM/SIGINT cancellation kills and reaps the owned child before exiting;
 interrupted passes do not replace the last complete observation.
 
@@ -27,8 +37,9 @@ watch command's known per-session load/plan failure diagnostics are classified a
 `watch_evaluation_failed` even when that command exits zero; plan count is then
 unavailable. Both commands limit discovery to files updated within 180 seconds
 before reading their usage; activity is a file modification heuristic, not proof
-of an owning process. The report is capped at 2,000 sessions. Only exact
-allowlisted Codex rows reach the saved observations. A missing or idle row is
+of an owning process. The report is capped at 2,000 sessions. `sessions` contains
+only exact allowlisted Codex rows; `context_samples` also includes explicitly
+selected IDs or provider opt-ins from other providers. A missing or idle row is
 unavailable, never a zero-valued measurement.
 
 Each command also includes an additive `resources` object with `user_cpu_us`,
@@ -64,24 +75,47 @@ API calls. It reads the provider histories through Gobstopper's read-only comman
 Context drops are differences between consecutive observations, **not savings
 attributable to Gobstopper**. Native provider compaction, a resume, another
 process, and ordinary accounting changes can cause them. Every observation
-explicitly records unknown attribution. A zero context reading after a compaction
-boundary is treated as unavailable until a provider usage record arrives.
+explicitly records unknown attribution. Context state distinguishes `reported`,
+`absent`, `unknown` and `reset`; only reported observations are compared. A zero
+context reading after a compaction boundary is treated as unavailable until a
+provider usage record arrives. `source_identity_sha256` must match across the
+pair, so the same native ID from a foreign store cannot produce a delta.
 First-sample deltas, missing fields, and deltas after a missing observation are
 `null`; comparable unchanged values yield `0`. Counter decreases are marked as
-resets and have unknown deltas. `native_hook_applied` reads the report's additive
+resets and have unknown deltas. Lifetime counters are exposed only for `full`
+scope; bounded discovery tails with `partial` scope do not become lifetime
+totals. `native_hook_applied` reads the report's additive
 `compactions.nativeHookApplied` counter. Older binaries that omit that field
 produce `null`, and the aggregate count of all applied strategies is never used
-as a substitute. Hook counts are lifecycle observations, not proof that the
-hooks caused compaction or reduced usage. Reported counters inherit any limits
-of the underlying report and event log.
+as a substitute. Current hook callbacks are unattributed observations and never
+increment that applied counter. Legacy hook labels alone are not evidence of
+causal compaction or reduced usage. Retention aggregation requires an applied
+event with no error and internally consistent source-bound before/after
+snapshots. Its provider, native session ID and source identity must match a
+selected context sample. Exact before/after snapshot pairs count once;
+conflicting counts or source hashes for one pair exclude it. The reader follows the same `XDG_DATA_HOME` as the
+child commands, refuses symlinks and special files, rejects duplicate JSON keys,
+and bounds the log to 16 MiB and each record to 64 KiB. Missing, unreadable,
+oversized or torn logs have `available: false` and a closed `error`; malformed
+complete records increment `invalid_records`. `conflicting_pairs` reports
+ambiguous tallies. Legacy count fields remain zero when unavailable, so
+consumers must check availability. This covers one local log generation, not
+lifetime retention. Absent coverage is unmeasured.
+
+Released CLI native dispatch remains guarded even with an old opt-in. The
+monitor reports this as `closed_session_compact: "unqualified"` where supplied;
+it is not an invitation to remove the guard or retry an unknown operation. See
+the [activation matrix](../docs/assurance/qualification.json) and
+[recovery runbook](../docs/assurance/operations.md).
 
 The output directory must belong to the current user and be private (0700).
 New directories are created privately; an existing nonprivate directory is
 refused rather than having unrelated permissions changed. Symlinked output
 paths, symlinked or hardlinked files, and nonprivate existing output files are
 refused. Created files use 0600. Session IDs remain identifying information;
-keep these local records private. No transcript text, filesystem paths, unrelated
-session IDs, or remote credentials are retained in observations.
+keep these local records private. No transcript text, filesystem paths,
+identifiers outside the selected ID/provider scope, or remote credentials are
+retained in observations.
 
 Run the focused fixture tests with:
 
@@ -95,5 +129,6 @@ data, counter resets, symlink refusal, overlap exclusion, log rotation, timeout,
 bounded capture, zero-exit evaluation failures, and cancellation cleanup. They
 also cover numeric child-resource deltas, timeout reaping versus an unstarted
 second command, unavailable or invalid counters, and diagnostic failure without
-losing command results or cleanup. They do not establish live session compaction
-savings.
+losing command results or cleanup, same-ID foreign stores, duplicate/conflicting
+evidence, torn or special-file logs, successful leaders with silent descendants,
+and escaped pipe holders. They do not establish live session compaction savings.

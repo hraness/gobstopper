@@ -1,6 +1,6 @@
 [package]
 name = "gobstopper"
-description = "Compacts Claude Code, Codex, and Devin sessions at a context size you choose"
+description = "Inspects Claude Code, Codex, and Devin sessions and prepares compacted transcript copies"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

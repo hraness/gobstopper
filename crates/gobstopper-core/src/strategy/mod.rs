@@ -500,6 +500,7 @@ mod tests {
             items,
             usage: UsageSample {
                 context_tokens: 100,
+                context_state: crate::model::ContextState::Reported,
                 ..Default::default()
             },
         };

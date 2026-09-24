@@ -1,0 +1,29 @@
+import Transcript
+
+#print axioms Transcript.maskOne_key
+#print axioms Transcript.maskOne_live
+#print axioms Transcript.maskOne_protected
+#print axioms Transcript.maskOne_event
+#print axioms Transcript.protected_identity
+#print axioms Transcript.inactive_identity
+#print axioms Transcript.selected_is_masked
+#print axioms Transcript.unselected_identity
+#print axioms Transcript.maskOne_empty
+#print axioms Transcript.mask_empty
+#print axioms Transcript.length_preserved
+#print axioms Transcript.order_and_identity_preserved
+#print axioms Transcript.links_preserved
+#print axioms Transcript.effective_commutes
+#print axioms Transcript.protected_projection_preserved
+#print axioms Transcript.maskOne_compose
+#print axioms Transcript.composition
+#print axioms Transcript.idempotence
+#print axioms Transcript.admitted_targets_known_safe
+#print axioms Transcript.rejection_identity
+#print axioms Transcript.admitted_execution
+#print axioms Transcript.tool_wellformedness_preserved
+#print axioms Transcript.digest_keeps_prior_order
+#print axioms Transcript.digest_keeps_prior_records
+#print axioms Transcript.digest_fresh_identity
+#print axioms Transcript.quiet_append
+#print axioms Transcript.digest_preserves_tool_links

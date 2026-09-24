@@ -118,6 +118,7 @@ const LEXICAL_COVER: f64 = 0.75;
 /// would impose, measured explicitly by the retention tiers).
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Arm {
+    Baseline,
     Masking,
     Typed,
     Digest,
@@ -126,6 +127,7 @@ enum Arm {
 impl Arm {
     fn name(self) -> &'static str {
         match self {
+            Self::Baseline => "no_compaction",
             Self::Masking => "observation_masking",
             Self::Typed => "typed_masking",
             Self::Digest => "typed_digest",
@@ -149,7 +151,7 @@ fn retention_card(checks: &[BoundCheck], covers_items: usize) -> (DigestBlock, u
             KnowledgeKind::Procedure => format!("procedure: {}", check.text),
             _ => check.text.clone(),
         };
-        if size + text.len() > MAX_DIGEST_BYTES {
+        if size.saturating_add(text.len()) > MAX_DIGEST_BYTES {
             break;
         }
         size += text.len();
@@ -167,6 +169,10 @@ fn retention_card(checks: &[BoundCheck], covers_items: usize) -> (DigestBlock, u
 pub struct RetentionScore {
     pub total: usize,
     pub retained: usize,
+    pub literal_recall: Option<f64>,
+    pub lexical_recall: Option<f64>,
+    pub literal_wilson95: Option<[f64; 2]>,
+    pub lexical_wilson95: Option<[f64; 2]>,
     /// Checks whose distinct content tokens are ≥75% covered by a single
     /// live slot — survives paraphrase where verbatim text does not.
     pub lexical_retained: usize,
@@ -190,6 +196,7 @@ pub struct RoundResult {
     pub status: &'static str,
     pub applied_rounds: usize,
     pub source_bytes: usize,
+    pub source_sha256: String,
     pub result_bytes: usize,
     pub result_sha256: String,
     pub estimated_context_before: u64,
@@ -206,6 +213,13 @@ pub struct RoundResult {
 #[derive(Debug, Serialize)]
 pub struct StudyReport {
     pub schema: &'static str,
+    pub version: &'static str,
+    pub metric_basis: &'static str,
+    pub interval_basis: &'static str,
+    pub charged_tokens: Option<u64>,
+    pub cache_hit_tokens: Option<u64>,
+    pub refetches: Option<u64>,
+    pub semantic_equivalence_qualified: bool,
     pub provider: Provider,
     pub source_sha256: String,
     pub manifest_sha256: String,
@@ -226,21 +240,33 @@ pub struct StudyReport {
 }
 
 pub fn read_manifest(path: &Path) -> Result<(Manifest, String)> {
-    let meta = std::fs::symlink_metadata(path)?;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(not(unix))]
+    bail!("bounded manifest reads are unsupported on this platform");
+    let file = options.open(path)?;
+    let meta = file.metadata()?;
     ensure!(
         meta.is_file() && meta.len() <= MAX_MANIFEST_BYTES,
         "manifest must be a bounded regular file"
     );
     let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(MAX_MANIFEST_BYTES + 1)
-        .read_to_end(&mut bytes)?;
+    file.take(MAX_MANIFEST_BYTES + 1).read_to_end(&mut bytes)?;
     ensure!(
         bytes.len() as u64 <= MAX_MANIFEST_BYTES,
         "manifest exceeds byte limit"
     );
-    let manifest = serde_json::from_slice(&bytes)
+    let text =
+        std::str::from_utf8(&bytes).map_err(|_| anyhow::anyhow!("invalid retention manifest"))?;
+    let value = crate::payload::decode_record(text)
         .map_err(|_| anyhow::anyhow!("invalid retention manifest"))?;
+    let manifest =
+        serde_json::from_value(value).map_err(|_| anyhow::anyhow!("invalid retention manifest"))?;
     Ok((manifest, copy::sha256(&bytes)))
 }
 
@@ -463,7 +489,7 @@ fn parse_with_limit(
         Provider::ClaudeCode => crate::claude::load_bytes(handle, bytes),
         Provider::Devin => crate::devin::load_bytes(handle, bytes),
     }?;
-    transcript.usage.context_tokens = transcript.estimated_context_tokens();
+    transcript.usage.invalidate_context();
     Ok(transcript)
 }
 
@@ -572,6 +598,14 @@ fn score(checks: &[BoundCheck], texts: &[Slot]) -> RetentionScore {
             score.missing_ids.push(check.id.clone());
         }
     }
+    if score.total > 0 {
+        score.literal_recall = Some(score.retained as f64 / score.total as f64);
+        score.lexical_recall = Some(score.lexical_retained as f64 / score.total as f64);
+    }
+    score.literal_wilson95 =
+        gobstopper_core::probe::wilson_interval(score.retained as u64, score.total as u64);
+    score.lexical_wilson95 =
+        gobstopper_core::probe::wilson_interval(score.lexical_retained as u64, score.total as u64);
     score
 }
 
@@ -611,9 +645,9 @@ pub fn evaluate(
         .map(|c| c.record)
         .collect();
     let mut rows = Vec::new();
-    for arm in [Arm::Masking, Arm::Typed, Arm::Digest] {
+    for arm in [Arm::Baseline, Arm::Masking, Arm::Typed, Arm::Digest] {
         let typed = arm == Arm::Typed;
-        let temp = transaction::Temporary::new(&std::env::temp_dir(), bytes)?;
+        let mut replay = bytes.to_vec();
         let mut applied = 0;
         let began = Instant::now();
         for round in 1..=rounds {
@@ -621,13 +655,20 @@ pub fn evaluate(
                 began.elapsed().as_secs() < 120,
                 "study arm exceeded time budget"
             );
-            let before = transaction::read(&temp.path)?;
+            let before = replay;
             let mut transcript = parse(handle.clone(), &before)?;
-            let before_tokens = transcript.context_tokens();
+            // A detached rewrite does not generate a fresh provider usage
+            // report. Compare normalized payload estimates on both sides.
+            transcript.usage.invalidate_context();
+            let before_tokens = transcript.estimated_context_tokens();
             let mut card_items = 0;
             let mut selection_policy = policy.clone();
             selection_policy.floor_tokens = 0;
-            let mut plan = ElideStrategy.evaluate(&transcript, &selection_policy);
+            let mut plan = if arm == Arm::Baseline {
+                None
+            } else {
+                ElideStrategy.evaluate(&transcript, &selection_policy)
+            };
             if let Some(plan) = &mut plan {
                 let savings: BTreeMap<_, _> = transcript
                     .items
@@ -664,7 +705,7 @@ pub fn evaluate(
                         .sum();
                     let (digest, carried) = retention_card(&checks, covered);
                     card_items = carried;
-                    projected += digest.estimate_overhead();
+                    projected = projected.saturating_add(digest.estimate_overhead());
                     plan.edits.push(Edit::InjectDigest { digest });
                 }
                 plan.context_tokens_after = projected;
@@ -673,16 +714,17 @@ pub fn evaluate(
                 }
             }
             let start = Instant::now();
-            if let Some(plan) = &plan {
+            let after = if let Some(plan) = &plan {
                 gobstopper_core::validation::validate_edits(&transcript, policy, &plan.edits)
                     .map_err(anyhow::Error::msg)?;
                 match handle.provider {
-                    Provider::Codex => crate::codex::apply(&temp.path, &plan.edits),
-                    Provider::ClaudeCode => crate::claude::apply(&temp.path, &plan.edits),
-                    Provider::Devin => crate::devin::apply(&temp.path, &plan.edits),
-                }?;
-            }
-            let after = transaction::read(&temp.path)?;
+                    Provider::Codex => crate::codex::transform(&before, &plan.edits),
+                    Provider::ClaudeCode => crate::claude::transform(&before, &plan.edits),
+                    Provider::Devin => crate::devin::transform(&before, &plan.edits),
+                }?
+            } else {
+                before.clone()
+            };
             let changed = before != after;
             applied += usize::from(changed);
             transcript = parse(handle.clone(), &after)?;
@@ -705,7 +747,7 @@ pub fn evaluate(
                         .all(|c| after_slots.iter().any(|s| s.text.contains(&c.text))),
                     "digest replay lost card-carried text"
                 ),
-                Arm::Masking => {}
+                Arm::Baseline | Arm::Masking => {}
             }
             rows.push(RoundResult {
                 arm: arm.name(),
@@ -714,11 +756,12 @@ pub fn evaluate(
                 status: if changed { "applied" } else { "no_change" },
                 applied_rounds: applied,
                 source_bytes: before.len(),
+                source_sha256: copy::sha256(&before),
                 result_bytes: after.len(),
                 result_sha256: copy::sha256(&after),
                 estimated_context_before: before_tokens,
-                estimated_context_after: transcript.context_tokens(),
-                floor_reached: transcript.context_tokens() <= policy.floor_tokens,
+                estimated_context_after: transcript.estimated_context_tokens(),
+                floor_reached: transcript.estimated_context_tokens() <= policy.floor_tokens,
                 pinned_records: if typed { pinned.len() } else { 0 },
                 verify_errors: findings
                     .iter()
@@ -763,7 +806,9 @@ pub fn evaluate(
                         "growth retired pinned context without an explicit revision"
                     );
                 }
-                transaction::replace(&temp.path, &after, next.as_bytes())?;
+                replay = next.into_bytes();
+            } else {
+                replay = after;
             }
         }
     }
@@ -771,7 +816,10 @@ pub fn evaluate(
         bail!("study produced no rows");
     }
     Ok(StudyReport {
-        schema: "gobstopper-retention-study-v1", provider: handle.provider,
+        schema: "gobstopper-retention-study-v1",
+        version: env!("CARGO_PKG_VERSION"), metric_basis: "source_bound_literal_and_lexical_presence_not_semantic_or_task_success",
+        interval_basis: "wilson95_descriptive_checks_not_independent_tasks", charged_tokens: None, cache_hit_tokens: None, refetches: None, semantic_equivalence_qualified: false,
+        provider: handle.provider,
         source_sha256: copy::sha256(bytes), manifest_sha256, label_source: manifest.label_source,
         source_verify_errors: source_findings.iter().filter(|f| f.severity == verify::Severity::Error).count(),
         source_verify_warnings: source_findings.iter().filter(|f| f.severity == verify::Severity::Warning).count(),
@@ -813,6 +861,8 @@ pub fn audit(
     let retention = score(&checks, &slots(&after, after_bytes)?);
     Ok(StudyReport {
         schema: "gobstopper-retention-study-v1",
+        version: env!("CARGO_PKG_VERSION"), metric_basis: "source_bound_literal_and_lexical_presence_not_semantic_or_task_success",
+        interval_basis: "wilson95_descriptive_checks_not_independent_tasks", charged_tokens: None, cache_hit_tokens: None, refetches: None, semantic_equivalence_qualified: false,
         provider,
         source_sha256: copy::sha256(before_bytes),
         manifest_sha256,
@@ -840,10 +890,11 @@ pub fn audit(
             status: "realized",
             applied_rounds: 0,
             source_bytes: before_bytes.len(),
+            source_sha256: copy::sha256(before_bytes),
             result_bytes: after_bytes.len(),
             result_sha256: copy::sha256(after_bytes),
-            estimated_context_before: before.context_tokens(),
-            estimated_context_after: after.context_tokens(),
+            estimated_context_before: before.estimated_context_tokens(),
+            estimated_context_after: after.estimated_context_tokens(),
             floor_reached: false,
             pinned_records: 0,
             verify_errors: findings

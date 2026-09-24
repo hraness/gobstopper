@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 
 import { SiteHeader, SiteFooter } from "../_components/site-chrome";
-import { publishedRelease } from "../publication";
 import { readmeHtml } from "../readme.generated";
 
 const title = "Documentation";
@@ -34,7 +33,6 @@ export default function Docs() {
     <>
       <SiteHeader path="/docs" />
       <main id="main" tabIndex={-1} className="document-page">
-        {publishedRelease === null && <p>Release preview: the installation examples below target the forthcoming Gobstopper release. <a href="https://github.com/hraness/gobstopper/releases">Check published releases before installing</a>.</p>}
         <article dangerouslySetInnerHTML={{ __html: readmeHtml }} />
       </main>
       <SiteFooter path="/docs" />

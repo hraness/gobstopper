@@ -1,0 +1,57 @@
+{
+  "schema": "gobstopper.proof-tools.v1",
+  "reviewed_at": "2026-09-23",
+  "provenance": "Official release asset digests checked through GitHub release metadata; TLC digest additionally matched the publisher release SHA-1. Hash pins are not publisher signatures.",
+  "tools": {
+    "tlc": {
+      "any": {
+        "version": "v1.7.4",
+        "url": "https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar",
+        "sha256": "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88",
+        "max_bytes": 8388608
+      }
+    },
+    "java": {
+      "linux-x86_64": {
+        "version": "21.0.12.1+1",
+        "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_x64_linux_hotspot_21.0.12.1_1.tar.gz",
+        "sha256": "ce79869e1307ed8ee1e2baa86a412b1eb5b75d10a01006d788a6f968bcfaee94",
+        "max_bytes": 268435456
+      },
+      "darwin-arm64": {
+        "version": "21.0.12.1+1",
+        "url": "https://github.com/adoptium/temurin21-binaries/releases/download/jdk-21.0.12.1%2B1/OpenJDK21U-jdk_aarch64_mac_hotspot_21.0.12.1_1.tar.gz",
+        "sha256": "3623232f33a9c3baadf304480b2535f9a3cba8a58d42ecbb438ba267315d9998",
+        "max_bytes": 268435456
+      }
+    },
+    "kani": {
+      "linux-x86_64": {
+        "version": "0.68.0",
+        "url": "https://github.com/model-checking/kani/releases/download/kani-0.68.0/kani-0.68.0-x86_64-unknown-linux-gnu.tar.gz",
+        "sha256": "32e2b484d73ede0bbf64a2cf0879c4259422497d8aec4ee67d448de9ae7843d3",
+        "max_bytes": 536870912
+      },
+      "darwin-arm64": {
+        "version": "0.68.0",
+        "url": "https://github.com/model-checking/kani/releases/download/kani-0.68.0/kani-0.68.0-aarch64-apple-darwin.tar.gz",
+        "sha256": "a5d39a5d5e748253a553aa62f295c6c397287927a28e5e32691d7ff2eda0c398",
+        "max_bytes": 536870912
+      }
+    },
+    "lean": {
+      "linux-x86_64": {
+        "version": "4.34.0",
+        "url": "https://github.com/leanprover/lean4/releases/download/v4.34.0/lean-4.34.0-linux.tar.zst",
+        "sha256": "caaa98356098c85dc0fcbbd28e1ec66f39eb6551829972b752ff20e1286b646b",
+        "max_bytes": 1073741824
+      },
+      "darwin-arm64": {
+        "version": "4.34.0",
+        "url": "https://github.com/leanprover/lean4/releases/download/v4.34.0/lean-4.34.0-darwin_aarch64.tar.zst",
+        "sha256": "69f263fa6e21bbc2466bbfb1affcd92479ee2714c883a07de548e099a5922932",
+        "max_bytes": 1073741824
+      }
+    }
+  }
+}

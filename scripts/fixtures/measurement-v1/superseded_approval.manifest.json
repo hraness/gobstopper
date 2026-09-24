@@ -1,0 +1,17 @@
+{
+  "checks": [
+    {
+      "end_byte": 69,
+      "id": "superseded_approval",
+      "kind": "constraint",
+      "pointer": "/payload/output",
+      "record_index": 3,
+      "sha256": "cda416d812243fa86d599f401eb7066783c6015e9aeec1820890b06bfc78afb1",
+      "start_byte": 0
+    }
+  ],
+  "growth": [],
+  "label_source": "synthetic",
+  "schema": "gobstopper-retention-v1",
+  "source_sha256": "91582995f16c13fc2ff0ec0338c3b37fa5bfe3b83e7fb1ad1ca1750e551020fe"
+}

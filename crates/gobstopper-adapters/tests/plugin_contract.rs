@@ -9,6 +9,7 @@ use std::{
     path::PathBuf,
     process::Command,
     sync::atomic::{AtomicU64, Ordering},
+    time::{Duration, Instant},
 };
 
 static FIXTURE_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -146,4 +147,149 @@ fn unknown_protocol_fields_are_not_ignored() {
     doc["undeclared"] = serde_json::json!(true);
     fs::write(&manifest, serde_json::to_vec(&doc).unwrap()).unwrap();
     assert!(plugins::check(&manifest).is_err());
+}
+
+fn item(index: usize, tokens: u64) -> gobstopper_core::TranscriptItem {
+    gobstopper_core::TranscriptItem {
+        line_index: index,
+        kind: gobstopper_core::ItemKind::User,
+        est_tokens: tokens,
+        elidable_bytes: None,
+        elidable_parts: 1,
+        label: "user".into(),
+        summary: None,
+        uuid: None,
+        parent_uuid: None,
+        tool_use_ids: vec![],
+        payload_sha256: None,
+    }
+}
+
+#[test]
+fn aggregate_projection_and_undeclared_summary_content_fail_closed() {
+    let fixture = Fixture::new();
+    let manifest = fixture.manifest(&response());
+    let trusted = plugins::check(&manifest).unwrap().manifest_sha256;
+    for items in [
+        vec![item(0, 60_000_000), item(1, 60_000_000)],
+        vec![item(0, u64::MAX), item(1, 1)],
+        vec![{
+            let mut x = item(0, 1);
+            x.summary = Some("PRIVATE_SUMMARY_SENTINEL".into());
+            x
+        }],
+    ] {
+        let mut request = request();
+        request.items = items;
+        assert!(plugins::invoke(&manifest, &trusted, &request).is_err());
+    }
+    let output = serde_json::json!({"protocol_version":1,"source_sha256":"0".repeat(64),"edits":[],"inspection":{"provider_id":"codex","session_id":"s1","items":[item(0,60_000_000),item(1,60_000_000)],"usage":UsageSample::default()}}).to_string();
+    let manifest = fixture.manifest(&output);
+    let mut document: Manifest = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    document.capabilities = vec![Capability::ProviderRead];
+    fs::write(&manifest, serde_json::to_vec(&document).unwrap()).unwrap();
+    let trusted = plugins::check(&manifest).unwrap().manifest_sha256;
+    let mut request = request();
+    request.operation = Capability::ProviderRead;
+    assert!(plugins::invoke(&manifest, &trusted, &request).is_err());
+}
+
+#[test]
+fn strategy_cannot_return_provider_controls_or_unrequested_inspection() {
+    for edits in [
+        serde_json::json!([{"op":"provider_compact","control":"unauthorized"}]),
+        serde_json::json!([{"op":"cache_edit","tool_use_ids":["private"]}]),
+    ] {
+        let fixture = Fixture::new();
+        let output = serde_json::json!({"protocol_version":1,"source_sha256":"0".repeat(64),"edits":edits,"inspection":null}).to_string();
+        let manifest = fixture.manifest(&output);
+        let trusted = plugins::check(&manifest).unwrap().manifest_sha256;
+        assert!(plugins::invoke(&manifest, &trusted, &request()).is_err());
+    }
+    let fixture = Fixture::new();
+    let output = serde_json::json!({"protocol_version":1,"source_sha256":"0".repeat(64),"edits":[],"inspection":{"provider_id":"codex","session_id":"s1","items":[],"usage":UsageSample::default()}}).to_string();
+    let manifest = fixture.manifest(&output);
+    let trusted = plugins::check(&manifest).unwrap().manifest_sha256;
+    assert!(plugins::invoke(&manifest, &trusted, &request()).is_err());
+}
+
+#[test]
+fn captured_bundle_uses_declared_relative_dependencies_and_cleans_up() {
+    let fixture = Fixture::new();
+    let output = response();
+    let manifest = fixture.manifest(&output);
+    let script = "#!/bin/sh\n/bin/cat >/dev/null\n/bin/cat response.json\n";
+    fs::write(fixture.0.join("editor"), script).unwrap();
+    fs::write(fixture.0.join("response.json"), &output).unwrap();
+    let mut document: Manifest = serde_json::from_slice(&fs::read(&manifest).unwrap()).unwrap();
+    document
+        .files
+        .insert("editor".into(), sha256(script.as_bytes()));
+    document
+        .files
+        .insert("response.json".into(), sha256(output.as_bytes()));
+    fs::write(&manifest, serde_json::to_vec(&document).unwrap()).unwrap();
+    let trusted = plugins::check(&manifest).unwrap().manifest_sha256;
+    assert!(plugins::invoke(&manifest, &trusted, &request())
+        .unwrap()
+        .edits
+        .is_empty());
+    assert_eq!(
+        fs::read_to_string(fixture.0.join("editor")).unwrap(),
+        script
+    );
+    assert_eq!(fs::read_dir(&fixture.0).unwrap().count(), 3);
+}
+
+#[test]
+fn normal_exit_still_collects_owned_background_descendants() {
+    let fixture = Fixture::new();
+    let marker = fixture.0.join("escaped-work");
+    let mut command = Command::new("/bin/sh");
+    command
+        .args([
+            "-c",
+            "(/bin/sleep 0.3; printf bad > \"$MARKER\") >/dev/null 2>&1 & printf ok",
+        ])
+        .env("MARKER", &marker);
+    assert_eq!(
+        plugins::run_bounded(command, vec![], 10_000, 64).unwrap(),
+        b"ok"
+    );
+    std::thread::sleep(Duration::from_millis(400));
+    assert!(
+        !marker.exists(),
+        "normal leader exit left its owned descendant running"
+    );
+}
+
+#[test]
+fn blocked_stdin_and_stderr_flood_share_the_deadline_and_output_budget() {
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", "/bin/sleep 2"]);
+    let start = Instant::now();
+    assert!(plugins::run_bounded(command, vec![b'x'; 2 * 1024 * 1024], 100, 64).is_err());
+    assert!(start.elapsed() < Duration::from_secs(2));
+    let mut command = Command::new("/bin/sh");
+    command.args(["-c", "printf '%80s' x; printf '%80s' y >&2"]);
+    assert!(plugins::run_bounded(command, vec![], 10_000, 128).is_err());
+}
+
+#[test]
+fn inherited_pipe_outside_group_cannot_hold_runner_threads() {
+    let fixture = Fixture::new();
+    let done = fixture.0.join("done");
+    let mut command = Command::new("/usr/bin/python3");
+    command.args(["-c", "import os,sys,time\npid=os.fork()\nif pid==0:\n os.setsid()\n time.sleep(2)\n open(os.environ['DONE'],'w').close()\n os._exit(0)\nsys.stdout.write('ok');sys.stdout.flush();os._exit(0)\n"])
+        .env("DONE", &done);
+    let result = plugins::run_bounded(command, vec![], 1500, 64);
+    // This deliberately escaped descendant is outside signaling authority.
+    // Its fixture-owned bounded lifetime is collected cooperatively, never by
+    // signaling a stale PID after releasing the process-group identity.
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while !done.exists() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert!(done.exists());
+    assert_eq!(result.unwrap(), b"ok");
 }

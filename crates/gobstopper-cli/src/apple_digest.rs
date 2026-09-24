@@ -47,13 +47,14 @@ const DIGEST_SCHEMA: &str = r#"{"type":"object","properties":{"digest":{"type":"
 const MAX_STUB_CHARS: usize = 160;
 
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct StubOut {
     id: usize,
     stub: String,
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct ModelFields {
     summary: Option<String>,
     concepts: Option<Vec<String>>,
@@ -62,6 +63,28 @@ struct ModelFields {
     errors: Option<Vec<String>>,
     open_tasks: Option<Vec<String>>,
     current_work: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DigestResponse {
+    digest: ModelFields,
+    stubs: Vec<StubOut>,
+}
+
+fn decode_response(value: Value, count: usize) -> anyhow::Result<DigestResponse> {
+    let response: DigestResponse =
+        serde_json::from_value(value).map_err(|_| anyhow::anyhow!("digest_response_invalid"))?;
+    let mut seen = HashSet::new();
+    anyhow::ensure!(
+        response.stubs.len() <= count
+            && response
+                .stubs
+                .iter()
+                .all(|stub| stub.id > 0 && stub.id <= count && seen.insert(stub.id)),
+        "digest_stub_identity_invalid"
+    );
+    Ok(response)
 }
 
 /// Rewrite `plan`'s `InjectDigest` digest with model-extracted fields when
@@ -97,7 +120,7 @@ pub fn maybe_upgrade(plan: &mut CompactionPlan, transcript: &Transcript) {
         return;
     };
     let before_overhead = digest_slot.estimate_overhead();
-    match write_card(bridge, transcript, digest_slot, &elided) {
+    match write_card(&bridge, transcript, digest_slot, &elided) {
         Ok((changed, stubs)) => {
             // The strategy priced the mechanical digest into
             // `context_tokens_after`; restate it against the card actually
@@ -136,7 +159,7 @@ pub fn maybe_upgrade(plan: &mut CompactionPlan, transcript: &Transcript) {
                 .context_tokens_after
                 .saturating_add(stub_residual_tokens(&plan.edits, &by_line));
         }
-        Err(e) => eprintln!("apple digest: keeping mechanical state card ({e:#})"),
+        Err(_) => eprintln!("apple digest: response_unavailable; keeping mechanical state card"),
     }
 }
 
@@ -195,7 +218,7 @@ fn digest_input_bounds(
 }
 
 fn write_card(
-    bridge: &apple_foundation::Bridge,
+    bridge: &apple::Bridge,
     transcript: &Transcript,
     digest: &mut DigestBlock,
     elided: &HashSet<usize>,
@@ -220,8 +243,7 @@ fn write_card(
     picked.truncate(max_items);
     picked.sort_unstable();
 
-    let excerpts =
-        apple::read_excerpts(&transcript.session.path, &picked, item_bytes, total_bytes)?;
+    let excerpts = apple::read_excerpts(transcript, &picked, item_bytes, total_bytes)?;
     if excerpts.is_empty() {
         return Ok((false, Default::default()));
     }
@@ -244,36 +266,21 @@ fn write_card(
     );
     let schema: Value = serde_json::from_str(DIGEST_SCHEMA).context("digest schema malformed")?;
     let instructions = "Fill the digest object with short factual strings taken only from the records shown. files_touched: file paths or URLs. errors: actual error text seen in the records. decisions: concrete findings or choices made. open_tasks: unfinished work mentioned. concepts: tool and library names. current_work: what the agent was doing most recently. summary: one line covering what the removed records contained. Omit a field the records give no evidence for. Never include credentials, tokens, or code blocks. In stubs, write one entry per record id: a short note on what that record's content was — the file it read, the command it ran, or the result it produced — not just its label.";
-    let value = match apple::cache_get(&prompt, &schema) {
-        Some(v) => v,
-        None => {
-            let v = bridge.request(&apple_foundation::Request {
-                prompt: prompt.clone(),
-                instructions: Some(instructions.into()),
-                schema: Some(schema.clone()),
-                expect_json: false,
-                max_output_bytes: Some(4096),
-            })?;
-            apple::cache_put(&prompt, &schema, &v);
-            v
-        }
+    let request = apple_foundation::Request {
+        prompt,
+        instructions: Some(instructions.into()),
+        schema: Some(schema),
+        expect_json: false,
+        max_output_bytes: Some(4096),
     };
-    let fields: ModelFields = serde_json::from_value(
-        value
-            .get("digest")
-            .cloned()
-            .context("apple response missing `digest` object")?,
-    )
-    .context("apple response `digest` had invalid shape")?;
-    let stubs: Vec<StubOut> = serde_json::from_value(
-        value
-            .get("stubs")
-            .cloned()
-            .unwrap_or_else(|| Value::Array(Vec::new())),
-    )
-    .context("apple response `stubs` had invalid shape")?;
-
-    let stubs = stubs
+    let value = match apple::cache_get(bridge, "digest-v2", &request) {
+        Some(v) => v,
+        None => bridge.request(&request)?,
+    };
+    let response = decode_response(value.clone(), excerpts.len())?;
+    apple::cache_put(bridge, "digest-v2", &request, &value);
+    let stubs = response
+        .stubs
         .into_iter()
         .filter_map(|s| {
             // `id` is the 1-based `record N` position from the prompt;
@@ -289,7 +296,7 @@ fn write_card(
                 .map(|t| (*line, t))
         })
         .collect();
-    Ok((overlay(digest, fields), stubs))
+    Ok((overlay(digest, response.digest), stubs))
 }
 
 /// Collapse a model-written stub to one bounded line. Rejects stubs that
@@ -398,6 +405,20 @@ fn env_usize(name: &str, default: usize) -> usize {
 mod tests {
     use super::*;
     use crate::apple::excerpt;
+
+    #[test]
+    fn digest_contract_refuses_missing_duplicate_and_foreign_stubs() {
+        for value in [
+            serde_json::json!({"digest":{}}),
+            serde_json::json!({"digest":{},"stubs":[{"id":1,"stub":"first"},{"id":1,"stub":"other"}]}),
+            serde_json::json!({"digest":{},"stubs":[{"id":0,"stub":"foreign"}]}),
+            serde_json::json!({"digest":{"unknown":"PRIVATE_SENTINEL"},"stubs":[]}),
+        ] {
+            let error = decode_response(value, 2).err().unwrap();
+            assert!(!format!("{error:#}").contains("PRIVATE_SENTINEL"));
+        }
+        assert!(decode_response(serde_json::json!({"digest":{},"stubs":[]}), 1).is_ok());
+    }
 
     #[test]
     fn digest_input_geometry_is_bounded_and_zero_preserving() {

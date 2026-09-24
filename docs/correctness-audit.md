@@ -1,5 +1,13 @@
 # Correctness audit — 2026-09-23
 
+This is the historical initial audit of `c797729` and the repairs developed on
+`codex/correctness-audit` for [PR 88](https://github.com/hraness/gobstopper/pull/88).
+References below to “this change” and residual risks describe that stage, not
+the current implementation. The original findings are preserved. For current
+behavior and status, see the [assurance case](assurance/README.md) and
+[correctness plan](correctness-plan.md); the subsequent foundation work is
+tracked in [PR 90](https://github.com/hraness/gobstopper/pull/90).
+
 Gobstopper has useful structural safeguards and substantial regression coverage,
 but the system is not end-to-end verified. This audit found defects in recovery
 storage, operation identity, provider control, session isolation, and measurement

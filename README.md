@@ -1,18 +1,20 @@
 <!-- hraness:gobstopper-landing:start -->
 # gobstopper
 
-Gobstopper compacts Claude Code, Codex, and Devin sessions at a context size
-you choose. It snapshots every transcript before changing it, so the original
-is never lost, and it measures what each strategy keeps.
+Gobstopper inspects Claude Code, Codex, and Devin sessions and prepares compacted transcript copies.
 
-Run `gobstopper watch` and it follows your agent sessions. When a session's
-context crosses your threshold, Gobstopper compacts it with the strategy you
-picked for that session, provider, or preset. By default, Claude Code and
-Codex compactions go to a separate fork and leave the source transcript
-unchanged; an idle Devin session is edited in place in one database
-transaction. For
-closed sessions, you can have Gobstopper ask the provider to run its own
-compaction instead. Plugins can add strategies and providers.
+Preview compaction at a context size you choose, then prepare a separate Codex
+or Claude Code copy. Gobstopper archives the exact source and candidate bytes
+and checks supported structural and retention properties.
+
+Use `gobstopper watch --dry-run` to inspect threshold decisions, or prepare a
+copy with a file strategy. Released CLI builds cannot ask providers to compact,
+even when `auto_compact_closed` is enabled. Direct provider-store and in-place
+rewrites are disabled. Copy preparation preserves the source; resuming a copy
+with a live provider requires separate compatibility testing. See the
+[activation matrix](docs/assurance/qualification.json) and
+[recovery runbook](docs/assurance/operations.md). Plugins can add strategies
+and providers when you explicitly trust them.
 
 <!-- hraness:gobstopper-landing:end -->
 
@@ -29,20 +31,21 @@ model. Optional model scorers change what gets selected; they do not skip the
 snapshot or the verification step.
 
 A running session's context belongs to the provider process that loaded it.
-Gobstopper does not rewrite a session it detects as running; it can suggest
-`/compact`, or tell the program that runs the session which provider control
-to call. A smaller context is not the same as a successful continuation or a
-lower bill. The [published studies](https://gobstopper.sh/benchmarks) report
-context reduction, retention, no-op cases, and limitations separately.
+Gobstopper can suggest `/compact`, or tell the program that runs the session
+which provider control to call. File compaction prepares a separate copy.
+A smaller context is not the same as a successful continuation or a lower bill.
+The [published studies](https://gobstopper.sh/benchmarks) report context reduction,
+retention, no-op cases, and limitations separately.
 
 ## Recoverable history
 
-Before Gobstopper compacts a session, it stores the exact source in a
-content-addressed vault (`~/.local/share/gobstopper/vault/`): the transcript
-file for Claude Code and Codex, and the session's canonical export for Devin.
-Snapshots use deduplicated 1 MiB chunks, so appended versions reuse
+Before publishing a Claude Code or Codex copy, Gobstopper stores the exact
+source and candidate bytes in a content-addressed vault
+(`~/.local/share/gobstopper/vault/`). Snapshots use deduplicated 1 MiB chunks,
+so appended versions reuse
 unchanged prefix storage without creating one filesystem object per JSONL
-record.
+record. Devin snapshots instead contain a canonical per-session export, not
+the shared database or every provider-owned artifact.
 
 `gobstopper recall --query <q>` searches the state cards in every archived
 snapshot, ranks matches by relevance to the query, and returns the high-level
@@ -72,8 +75,9 @@ as searched.
 Search returns at most 50 references and reports the full match count; narrow
 the query when results are truncated. Each search or read verifies and
 reconstructs the whole snapshot, up to the transcript size limit (512 MiB by
-default). Paging a large record repeats that work, and search matches literal
-text only; there is no index or semantic search.
+default, configurable with `GOBSTOPPER_MAX_TRANSCRIPT_BYTES`). Paging a large
+record repeats that work, and search matches literal text only; there is no
+index or semantic search.
 
 Use the full object SHA from `history`, the native hook recovery pointer, or
 the `snapshot_manifest_sha256` field in copy receipts. The `snapshot_sha256`
@@ -98,7 +102,10 @@ literal retention.
 `gobstopper mcp` runs a read-only Model Context Protocol server on stdio with
 the tools `policy_check`, `list_sessions`, `recall`, `history`, `show`,
 `diff`, `plan`, and `verify`. Register it once, and an agent can inspect
-policy and archived state without any tool that changes a transcript:
+policy and archived state without a tool that changes a transcript. MCP uses
+deterministic built-ins, rejects executable strategies, and does not call
+configured plugins, model scorers, or model digests. Explicit plugin commands
+run code you trust with your user permissions, without an OS sandbox:
 
 ```sh
 claude mcp add gobstopper -- gobstopper mcp
@@ -107,23 +114,21 @@ devin mcp add -s user gobstopper -- gobstopper mcp
 ```
 
 For Devin, `policy_check` accepts `provider = "devin"` and returns `/compact`
-when the configured threshold is crossed. Gobstopper refuses to write to a
-Devin session whose lock Devin holds when it checks. Once the session is idle,
-`gobstopper apply` snapshots it to the vault and compacts it in place in one
-SQLite transaction. The lock is checked before the write, not held during it;
-see [docs/devin.md](docs/devin.md) and the
-[correctness audit](docs/correctness-audit.md). A read-only provider plugin can inspect a
-`devin --export out.json` file for offline analysis.
+when the configured threshold is crossed. While a Devin session is running,
+Devin owns its store. Direct-store `apply` and `undo` are disabled; use the
+provider's `/compact` or inspect a canonical export instead. See
+[docs/devin.md](docs/devin.md). `devin --export out.json` can be inspected
+through a trusted provider-reader plugin when offline analysis is needed.
 
-Each compaction cycle costs one large input call and can lose detail, so the
-strategy and where it cuts matter as much as the timing.
+Provider-generated summaries can cost a large input call and lose detail, so
+the strategy and where it cuts matter as much as the timing.
 
 ## Strategies
 
 | id | kind | what it does |
 |---|---|---|
 | `auto` (default) | dynamic | live sessions delegate to provider controls (`cache_edits` for eligible Claude sessions); idle sessions choose the best validated file strategy by savings and preserved-prefix score |
-| `sawtooth` | provider | requests provider-native compaction (`thread/compact/start` on Codex; `/compact` guidance on Claude) |
+| `sawtooth` | provider | proposes provider-native compaction to the session owner; released CLI dispatch is blocked pending qualification |
 | `cache_edits` | provider | emits bounded Claude `tool_use_id` values for API-layer context editing; never rewrites a transcript |
 | `elide` | transcript | stubs stale tool outputs oldest-first until the floor |
 | `cache_aware` | transcript | elides a tailward stale-output window and injects a bounded state card while preserving the longest practical prefix |
@@ -139,9 +144,10 @@ Custom strategies are userspace code: a preset can name a `command` that
 receives the normalized transcript as JSON on stdin and returns an edit
 plan on stdout, or install a versioned `gobstopper-plugin.json` bundle
 (see `gobstopper plugin check`). A `command` runs only with
-`trusted_legacy_command = true`. Gobstopper validates every proposal: no edit
-can grow the transcript, touch the protected recent tool output, bypass the
-linkage checks, or exceed the configured digest size.
+`trusted_legacy_command = true`. Gobstopper checks eligible payloads, protected
+recent output, edit combinations, digest size, and projected token reduction.
+File candidates must not introduce supported structural findings. These checks
+cover edit structure and size, not semantic preservation or provider acceptance.
 
 ## Install & use
 
@@ -156,24 +162,32 @@ cargo install --git https://github.com/hraness/gobstopper gobstopper
 gobstopper detect                  # sessions, context sizes, lifetime burn
 gobstopper plan <session>          # what would happen, under which strategy
 gobstopper plan <session> --trigger 100000 --floor 30000    # tune the trade-off
-gobstopper eval <session>          # every strategy side-by-side on temp copies
-gobstopper apply <session>         # snapshot, then write a validated fork (Devin: in place)
-gobstopper verify <session>        # resume-validity check (exit 1 on errors)
+gobstopper eval <session>          # compare strategies on the same frozen bytes
+gobstopper apply <session> --strategy elide  # Codex/Claude copy; native requests are refused
+gobstopper verify <session>        # supported structural checks (exit 1 on errors)
 gobstopper fork <session>          # clone under a fresh session id + resume cmd
-gobstopper undo <session>          # restore a snapshot into a new fork (Devin: in place)
+gobstopper undo <session>          # Codex/Claude: restore a snapshot into a new fork
 gobstopper vault                   # list snapshots in the undo vault
 gobstopper prune                   # preview keeping the newest 10 snapshots per session
-gobstopper install-hooks           # Claude Code, Codex, and Devin hooks
-gobstopper watch --dry-run         # poll sessions and report plans without writing
-gobstopper watch --dry-run --active-only --once  # one pass over recently active sessions
+gobstopper install-hooks --output ./hook-candidates.json  # private settings candidates
+gobstopper watch --dry-run         # inspect threshold decisions without preparing copies
+gobstopper watch --dry-run --active-only --once  # bounded recent-session inspection
 gobstopper explain                 # the occupancy model behind the defaults
 gobstopper recall --query <q>      # search state-card digests across all archived sessions
 gobstopper history <session>       # every archived state of one session
 gobstopper diff <sha-a> <sha-b>    # structural comparison of two vault snapshots
-gobstopper bench                   # benchmark every strategy across discovered sessions
+gobstopper bench                   # compare strategies on recently changed sessions
 gobstopper tune <session>          # preview the adaptive trigger/floor for a session
-gobstopper mcp                     # read-only MCP server: the vault as agent tools
+gobstopper mcp                     # deterministic inspection; executable strategies are rejected
 ```
+
+Hook installation and removal export candidates without changing provider settings.
+The bundle includes the exact original settings and hashes, so keep it private.
+Automatic settings replacement is disabled because Gobstopper cannot obtain
+custody honored by provider/editor writers. Review and apply candidates through
+provider-owned settings controls and retain provider trust prompts. Callbacks
+archive source-bound evidence; their session identifiers do not prove which
+operation caused a compaction. See [the recovery runbook](docs/assurance/operations.md).
 
 For automation, `gobstopper plan <session> --json` returns the existing plan
 object when a plan is available. A successful inspection without a plan returns
@@ -207,20 +221,33 @@ The target is a policy setting, not a measured
 minimum context size, and projected savings are not billed savings. Invalid
 configuration, invalid proposals, and execution failures are command errors.
 
-Every `apply` or `watch` compaction first snapshots the source into the vault.
-For Claude Code and Codex, `apply` publishes the result as a separate,
-verified file and leaves the original transcript unchanged. For an idle Devin
-session, `apply` rewrites the session store in place in one SQLite
-transaction after checking that Devin does not hold the session lock.
-`watch` also prepares separate files by default; it rewrites idle sessions in
-place only when you set `[provider.claude_code] auto_apply_inplace` or
-`[provider.devin] auto_apply_store`. Gobstopper does not rewrite a session it
-detects as running. Each compaction appends a numeric record to
-`events.jsonl` in the `gobstopper/compaction-events-v1` schema.
+Gobstopper's copy paths require retained source and candidate bytes before
+publication. File-copy paths publish a separate candidate after structural
+verification. Native dispatch remains guarded even if a policy proposes it;
+standalone native `apply` refuses before creating a fork or snapshot. Legacy
+direct-write flags remain readable but cannot authorize those writes. A real
+watch pass can archive a source snapshot before reaching the native guard;
+`watch --dry-run` does not create that snapshot.
+Telemetry is best effort:
+successful event writes use the `gobstopper/compaction-events-v1` schema.
+
+`eval` and `bench` freeze each session's source before comparing strategies.
+For Devin, that source is the canonical per-session export, never the SQLite
+database file. `bench` selects sessions updated within seven days by default;
+`--all` removes that age filter but retains discovery and input limits. Its
+24-column CSV includes source/result hashes, `execution_state`, `token_basis`,
+retention availability and a closed `failure` category. Discovered sessions
+that fail policy resolution or evaluation remain explicit failed rows with
+unavailable measurements. Parse CSV quoting rather than splitting lines or
+commas: session identifiers can contain those characters. A provider proposal
+is `provider_not_executed`; a detached transform is not a resumed provider
+session. Numeric legacy fields must be read with those state and availability
+fields, not counted as measured zeroes or task success.
 
 ### Typed-retention experiments (opt-in)
 
-`eval-study` replays three arms on private temporary copies: plain
+`eval-study` replays four arms on isolated in-memory candidates: an unchanged
+`no_compaction` baseline; plain
 observation masking; typed masking (constraints, procedures, and open tasks
 stay pinned in their original records and roles, and retrieved text never
 becomes a higher-authority instruction); and `typed_digest` (pinned records
@@ -347,7 +374,7 @@ adaptive = true              # derive trigger/floor per session; see `gobstopper
 [provider.codex]             # per-provider overrides
 trigger_tokens = 200_000
 
-[provider.devin]             # live sessions get /compact; see docs/devin.md
+[provider.devin]             # policy can advise /compact; see docs/devin.md
 trigger_tokens = 200_000
 
 [sessions."01a08d7c-…"]      # per-session overrides
@@ -373,8 +400,9 @@ process. It reports native delegation as `skipped`, with zero credited savings;
 the program running that session has to request the compaction. `--active-only` limits discovery
 to files updated within the last 180 seconds (a recency heuristic, not proof of
 an owning process), and `--once` exits after one pass. A dry run writes no forks
-or compaction events. Installed lifecycle hooks snapshot native compactions
-and give the session a recovery pointer.
+or compaction events. Installed provider-managed lifecycle hooks can archive
+observations and provide a recovery pointer. They do not establish an applied
+Gobstopper operation or a matched before/after pair.
 
 The optional [local monitor](scripts/monitor.md) records numeric observations
 for an explicit list of sessions and checks a deterministic dry-run watcher.
@@ -426,12 +454,13 @@ in the OS credential store
 
 ```sh
 pbpaste | gobstopper auth jev     # or run it bare to use the clipboard
-gobstopper auth jev --status      # key source + masked value + live check
+gobstopper auth jev --status      # key source + live check; no key fragments
 gobstopper auth jev --delete      # remove the stored key
 ```
 
-The key is verified against the API before it is stored; a rejected key
-never reaches the keychain. Resolution order at scoring time is
+An API check precedes storage. A definitively rejected key is refused;
+network or API failures allow storage with an explicit unverified result.
+Resolution order at scoring time is
 `TYPESAFE_API_KEY` → `GOBSTOPPER_JEV_API_KEY` → OS keychain, so CI keeps
 working from env alone. Linux kernel-keyring entries are session-scoped and
 do not survive a reboot; use an environment variable for persistent
@@ -452,7 +481,9 @@ concurrent calls (`GOBSTOPPER_JEV_PARALLEL`, default `2`).
 `GOBSTOPPER_JEV_MAX_BATCHES` defaults to `4`. Only the newest
 `MAX_Q × MAX_BATCHES` tailward candidates are sent; an older prefix keeps its
 deterministic heuristic score. This caps the default at four calls and 256
-remote-scored candidates even for unusually large transcripts. Identical
+remote-scored candidates even for unusually large transcripts. Each logical
+batch can make two transport attempts if the first has a transient failure.
+Identical
 question texts within a pass are asked once: repeated tool outputs share a
 single remote answer instead of being billed per item. Batches run through
 a bounded worker pool: execution is parallel, but results are overlaid in
@@ -467,15 +498,17 @@ establish current or provider-wide performance.
 `eval` and `bench` honor `GOBSTOPPER_SCORER` for their `scored` row, so
 an A/B run measures the same Jev or Apple ranking used by `plan` rather than
 silently substituting the heuristic. `GOBSTOPPER_EVAL_JUDGE=jev` adds a
-separate semantic recall score to `eval`. Verbatim survivors are credited
-locally; only up to 64 facts absent from the rewritten file become typed
-`noul` questions. They are judged against at most 100,000 bytes of bounded
+separate model-judged retention estimate to `eval`. Verbatim survivors are
+credited locally; only up to 64 sampled strings absent from the rewritten live
+context become typed `noul` questions. They are judged against at most 100,000 bytes of bounded
 compaction evidence (state cards, elision stubs, and short tool records, with
-a head+tail fallback), so semantic recall cannot be lower than verbatim
-recall and an intact rewrite costs no judge request. The judge is off by
-default because missed-fact evaluation sends that bounded evidence to the
-remote API; failures simply omit the semantic score. Restricting the run to
-`--strategy scored` uses at most one judge request:
+a head+tail fallback). An intact candidate costs no judge request. The judge is
+off by default because missed-fact evaluation sends that bounded evidence to the
+remote API. Invalid or missing answers remain unmeasured; coverage is explicit
+through `probes_requested`, `probes_total`, `complete`, `recall_available` and
+`basis`. A partial denominator must not be compared as if it covered every
+probe. Restricting the run to `--strategy scored` creates at most one logical
+judge request, with one retry allowed on transient transport/5xx failure:
 
 ```sh
 GOBSTOPPER_SCORER=jev GOBSTOPPER_EVAL_JUDGE=jev \
@@ -487,8 +520,9 @@ System One, while retaining bounded compatibility fallbacks for older response
 shapes. Jev starts from the complete deterministic heuristic ranking and
 overlays only valid remote answers; capped candidates, missing answers, and
 failed or malformed chunks keep their heuristic scores. Semantic eval omits
-its model score instead of crediting unknown facts. In one post-fix 80k-token
-A/B run, Jev chose five smaller records where the heuristic chose four larger
+unavailable answers instead of crediting unknown facts. These estimates do not
+establish semantic equivalence, instruction authority, or task success. In one
+historical 80k-token A/B run, Jev chose five smaller records where the heuristic chose four larger
 ones, reclaimed about 649 more tokens, and both retained all 38 extracted
 probes. At a more aggressive floor, one probe lost verbatim was not falsely
 credited by the semantic judge (37/38 on both scores). This is one session,
@@ -509,9 +543,13 @@ question layer also persists to
 `~/.local/share/gobstopper/jev-cache.json` as sha256 key digests mapped to
 a probability and timestamp, never text, so a cold `plan` inside
 the TTL can reuse an answer when its question and scoring state match.
-Older question-only cache entries cannot match the context-bound keys.
-Transient
-transport errors and HTTP 5xx responses are retried once; auth rejections
+The version 2 disk format rejects malformed, duplicate, future-dated and
+out-of-range entries. Publication uses a new private temporary file, sync and
+atomic replacement; concurrent writers can lose reusable entries, causing a
+fresh request, but do not publish a partial image. Older cache formats are
+ignored. `jev-latest` is a provider alias, not an attested weight revision;
+matching context and TTL do not prove the remote model stayed unchanged.
+Transient transport errors and HTTP 5xx responses are retried once; auth rejections
 are not. The scorer and judge resolve the API key once per process, so
 `watch` does not re-read the OS credential store every pass. Set
 `GOBSTOPPER_JEV_CACHE=0` or `GOBSTOPPER_JEV_CACHE_TTL_SECS=0` to disable
@@ -521,11 +559,10 @@ the TTL maximum is 3,600 seconds.
 
 `GOBSTOPPER_SCORER=apple` (macOS 26+, Apple Silicon) scores on-device with
 Apple Intelligence Foundation Models via the shared `apple-foundation`
-bridge. It needs no API key, costs nothing per call, and keeps the data on
-the device. The bridge auto-builds to
-`~/.local/share/gobstopper/apple-bridge` on first use (or set
-`GOBSTOPPER_APPLE_BRIDGE`), requests queue through one persistent process
-with guided JSON output, and any failure retains heuristic scores.
+bridge with no remote API key. Inference requires an already installed bridge
+(or an explicit `GOBSTOPPER_APPLE_BRIDGE`); it never builds Swift code on demand.
+Uncached requests are serialized, each using one bounded `--once` process with
+guided JSON output and owned process cleanup. Failure retains heuristic scores.
 `GOBSTOPPER_APPLE_TIMEOUT_MS`, `_MAX_CANDIDATES`, `_BATCH_SIZE`, and
 `_MAX_BATCHES` tune it, hard-capped at 100–600,000 ms, 256 candidates, 64
 labels-only items per batch (8 with content), and 16 batches. Since inference
@@ -534,7 +571,9 @@ is local, the scorer also reads a bounded excerpt of each candidate record
 labels-only scoring) and shrinks its default batch sizes to fit the ~4k-token
 context window. Each batch's guided schema contains one required `p_<id>` field
 per candidate, so omitted or duplicate array IDs cannot silently distort the
-ranking; a malformed batch retains its heuristic scores.
+ranking; a malformed batch retains its heuristic scores. Excerpts come from one
+bounded source image whose normalized eligibility and payload fingerprints must
+match the plan input; changed or ambiguous sources fall back to the heuristic.
 
 `GOBSTOPPER_DIGEST=apple` goes further: the injected state card is written
 by the on-device model instead of keyword extraction. Because inference is
@@ -552,11 +591,13 @@ The same call also writes a one-line stub per excerpted record, such as
 template where the payload was removed. Records the model did not cover
 keep the generic stub; invalid or oversized stubs are dropped by validation.
 
-Apple requests are cached in-process on the SHA-256 of the (prompt, schema)
-pair: `watch` re-evaluates an unchanged transcript every poll interval, and
-identical model inputs return the recorded response instead of another
-generation. In one live dry-run poll, re-evaluation went from about 17 s to
-milliseconds.
+Apple requests are cached in-process by task, instructions, schema, prompt and
+bridge binary identity. Only validated complete scorer batches or validated digest fields/stubs enter
+the cache. This identifies the exact submitted bounded input, not omitted
+source context or opaque model weights.
+Model weights and OS inference internals remain opaque; a binary hash does not
+attest their identity. An identical admitted request can reuse its recorded
+response without another generation.
 The cache is bounded at 64 entries with oldest-first eviction;
 `GOBSTOPPER_APPLE_CACHE=0` disables both reads and writes. Scorer diagnostics
 report cached batches separately from real model calls. The savings gate
@@ -585,12 +626,21 @@ gobstopper policy-check --provider codex --context-tokens 300000 \
 ```
 
 `policy-check` returns a decision; it does not call the provider. The runtime
-invokes `thread/compact/start` on its own app-server connection, or launches
-Claude Code sessions with `--autocompact <tokens>`. Transcript rewrites stay
-in Gobstopper, which publishes verified forks for an explicit resume and does
-not rewrite a session it detects as running.
+must establish that it controls the selected session and test the provider's
+operation before executing it on its own connection. File preparation publishes
+separate copies for an explicit resume; provider acceptance is a separate check.
 
-## How providers compact today
+This numeric interface was designed for OOMPA, which was retired on 2026-09-19
+and replaced by xcb. xcb embeds `gobstopper-core` as a library; see the
+[plugin protocol](docs/plugin-protocol.md). The
+[historical integration contract](docs/oompa-contract.md) records the original
+interface and the obligations of a runtime that uses it.
+
+## Provider levers observed in earlier versions
+
+These are protocol notes from earlier provider builds, not an activation grant
+for the installed version. The [qualification matrix](docs/assurance/qualification.json)
+records current status; there are no qualified live native cells.
 
 | lever | codex | claude code |
 |---|---|---|
@@ -606,28 +656,22 @@ Codex persists compaction as a `compacted` rollout record carrying
 history when it resumes.
 gobstopper's parser and verifier understand that shape, including tool pairs
 inside `replacement_history`. Synthetic records are experimental, pair-aware,
-transactional, and available only behind `--experimental-compacted`; ordinary
+checked before copy publication, and available only behind `--experimental-compacted`; ordinary
 `apply` uses the portable forked digest representation.
 
-With `[provider.codex] auto_compact_closed`, `watch` drives
-`thread/compact/start` itself on idle over-trigger threads via
-`codex app-server` (pre/post vault snapshots + realized retention on the
-event, same as the devin acp path). Multi-agent v2 sub-agent threads cannot
-be resumed by the app-server and are skipped (`watch-apply:sub-agent`
-events); plain forks resume normally. Terminal provider outcomes (quota
-rejections, structural resume failures, an account plan without the remote
-compact task's server-side model, unconfirmed turns) suppress the
-session on a session-keyed cooldown (a failed turn still rewrites the
-rollout, so a fingerprint-settle cannot hold); transient errors like a
-missing `codex` binary retry on the next pass.
+The CLI contains native adapters and a durable operation journal, but release
+builds refuse dispatch with `native_unqualified`, including prior
+`auto_compact_closed` settings. Debug protocol fixtures require exact synthetic
+executable bytes and isolated temporary homes. They do not qualify a live provider.
+If an earlier attempt is dispatched or unknown, cooldown expiry, changed source
+bytes, and watch restarts cannot automatically replay it. Inspect
+`gobstopper native-operations`; reconciliation accepts only persisted matching
+Codex terminal identity, never a caller-supplied success flag. See the
+[recovery runbook](docs/assurance/operations.md).
 
-The same `auto_compact_closed` setting under `[provider.claude_code]` has
-`watch` run `claude --resume <id> -p /compact` on closed over-trigger
-sessions, and under `[provider.devin]` it runs `/compact` over `devin acp`
-(see [docs/devin.md](docs/devin.md)). `[provider.claude_code]
-auto_apply_inplace` lets `watch` rewrite an idle Claude Code transcript in
-place after a snapshot instead of preparing a fork. All three settings are
-off by default; see [config.example.toml](config.example.toml).
+The compatibility settings `auto_apply_inplace`, `auto_apply_store`, and
+`auto_compact_closed` cannot enable these disabled operations. See
+[config.example.toml](config.example.toml) for their current meanings.
 
 ## Layout
 
@@ -635,7 +679,7 @@ off by default; see [config.example.toml](config.example.toml).
   the `Strategy` trait, all built-in strategies, and the telemetry schema.
   Its only file I/O is the telemetry event log.
 - `crates/gobstopper-adapters`: session discovery, Codex and Claude Code JSONL
-  parsing and rewriting, the Devin session-store adapter, no-clobber
+  parsing and copy preparation, read-only Devin exports, no-clobber
   publication, verification, plugin hosting, and the snapshot vault.
 - `crates/gobstopper-cli`: the `gobstopper` binary (run `gobstopper --help`
   for every subcommand), layered configuration, hooks, and the read-only MCP
@@ -667,7 +711,8 @@ size for retention; it does not measure task quality or recommend a cutoff.
 The following single-session experiments were recorded in the repository on
 September 17 using earlier builds and workflows. They are separate from the
 729-session retrospective and do not establish current provider-wide savings
-or general task quality. One 333k-token Claude session was asked the same
+or general task quality. They do not qualify this artifact's activation matrix.
+One 333k-token Claude session was asked the same
 resume question under four conditions, measuring provider tokens on that turn:
 
 | condition | input tokens on resume | output tokens | recalled the standing task? |
@@ -719,34 +764,40 @@ correct window chain was accepted by `codex exec resume`, and the model
 completed a real API turn that recalled the elided commands. In a separate
 Claude Code trial on a 333k-token test copy, Gobstopper elided 43 stale tool
 records and injected a state card, and `claude --resume` succeeded and
-recalled the standing task. That trial used an earlier build; current
-`apply` writes Claude Code compactions to a separate fork.
+recalled the standing task. These trials used earlier builds and do not establish current provider resume
+compatibility. Current `apply` writes Claude Code compactions to a separate fork.
+
 
 ## Status
 
-`plan`, `eval`, `verify`, the MCP server, and provider inspection do not
-change your sessions; configured plugins and preset commands they run are your
-own trusted code.
-For Claude Code and Codex, `apply` and `undo` write separate files and leave
-the source unchanged, and so does `watch` unless you turn on
-`auto_apply_inplace` or `auto_compact_closed`. For an idle Devin session,
-`apply` and `undo` write to the session store in place after checking that
-Devin does not hold the session lock.
-Before publishing a separate file, Gobstopper checks the source hash again,
-refuses to overwrite an existing file, snapshots the source, verifies the
-structure, and keeps a receipt so a repeated run does not publish twice.
-Transcripts are limited to 512 MiB by default
-(`GOBSTOPPER_MAX_TRANSCRIPT_BYTES`) and 100,000 records. Unit, regression,
-and property tests cover the default deterministic strategies and the
-built-in Codex and Claude Code adapters, and unit tests cover the Devin
-adapter. The live resume trials above ran on earlier builds.
+The [correctness audit](docs/correctness-audit.md) records established behavior,
+known defects and evidence limits; the [assurance plan](docs/correctness-plan.md)
+tracks the remaining work. No whole-system correctness proof is claimed.
+File-copy publication uses source hashes, no-clobber creation, retained source
+and candidate bytes, structural checks and durable operation receipts. Shared
+vault readers coordinate with pruning, which fails closed on corrupt recovery
+roots. Operation pins have no automatic retirement policy. Transcript processing
+defaults to 512 MiB and 100,000 records. Process-death fixtures and
+[TLA+ vault models](verify/vault/README.md), the
+[native dispatch model](verify/watch/README.md),
+[production Rust proof kernels](verify/core/README.md), and
+[Lean transcript algebra](verify/transcript/README.md) cover their declared
+invariants and bounds. The [bounded synthetic stress gate](verify/stress/README.md)
+exercises named fault, restart and process fixtures. The
+[verification guide](verify/README.md) describes reproducible tool inputs and CI
+gates. These checks do not prove arbitrary filesystem power-loss
+behavior, proprietary provider acceptance, or preservation of every task fact.
 
-Running sessions stay under the provider's control. Synthetic Codex
-`compacted` records (`--experimental-compacted`) and model scoring are
-experimental, and plugins or preset commands run only after you trust them.
-Devin support covers session detection, policy checks over the CLI and MCP,
-provider compaction of closed sessions over `devin acp`, vault snapshots of
-each session's export, and guarded in-place compaction of idle sessions.
+Direct provider controls still belong to the live session owner. Synthetic
+Codex `compacted` records, external model scoring, and semantic editor plugins
+remain explicitly experimental or trusted extension paths. Devin support covers
+detection, numeric policy/MCP handoff, frozen export evaluation and per-session
+vault exports. Released
+native dispatch remains guarded for all three providers. Direct-store and
+arbitrary-path rewrite APIs refuse mutation. Deterministic MCP inspection rejects
+executable strategies; explicitly invoked extensions remain trusted code rather
+than an OS sandbox. The [activation matrix](docs/assurance/qualification.json)
+and [recovery runbook](docs/assurance/operations.md) define the supported modes.
 See [docs/design.md](docs/design.md), [docs/roadmap.md](docs/roadmap.md),
 [docs/plugin-protocol.md](docs/plugin-protocol.md), and
 [docs/devin.md](docs/devin.md) for details.

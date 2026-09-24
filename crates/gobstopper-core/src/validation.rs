@@ -1,28 +1,29 @@
+use crate::admission::{self, EditAdmission, EditClass};
 use crate::strategy::PolicyConfig;
 use crate::{Edit, Transcript};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
-pub const MAX_EDITS: usize = 64;
-pub const MAX_ITEMS: usize = 100_000;
-pub const MAX_DIGEST_BYTES: usize = 32 * 1024;
+pub use crate::admission::{MAX_DIGEST_BYTES, MAX_EDITS, MAX_ITEMS};
 
 pub fn validate_edits(
     transcript: &Transcript,
     policy: &PolicyConfig,
     edits: &[Edit],
 ) -> Result<(), &'static str> {
-    if edits.len() > MAX_EDITS || transcript.items.len() > MAX_ITEMS {
+    if !admission::plan_bounds(edits.len(), transcript.items.len()) {
         return Err("plan exceeds item limits");
     }
-    let items: HashMap<_, _> = transcript.items.iter().map(|i| (i.line_index, i)).collect();
-    if items.len() != transcript.items.len() {
+    let mut items: Vec<_> = transcript.items.iter().collect();
+    items.sort_unstable_by_key(|item| item.line_index);
+    let indexes: Vec<_> = items.iter().map(|item| item.line_index).collect();
+    if !admission::strictly_increasing(&indexes) {
         return Err("ambiguous transcript indexes");
     }
     let protected: HashSet<_> = transcript
         .items
         .iter()
         .rev()
-        .filter(|i| i.elidable_bytes.is_some())
+        .filter(|i| i.is_elidable())
         .take(policy.keep_recent_tool_outputs)
         .map(|i| i.line_index)
         .collect();
@@ -32,8 +33,14 @@ pub fn validate_edits(
         .flat_map(|item| item.tool_use_ids.iter().map(String::as_str))
         .collect();
     let mut seen = HashSet::new();
-    let mut digests = 0;
+    let mut composition = EditAdmission::default();
     for edit in edits {
+        composition.admit(match edit {
+            Edit::Elide { .. } => EditClass::Elide,
+            Edit::InjectDigest { .. } => EditClass::Digest,
+            Edit::ProviderCompact { .. } => EditClass::ProviderControl,
+            Edit::CacheEdit { .. } => EditClass::CacheControl,
+        })?;
         match edit {
             Edit::Elide {
                 line_indexes,
@@ -57,11 +64,14 @@ pub fn validate_edits(
                     return Err("invalid elision bounds or stub template");
                 }
                 for line in line_indexes {
-                    let item = items.get(line).ok_or("unknown edit index")?;
-                    if item.elidable_bytes.is_none()
-                        || item.est_tokens == 0
-                        || protected.contains(line)
-                    {
+                    let position =
+                        admission::find_index(&indexes, *line).ok_or("unknown edit index")?;
+                    let item = items[position];
+                    if !admission::target_allowed(
+                        item.est_tokens,
+                        item.elidable_bytes,
+                        protected.contains(line),
+                    ) {
                         return Err("edit targets protected or non-elidable content");
                     }
                     if !seen.insert(*line) {
@@ -70,7 +80,6 @@ pub fn validate_edits(
                 }
             }
             Edit::InjectDigest { digest } => {
-                digests += 1;
                 let size = digest
                     .goal
                     .iter()
@@ -82,10 +91,11 @@ pub fn validate_edits(
                     .chain(&digest.open_tasks)
                     .chain(&digest.current_work)
                     .chain(&digest.context)
-                    .try_fold(0usize, |total, s| total.checked_add(s.len()))
-                    .ok_or("digest size overflow")?;
-                if digests > 1
-                    || digest.covers_items == 0
+                    .try_fold(0usize, |total, s| {
+                        admission::add_digest_bytes(total, s.len())
+                    })
+                    .ok_or("invalid digest bounds")?;
+                if digest.covers_items == 0
                     || digest.covers_items > transcript.items.len()
                     || size > MAX_DIGEST_BYTES
                 {
@@ -159,6 +169,7 @@ mod tests {
             }],
             usage: UsageSample {
                 context_tokens: 500,
+                context_state: crate::model::ContextState::Reported,
                 ..Default::default()
             },
         }
@@ -257,5 +268,64 @@ mod tests {
             Edit::Elide { per_item_stubs, .. } => assert!(per_item_stubs.is_empty()),
             _ => panic!("expected elide"),
         }
+    }
+
+    #[test]
+    fn physical_indexes_zero_payloads_and_live_protection_are_exact() {
+        let mut transcript = transcript(Provider::Codex);
+        transcript.items[0].line_index = usize::MAX;
+        let policy = PolicyConfig {
+            keep_recent_tool_outputs: 0,
+            ..Default::default()
+        };
+        let edit = |line| {
+            vec![Edit::Elide {
+                line_indexes: vec![line],
+                stub_template: "[elided]".into(),
+                per_item_stubs: Default::default(),
+            }]
+        };
+        assert!(validate_edits(&transcript, &policy, &edit(usize::MAX)).is_ok());
+        assert!(validate_edits(&transcript, &policy, &edit(0)).is_err());
+        let protected = PolicyConfig {
+            keep_recent_tool_outputs: usize::MAX,
+            ..policy.clone()
+        };
+        assert!(validate_edits(&transcript, &protected, &edit(usize::MAX)).is_err());
+        transcript.items[0].elidable_bytes = Some(0);
+        assert!(validate_edits(&transcript, &policy, &edit(usize::MAX)).is_err());
+        transcript.items[0].elidable_bytes = Some(2000);
+        transcript.items[0].est_tokens = 0;
+        assert!(validate_edits(&transcript, &policy, &edit(usize::MAX)).is_err());
+    }
+
+    #[test]
+    fn duplicate_indexes_and_mixed_controls_reject_without_changing_input() {
+        let mut transcript = transcript(Provider::Codex);
+        let policy = PolicyConfig {
+            keep_recent_tool_outputs: 0,
+            ..Default::default()
+        };
+        let elide = Edit::Elide {
+            line_indexes: vec![1],
+            stub_template: "[elided]".into(),
+            per_item_stubs: Default::default(),
+        };
+        let before = serde_json::to_vec(&transcript.items).unwrap();
+        assert!(validate_edits(&transcript, &policy, &[elide.clone(), elide.clone()]).is_err());
+        assert!(validate_edits(
+            &transcript,
+            &policy,
+            &[
+                elide.clone(),
+                Edit::ProviderCompact {
+                    control: "native".into(),
+                }
+            ]
+        )
+        .is_err());
+        assert_eq!(serde_json::to_vec(&transcript.items).unwrap(), before);
+        transcript.items.push(transcript.items[0].clone());
+        assert!(validate_edits(&transcript, &policy, &[elide]).is_err());
     }
 }

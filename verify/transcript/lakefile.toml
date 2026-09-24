@@ -1,0 +1,10 @@
+name = "transcript"
+version = "0.1.0"
+defaultTargets = ["Transcript", "vectors"]
+
+[[lean_lib]]
+name = "Transcript"
+
+[[lean_exe]]
+name = "vectors"
+root = "Vectors"

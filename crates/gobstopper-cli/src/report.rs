@@ -1,91 +1,17 @@
-//! `session-observations-v1` report: join session discovery with
-//! compaction telemetry into the AI Charts session-report shape so
-//! aicharts (or any consumer of that profile) can ingest gobstopper's
-//! measurements for dashboards.
-//!
-//! # Target schema (from aicharts `lib/usage/sessions.ts`)
-//!
-//! The canonical envelope is:
-//!
-//! ```json
-//! {
-//!   "schemaVersion": 1,
-//!   "profile": "session-observations-v1",
-//!   "sessions": [ {
-//!     "provider": "codex" | "claude_code" | "devin",
-//!     "sessionId": "<32 lowercase hex>",
-//!     "conversationId": "<32 lowercase hex> | null",
-//!     "window": { "startMs": <epoch ms>, "endMs": <epoch ms> },
-//!     "source": "history" | "instrumented",
-//!     "usage": [ {
-//!       "id": "<32 lowercase hex>", "atMs": <epoch ms within window>,
-//!       "model": "<allowlisted slug> | null",
-//!       "modelBasis": "response" | "request" | "unknown",
-//!       "inputTokens": 0, "cacheReadTokens": 0, "cacheWriteTokens": 0,
-//!       "outputTokens": 0, "reasoningTokens": null
-//!     } ],
-//!     "spans": []
-//!   } ]
-//! }
-//! ```
-//!
-//! aicharts' `parseSessionReport` accepts exactly these keys — no more,
-//! no fewer — bounds sessions to 2,000 and records to 50,000, requires
-//! `endMs - startMs <= 366 days`, requires history-sourced sessions to
-//! carry no spans, and deduplicates on `provider:sessionId` /
-//! `provider:usage:id`.
-//!
-//! # Deliberate deviations from the strict schema
-//!
-//! - **`gobstopper` extension key.** Each session carries one extra
-//!   namespaced object holding compaction stats and raw counters the
-//!   strict schema has no slot for. Every aicharts-mandated field is
-//!   still emitted with a strictly valid value, so stripping
-//!   `sessions[].gobstopper` (e.g. `jq 'del(.sessions[].gobstopper)'`)
-//!   yields a report `parseSessionReport` accepts.
-//! - **Real session ids, not keyed ids.** aicharts derives 128-bit
-//!   keyed (HMAC) pseudonymous ids with a private occurrence key.
-//!   gobstopper holds no such key, so `sessionId` carries the *native*
-//!   provider id canonicalized to 32 lowercase hex (a UUID with dashes
-//!   stripped is already the 128-bit id); non-UUID ids fall back to a
-//!   deterministic FNV-1a digest — stable for joins, not a secrecy
-//!   boundary. Consumers that need pseudonymity must re-key downstream,
-//!   exactly as aicharts does with its occurrence key. The untouched
-//!   native id is repeated under `gobstopper.sessionIdNative` whenever
-//!   it is safe to print (never a filesystem path).
-//! - **One aggregate usage record per session.** gobstopper's cheap
-//!   scan yields lifetime counters, not per-request occurrences. The
-//!   single record is timestamped at last activity. Token semantics:
-//!   gobstopper `lifetime_input_tokens` includes the cached portion on
-//!   both providers, so `inputTokens` = lifetime input minus
-//!   `cacheReadTokens` (= `lifetime_cached_tokens`) to keep aicharts'
-//!   `accountedTokens` sum faithful. Claude cache-*write* tokens cannot
-//!   be separated from uncached input in the aggregate and are folded
-//!   into `inputTokens`; `outputTokens`/`reasoningTokens` are not
-//!   tracked and report 0/null. `model` is always null (`unknown`
-//!   basis): gobstopper retains no model labels.
-//! - **Window bounds.** `endMs` is last activity (file mtime age at
-//!   scan; if underivable, the latest event ts; if neither, 0 and no
-//!   usage record is emitted — `atMs` must stay inside the window).
-//!   `startMs` extends back over the session's earliest telemetry
-//!   event, clamped so the span never exceeds the schema's 366-day
-//!   bound.
-//!
-//! Compaction events join sessions on the native (un-normalized)
-//! provider id plus provider — the same key `apply`/`watch` wrote.
-//! Events whose session is not among `sessions` are not represented.
-//! Sessions are emitted in discovery order (newest first), deduplicated
-//! on the emitted `(provider, sessionId)` pair, and capped at the
-//! schema's 2,000-session bound; each carries at most one usage record
-//! so the 50,000-record bound cannot be hit.
-//!
-//! Numeric and identifier fields only — never transcript content,
-//! prompts, cwd, or filesystem paths.
+//! Source-bound session observations. Counts carry presence and source scope
+//! in the gobstopper extension; partial discovery tails are never lifetime
+//! totals. Positive provider context reports from retained same-source snapshots
+//! can establish a recorded reduction, not billed savings or causal task benefit.
+//! Exported session ids hash provider/store/session so equal native ids in
+//! different stores cannot merge. The native id remains available when bounded.
+//! The compatibility usage slots for output/cache-write are zero placeholders;
+//! unmeasuredUsageFields names them explicitly. No prices or billing are inferred.
 
 #![allow(dead_code)]
 
 use gobstopper_adapters::detect::Discovered;
 use gobstopper_core::events::CompactionEvent;
+use gobstopper_core::model::LifetimeScope;
 use gobstopper_core::Provider;
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
@@ -176,24 +102,40 @@ struct Agg {
     applied: u64,
     native_hook_applied: u64,
     est_reclaimed: u64,
+    qualified_reductions: u64,
+    unqualified_applied: u64,
+    seen_reductions: HashSet<(String, String)>,
     last_applied_ts: u64,
     last_strategy: Option<String>,
 }
 
-fn aggregate<'a>(events: &'a [CompactionEvent]) -> HashMap<(Provider, &'a str), Agg> {
-    let mut map: HashMap<(Provider, &'a str), Agg> = HashMap::new();
+fn aggregate<'a>(events: &'a [CompactionEvent]) -> HashMap<(Provider, &'a str, &'a str), Agg> {
+    let mut map: HashMap<(Provider, &'a str, &'a str), Agg> = HashMap::new();
     for e in events {
-        let agg = map.entry((e.provider, e.session_id.as_str())).or_default();
+        let Some(identity) = e.source_identity_sha256.as_deref() else {
+            continue;
+        };
+        let agg = map
+            .entry((e.provider, e.session_id.as_str(), identity))
+            .or_default();
         if agg.min_ts == 0 || e.ts < agg.min_ts {
             agg.min_ts = e.ts;
         }
         agg.max_ts = agg.max_ts.max(e.ts);
         if e.outcome == "applied" {
-            agg.applied += 1;
-            if e.strategy == "native" && e.action == "provider_compact" {
-                agg.native_hook_applied += 1;
+            agg.applied = agg.applied.saturating_add(1);
+            if let Some(reduction) = e.recorded_context_reduction_tokens() {
+                let pair = (
+                    e.snapshot_before_sha256.clone().unwrap(),
+                    e.snapshot_after_sha256.clone().unwrap(),
+                );
+                if agg.seen_reductions.insert(pair) {
+                    agg.qualified_reductions = agg.qualified_reductions.saturating_add(1);
+                    agg.est_reclaimed = agg.est_reclaimed.saturating_add(reduction);
+                }
+            } else {
+                agg.unqualified_applied = agg.unqualified_applied.saturating_add(1);
             }
-            agg.est_reclaimed = agg.est_reclaimed.saturating_add(e.est_reclaimed_tokens);
             if e.ts >= agg.last_applied_ts {
                 agg.last_applied_ts = e.ts;
                 agg.last_strategy = Some(e.strategy.clone());
@@ -217,7 +159,13 @@ pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Valu
 
     for d in sessions {
         let handle = &d.handle;
-        let session_id = normalize_session_id(&handle.session_id);
+        let source_identity = gobstopper_adapters::copy::sha256(
+            &serde_json::to_vec(&(handle.provider, &handle.session_id, &handle.path))
+                .expect("serializable source identity"),
+        );
+        // Store identity participates in the exported id so foreign stores with
+        // the same native id remain separate even across successive reports.
+        let session_id = source_identity[..32].to_string();
         // The strict parser rejects duplicate provider:sessionId keys;
         // keep the first (discovery order is newest-first).
         if !seen.insert((handle.provider, session_id.clone())) {
@@ -226,14 +174,22 @@ pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Valu
         if out.len() >= MAX_SESSIONS {
             break;
         }
-        let agg = aggs.get(&(handle.provider, handle.session_id.as_str()));
+        let agg = aggs.get(&(
+            handle.provider,
+            handle.session_id.as_str(),
+            source_identity.as_str(),
+        ));
 
         // Last activity: file mtime age at scan time. `u64::MAX` is the
         // detect sentinel for "mtime unreadable" — not a real age.
         let last_activity_ms = (handle.age_secs != u64::MAX)
             .then(|| now_ms.saturating_sub(handle.age_secs.saturating_mul(1_000)));
-        let event_min_ms = agg.filter(|a| a.min_ts > 0).map(|a| a.min_ts * 1_000);
-        let event_max_ms = agg.filter(|a| a.max_ts > 0).map(|a| a.max_ts * 1_000);
+        let event_min_ms = agg
+            .filter(|a| a.min_ts > 0)
+            .map(|a| a.min_ts.saturating_mul(1_000).min(now_ms));
+        let event_max_ms = agg
+            .filter(|a| a.max_ts > 0)
+            .map(|a| a.max_ts.saturating_mul(1_000).min(now_ms));
         let end_ms = last_activity_ms.or(event_max_ms).unwrap_or(0);
         let mut start_ms = last_activity_ms.or(event_min_ms).unwrap_or(0);
         if let Some(min) = event_min_ms {
@@ -250,7 +206,7 @@ pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Valu
         // One aggregate usage record, timestamped at last activity.
         // Only emitted when a real timestamp exists: `atMs` must lie
         // inside the window, and a fabricated epoch would lie.
-        let usage = if end_ms > 0 {
+        let usage = if end_ms > 0 && d.usage.lifetime_scope == LifetimeScope::Full {
             vec![json!({
                 "id": digest128("gobstopper/usage", session_id.as_bytes()),
                 "atMs": end_ms,
@@ -260,7 +216,7 @@ pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Valu
                     .usage
                     .lifetime_input_tokens
                     .saturating_sub(d.usage.lifetime_cached_tokens),
-                "cacheReadTokens": d.usage.lifetime_cached_tokens,
+                "cacheReadTokens": d.usage.lifetime_cached_tokens.min(d.usage.lifetime_input_tokens),
                 "cacheWriteTokens": 0,
                 "outputTokens": 0,
                 "reasoningTokens": Value::Null,
@@ -273,9 +229,15 @@ pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Valu
         let est_reclaimed = agg.map(|a| a.est_reclaimed).unwrap_or(0);
         let last_applied_ms = agg
             .filter(|a| a.last_applied_ts > 0)
-            .map(|a| a.last_applied_ts * 1_000);
+            .map(|a| a.last_applied_ts.saturating_mul(1_000).min(now_ms));
         let last_strategy = agg.and_then(|a| a.last_strategy.clone());
-        let native = if looks_like_path(&handle.session_id) {
+        let native = if looks_like_path(&handle.session_id)
+            || handle.session_id.len() > 256
+            || !handle
+                .session_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        {
             Value::Null
         } else {
             Value::from(handle.session_id.as_str())
@@ -289,7 +251,7 @@ pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Valu
             Provider::Codex if gobstopper_adapters::codex::is_subagent_thread(&handle.path) => {
                 "unavailable:sub-agent"
             }
-            _ => "available",
+            _ => "unqualified",
         };
 
         out.push(json!({
@@ -302,16 +264,32 @@ pub fn build_report(sessions: &[Discovered], events: &[CompactionEvent]) -> Valu
             "spans": [],
             "gobstopper": {
                 "sessionIdNative": native,
+                "sourceIdentitySha256": source_identity,
+                "sessionIdBasis": "canonical_provider_store_session_sha256_prefix",
+                "sampling": "bounded_discovered_sessions",
+                "legacyEventsQualified": false,
                 "contextTokens": d.usage.context_tokens,
+                "contextState": d.usage.context_state,
+                "reportedContextTokens": d.usage.reported_context(),
+                "lifetimeScope": d.usage.lifetime_scope,
+                "tokenUnits": "tokens",
+                "usageBasis": "recorded_provider_accounting_not_billing",
+                "unmeasuredUsageFields": ["cacheWriteTokens", "outputTokens", "reasoningTokens", "chargedTokens"],
                 "lifetimeInputTokens": d.usage.lifetime_input_tokens,
                 "lifetimeCachedTokens": d.usage.lifetime_cached_tokens,
                 "modelContextWindow": d.usage.model_context_window,
                 "lastActivityMs": last_activity_ms,
                 "closedSessionCompact": closed_session_compact,
+                "qualificationStatus": "unqualified",
+                "nativeActivation": false,
                 "compactions": {
                     "applied": applied,
                     "nativeHookApplied": agg.map(|a| a.native_hook_applied).unwrap_or(0),
                     "estReclaimedTokens": est_reclaimed,
+                    "recordedContextReductionTokens": agg.filter(|a| a.qualified_reductions > 0).map(|a| a.est_reclaimed),
+                    "qualifiedReductionEvents": agg.map(|a| a.qualified_reductions).unwrap_or(0),
+                    "unqualifiedAppliedEvents": agg.map(|a| a.unqualified_applied).unwrap_or(0),
+                    "reductionBasis": "positive_reported_context_same_source_retained_bytes_not_billing",
                     "lastAppliedMs": last_applied_ms,
                     "lastStrategy": last_strategy,
                 },
@@ -349,6 +327,7 @@ pub fn cohort_summary(cfg: &crate::config::Config, events: &[CompactionEvent]) -
         watch_suppressed: u64,
         applies: u64,
         reclaimed_tokens: u64,
+        seen_reductions: HashSet<(String, String, String)>,
         /// error_code == unresolved_context; not a policy decision.
         unresolved_context: u64,
         first_ts: u64,
@@ -356,37 +335,51 @@ pub fn cohort_summary(cfg: &crate::config::Config, events: &[CompactionEvent]) -
     }
     impl Acc {
         fn observe(&mut self, e: &CompactionEvent, cohort: &'static str) {
-            self.sessions.insert(e.session_id.clone());
-            self.events += 1;
+            self.sessions.insert(
+                e.source_identity_sha256
+                    .clone()
+                    .unwrap_or_else(|| format!("unqualified:{}", e.session_id)),
+            );
+            self.events = self.events.saturating_add(1);
             if self.first_ts == 0 || e.ts < self.first_ts {
                 self.first_ts = e.ts;
             }
             self.last_ts = self.last_ts.max(e.ts);
             if e.error_code.as_deref() == Some("unresolved_context") {
-                self.unresolved_context += 1;
+                self.unresolved_context = self.unresolved_context.saturating_add(1);
             }
             if e.strategy.starts_with("prompt-policy") {
                 match e.outcome.as_str() {
-                    "planned" => self.advisories_shown += 1,
+                    "planned" => self.advisories_shown = self.advisories_shown.saturating_add(1),
                     // Unresolved context is not a decision at all —
                     // counted above, excluded from both arms here.
                     "skipped" if e.error_code.as_deref() == Some("unresolved_context") => {}
                     "skipped" => {
                         if cohort == "control" && e.context_tokens_before >= e.trigger_tokens {
-                            self.advisories_suppressed += 1;
+                            self.advisories_suppressed =
+                                self.advisories_suppressed.saturating_add(1);
                         } else {
-                            self.silent_decisions += 1;
+                            self.silent_decisions = self.silent_decisions.saturating_add(1);
                         }
                     }
                     _ => {}
                 }
             }
             if e.strategy == "watch-apply:control" {
-                self.watch_suppressed += 1;
+                self.watch_suppressed = self.watch_suppressed.saturating_add(1);
             }
             if e.outcome == "applied" {
-                self.applies += 1;
-                self.reclaimed_tokens += e.est_reclaimed_tokens;
+                self.applies = self.applies.saturating_add(1);
+                if let Some(reduction) = e.recorded_context_reduction_tokens() {
+                    let pair = (
+                        e.source_identity_sha256.clone().unwrap(),
+                        e.snapshot_before_sha256.clone().unwrap(),
+                        e.snapshot_after_sha256.clone().unwrap(),
+                    );
+                    if self.seen_reductions.insert(pair) {
+                        self.reclaimed_tokens = self.reclaimed_tokens.saturating_add(reduction);
+                    }
+                }
             }
         }
         fn json(&self) -> Value {
@@ -439,7 +432,8 @@ pub fn cohort_summary(cfg: &crate::config::Config, events: &[CompactionEvent]) -
             }),
         );
     }
-    json!({ "schema": "gobstopper-cohort-readout-v1", "providers": out })
+    json!({ "schema": "gobstopper-cohort-readout-v1", "providers": out,
+        "interpretation": "descriptive_selected_cohorts_not_causal_effect", "reclaimed_tokens_basis": "qualified_recorded_context_reduction_not_billing" })
 }
 
 #[cfg(test)]
@@ -466,6 +460,8 @@ mod tests {
                 lifetime_input_tokens: 100_000,
                 lifetime_cached_tokens: 30_000,
                 model_context_window: Some(1_000_000),
+                context_state: gobstopper_core::model::ContextState::Reported,
+                lifetime_scope: LifetimeScope::Full,
             },
         }
     }
@@ -478,27 +474,118 @@ mod tests {
         strategy: &str,
         reclaimed: u64,
     ) -> CompactionEvent {
-        CompactionEvent {
-            schema: CompactionEvent::SCHEMA.to_string(),
-            ts,
+        use gobstopper_core::events::TokenObservation;
+        use gobstopper_core::model::ContextState;
+        let mut event = CompactionEvent::new(
             provider,
-            session_id: session_id.to_string(),
-            strategy: strategy.to_string(),
-            action: "transcript_compact".to_string(),
-            outcome: outcome.to_string(),
-            trigger_tokens: 250_000,
-            context_tokens_before: 260_000,
-            context_tokens_after: 260_000 - reclaimed,
-            est_reclaimed_tokens: reclaimed,
-            items_covered: 10,
-            duration_ms: 5,
-            error_code: None,
-            snapshot_before_sha256: None,
-            snapshot_after_sha256: None,
-            retention_total: None,
-            retention_retained: None,
-            retention_lexical: None,
-        }
+            session_id,
+            strategy,
+            "transcript_compact",
+            outcome,
+            250_000,
+            260_000,
+            260_000u64.saturating_sub(reclaimed),
+            10,
+            5,
+            None,
+        );
+        event.ts = ts;
+        let source = discovered(provider, session_id, 0).handle;
+        let identity = gobstopper_adapters::copy::sha256(
+            &serde_json::to_vec(&(provider, session_id, &source.path)).unwrap(),
+        );
+        event.source_identity_sha256 = Some(identity.clone());
+        let before_manifest = gobstopper_adapters::copy::sha256(
+            &serde_json::to_vec(&(ts, reclaimed, "before")).unwrap(),
+        );
+        let after_manifest = gobstopper_adapters::copy::sha256(
+            &serde_json::to_vec(&(ts, reclaimed, "after")).unwrap(),
+        );
+        event.snapshot_before_sha256 = Some(before_manifest.clone());
+        event.snapshot_after_sha256 = Some(after_manifest.clone());
+        let observation = |manifest: &str, context| TokenObservation {
+            source_sha256: gobstopper_adapters::copy::sha256(manifest.as_bytes()),
+            source_identity_sha256: identity.clone(),
+            snapshot_manifest_sha256: Some(manifest.into()),
+            context_state: ContextState::Reported,
+            context_tokens: Some(context),
+            estimated_context_tokens: 0,
+            lifetime_scope: LifetimeScope::Absent,
+            lifetime_input_tokens: None,
+            lifetime_cached_tokens: None,
+        };
+        event.before_observation = Some(observation(&before_manifest, 260_000));
+        event.after_observation = Some(observation(
+            &after_manifest,
+            260_000u64.saturating_sub(reclaimed),
+        ));
+        event
+    }
+
+    #[test]
+    fn source_identity_separates_foreign_same_id_and_partial_totals() {
+        let first = discovered(Provider::Codex, UUID_A, 0);
+        let mut foreign = discovered(Provider::Codex, UUID_A, 0);
+        foreign.handle.path = "/foreign/source.jsonl".into();
+        foreign.usage.lifetime_scope = LifetimeScope::Partial;
+        let report = build_report(
+            &[first, foreign],
+            &[event(
+                Provider::Codex,
+                UUID_A,
+                u64::MAX,
+                "applied",
+                "auto",
+                20,
+            )],
+        );
+        let sessions = report["sessions"].as_array().unwrap();
+        assert_eq!(sessions.len(), 2);
+        assert_ne!(sessions[0]["sessionId"], sessions[1]["sessionId"]);
+        assert_eq!(
+            sessions[0]["gobstopper"]["compactions"]["recordedContextReductionTokens"],
+            20
+        );
+        assert!(
+            sessions[1]["gobstopper"]["compactions"]["recordedContextReductionTokens"].is_null()
+        );
+        assert!(sessions[1]["usage"].as_array().unwrap().is_empty());
+        assert!(
+            sessions[0]["gobstopper"]["compactions"]["lastAppliedMs"]
+                .as_u64()
+                .unwrap()
+                < u64::MAX
+        );
+    }
+
+    #[test]
+    fn legacy_estimates_and_plans_are_never_recorded_savings() {
+        let session = discovered(Provider::Codex, UUID_A, 0);
+        let mut legacy = event(Provider::Codex, UUID_A, 1, "applied", "auto", 50_000);
+        legacy.before_observation = None;
+        legacy.after_observation = None;
+        let report = build_report(&[session], &[legacy]);
+        let compactions = &report["sessions"][0]["gobstopper"]["compactions"];
+        assert_eq!(compactions["applied"], 1);
+        assert_eq!(compactions["estReclaimedTokens"], 0);
+        assert_eq!(compactions["unqualifiedAppliedEvents"], 1);
+        assert!(compactions["recordedContextReductionTokens"].is_null());
+    }
+
+    #[test]
+    fn repeated_evidence_pair_does_not_multiply_recorded_reduction() {
+        let session = discovered(Provider::Codex, UUID_A, 0);
+        let event = event(Provider::Codex, UUID_A, 1, "applied", "auto", 20);
+        let events = [event.clone(), event];
+        let report = build_report(&[session], &events);
+        let compactions = &report["sessions"][0]["gobstopper"]["compactions"];
+        assert_eq!(compactions["recordedContextReductionTokens"], 20);
+        assert_eq!(compactions["qualifiedReductionEvents"], 1);
+        let cohorts = cohort_summary(&crate::config::Config::default(), &events);
+        assert_eq!(
+            cohorts["providers"]["codex"]["cohorts"]["ungated"]["reclaimed_tokens"],
+            20
+        );
     }
 
     #[test]
@@ -627,8 +714,10 @@ mod tests {
 
         let s = &list[0];
         assert_eq!(s["provider"], "codex");
-        // Native UUID canonicalized: same 128-bit id, dashes stripped.
-        assert_eq!(s["sessionId"], "3f6b1a2c9d4e4f5a8b6c7d8e9f0a1b2c");
+        assert_eq!(
+            s["sessionId"],
+            &s["gobstopper"]["sourceIdentitySha256"].as_str().unwrap()[..32]
+        );
         assert!(s["conversationId"].is_null());
         assert_eq!(s["source"], "history");
         assert_eq!(s["spans"].as_array().unwrap().len(), 0);
@@ -656,7 +745,8 @@ mod tests {
 
         let g = &s["gobstopper"];
         assert_eq!(g["sessionIdNative"], UUID_A);
-        assert_eq!(g["closedSessionCompact"], "available");
+        assert_eq!(g["closedSessionCompact"], "unqualified");
+        assert_eq!(g["nativeActivation"], false);
         assert_eq!(g["contextTokens"], 42_000);
         assert_eq!(g["lifetimeInputTokens"], 100_000);
         assert_eq!(g["lifetimeCachedTokens"], 30_000);
@@ -692,7 +782,7 @@ mod tests {
         let report = build_report(&sessions, &[native, planned, skipped, other]);
         let counts = &report["sessions"][0]["gobstopper"]["compactions"];
         assert_eq!(counts["applied"], 2);
-        assert_eq!(counts["nativeHookApplied"], 1);
+        assert_eq!(counts["nativeHookApplied"], 0); // a hook label is not a causal operation receipt
         assert_eq!(counts["estReclaimedTokens"], 100);
     }
 

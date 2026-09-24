@@ -42,18 +42,15 @@ pub struct PolicyPatch {
     pub command: Option<String>,
     pub trusted_legacy_command: Option<bool>,
     pub plugin: Option<PluginSelection>,
-    /// Devin only: let `watch` apply elision plans to `sessions.db`
-    /// in place for idle sessions (guarded store write). Default off —
-    /// watch still plans/delegates without it.
+    /// Legacy compatibility flag. Direct provider-store writes remain
+    /// unavailable until compatible lifetime provider custody is qualified.
     pub auto_apply_store: Option<bool>,
-    /// Claude Code only: let `watch` rewrite an idle session's JSONL
-    /// transcript in place instead of preparing a detached fork.
-    /// Default off — without it watch prepares fork copies.
+    /// Legacy compatibility flag. Direct transcript replacement remains
+    /// unavailable until compatible lifetime provider custody is qualified.
     pub auto_apply_inplace: Option<bool>,
-    /// Claude Code only: let `watch` ask the provider to compact a
-    /// *closed* session natively (`claude --resume <id> -p /compact`)
-    /// before falling back to in-place elision. Only sessions with no
-    /// live owner pid are eligible. Default off.
+    /// Let watch ask a supported Codex, Claude or Devin provider to compact
+    /// a closed session natively. Default off. No native outcome falls back
+    /// to direct surgery; ownership still requires provider qualification.
     pub auto_compact_closed: Option<bool>,
     /// Devin only: deadline in seconds for one `devin acp` compact
     /// (initialize + session/load replay + /compact + async status).
@@ -129,11 +126,21 @@ pub fn config_path() -> PathBuf {
 
 pub fn load() -> anyhow::Result<Config> {
     use std::io::Read;
-    let file = match std::fs::File::open(config_path()) {
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = match options.open(config_path()) {
         Ok(file) => file,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Config::default()),
         Err(error) => return Err(error.into()),
     };
+    if !file.metadata()?.is_file() {
+        anyhow::bail!("configuration must be a regular file");
+    }
     let mut text = String::new();
     file.take(64 * 1024 + 1).read_to_string(&mut text)?;
     if text.len() > 64 * 1024 {
@@ -143,24 +150,7 @@ pub fn load() -> anyhow::Result<Config> {
 }
 
 pub fn validate_policy(policy: &PolicyConfig) -> anyhow::Result<()> {
-    if policy
-        .keep_score_threshold
-        .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
-    {
-        anyhow::bail!("keep_score_threshold must be a finite value between 0 and 1");
-    }
-    if policy.trigger_tokens == 0
-        || policy.trigger_tokens > 10_000_000
-        || policy.floor_tokens >= policy.trigger_tokens
-        || policy.keep_recent_tool_outputs > 100_000
-        || policy.min_interval_secs > 86_400
-        || policy.apply_hold_secs > 86_400
-        || policy.min_savings_tokens > 10_000_000
-        || policy.block_tokens > 10_000_000
-    {
-        anyhow::bail!("invalid policy bounds: require floor < trigger <= 10000000, min_savings_tokens <= 10000000, block_tokens <= 10000000, keep_recent_tool_outputs <= 100000, and min_interval_secs/apply_hold_secs <= 86400");
-    }
-    Ok(())
+    gobstopper_core::policy::validate_policy(policy).map_err(anyhow::Error::msg)
 }
 
 pub fn parse(text: &str) -> anyhow::Result<Config> {
@@ -194,6 +184,18 @@ pub struct Resolved {
     pub auto_compact_closed: bool,
     /// See `PolicyPatch::acp_timeout_secs`.
     pub acp_timeout_secs: u64,
+}
+
+impl Resolved {
+    /// Inspection must reject configured executable strategies before any
+    /// threshold shortcut. The caller separately chooses the pure evaluation
+    /// path, which never resolves environment-selected scorers or digests.
+    pub fn ensure_inspection(&self) -> anyhow::Result<()> {
+        if self.command.is_some() || self.plugin.is_some() {
+            anyhow::bail!("external strategies are unavailable in deterministic inspection");
+        }
+        Ok(())
+    }
 }
 
 impl Config {
@@ -316,6 +318,35 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inspection_rejects_external_strategies_without_loading_them() {
+        for config in [
+            "[policy]\ncommand = 'must-not-run'\ntrusted_legacy_command = true".to_string(),
+            format!(
+                "[policy.plugin]\nmanifest = '/does/not/exist/plugin.json'\ntrusted_sha256 = '{}'",
+                "a".repeat(64)
+            ),
+        ] {
+            let cfg = parse(&config).unwrap();
+            assert!(cfg
+                .resolve(Provider::Codex, "s", None, None)
+                .unwrap()
+                .ensure_inspection()
+                .is_err());
+            // Explicit built-in selection clears external strategy authority.
+            assert!(cfg
+                .resolve(Provider::Codex, "s", None, Some("scored"))
+                .unwrap()
+                .ensure_inspection()
+                .is_ok());
+        }
+        assert!(Config::default()
+            .resolve(Provider::Codex, "s", None, None)
+            .unwrap()
+            .ensure_inspection()
+            .is_ok());
+    }
 
     #[test]
     fn malformed_and_unknown_configuration_fails() {

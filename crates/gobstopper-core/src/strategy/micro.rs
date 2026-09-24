@@ -25,7 +25,7 @@ impl Strategy for MicroStrategy {
         let elidable: Vec<&crate::model::TranscriptItem> = transcript
             .items
             .iter()
-            .filter(|i| i.elidable_bytes.is_some())
+            .filter(|i| i.is_elidable())
             .collect();
         if elidable.is_empty() {
             return None;

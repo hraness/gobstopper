@@ -122,7 +122,7 @@ fn bounded_u64(value: Option<String>, default: u64, min: u64, max: u64) -> u64 {
 
 /// Runtime configuration for the Jev scorer. Lives in gobstopper.toml as
 /// `[scorer]` or `[scorer.jev]` depending on which design we ship.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct JevConfig {
     pub api_key: String,
     pub endpoint: String,
@@ -339,7 +339,12 @@ fn question_cache() -> &'static Mutex<ResponseCache<f64>> {
 
 fn cache_key(endpoint: &str, api_key: &str, payload: &[u8]) -> CacheKey {
     let mut hasher = Sha256::new();
-    for part in [endpoint.as_bytes(), api_key.as_bytes(), payload] {
+    for part in [
+        b"gobstopper-jev-request-v3".as_slice(),
+        endpoint.as_bytes(),
+        api_key.as_bytes(),
+        payload,
+    ] {
         hasher.update((part.len() as u64).to_le_bytes());
         hasher.update(part);
     }
@@ -355,7 +360,7 @@ fn question_cache_key(
     // The namespace strands old question-only entries in both memory and
     // disk caches without rewriting or deleting the existing cache file.
     let payload = serde_json::to_vec(&(
-        "gobstopper/jev-question-v2",
+        "gobstopper/jev-question-v3",
         "jev-latest",
         state,
         instructions,
@@ -423,6 +428,7 @@ struct DiskCache {
 }
 
 #[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct DiskFile {
     v: u32,
     e: HashMap<String, (f64, u64)>,
@@ -430,22 +436,17 @@ struct DiskFile {
 
 impl DiskCache {
     fn open(path: PathBuf) -> Self {
-        let entries = std::fs::read(&path)
-            .ok()
-            .and_then(|raw| serde_json::from_slice::<DiskFile>(&raw).ok())
-            .filter(|f| f.v == 1)
-            .map(|f| {
-                f.e.into_iter()
-                    .filter_map(|(hex, (p, t))| unhex(&hex).map(|k| (k, (p, t))))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let entries = read_disk_cache(&path).unwrap_or_default();
         Self { path, entries }
     }
 
     fn get(&mut self, key: CacheKey, ttl_secs: u64) -> Option<f64> {
         let &(probability, inserted) = self.entries.get(&key)?;
-        if unix_now().saturating_sub(inserted) >= ttl_secs {
+        let now = unix_now();
+        if inserted > now
+            || now - inserted >= ttl_secs
+            || !crate::llm_scorer::valid_probability(probability)
+        {
             self.entries.remove(&key);
             return None;
         }
@@ -453,6 +454,9 @@ impl DiskCache {
     }
 
     fn put(&mut self, key: CacheKey, probability: f64) {
+        if !crate::llm_scorer::valid_probability(probability) {
+            return;
+        }
         if self.entries.len() >= CACHE_MAX_QUESTIONS && !self.entries.contains_key(&key) {
             if let Some(oldest) = self
                 .entries
@@ -469,7 +473,7 @@ impl DiskCache {
 
     fn persist(&self) {
         let file = DiskFile {
-            v: 1,
+            v: 2,
             e: self
                 .entries
                 .iter()
@@ -479,34 +483,98 @@ impl DiskCache {
         let Ok(body) = serde_json::to_vec(&file) else {
             return;
         };
-        if let Some(parent) = self.path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let tmp = self
-            .path
-            .with_extension(format!("jev-cache-{}.tmp", std::process::id()));
-        if std::fs::write(&tmp, body).is_err() {
-            return;
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
-        }
-        if std::fs::rename(&tmp, &self.path).is_err() {
-            #[cfg(windows)]
-            {
-                let _ = std::fs::remove_file(&self.path);
-                if std::fs::rename(&tmp, &self.path).is_err() {
-                    let _ = std::fs::remove_file(&tmp);
-                }
-            }
-            #[cfg(not(windows))]
-            let _ = std::fs::remove_file(&tmp);
-        }
+        let _ = publish_disk_cache(&self.path, &body);
     }
 }
 
+const MAX_DISK_CACHE_BYTES: u64 = 128 * 1024;
+fn read_disk_cache(path: &std::path::Path) -> anyhow::Result<HashMap<CacheKey, (f64, u64)>> {
+    use std::io::Read;
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    anyhow::ensure!(
+        file.metadata()?.is_file() && file.metadata()?.len() <= MAX_DISK_CACHE_BYTES,
+        "cache_invalid"
+    );
+    let mut raw = Vec::new();
+    file.take(MAX_DISK_CACHE_BYTES + 1).read_to_end(&mut raw)?;
+    anyhow::ensure!(raw.len() as u64 <= MAX_DISK_CACHE_BYTES, "cache_invalid");
+    let value = crate::mcp::strict_json(&raw).map_err(|_| anyhow::anyhow!("cache_invalid"))?;
+    let file: DiskFile =
+        serde_json::from_value(value).map_err(|_| anyhow::anyhow!("cache_invalid"))?;
+    anyhow::ensure!(
+        file.v == 2 && file.e.len() <= CACHE_MAX_QUESTIONS,
+        "cache_invalid"
+    );
+    let mut entries = HashMap::new();
+    for (hex, (probability, inserted)) in file.e {
+        anyhow::ensure!(
+            crate::llm_scorer::valid_probability(probability) && inserted <= unix_now(),
+            "cache_invalid"
+        );
+        let key = unhex(&hex).context("cache_invalid")?;
+        anyhow::ensure!(
+            entries.insert(key, (probability, inserted)).is_none(),
+            "cache_invalid"
+        );
+    }
+    Ok(entries)
+}
+
+fn publish_disk_cache(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<()> {
+    use std::io::Write;
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    anyhow::ensure!(bytes.len() as u64 <= MAX_DISK_CACHE_BYTES, "cache_invalid");
+    // Caller-selected paths live in stable owner-controlled parents. Existing
+    // symlinks/special files are never replaced, and no foreign temp is opened.
+    match std::fs::symlink_metadata(path) {
+        Ok(meta) => anyhow::ensure!(meta.is_file(), "cache_target_invalid"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.into()),
+    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .context("cache_parent_invalid")?;
+    std::fs::create_dir_all(parent)?;
+    anyhow::ensure!(
+        std::fs::symlink_metadata(parent)?.is_dir(),
+        "cache_parent_invalid"
+    );
+    let temp = parent.join(format!(
+        ".jev-cache-{}-{}.tmp",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut file = options.open(&temp)?;
+    let result = (|| -> anyhow::Result<()> {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        std::fs::rename(&temp, path)?;
+        #[cfg(unix)]
+        std::fs::File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    result
+}
+
+#[cfg(not(test))]
 fn disk_cache_path() -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("GOBSTOPPER_JEV_CACHE_PATH") {
         return Some(PathBuf::from(path));
@@ -516,7 +584,13 @@ fn disk_cache_path() -> Option<PathBuf> {
 }
 
 fn disk_cache() -> Option<&'static Mutex<DiskCache>> {
+    // Unit tests never resolve or mutate the user's persistent cache. Disk
+    // fixtures call DiskCache::open with an explicit isolated path instead.
+    #[cfg(test)]
+    return None;
+    #[cfg(not(test))]
     static CACHE: OnceLock<Option<Mutex<DiskCache>>> = OnceLock::new();
+    #[cfg(not(test))]
     CACHE
         .get_or_init(|| disk_cache_path().map(|path| Mutex::new(DiskCache::open(path))))
         .as_ref()
@@ -639,7 +713,7 @@ impl ScoreDriver for JevScorer {
                 .filter_map(|&idx| transcript.items.get(idx).map(|i| i.line_index))
                 .collect();
             crate::apple::read_excerpts(
-                &transcript.session.path,
+                transcript,
                 &lines,
                 self.cfg.content_bytes,
                 self.cfg.content_bytes.saturating_mul(requested.len()),
@@ -687,10 +761,10 @@ impl ScoreDriver for JevScorer {
                             results[position].keep_probability = probability.clamp(0.0, 1.0);
                         }
                     }
-                    if let Some(error) = fetch.remote_failed {
+                    if fetch.remote_failed.is_some() {
                         failed += 1;
                         eprintln!(
-                            "jev scorer call failed for chunk {chunk_index}; retaining heuristic scores for unanswered questions: {error:#}"
+                            "jev scorer call failed for chunk {chunk_index}; retaining heuristic scores for unanswered questions: response_unavailable"
                         );
                     }
                 }
@@ -732,8 +806,8 @@ fn build_state(transcript: &Transcript, max_items: usize) -> serde_json::Value {
         .map(|i| {
             json!({
                 "kind": i.kind,
-                "label": i.label,
-                "summary": i.summary.as_deref().unwrap_or(""),
+                "label": crate::llm_scorer::bounded_text(&i.label, 256),
+                "summary": crate::llm_scorer::bounded_text(i.summary.as_deref().unwrap_or(""), 512),
             })
         })
         .collect::<Vec<_>>();
@@ -753,13 +827,22 @@ fn question_instructions(
     excerpts: &std::collections::HashMap<usize, String>,
 ) -> String {
     let desc = if let Some(summary) = &item.summary {
-        format!("{} = {}", item.label, summary)
+        format!(
+            "{} = {}",
+            crate::llm_scorer::bounded_text(&item.label, 256),
+            crate::llm_scorer::bounded_text(summary, 512)
+        )
     } else {
-        item.label.clone()
+        crate::llm_scorer::bounded_text(&item.label, 256)
     };
     let excerpt = excerpts
         .get(&item.line_index)
-        .map(|e| format!(" Content excerpt: {e}"))
+        .map(|e| {
+            format!(
+                " Content excerpt: {}",
+                crate::llm_scorer::bounded_text(e, MAX_CONTENT_BYTES)
+            )
+        })
         .unwrap_or_default();
     format!(
         "Does the output of `{desc}` need to stay visible for the agent to continue its current task?{excerpt}"
@@ -884,6 +967,9 @@ fn post_json(
         .arg("@-")
         .arg("-w")
         .arg("\n%{http_code}")
+        .arg("--proto")
+        .arg("=http,https")
+        .arg("--url")
         .arg(endpoint);
     let raw =
         gobstopper_adapters::plugins::run_bounded(cmd, body.to_vec(), timeout_ms, 1024 * 1024)?;
@@ -919,6 +1005,16 @@ fn post_json_retried(
 }
 
 fn answer_probability(value: serde_json::Value) -> Option<f64> {
+    if let Some(object) = value.as_object() {
+        if ["noul", "probability", "p", "score", "answer"]
+            .iter()
+            .filter(|key| object.contains_key(**key))
+            .count()
+            != 1
+        {
+            return None;
+        }
+    }
     let probability = if let Ok(answer) = serde_json::from_value::<JevAnswer>(value.clone()) {
         answer
             .noul
@@ -935,12 +1031,18 @@ fn answer_probability(value: serde_json::Value) -> Option<f64> {
     } else {
         value.as_f64()?
     };
-    probability.is_finite().then(|| probability.clamp(0.0, 1.0))
+    crate::llm_scorer::valid_probability(probability).then_some(probability)
 }
 
 fn parse_answers(text: &str) -> anyhow::Result<HashMap<String, f64>> {
+    let value = crate::mcp::strict_json(text.as_bytes())
+        .map_err(|_| anyhow::anyhow!("jev_response_invalid"))?;
     let parsed: JevAnswers =
-        serde_json::from_str(text).with_context(|| format!("parse jev response: {text}"))?;
+        serde_json::from_value(value).map_err(|_| anyhow::anyhow!("jev_response_invalid"))?;
+    anyhow::ensure!(
+        parsed.answers.len() <= MAX_QUESTIONS_PER_CALL,
+        "jev_response_invalid"
+    );
     parsed
         .answers
         .into_iter()
@@ -957,7 +1059,14 @@ fn post_answers(request: &JevRequest, cfg: &JevConfig) -> anyhow::Result<HashMap
     if !(200..300).contains(&code) {
         anyhow::bail!("jev HTTP {code}");
     }
-    parse_answers(&text)
+    let answers = parse_answers(&text)?;
+    anyhow::ensure!(
+        answers
+            .keys()
+            .all(|key| request.questions.contains_key(key)),
+        "jev_answer_identity_invalid"
+    );
+    Ok(answers)
 }
 
 /// Exact-request cache wrapper used by the eval judge: the judge's
@@ -974,7 +1083,12 @@ fn call_jev(
         return Ok(answers);
     }
     let answers = post_answers(request, cfg)?;
-    request_cache_put(key, answers.clone(), ttl);
+    // Whole-request reuse requires complete coverage. Individually answered
+    // scorer questions have their separate keyed cache; missing answers retain
+    // the heuristic result and never become a fabricated zero probability.
+    if answers.len() == request.questions.len() {
+        request_cache_put(key, answers.clone(), ttl);
+    }
     Ok(answers)
 }
 
@@ -1309,7 +1423,7 @@ mod tests {
         );
         assert_eq!(answer_probability(json!({"probability": 0.2})), Some(0.2));
         assert_eq!(answer_probability(json!(true)), Some(1.0));
-        assert_eq!(answer_probability(json!(1.7)), Some(1.0));
+        assert_eq!(answer_probability(json!(1.7)), None);
         assert_eq!(answer_probability(json!({"unknown": 1})), None);
         assert!(serde_json::from_str::<JevAnswers>("{}").is_err());
     }
@@ -1501,6 +1615,22 @@ mod tests {
     }
 
     #[test]
+    fn partial_and_foreign_answers_never_poison_exact_request_cache() {
+        let server = serve(vec![
+            (200, r#"{"answers":{}}"#.into()),
+            (200, r#"{"answers":{"foreign":0.1}}"#.into()),
+            (200, r#"{"answers":{"q_0":0.8}}"#.into()),
+        ]);
+        let cfg = test_cfg(server.endpoint);
+        let request = noul_request("q_0");
+        let ttl = Some(Duration::from_secs(60));
+        assert!(call_jev(&request, &cfg, ttl).unwrap().is_empty());
+        assert!(call_jev(&request, &cfg, ttl).is_err());
+        assert_eq!(call_jev(&request, &cfg, ttl).unwrap()["q_0"], 0.8);
+        assert_eq!(server.bodies.lock().unwrap().len(), 3);
+    }
+
+    #[test]
     fn fetch_chunk_sends_only_uncached_questions() {
         let server = serve(vec![(200, r#"{"answers":{"q_0_1":{"noul":0.9}}}"#.into())]);
         let cfg = test_cfg(server.endpoint);
@@ -1639,6 +1769,95 @@ mod tests {
             .last_run_summary()
             .unwrap()
             .contains("(2 cached, 0 sent)"));
+    }
+
+    #[test]
+    fn strict_answers_and_cache_reject_ambiguous_private_data() {
+        for text in [
+            r#"{"answers":{"q":0.1,"q":0.9}}"#,
+            r#"{"answers":{"q":-1}}"#,
+            r#"{"answers":{"q":{"noul":0.2,"score":0.8}}}"#,
+            "PRIVATE_SENTINEL",
+        ] {
+            let error = parse_answers(text).unwrap_err();
+            assert!(!format!("{error:#}").contains("PRIVATE_SENTINEL"));
+        }
+        let path = temp_cache_path("strict");
+        let key = hex_key(&[1; 32]);
+        for raw in [
+            format!(r#"{{"v":2,"e":{{"{key}":[-1,0]}}}}"#),
+            format!(r#"{{"v":2,"e":{{"{key}":[0.5,{}]}}}}"#, u64::MAX),
+            format!(r#"{{"v":2,"e":{{"{key}":[0.1,0],"{key}":[0.9,0]}}}}"#),
+            " ".repeat(MAX_DISK_CACHE_BYTES as usize + 1),
+        ] {
+            std::fs::write(&path, raw).unwrap();
+            assert!(DiskCache::open(path.clone()).entries.is_empty());
+        }
+        std::fs::remove_file(&path).unwrap();
+        #[cfg(unix)]
+        {
+            let target = temp_cache_path("foreign");
+            std::fs::write(&target, b"preserved").unwrap();
+            std::os::unix::fs::symlink(&target, &path).unwrap();
+            assert!(DiskCache::open(path.clone()).entries.is_empty());
+            assert!(publish_disk_cache(&path, b"{}").is_err());
+            assert_eq!(std::fs::read(&target).unwrap(), b"preserved");
+            std::fs::remove_file(&path).unwrap();
+            std::fs::remove_file(target).unwrap();
+        }
+        assert!(disk_cache().is_none());
+    }
+
+    #[test]
+    fn cache_child() {
+        let Some(path) = std::env::var_os("GOBSTOPPER_C10_CACHE_FIXTURE") else {
+            return;
+        };
+        let path = PathBuf::from(path);
+        assert!(path.starts_with(std::env::temp_dir()));
+        assert!(path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with("gobstopper-jev-test-"));
+        let key = std::env::var("GOBSTOPPER_C10_CACHE_KEY")
+            .unwrap()
+            .parse::<u8>()
+            .unwrap();
+        DiskCache::open(path).put([key; 32], f64::from(key) / 10.0);
+    }
+
+    #[test]
+    fn concurrent_process_caches_publish_only_complete_private_images() {
+        let path = temp_cache_path("processes");
+        let mut children = Vec::new();
+        for key in 1..=4 {
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command
+                .args(["--exact", "jev::tests::cache_child", "--nocapture"])
+                .env("GOBSTOPPER_C10_CACHE_FIXTURE", &path)
+                .env("GOBSTOPPER_C10_CACHE_KEY", key.to_string())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            children.push(command.spawn().unwrap());
+        }
+        for mut child in children {
+            assert!(child.wait().unwrap().success());
+        }
+        let entries = read_disk_cache(&path).unwrap();
+        assert!(!entries.is_empty());
+        assert!(entries
+            .iter()
+            .all(|(key, (value, _))| *value == f64::from(key[0]) / 10.0));
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+        std::fs::remove_file(path).unwrap();
     }
 
     fn temp_cache_path(name: &str) -> PathBuf {

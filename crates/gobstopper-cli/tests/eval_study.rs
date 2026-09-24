@@ -103,6 +103,57 @@ impl Drop for Fixture {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn raw_devin_vault_image_refuses_without_materializing_a_shared_temp_file() {
+    let fixture = Fixture::new();
+    let vault = fixture.root.join("data/gobstopper/vault");
+    let raw = b"SQLite format 3\0synthetic raw image";
+    let entry = gobstopper_adapters::vault::snapshot_data(
+        raw,
+        &fixture.source,
+        gobstopper_core::Provider::Devin,
+        "synthetic",
+        None,
+        &vault,
+    )
+    .unwrap();
+    let target = fixture.root.join("private-sentinel");
+    fs::write(&target, "private-sentinel").unwrap();
+    let temp = fixture
+        .root
+        .join(format!("gobstopper-audit-{}.db", entry.sha256));
+    std::os::unix::fs::symlink(&target, &temp).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_gobstopper"))
+        .env_clear()
+        .env("PATH", "")
+        .env("XDG_CONFIG_HOME", fixture.root.join("config"))
+        .env("XDG_DATA_HOME", fixture.root.join("data"))
+        .env("TMPDIR", &fixture.root)
+        .args([
+            "eval-study",
+            &format!("vault:{}", entry.sha256),
+            "--json",
+            "--manifest",
+        ])
+        .arg(fixture.root.join("unread-manifest.json"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("raw Devin store images are unavailable for replay"),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read_to_string(target).unwrap(), "private-sentinel");
+    assert!(temp.symlink_metadata().unwrap().file_type().is_symlink());
+    assert_eq!(
+        gobstopper_adapters::vault::read_object(&entry.sha256, &vault).unwrap(),
+        raw
+    );
+}
+
 #[test]
 fn typed_replay_preserves_bound_evidence_without_claiming_live_quality() {
     let fixture = Fixture::new();
@@ -122,10 +173,16 @@ fn typed_replay_preserves_bound_evidence_without_claiming_live_quality() {
     assert!(report["billed_cost_usd"].is_null());
     assert!(report["continuation_success"].is_null());
     let rows = report["rows"].as_array().unwrap();
-    assert_eq!(rows.len(), 30);
+    assert_eq!(rows.len(), 40);
     for row in rows {
         assert_eq!(row["verify_errors"], 0);
         match row["arm"].as_str().unwrap() {
+            "no_compaction" => {
+                assert_eq!(row["retention"]["retained"], 1);
+                assert_eq!(row["retention"]["source_bound_retained"], 1);
+                assert_eq!(row["applied_rounds"], 0);
+                assert_eq!(row["source_sha256"], row["result_sha256"]);
+            }
             "typed_masking" => {
                 assert_eq!(row["retention"]["retained"], 1);
                 assert_eq!(row["retention"]["same_origin_retained"], 1);
@@ -261,7 +318,11 @@ fn replay_with_intervening_work_counts_real_mutations() {
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(report["replay_mode"], "supplied_growth");
     for row in report["rows"].as_array().unwrap() {
-        assert_eq!(row["applied_rounds"], row["round"]);
+        if row["arm"] == "no_compaction" {
+            assert_eq!(row["applied_rounds"], 0);
+        } else {
+            assert_eq!(row["applied_rounds"], row["round"]);
+        }
         if row["arm"] == "typed_masking" {
             assert_eq!(row["retention"]["source_bound_retained"], 1);
         }
@@ -269,10 +330,10 @@ fn replay_with_intervening_work_counts_real_mutations() {
 }
 
 #[test]
-fn inherited_verification_errors_are_distinct_from_new_errors() {
+fn inherited_verification_warnings_are_distinct_from_new_errors() {
     let fixture = Fixture::new();
     let mut bytes = fs::read(&fixture.source).unwrap();
-    bytes.extend_from_slice(b"not-json\n{\"type\":\"test_metadata\"}\n");
+    bytes.extend_from_slice(b"{\"type\":\"response_item\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"missing-test-call\",\"output\":\"orphaned diagnostic\"}}\n");
     fs::write(&fixture.source, &bytes).unwrap();
     let mut manifest = fixture.manifest.clone();
     manifest["source_sha256"] = json!(sha(&bytes));
@@ -283,11 +344,27 @@ fn inherited_verification_errors_are_distinct_from_new_errors() {
         String::from_utf8_lossy(&output.stderr)
     );
     let report: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(report["source_verify_errors"], 1);
+    assert_eq!(report["source_verify_errors"], 0);
+    assert_eq!(report["source_verify_warnings"], 1);
     for row in report["rows"].as_array().unwrap() {
-        assert_eq!(row["verify_errors"], 1);
+        assert_eq!(row["verify_errors"], 0);
+        assert_eq!(row["verify_warnings"], 1);
         assert_eq!(row["new_verify_errors"], 0);
     }
+}
+
+#[test]
+fn study_rejects_ambiguous_source_even_with_current_annotations_hash() {
+    let fixture = Fixture::new();
+    let mut bytes = fs::read(&fixture.source).unwrap();
+    bytes.extend_from_slice(b"not-json\n{\"type\":\"test_metadata\"}\n");
+    fs::write(&fixture.source, &bytes).unwrap();
+    let mut manifest = fixture.manifest.clone();
+    manifest["source_sha256"] = json!(sha(&bytes));
+    let output = fixture.run(&manifest, "1");
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("not live textual content"));
 }
 
 #[test]

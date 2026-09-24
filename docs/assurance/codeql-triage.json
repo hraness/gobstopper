@@ -1,0 +1,736 @@
+{
+  "schema": "gobstopper.codeql-triage.v1",
+  "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+  "snapshot": {
+    "observed_date": "2026-09-23",
+    "basename": "codeql-open-alerts-after-merge.json",
+    "sha256": "854b6850d69791662025ffcfc98b618975aca9daefe68e9c54bd7552d4323a78",
+    "count": 21,
+    "rule": "rust/cleartext-logging",
+    "tool": "CodeQL 2.27.0",
+    "scope": "Merged baseline open alerts, not a fresh current-head scanner receipt."
+  },
+  "counts": {
+    "requested_identity": 13,
+    "synthetic_test_only": 1,
+    "credential_fragment": 4,
+    "background_identity": 3
+  },
+  "policy": "No dismissals, suppression or scanner-state mutation. Source repairs require a new exact-head scan before any closure claim. Intentional requested displays are individually authorized, not blanket false positives.",
+  "alerts": [
+    {
+      "number": 8,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/8",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 1783,
+        "end_line": 1786,
+        "origin": "Selected recovery VaultEntry.session_id"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "cmd_undo recovery preview",
+        "baseline_code": "        \"restore snapshot {} \u2014 {} bytes, session {}\",\n        &entry.sha256[..16],\n        entry.bytes,\n        entry.session_id"
+      },
+      "classification": "requested_identity",
+      "authorized_output_contract": "Explicit undo target preview/confirmation names the selected session.",
+      "decision": "Preserve requested identity, verify exact target; no background disclosure authorization.",
+      "resolution": "reviewed_retained_output",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+        "evidence": [
+          "E-SOURCE"
+        ],
+        "validation_gate": "Preserve field-specific authorization and source/target isolation fixtures; reassess on output routing changes.",
+        "remaining_risk": "Requested stdout may be captured by caller; caller authorization is not universal nonsensitivity."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    },
+    {
+      "number": 12,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/12",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-adapters/src/fork.rs",
+        "start_line": 366,
+        "end_line": 366,
+        "origin": "generate_session_id(\"seed\") synthetic UUID"
+      },
+      "sink": {
+        "channel": "test assertion/panic",
+        "operation": "generated_id_is_uuid_v4_shaped assertion failure",
+        "baseline_code": "        assert!(uuid_shaped(&id), \"not uuid-shaped: {id}\");"
+      },
+      "classification": "synthetic_test_only",
+      "authorized_output_contract": "Unit-test diagnostic uses a generated identifier without a provider session or secret.",
+      "decision": "Keep production output separate; test-only assertion is not evidence that real session IDs are nonsensitive.",
+      "resolution": "reviewed_retained_output",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+        "evidence": [
+          "E-SOURCE"
+        ],
+        "validation_gate": "Preserve field-specific authorization and source/target isolation fixtures; reassess on output routing changes.",
+        "remaining_risk": "Do not reuse test-only rationale for real provider identifiers."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    },
+    {
+      "number": 13,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/13",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 2531,
+        "end_line": 2531,
+        "origin": "Selected source session_id and fresh generated fork session_id"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "cmd_fork stdout receipt",
+        "baseline_code": "    println!(\"forked {} -> {}\", d.handle.session_id, r.session_id);"
+      },
+      "classification": "requested_identity",
+      "authorized_output_contract": "Explicit fork request needs source-to-output identity to select the new session.",
+      "decision": "Preserve exact requested mutation receipt.",
+      "resolution": "reviewed_retained_output",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+        "evidence": [
+          "E-SOURCE"
+        ],
+        "validation_gate": "Preserve field-specific authorization and source/target isolation fixtures; reassess on output routing changes.",
+        "remaining_risk": "Requested stdout may be captured by caller; caller authorization is not universal nonsensitivity."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    },
+    {
+      "number": 14,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/14",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 2533,
+        "end_line": 2533,
+        "origin": "ForkResult.resume_hint containing new session_id"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "cmd_fork stdout resume command",
+        "baseline_code": "    println!(\"  resume: {}\", r.resume_hint);"
+      },
+      "classification": "requested_identity",
+      "authorized_output_contract": "Explicit fork returns the command for the generated target.",
+      "decision": "Preserve requested actionable resume identity.",
+      "resolution": "reviewed_retained_output",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+        "evidence": [
+          "E-SOURCE"
+        ],
+        "validation_gate": "Preserve field-specific authorization and source/target isolation fixtures; reassess on output routing changes.",
+        "remaining_risk": "Requested stdout may be captured by caller; caller authorization is not universal nonsensitivity."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    },
+    {
+      "number": 15,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/15",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 2573,
+        "end_line": 2577,
+        "origin": "Discovered session.handle.session_id"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "cmd_eval stdout heading",
+        "baseline_code": "        \"{} {} \u2014 context ~{} tokens, effective trigger {}\",\n        d.handle.provider.as_str(),\n        d.handle.session_id,\n        d.usage.context_tokens,\n        policy.effective_trigger(),"
+      },
+      "classification": "requested_identity",
+      "authorized_output_contract": "Explicit chosen-session evaluation displays that target with context/trigger metrics.",
+      "decision": "Do not treat evaluation stdout as a background log or use estimates as billing evidence.",
+      "resolution": "reviewed_retained_output",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+        "evidence": [
+          "E-SOURCE"
+        ],
+        "validation_gate": "Preserve field-specific authorization and source/target isolation fixtures; reassess on output routing changes.",
+        "remaining_risk": "Requested stdout may be captured by caller; caller authorization is not universal nonsensitivity."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    },
+    {
+      "number": 26,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/26",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 1845,
+        "end_line": 1847,
+        "origin": "RestoreCopy result path and resume_hint"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "cmd_undo stdout completion",
+        "baseline_code": "        \"restored copy {}\\n{}\",\n        restored.path.display(),\n        restored.resume_hint"
+      },
+      "classification": "requested_identity",
+      "authorized_output_contract": "Explicit recovery request receives the new path/identity after restore.",
+      "decision": "Preserve requested recovery identity; shared stdout capture remains sensitive.",
+      "resolution": "reviewed_retained_output",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+        "evidence": [
+          "E-SOURCE"
+        ],
+        "validation_gate": "Preserve field-specific authorization and source/target isolation fixtures; reassess on output routing changes.",
+        "remaining_risk": "Requested stdout may be captured by caller; caller authorization is not universal nonsensitivity."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    },
+    {
+      "number": 27,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/27",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 2084,
+        "end_line": 2084,
+        "origin": "Vault recall row.session_id"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "cmd_recall stdout historical digest row",
+        "baseline_code": "        println!(\"session:    {}\", r.session_id);"
+      },
+      "classification": "requested_identity",
+      "authorized_output_contract": "Explicit recall requests digest records, optionally across sessions.",
+      "decision": "Authorization follows selected query/scope; summary content remains untrusted historical data.",
+      "resolution": "reviewed_retained_output",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+        "evidence": [
+          "E-SOURCE"
+        ],
+        "validation_gate": "Preserve field-specific authorization and source/target isolation fixtures; reassess on output routing changes.",
+        "remaining_risk": "Requested stdout may be captured by caller; caller authorization is not universal nonsensitivity."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    },
+    {
+      "number": 30,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/30",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 3034,
+        "end_line": 3035,
+        "origin": "Compacted-copy result.resume_hint"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "cmd_apply experimental compacted stdout",
+        "baseline_code": "                \"resume the new session: codex resume {}\",\n                receipt.session_id"
+      },
+      "classification": "requested_identity",
+      "authorized_output_contract": "Explicit apply copy result identifies the new output/session.",
+      "decision": "Preserve requested output identity, qualify experimental provider acceptance separately.",
+      "resolution": "reviewed_retained_output",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+        "evidence": [
+          "E-SOURCE"
+        ],
+        "validation_gate": "Preserve field-specific authorization and source/target isolation fixtures; reassess on output routing changes.",
+        "remaining_risk": "Requested stdout may be captured by caller; caller authorization is not universal nonsensitivity."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    },
+    {
+      "number": 31,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/31",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 3185,
+        "end_line": 3186,
+        "origin": "Native copy ForkResult.resume_hint"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "cmd_apply native copy stdout",
+        "baseline_code": "            \"native compaction targets a separate fork: {}\",\n            forked.resume_hint"
+      },
+      "classification": "requested_identity",
+      "authorized_output_contract": "Explicit apply prepares a distinct copy and reports its resume command.",
+      "decision": "Preserve exact copy target; native outcome is a separate claim.",
+      "resolution": "reviewed_retained_output",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+        "evidence": [
+          "E-SOURCE"
+        ],
+        "validation_gate": "Preserve field-specific authorization and source/target isolation fixtures; reassess on output routing changes.",
+        "remaining_risk": "Requested stdout may be captured by caller; caller authorization is not universal nonsensitivity."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    },
+    {
+      "number": 33,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/33",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 1609,
+        "end_line": 1622,
+        "origin": "Transcript.handle.session_id"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "print_plan stdout called by plan/apply preview",
+        "baseline_code": "        \"{} {} ({})\\n  context: {} -> ~{} tokens (saves ~{})\\n  prefix: {} tokens cached\\n  strategy: {}\\n  {}\",\n        d.handle.provider.as_str(),\n        d.handle.session_id,\n        if d.handle.is_active() {\n            \"active\"\n        } else {\n            \"idle\"\n        },\n        plan.context_tokens_before,\n        plan.context_tokens_after,\n        plan.est_savings(),\n        prefix_tokens,\n        plan.strategy,\n        plan.rationale,"
+      },
+      "classification": "requested_identity",
+      "authorized_output_contract": "Caller requested selected plan or mutation preview, including exact target identity.",
+      "decision": "Requested identity is justified; free-form rationale and path/content fields remain dedicated privacy work.",
+      "resolution": "reviewed_retained_output",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+        "evidence": [
+          "E-SOURCE"
+        ],
+        "validation_gate": "Preserve field-specific authorization and source/target isolation fixtures; reassess on output routing changes.",
+        "remaining_risk": "Requested stdout may be captured by caller; caller authorization is not universal nonsensitivity."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    },
+    {
+      "number": 34,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/34",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 2866,
+        "end_line": 2873,
+        "origin": "Selected transcript.handle.session_id"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "cmd_tune stdout heading",
+        "baseline_code": "        \"{} {} \u2014 adaptive {}\",\n        d.handle.provider.as_str(),\n        d.handle.session_id,\n        if resolved.policy.adaptive {\n            \"on\"\n        } else {\n            \"off (preview)\"\n        },"
+      },
+      "classification": "requested_identity",
+      "authorized_output_contract": "Explicit tune command returns a recommendation for a selected target.",
+      "decision": "Preserve requested target binding; no settings installation occurs.",
+      "resolution": "reviewed_retained_output",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+        "evidence": [
+          "E-SOURCE"
+        ],
+        "validation_gate": "Preserve field-specific authorization and source/target isolation fixtures; reassess on output routing changes.",
+        "remaining_risk": "Requested stdout may be captured by caller; caller authorization is not universal nonsensitivity."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    },
+    {
+      "number": 35,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/35",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 2906,
+        "end_line": 2907,
+        "origin": "Selected transcript.handle.session_id embedded in TOML"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "cmd_tune stdout suggested session override",
+        "baseline_code": "            \"  [sessions.\\\"{}\\\"]\\n  trigger_tokens = {}\\n  floor_tokens = {}\",\n            d.handle.session_id, adjusted.trigger_tokens, adjusted.floor_tokens"
+      },
+      "classification": "requested_identity",
+      "authorized_output_contract": "Caller requested concrete configuration suggestion keyed to that exact session.",
+      "decision": "Preserve requested configuration key; do not emit it in background diagnostics.",
+      "resolution": "reviewed_retained_output",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+        "evidence": [
+          "E-SOURCE"
+        ],
+        "validation_gate": "Preserve field-specific authorization and source/target isolation fixtures; reassess on output routing changes.",
+        "remaining_risk": "Requested stdout may be captured by caller; caller authorization is not universal nonsensitivity."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    },
+    {
+      "number": 36,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/36",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 3132,
+        "end_line": 3138,
+        "origin": "CopyReceipt.session_id in provider resume command"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "cmd_apply copy stdout receipt",
+        "baseline_code": "                        \"resume the new session: {} {}\",\n                        if d.handle.provider == Provider::Codex {\n                            \"codex resume\"\n                        } else {\n                            \"claude --resume\"\n                        },\n                        receipt.session_id"
+      },
+      "classification": "requested_identity",
+      "authorized_output_contract": "Explicit apply result needs the newly published session identity.",
+      "decision": "Preserve requested exact output identity.",
+      "resolution": "reviewed_retained_output",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+        "evidence": [
+          "E-SOURCE"
+        ],
+        "validation_gate": "Preserve field-specific authorization and source/target isolation fixtures; reassess on output routing changes.",
+        "remaining_risk": "Requested stdout may be captured by caller; caller authorization is not universal nonsensitivity."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    },
+    {
+      "number": 39,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/39",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 4696,
+        "end_line": 4703,
+        "origin": "Resolved env/keychain provider key passed to secrets::masked"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "cmd_auth --status stdout",
+        "baseline_code": "            \"jev: {} key {} \u2014 {}\",\n            source.describe(),\n            secrets::masked(&key),\n            match jev::health_check(&key, &endpoint) {\n                jev::Health::Ok => \"verified\",\n                jev::Health::Rejected => \"rejected by API (401/403)\",\n                jev::Health::Unverified => \"could not verify (network/API error)\",\n            }"
+      },
+      "classification": "credential_fragment",
+      "authorized_output_contract": "Status authorizes credential source/health, not fragments of the credential.",
+      "decision": "Remove masked key value; report only source, configured state and closed health category.",
+      "resolution": "source_repaired_pending_exact_head_scan",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "working-tree-C1",
+        "evidence": [
+          "E-C1-PRIVACY"
+        ],
+        "validation_gate": "Focused privacy/output fixture and exact-head CodeQL rescan; do not claim scanner closure before result.",
+        "remaining_risk": "Other auth/model resource and privacy paths require C10."
+      },
+      "next_gate": "C10",
+      "scanner_action": "none"
+    },
+    {
+      "number": 40,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/40",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 4712,
+        "end_line": 4712,
+        "origin": "Clipboard provider key passed to secrets::masked"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "cmd_auth clipboard stdout",
+        "baseline_code": "        println!(\"found a key on the clipboard: {}\", secrets::masked(&k));"
+      },
+      "classification": "credential_fragment",
+      "authorized_output_contract": "Auth authorizes reading/storing chosen key; it does not need first/last characters in output.",
+      "decision": "Remove credential fragments; preserve input-source label.",
+      "resolution": "source_repaired_pending_exact_head_scan",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "working-tree-C1",
+        "evidence": [
+          "E-C1-PRIVACY"
+        ],
+        "validation_gate": "Focused privacy/output fixture and exact-head CodeQL rescan; do not claim scanner closure before result.",
+        "remaining_risk": "Other auth/model resource and privacy paths require C10."
+      },
+      "next_gate": "C10",
+      "scanner_action": "none"
+    },
+    {
+      "number": 41,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/41",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 4737,
+        "end_line": 4738,
+        "origin": "Accepted provider key passed to secrets::masked"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "cmd_auth verified/store stdout",
+        "baseline_code": "                    \"typesafe key {} verified and stored in the OS keychain\",\n                    secrets::masked(&key)"
+      },
+      "classification": "credential_fragment",
+      "authorized_output_contract": "Auth acknowledgement needs success/category, not credential characters.",
+      "decision": "Remove credential fragments and obsolete byte-indexing mask helper.",
+      "resolution": "source_repaired_pending_exact_head_scan",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "working-tree-C1",
+        "evidence": [
+          "E-C1-PRIVACY"
+        ],
+        "validation_gate": "Focused privacy/output fixture and exact-head CodeQL rescan; do not claim scanner closure before result.",
+        "remaining_risk": "Other auth/model resource and privacy paths require C10."
+      },
+      "next_gate": "C10",
+      "scanner_action": "none"
+    },
+    {
+      "number": 42,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/42",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 4741,
+        "end_line": 4742,
+        "origin": "Unverified provider key passed to secrets::masked"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "cmd_auth unverified/store stdout",
+        "baseline_code": "                    \"typesafe key {} stored in the OS keychain (could not verify: network/API error)\",\n                    secrets::masked(&key)"
+      },
+      "classification": "credential_fragment",
+      "authorized_output_contract": "Storage after failed health check must say unverified without displaying secret material.",
+      "decision": "Remove credential fragments; keep honest unverified outcome.",
+      "resolution": "source_repaired_pending_exact_head_scan",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "working-tree-C1",
+        "evidence": [
+          "E-C1-PRIVACY"
+        ],
+        "validation_gate": "Focused privacy/output fixture and exact-head CodeQL rescan; do not claim scanner closure before result.",
+        "remaining_risk": "Other auth/model resource and privacy paths require C10."
+      },
+      "next_gate": "C10",
+      "scanner_action": "none"
+    },
+    {
+      "number": 62,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/62",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 3891,
+        "end_line": 3892,
+        "origin": "Devin watched session_id plus snapshot error"
+      },
+      "sink": {
+        "channel": "stderr",
+        "operation": "watch Devin snapshot-failure stderr",
+        "baseline_code": "                                \"acp /compact for {} skipped: pre-compact snapshot failed ({e})\",\n                                d.handle.session_id"
+      },
+      "classification": "background_identity",
+      "authorized_output_contract": "Background daemon failure needs provider/outcome category, not raw identity or unsanitized error.",
+      "decision": "Replace with static snapshot-failed diagnostic; retain exact identity in structured authorized evidence.",
+      "resolution": "source_repaired_pending_exact_head_scan",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "working-tree-C1",
+        "evidence": [
+          "E-C1-PRIVACY"
+        ],
+        "validation_gate": "Focused privacy/output fixture and exact-head CodeQL rescan; do not claim scanner closure before result.",
+        "remaining_risk": "Other background prefix/path/raw-error diagnostics remain open; this repair is sink-specific."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    },
+    {
+      "number": 63,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/63",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 2514,
+        "end_line": 2522,
+        "origin": "CompactionEvent.session_id"
+      },
+      "sink": {
+        "channel": "stdout",
+        "operation": "cmd_events --retention stdout rows",
+        "baseline_code": "            \"  {} {:<12} {:<18} literal {}/{} lexical {}/{} {}\",\n            e.ts,\n            e.provider.as_str(),\n            e.session_id,\n            retained,\n            total,\n            lexical,\n            total,\n            flag"
+      },
+      "classification": "requested_identity",
+      "authorized_output_contract": "Explicit events report requests identity and retained numeric observations.",
+      "decision": "Preserve requested report field; retention counters remain separately validated.",
+      "resolution": "reviewed_retained_output",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+        "evidence": [
+          "E-SOURCE"
+        ],
+        "validation_gate": "Preserve field-specific authorization and source/target isolation fixtures; reassess on output routing changes.",
+        "remaining_risk": "Requested stdout may be captured by caller; caller authorization is not universal nonsensitivity."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    },
+    {
+      "number": 68,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/68",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 4049,
+        "end_line": 4050,
+        "origin": "Codex watched session_id plus snapshot error"
+      },
+      "sink": {
+        "channel": "stderr",
+        "operation": "watch Codex snapshot-failure stderr",
+        "baseline_code": "                            \"codex thread/compact for {} skipped: pre-compact snapshot failed ({e})\",\n                            d.handle.session_id"
+      },
+      "classification": "background_identity",
+      "authorized_output_contract": "Background daemon failure does not need full identity or raw filesystem/provider error.",
+      "decision": "Replace with static snapshot-failed diagnostic.",
+      "resolution": "source_repaired_pending_exact_head_scan",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "working-tree-C1",
+        "evidence": [
+          "E-C1-PRIVACY"
+        ],
+        "validation_gate": "Focused privacy/output fixture and exact-head CodeQL rescan; do not claim scanner closure before result.",
+        "remaining_risk": "Other background prefix/path/raw-error diagnostics remain open; this repair is sink-specific."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    },
+    {
+      "number": 71,
+      "url": "https://github.com/hraness/gobstopper/security/code-scanning/71",
+      "rule": "rust/cleartext-logging",
+      "scanner_severity": "high",
+      "baseline_state": "open",
+      "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "start_line": 4119,
+        "end_line": 4120,
+        "origin": "Codex watched session_id plus native error category"
+      },
+      "sink": {
+        "channel": "stderr",
+        "operation": "watch Codex native-failure stderr",
+        "baseline_code": "                            \"codex thread/compact for {} failed: {e}\",\n                            d.handle.session_id"
+      },
+      "classification": "background_identity",
+      "authorized_output_contract": "Background daemon failure needs closed outcome code, not raw session identity.",
+      "decision": "Replace with provider plus closed native error class.",
+      "resolution": "source_repaired_pending_exact_head_scan",
+      "remediation": {
+        "owner": "integration owner",
+        "source_revision": "working-tree-C1",
+        "evidence": [
+          "E-C1-PRIVACY"
+        ],
+        "validation_gate": "Focused privacy/output fixture and exact-head CodeQL rescan; do not claim scanner closure before result.",
+        "remaining_risk": "Other background prefix/path/raw-error diagnostics remain open; this repair is sink-specific."
+      },
+      "next_gate": "C8",
+      "scanner_action": "none"
+    }
+  ]
+}

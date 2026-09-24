@@ -15,6 +15,7 @@ use gobstopper_core::model::{ItemKind, SessionHandle, TranscriptItem, UsageSampl
 use gobstopper_core::plan::{DigestBlock, Edit};
 use gobstopper_core::{Provider, Transcript};
 use serde_json::Value;
+#[cfg(test)]
 use std::fs;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
@@ -29,7 +30,8 @@ fn classify(payload_type: &str, role: Option<&str>) -> ItemKind {
         "message" => match role {
             Some("user") => ItemKind::User,
             Some("assistant") => ItemKind::Assistant,
-            _ => ItemKind::System,
+            Some("system" | "developer") => ItemKind::System,
+            _ => ItemKind::Meta,
         },
         // Inter-agent traffic is assistant-authored content.
         "agent_message" => ItemKind::Assistant,
@@ -131,13 +133,68 @@ fn annotated_output_summary(
     Some(full.chars().take(MAX_SUMMARY).collect())
 }
 
-fn call_id(payload: &Value) -> Option<String> {
+pub(crate) fn record_call_id(payload: &Value) -> Option<&str> {
     payload
         .get("call_id")
         .or_else(|| payload.get("tool_call_id"))
         .or_else(|| payload.get("id"))
         .and_then(Value::as_str)
-        .map(str::to_string)
+        .filter(|id| !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control))
+}
+
+fn call_id(payload: &Value) -> Option<String> {
+    record_call_id(payload).map(str::to_string)
+}
+
+pub(crate) fn supported_item(payload: &Value) -> bool {
+    match payload.get("type").and_then(Value::as_str) {
+        Some("message") => {
+            matches!(
+                payload.get("role").and_then(Value::as_str),
+                Some("user" | "assistant" | "system" | "developer")
+            ) && payload.get("content").is_some_and(|v| {
+                v.as_array().is_some_and(Vec::is_empty) || crate::payload::supported_content(v)
+            })
+        }
+        Some("function_call" | "custom_tool_call" | "local_shell_call") => {
+            record_call_id(payload).is_some()
+        }
+        Some("function_call_output") => {
+            record_call_id(payload).is_some()
+                && supported_output_keys(payload)
+                && payload.get("output").is_some_and(Value::is_string)
+        }
+        Some("custom_tool_call_output") => {
+            record_call_id(payload).is_some()
+                && supported_output_keys(payload)
+                && payload.get("output").is_some_and(|v| {
+                    crate::payload::supported_content(v)
+                        && v.as_array().is_some_and(|a| {
+                            a.iter().all(|b| {
+                                b.get("type").and_then(Value::as_str) == Some("input_text")
+                            })
+                        })
+                })
+        }
+        Some("reasoning" | "agent_message") => true,
+        _ => false,
+    }
+}
+
+fn supported_output_keys(payload: &Value) -> bool {
+    payload.as_object().is_some_and(|object| {
+        object.keys().all(|key| {
+            matches!(
+                key.as_str(),
+                "type"
+                    | "output"
+                    | "call_id"
+                    | "tool_call_id"
+                    | "id"
+                    | "internal_chat_message_metadata_passthrough"
+            )
+        })
+    })
 }
 
 #[derive(Clone)]
@@ -170,6 +227,10 @@ fn call_label(payload: &Value) -> ToolCallMeta {
 
 /// Elidable payload bytes: tool output bodies only.
 fn elidable_bytes(payload: &Value) -> Option<u64> {
+    let output = payload.get("output")?;
+    if !supported_item(payload) || !crate::payload::supported_content(output) {
+        return None;
+    }
     let text = output_text(payload)?;
     let bytes = text.len() as u64;
     (bytes > 256).then_some(bytes)
@@ -188,6 +249,7 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
     let file = std::io::Cursor::new(bytes);
     let mut items: Vec<TranscriptItem> = Vec::new();
     let mut window_start = 0;
+    let mut ambiguous = false;
     let mut usage = UsageSample::default();
     let mut calls: std::collections::HashMap<String, ToolCallMeta> =
         std::collections::HashMap::new();
@@ -199,9 +261,14 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
             path: handle.path.clone(),
             source: e,
         })?;
-        let Ok(record) = serde_json::from_str::<Value>(&line) else {
+        let Ok(record) = crate::payload::decode_record(&line) else {
+            ambiguous |= !line.trim().is_empty();
             continue;
         };
+        ambiguous |= !record.is_object();
+        ambiguous |= record
+            .get("ordinal")
+            .is_some_and(|value| value.as_u64().is_none());
         match record.get("type").and_then(Value::as_str) {
             Some("token_usage_record" | "event_msg") => absorb_usage(&record, &mut usage),
             Some("response_item") => {
@@ -210,7 +277,11 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                 let role = payload.get("role").and_then(Value::as_str);
                 let kind = classify(ptype, role);
                 let elidable = elidable_bytes(payload);
-                let est = estimate_tokens(value_len(payload));
+                let est = if kind == ItemKind::Meta {
+                    0
+                } else {
+                    estimate_tokens(value_len(payload))
+                };
                 let item_call_id = call_id(payload);
                 if kind == ItemKind::ToolCall {
                     if let Some(id) = &item_call_id {
@@ -262,12 +333,35 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                 for item in &mut items[window_start..] {
                     item.est_tokens = 0;
                     item.elidable_bytes = None;
+                    item.elidable_parts = 0;
+                    item.tool_use_ids.clear();
+                    item.payload_sha256 = None;
                 }
+                calls.clear();
                 window_start = items.len();
-                usage.context_tokens = 0;
+                usage.reset_context();
                 // Post-compaction files carry live context inside
                 // `replacement_history`; its tool outputs stay elidable.
                 let payload = &record["payload"];
+                let history = payload.get("replacement_history").and_then(Value::as_array);
+                if history.is_some_and(|h| h.len() > gobstopper_core::validation::MAX_ITEMS) {
+                    return Err(AdapterError::InvalidEdit(
+                        "compacted history exceeds record limit",
+                    ));
+                }
+                ambiguous |= history.is_none();
+                if let Some(history) = history {
+                    for item in history {
+                        if matches!(
+                            item.get("type").and_then(Value::as_str),
+                            Some("function_call" | "custom_tool_call" | "local_shell_call")
+                        ) {
+                            if let Some(id) = call_id(item) {
+                                calls.insert(id, call_label(item));
+                            }
+                        }
+                    }
+                }
                 // Count only items apply would actually stub — the
                 // per-output floor must match `apply_elide` exactly or a
                 // record full of small outputs reads as elidable forever
@@ -275,6 +369,7 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                 let (bytes, parts) = payload
                     .get("replacement_history")
                     .and_then(Value::as_array)
+                    .filter(|items| items.iter().all(supported_item))
                     .map(|items| {
                         items.iter().filter_map(elidable_bytes).fold(
                             (0u64, 0u32),
@@ -288,10 +383,10 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                 let payload_sha256 = payload
                     .get("replacement_history")
                     .and_then(Value::as_array)
+                    .filter(|items| items.iter().all(supported_item))
                     .and_then(|items| {
                         crate::payload::fingerprint(items.iter().filter_map(|item| {
-                            item.get("output")
-                                .filter(|output| crate::payload::eligible_bytes(output) > 0)
+                            elidable_bytes(item).and_then(|_| item.get("output"))
                         }))
                     });
                 items.push(TranscriptItem {
@@ -315,6 +410,20 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                 });
             }
             _ => {}
+        }
+    }
+    let ambiguous_identity = crate::verify::verify(Provider::Codex, bytes)
+        .iter()
+        .any(|f| f.code == "duplicate_tool_call_id" || f.code == "duplicate_tool_result");
+    if ambiguous || ambiguous_identity {
+        usage.invalidate_context();
+        usage.lifetime_scope = gobstopper_core::model::LifetimeScope::Partial;
+        for item in &mut items {
+            item.est_tokens = 0;
+            item.elidable_bytes = None;
+            item.elidable_parts = 0;
+            item.tool_use_ids.clear();
+            item.payload_sha256 = None;
         }
     }
     Ok(Transcript {
@@ -346,27 +455,41 @@ fn absorb_usage(record: &Value, sample: &mut UsageSample) {
     // counters instead of adding them. Cached input is already in input.
     // Rate-limit-only token_count events have null info; missing fields must
     // not erase the last known usage or provider-advertised window.
-    if let Some(input) = last["input_tokens"].as_u64() {
-        sample.context_tokens = input.saturating_add(last["output_tokens"].as_u64().unwrap_or(0));
+    sample.observe_cumulative_report(
+        last["input_tokens"]
+            .as_u64()
+            .map(|input| input.saturating_add(last["output_tokens"].as_u64().unwrap_or(0))),
+        total["input_tokens"].as_u64(),
+        total["cached_input_tokens"].as_u64(),
+        window.as_u64(),
+    );
+    if last.as_object().is_some_and(|fields| {
+        ["input_tokens", "output_tokens"]
+            .iter()
+            .any(|key| fields.get(*key).is_some_and(|value| !value.is_u64()))
+    }) {
+        sample.invalidate_context();
     }
-    if let Some(input) = total["input_tokens"].as_u64() {
-        sample.lifetime_input_tokens = input;
-    }
-    if let Some(cached) = total["cached_input_tokens"].as_u64() {
-        sample.lifetime_cached_tokens = cached;
-    }
-    if let Some(window) = window.as_u64().filter(|window| *window > 0) {
-        sample.model_context_window = Some(window);
+    if total.as_object().is_some_and(|fields| {
+        ["input_tokens", "cached_input_tokens"]
+            .iter()
+            .any(|key| fields.get(*key).is_some_and(|value| !value.is_u64()))
+    }) {
+        sample.lifetime_scope = gobstopper_core::model::LifetimeScope::Partial;
     }
 }
 
 /// Cheap usage pass for `detect`: read only the tail of the file.
 pub fn scan_usage(path: &Path) -> UsageSample {
     let mut sample = UsageSample::default();
-    for record in crate::tail_records(path, TAIL_SCAN_BYTES) {
+    let Some((records, _complete)) = crate::tail_records(path, TAIL_SCAN_BYTES) else {
+        sample.invalidate_context();
+        return sample;
+    };
+    for record in records {
         match record.get("type").and_then(Value::as_str) {
             Some("token_usage_record" | "event_msg") => absorb_usage(&record, &mut sample),
-            Some("compacted") => sample.context_tokens = 0,
+            Some("compacted") => sample.reset_context(),
             _ => {}
         }
     }
@@ -376,12 +499,7 @@ pub fn scan_usage(path: &Path) -> UsageSample {
 /// Read the parent thread id from a Codex session head, if this is a
 /// sub-agent or forked thread. Returns `None` for a root/user thread.
 pub fn parent_thread(path: &Path) -> Option<String> {
-    let file = fs::File::open(path).ok()?;
-    for line in BufReader::new(file).lines().take(64) {
-        let Ok(line) = line else { break };
-        let Ok(record) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
+    for record in crate::payload::head_records(path, 64) {
         if record.get("type").and_then(Value::as_str) != Some("session_meta") {
             continue;
         }
@@ -419,14 +537,7 @@ pub fn parent_thread(path: &Path) -> Option<String> {
 /// first"), so provider-native compaction must target the parent instead.
 /// Plain `forked_from_id` threads resume fine and are not flagged here.
 pub fn is_subagent_thread(path: &Path) -> bool {
-    let Ok(file) = fs::File::open(path) else {
-        return false;
-    };
-    for line in BufReader::new(file).lines().take(64) {
-        let Ok(line) = line else { break };
-        let Ok(record) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
+    for record in crate::payload::head_records(path, 64) {
         if record.get("type").and_then(Value::as_str) != Some("session_meta") {
             continue;
         }
@@ -440,14 +551,7 @@ pub fn is_subagent_thread(path: &Path) -> bool {
 
 /// Read session identity from the head of the file.
 pub fn scan_meta(path: &Path) -> (Option<String>, Option<PathBuf>) {
-    let Ok(file) = fs::File::open(path) else {
-        return (None, None);
-    };
-    for line in BufReader::new(file).lines().take(64) {
-        let Ok(line) = line else { break };
-        let Ok(record) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
+    for record in crate::payload::head_records(path, 64) {
         if record.get("type").and_then(Value::as_str) == Some("session_meta") {
             let payload = &record["payload"];
             let id = payload
@@ -476,11 +580,10 @@ fn stub_for(template: &str, bytes: u64, kind: &str) -> String {
 /// `ordinal` sequence is never disturbed.
 fn apply_elide(
     raw: &str,
-    line_indexes: &[usize],
+    targets: &std::collections::HashSet<usize>,
     stub_template: &str,
     per_item_stubs: &std::collections::BTreeMap<usize, String>,
 ) -> (String, u64) {
-    let targets: std::collections::HashSet<usize> = line_indexes.iter().copied().collect();
     let render = |idx: usize, old: u64, kind: &str| {
         per_item_stubs
             .get(&idx)
@@ -495,9 +598,14 @@ fn apply_elide(
             continue;
         }
         let trimmed = line.trim_end_matches('\n');
-        match serde_json::from_str::<Value>(trimmed) {
+        match crate::payload::decode_record(trimmed) {
             Ok(mut record) => {
-                let is_compacted = record.get("type").and_then(Value::as_str) == Some("compacted");
+                let kind = record.get("type").and_then(Value::as_str);
+                if !matches!(kind, Some("response_item" | "compacted")) {
+                    out.push_str(line);
+                    continue;
+                }
+                let is_compacted = kind == Some("compacted");
                 let Some(payload) = record.get_mut("payload") else {
                     out.push_str(line);
                     continue;
@@ -594,12 +702,19 @@ pub(crate) fn digest_text(digest: &DigestBlock) -> String {
     s
 }
 
-/// Execute a plan's edits against a rollout file. `ProviderCompact` is a
-/// no-op here — the CLI routes it to the provider instead.
-pub fn apply(path: &Path, edits: &[Edit]) -> Result<u64, AdapterError> {
-    crate::transaction::apply(Provider::Codex, path, |candidate| {
-        apply_inner(candidate, edits)
-    })
+/// Direct provider-file mutation is disabled: an arbitrary path and an idle
+/// observation cannot establish compatible lifetime custody. Use [`transform`]
+/// to prepare bytes for an independently admitted, no-clobber copy.
+pub fn apply(_path: &Path, _edits: &[Edit]) -> Result<u64, AdapterError> {
+    Err(AdapterError::DirectMutationDisabled)
+}
+
+/// Transform detached transcript bytes without reading or writing any file.
+/// Provider-control edits retain their no-op lowering here; dispatch belongs
+/// to the session owner. Generated digest identities need not be deterministic.
+pub fn transform(original: &[u8], edits: &[Edit]) -> Result<Vec<u8>, AdapterError> {
+    crate::payload::check_edit_bounds(edits)?;
+    crate::transaction::prepare(Provider::Codex, original, |text| apply_inner(text, edits))
 }
 
 fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
@@ -610,7 +725,10 @@ fn apply_inner(original: &str, edits: &[Edit]) -> Result<String, AdapterError> {
                 line_indexes,
                 stub_template,
                 per_item_stubs,
-            } => raw = apply_elide(&raw, line_indexes, stub_template, per_item_stubs).0,
+            } => {
+                let targets = crate::payload::elision_targets(Provider::Codex, &raw, line_indexes)?;
+                raw = apply_elide(&raw, &targets, stub_template, per_item_stubs).0;
+            }
             Edit::InjectDigest { digest } => {
                 // Appended as a user message; Codex rebuilds context from
                 // rollout items on resume, so a trailing state card lands
@@ -729,6 +847,8 @@ mod usage_tests {
                 lifetime_input_tokens: 647640,
                 lifetime_cached_tokens: 583680,
                 model_context_window: Some(258400),
+                context_state: gobstopper_core::model::ContextState::Reported,
+                lifetime_scope: gobstopper_core::model::LifetimeScope::Full,
             },
         );
     }
@@ -759,6 +879,8 @@ mod usage_tests {
                 lifetime_input_tokens: 7000,
                 lifetime_cached_tokens: 5500,
                 model_context_window: Some(258400),
+                context_state: gobstopper_core::model::ContextState::Reported,
+                lifetime_scope: gobstopper_core::model::LifetimeScope::Full,
             },
         );
     }
@@ -775,6 +897,8 @@ mod usage_tests {
                 lifetime_input_tokens: 7000,
                 lifetime_cached_tokens: 5500,
                 model_context_window: None,
+                context_state: gobstopper_core::model::ContextState::Reported,
+                lifetime_scope: gobstopper_core::model::LifetimeScope::Full,
             },
         );
     }
@@ -796,6 +920,8 @@ mod usage_tests {
                 lifetime_input_tokens: 7000,
                 lifetime_cached_tokens: 5500,
                 model_context_window: Some(258400),
+                context_state: gobstopper_core::model::ContextState::Reset,
+                lifetime_scope: gobstopper_core::model::LifetimeScope::Full,
             },
         );
     }
@@ -817,6 +943,8 @@ mod usage_tests {
                 lifetime_input_tokens: 7000,
                 lifetime_cached_tokens: 5500,
                 model_context_window: Some(1000000),
+                context_state: gobstopper_core::model::ContextState::Reported,
+                lifetime_scope: gobstopper_core::model::LifetimeScope::Full,
             },
         );
     }

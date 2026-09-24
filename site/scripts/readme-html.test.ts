@@ -7,15 +7,17 @@ import { publishedReadme } from "./published-readme.ts";
 
 const repository = join(import.meta.dir, "..", "..");
 
-test("site installation coordinates stay on the admitted release while new source is prepared", () => {
+test("versioned installation references use the admitted release without changing source installs", () => {
   const source = [
     "cargo install --git https://github.com/hraness/gobstopper --tag v0.21.1 gobstopper",
+    "cargo install --git https://github.com/hraness/gobstopper gobstopper --locked",
     "bunx skills add hraness/gobstopper#v0.21.1",
     "Version 0.21.1 and historical v0.20.0 remain prose.",
     "Unrelated hraness/gobstopper#v0.21.10 and hraness/gobstopper#v0.21.1-beta.1 stay literal.",
   ].join("\n");
   const projected = publishedReadme(source, "0.21.1", "0.21.0");
   expect(projected).toContain("--tag v0.21.0 gobstopper");
+  expect(projected).toContain("cargo install --git https://github.com/hraness/gobstopper gobstopper --locked");
   expect(projected).toContain("hraness/gobstopper#v0.21.0");
   expect(projected).toContain("Version 0.21.1 and historical v0.20.0 remain prose.");
   expect(projected).toContain("Unrelated hraness/gobstopper#v0.21.10 and hraness/gobstopper#v0.21.1-beta.1 stay literal.");
@@ -39,8 +41,8 @@ test("extracts the landing block between the shared Hraness markers", async () =
   expect(source.indexOf(LANDING_END)).toBeGreaterThan(source.indexOf(LANDING_START));
   const landing = readmeLanding(source);
   expect(landing.title).toBe("gobstopper");
-  expect(landing.lead).toContain("compacts Claude Code, Codex, and Devin sessions");
-  expect(landing.markdown).toContain("picked for that session");
+  expect(landing.lead).toContain("inspects Claude Code, Codex, and Devin sessions");
+  expect(landing.markdown).toMatch(/cannot ask providers to compact,\s+even when `auto_compact_closed` is enabled/u);
 });
 
 test("rejects unsafe README link targets", () => {

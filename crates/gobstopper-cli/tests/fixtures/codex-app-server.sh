@@ -35,6 +35,26 @@ while IFS= read -r line; do
           compact_item
           completed
           printf '{"id":2,"result":{}}\n' ;;
+        terminal-first-thread)
+          completed
+          compact_item
+          printf '{"id":2,"result":{}}\n' ;;
+        duplicate-terminal-thread)
+          compact_item
+          completed
+          completed
+          printf '{"id":2,"result":{}}\n' ;;
+        conflicting-terminal-thread)
+          compact_item
+          completed
+          printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"compact-turn","status":"failed"}}}\n' "$thread"
+          printf '{"id":2,"result":{}}\n' ;;
+        duplicate-key-thread)
+          printf '{"id":2,"id":0,"result":{}}\n' ;;
+        control-id-thread)
+          printf '{"id":2,"result":{}}\n'
+          printf '{"method":"item/completed","params":{"threadId":"%s","turnId":"bad\\nturn","item":{"id":"compact-item","type":"contextCompaction"}}}\n' "$thread"
+          printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"bad\\nturn","status":"completed"}}}\n' "$thread" ;;
         early-foreign-failure-thread|uncorrelated-failure-thread)
           printf '{"method":"turn/started","params":{"threadId":"%s","turn":{"id":"foreign-turn","status":"inProgress"}}}\n' "$thread"
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"foreign-turn","status":"failed"}}}\n' "$thread"
@@ -42,6 +62,8 @@ while IFS= read -r line; do
           if [ "$thread" = early-foreign-failure-thread ]; then
             compact_item
             completed
+          else
+            exit 0
           fi ;;
         wrong-turn-thread)
           printf '{"id":2,"result":{}}\n'
@@ -50,7 +72,11 @@ while IFS= read -r line; do
           printf '{"method":"turn/completed","params":{"threadId":"%s","turn":{"id":"compact-turn","status":"failed"}}}\n' "$thread" ;;
         no-item-thread)
           printf '{"id":2,"result":{}}\n'
-          completed ;;
+          completed
+          exit 0 ;;
+        no-terminal-open-thread)
+          printf '{"id":2,"result":{}}\n'
+          compact_item ;;
         oversized-thread)
           printf '{"id":2,"result":{}}\n'
           awk 'BEGIN {for (i=0;i<1048577;i++) printf "x"}' ;;
@@ -76,7 +102,16 @@ while time.monotonic() < until and not (root / "escaped-stop").exists():
           fi
           case "${GOBSTOPPER_FIXTURE_MODE:-noop}" in
             checkpoint)
-              cp "$XDG_DATA_HOME/gobstopper/watch-state-all.json" "$CODEX_HOME/dispatch-state.json" ;;
+              cp "$XDG_DATA_HOME/gobstopper/watch-state-all.json" "$CODEX_HOME/dispatch-state.json"
+              cat "$XDG_DATA_HOME/gobstopper/native-operations-v1/"[0-9a-f]*.jsonl > "$CODEX_HOME/dispatch-journal.jsonl" ;;
+            hold)
+              printf 'ready\n' > "$CODEX_HOME/provider-dispatched"
+              count=0
+              while [ ! -f "$CODEX_HOME/provider-release" ] && [ "$count" -lt 400 ]; do
+                sleep 0.01
+                count=$((count+1))
+              done
+              printf 'finished\n' > "$CODEX_HOME/provider-finished" ;;
             compact)
               printf '{"type":"compacted","payload":{"replacement_history":[]}}\n' >> "$CODEX_HOME/sessions/rollout-fixture.jsonl" ;;
             lower)

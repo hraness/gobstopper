@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import Home from "../app/page";
 import Docs from "../app/docs/page";
 import { publishedRelease } from "../app/publication";
+import { readmeLead } from "../app/readme.generated";
 import RootLayout from "../app/layout";
 
 const SUPPORT_URL = "https://account.hraness.com/support?product=gobstopper&amp;source=web#support";
@@ -30,23 +31,24 @@ test("every public route has one optional support footer without product signup"
   }
 });
 
-test("the homepage leads with the README identity and the verified install command", () => {
+test("the homepage shares the README identity and installs the guarded source build", () => {
   const html = renderToStaticMarkup(<Home />);
   expect(html.match(/<h1\b/gu)).toHaveLength(1);
-  expect(html).toContain("Compact coding-agent sessions early, with a way back.");
+  expect(html).toContain(renderToStaticMarkup(<>{readmeLead}</>));
+  expect(html).toContain("cargo install --git https://github.com/hraness/gobstopper gobstopper --locked");
+  expect(html).not.toContain("--tag v");
   if (publishedRelease === null) {
     expect(html).toContain("No release yet");
-    expect(html).not.toContain("--tag v");
   } else {
-    expect(html).toContain(`--tag v${publishedRelease.version}`);
-    expect(html).toContain("cargo install --git");
+    expect(html).toContain(`href="https://github.com/hraness/gobstopper/releases/tag/v${publishedRelease.version}"`);
     expect(html).toContain(publishedRelease.verificationRun);
-    // v0.2.1 predates Devin support; the page must say so and give the source install.
+    // This tag predates both Devin support and the guarded source behavior.
     if (publishedRelease.version === "0.2.1") {
-      expect(html).toContain("Devin support and several features described here are newer than that release");
-      expect(html).toContain("cargo install --git https://github.com/hraness/gobstopper gobstopper");
+      expect(html).toMatch(/predates Devin support[^<]+safeguards/u);
     }
   }
+  expect(html).toMatch(/automatic provider compaction is disabled/iu);
+  expect(html).toMatch(/refuses automatic provider compaction[^.]+auto_compact_closed/u);
   expect(html).not.toContain("hraness.com/gobstopper");
 });
 

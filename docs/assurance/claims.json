@@ -1,0 +1,447 @@
+{
+  "schema": "gobstopper.claims.v1",
+  "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
+  "claims": [
+    {
+      "id": "CLAIM-SYSTEM",
+      "owner": "integration owner",
+      "status": "specification",
+      "assertion": "Whole-system correctness remains an assurance objective; no complete theorem is asserted.",
+      "bounds": "C1\u2013C15 source, models, implementation proofs and qualification remain separate evidence layers.",
+      "public_sources": [
+        {
+          "path": "docs/correctness-plan.md"
+        },
+        {
+          "path": "docs/correctness-audit.md"
+        }
+      ],
+      "evidence": [
+        "E-PLAN"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "Unbounded system theorem"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-COPY",
+      "owner": "integration owner",
+      "status": "source_reviewed",
+      "assertion": "Codex/Claude copy operations retain exact source and candidate recovery bytes and publish a fresh no-clobber identity. Direct provider-file/Devin store writes are disabled.",
+      "bounds": "Version 2 operation receipts and strict roots cover compact/fork/restore wrappers; failed durability is distinct from no publication.",
+      "public_sources": [
+        {
+          "path": "README.md"
+        },
+        {
+          "path": "docs/design.md"
+        }
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "Provider resume acceptance",
+        "Physical power-loss durability",
+        "Pin retirement"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-VERIFY",
+      "owner": "integration owner",
+      "status": "source_reviewed",
+      "assertion": "Structural verification reports findings from the implemented provider dialect rules.",
+      "bounds": "Strict supported dialect checks plus independent synthetic oracles and finite Lean/Rust correspondence; passing is not provider acceptance.",
+      "public_sources": [
+        {
+          "path": "README.md"
+        },
+        {
+          "path": "docs/design.md"
+        }
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "Proprietary provider correctness",
+        "Task retention"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-INSPECTION",
+      "owner": "integration owner",
+      "status": "source_reviewed",
+      "assertion": "MCP inspection is bounded and deterministic: extension strategies are refused and configured model/scorer/digest execution is skipped.",
+      "bounds": "Only explicit recovery-content opt-in exists. Configured CLI planning and direct library callbacks have separately classified trusted external effects; installed Apple resolution never compiles or installs.",
+      "public_sources": [
+        {
+          "path": "README.md"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/mcp.rs"
+        }
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "No external process/network/cache effects",
+        "Sandbox guarantee"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-SAVINGS",
+      "owner": "integration owner",
+      "status": "source_reviewed",
+      "assertion": "Replay reduction, token estimates, source-bound recorded occupancy changes and billed savings are separate quantities.",
+      "bounds": "Applied context reduction requires positive reported before/after usage with exact identity and source/manifest provenance; repeated evidence is deduplicated. Missing/reset usage gives no measured credit.",
+      "public_sources": [
+        {
+          "path": "README.md"
+        },
+        {
+          "path": "docs/correctness-audit.md"
+        }
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "Universal savings percentage",
+        "Billing reduction from token estimates"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-SEMANTICS",
+      "owner": "integration owner",
+      "status": "source_reviewed",
+      "assertion": "Retention scores are literal/lexical or study-specific proxies within their declared source and label population.",
+      "bounds": "Registered synthetic negation, superseded instruction, approval and pending-effect controls report literal/judge evidence and incomplete provider arms separately.",
+      "public_sources": [
+        {
+          "path": "docs/correctness-plan.md"
+        },
+        {
+          "path": "README.md"
+        }
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "Preserving every future answer",
+        "Meaning equivalence from string overlap"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-SCANNER",
+      "owner": "integration owner",
+      "status": "historical_observation",
+      "assertion": "The merged baseline security analysis completed successfully while 21 cleartext-logging alerts remained open.",
+      "bounds": "Exact baseline commit; individual requested-output/secret-fragment/background/test-only triage is recorded separately.",
+      "public_sources": [
+        {
+          "path": "docs/assurance/codeql-triage.json"
+        }
+      ],
+      "evidence": [
+        "E-SCANNER"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "Alert-free codebase",
+        "Security theorem",
+        "Scanner closure before rescan"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-AUTH",
+      "owner": "integration owner",
+      "status": "source_reviewed",
+      "assertion": "Credential output must omit key material; a failed live health check can leave a key unverified rather than establishing validity.",
+      "bounds": "No credential fragments or arbitrary backend/provider diagnostics; accepted key storage is not successful provider attestation.",
+      "public_sources": [
+        {
+          "path": "README.md"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/secrets.rs"
+        }
+      ],
+      "evidence": [
+        "E-C1-PRIVACY",
+        "E-FOUNDATION-SOURCE"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "All stored keys verified",
+        "Fragment masking as a secrecy proof"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-NATIVE",
+      "owner": "integration owner",
+      "status": "source_reviewed",
+      "assertion": "Released CLI native dispatch is blocked until a provider/version/mode has qualified ownership and correlation evidence.",
+      "bounds": "Debug-only exact isolated fixtures exercise durable dispatch-before-call, retained uncertainty and owned process cleanup. No live cell is qualified.",
+      "public_sources": [
+        {
+          "path": "docs/assurance/qualification.json"
+        },
+        {
+          "path": "docs/assurance/operations.md"
+        }
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "Live provider acceptance",
+        "Exactly-once provider execution",
+        "Exclusive custody from idle age"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-BOUNDS",
+      "owner": "integration owner",
+      "status": "source_reviewed",
+      "assertion": "Resource caps are per implementation boundary and configuration, not one universal application bound.",
+      "bounds": "Default transcript read cap 512 MiB (1 KiB\u20138 GiB override), bounded MCP/hooks/plugin/model/journal inputs and outputs, and finite sequence/process fixtures; stable local filesystem/OS assumptions remain.",
+      "public_sources": [
+        {
+          "path": "README.md"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/transaction.rs"
+        }
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "Every operation bounded by transcript byte cap",
+        "Liveness from finite safety checking"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-DELIVERY",
+      "owner": "integration owner",
+      "status": "historical_observation",
+      "assertion": "Baseline PR 88 merged a checked source tree and retained a locally built macOS artifact without installing it or restarting live watchers.",
+      "bounds": "Merged ffc7148 tree 904cf3f; historical CI and artifact receipt only.",
+      "public_sources": [
+        {
+          "path": "docs/correctness-audit.md"
+        }
+      ],
+      "evidence": [
+        "E-BASELINE-CI"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS"
+      ],
+      "exclusions": [
+        "Current integration admission",
+        "Live activation qualification",
+        "Universal platform support"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any stronger public wording, new version/environment or changed source/evidence invalidates this scope."
+    },
+    {
+      "id": "CLAIM-VAULT",
+      "owner": "integration owner",
+      "status": "bounded_check",
+      "assertion": "Finite custody and publication model; 11 safety/control/witness configurations.",
+      "bounds": "Two publishers/one reader/one prune in custody; one publisher/one reader/two prune cycles/one restart in publication; 256 MiB JVM, 45 seconds per case, 32 MiB logs.",
+      "public_sources": [
+        {
+          "path": "verify/vault/README.md"
+        }
+      ],
+      "evidence": [
+        "E-VAULT-CURRENT"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS",
+        "A-MODEL"
+      ],
+      "exclusions": [
+        "No production refinement",
+        "No power-loss or network filesystem theorem",
+        "No fairness or unbounded actor theorem"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."
+    },
+    {
+      "id": "CLAIM-WATCH",
+      "owner": "integration owner",
+      "status": "bounded_check",
+      "assertion": "Finite native dispatch model; 13 safety/control/witness configurations.",
+      "bounds": "Two watchers, one target, two operations, four records per operation, one generation change; no fairness; 256 MiB JVM, 45 seconds per case, 32 MiB logs.",
+      "public_sources": [
+        {
+          "path": "verify/watch/README.md"
+        }
+      ],
+      "evidence": [
+        "E-WATCH-CURRENT"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS",
+        "A-MODEL"
+      ],
+      "exclusions": [
+        "No provider-attested operation association",
+        "No production/filesystem refinement",
+        "No eventual progress guarantee"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."
+    },
+    {
+      "id": "CLAIM-CORE",
+      "owner": "integration owner",
+      "status": "bounded_check",
+      "assertion": "Selected production Rust admission, arithmetic and usage kernels under Kani.",
+      "bounds": "Full scalar numeric domains; index lengths 0/1/2/4 and four-edit sequence; production limits unchanged.",
+      "public_sources": [
+        {
+          "path": "verify/core/README.md"
+        }
+      ],
+      "evidence": [
+        "E-CORE-CURRENT"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS",
+        "A-MODEL"
+      ],
+      "exclusions": [
+        "No parsing/OS/allocation theorem",
+        "No whole-core or whole-system proof",
+        "Unsupported paths must be shown unreachable"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."
+    },
+    {
+      "id": "CLAIM-TRANSCRIPT",
+      "owner": "integration owner",
+      "status": "bounded_check",
+      "assertion": "Unbounded Lean structural list laws plus finite actual Rust dialect correspondence.",
+      "bounds": "27 theorems, 20 synthetic cases, 23 steps per provider; kernel replay and both exact intended mutants.",
+      "public_sources": [
+        {
+          "path": "verify/transcript/README.md"
+        }
+      ],
+      "evidence": [
+        "E-TRANSCRIPT-CURRENT"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS",
+        "A-MODEL"
+      ],
+      "exclusions": [
+        "No universal Rust refinement",
+        "No branching/unknown-wire dialect theorem",
+        "No semantic equivalence of lossy output"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."
+    },
+    {
+      "id": "CLAIM-STRESS",
+      "owner": "integration owner",
+      "status": "bounded_check",
+      "assertion": "Bounded synthetic operation, process and fault suites.",
+      "bounds": "See retained exact suite inventory and receipt bounds; fixed sequence seed and finite capacities.",
+      "public_sources": [
+        {
+          "path": "verify/stress/README.md"
+        }
+      ],
+      "evidence": [
+        "E-STRESS-CURRENT"
+      ],
+      "assumptions": [
+        "A-RECEIPT",
+        "A-OS",
+        "A-MODEL"
+      ],
+      "exclusions": [
+        "No physical power-loss or real full-volume qualification",
+        "No whole-process-tree RSS theorem",
+        "No live provider acceptance"
+      ],
+      "next_gate": "C15",
+      "review_trigger": "Any source/tool/proof bound change invalidates this exact receipt. A required integration/release/install gate always runs independently."
+    }
+  ]
+}

@@ -6,7 +6,7 @@ Mode: Persuade. Target: `app/page.tsx`.
 
 Present Gobstopper's context-compaction workflow with the approved shared
 editorial marketing appearance. Keep the README lead, command and config
-examples that run on the release the page installs, the savings math with its
+examples that run on the source build the page installs, the savings math with its
 stated limits, and what Gobstopper won't do. Page copy follows `../STYLE.md`,
 including its repository additions.
 
@@ -28,8 +28,9 @@ needs (session detection, edits, strategies, presets and plugins, undo vault,
 telemetry and eval); three ways to run it (CLI, watcher and hooks, your own
 program); what Gobstopper won't do; installation; questions; maker; related
 products. Omit redundant section labels through empty legacy slots. Show the
-latest release and its verification run under the install heading; with no
-release, say so plainly.
+latest tagged release and its verification run under the install heading, with
+its differences from the documented source build. Make the source install
+primary so the installed behavior matches the write safeguards on the page.
 
 ## FIRST VIEWPORT
 

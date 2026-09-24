@@ -17,6 +17,7 @@ import { SiteHeader, SiteFooter } from "./_components/site-chrome";
 import { HeroField } from "./hero-field";
 import { HeroGraphic } from "./hero-graphic";
 import { publishedRelease } from "./publication";
+import { readmeLead } from "./readme.generated";
 
 
 function TopicIcon({ slug }: Readonly<{ slug: string }>) {
@@ -28,30 +29,28 @@ function TopicIcon({ slug }: Readonly<{ slug: string }>) {
 const releaseVersion = publishedRelease?.version;
 const repository = "https://github.com/hraness/gobstopper";
 
-const heading = "Compact coding-agent sessions early, with a way back.";
-const summary =
-  "Gobstopper watches your Claude Code, Codex, and Devin sessions and compacts each one when its context passes a size you choose. It snapshots every transcript before changing it, so the original is never lost, and it can score what each strategy preserved.";
-// v0.2.1 (September 18, 2026) predates Devin support and several features
-// described below. The note disappears once a newer release is published.
+const heading = "Prepare smaller coding-agent sessions, with a way back.";
+const summary = readmeLead;
+// This published release predates both Devin support and the source-build guards.
 const releasePredatesPage = releaseVersion === "0.2.1";
 const footnote =
-  `Free and open source (MIT or Apache-2.0). Needs Rust 1.85 or newer. Runs on your machine with no account.${releaseVersion === undefined ? " No release yet; install from source." : ` Latest release: v${releaseVersion}.`}${releasePredatesPage ? " Devin support and several features described here are newer than that release; install from source to use them." : ""}`;
+  "Source preview. Install from source for the behavior described here. Free and open source (MIT or Apache-2.0). Needs Rust 1.85 or newer. Local inspection needs no account.";
 
 const primitives = [
   {
     icon: "session-detection",
     label: "Session detection",
-    summary: "Finds live and idle sessions in the Codex, Claude Code, and Devin session stores and reads each provider's own token counts. When a provider doesn't report context size, Gobstopper estimates it.",
+    summary: "Finds sessions in the Codex, Claude Code, and Devin stores. Reports measured context separately from estimates and missing usage. Recent file activity cannot tell you whether another process is using a session.",
   },
   {
     icon: "edit-ir",
     label: "A few kinds of edit",
-    summary: "Every strategy reduces to the same small set of edits, such as hiding stale tool output, inserting a digest, or asking the provider to compact. Gobstopper validates the result before writing it and never removes the parent links and ordinals a provider needs to resume the session.",
+    summary: "Strategies propose replacing stale tool output, inserting a digest, or having the provider compact. Gobstopper checks supported record links, order, and tool-call pairs before writing a copy. Those checks do not establish that a provider can resume it.",
   },
   {
     icon: "strategies",
     label: "Strategies",
-    summary: "The default, auto, picks a strategy from the shape of the transcript. Sawtooth hands off to the provider's own compaction, elide hides stale tool output, and structured writes a conservative state card. Scored ranks what to hide and, on macOS, can draft state cards with a free on-device model if you opt in. Agentic accepts edits proposed by a program you trust.",
+    summary: "The default, auto, picks a strategy from the transcript. Sawtooth recommends provider compaction, elide replaces eligible stale tool output, and structured writes a state card from metadata. Scored ranks candidates; optional on-device models can score or draft cards. Agentic accepts edits proposed by a program you trust.",
   },
   {
     icon: "presets-config",
@@ -61,27 +60,27 @@ const primitives = [
   {
     icon: "undo-vault",
     label: "Undo vault",
-    summary: "Before changing anything, Gobstopper stores an exact copy of the transcript in a local vault. By default, Claude Code and Codex compactions are written to a new fork, and undo restores the original bytes into another. Idle Devin sessions are edited in place, and undo writes the original back unless Devin has added to the session since.",
+    summary: "Before writing a separate Claude Code or Codex copy, Gobstopper archives the original and prepared bytes. Search the snapshot for a missing record, read its saved text, or use undo to prepare a restored copy with a new session identity.",
   },
   {
     icon: "telemetry-eval",
     label: "Telemetry and eval",
-    summary: "Each compaction is logged with a pointer to its snapshot and a score for what it kept, and gobstopper events --retention totals those scores by provider. The eval command runs every strategy on temporary copies and scores how much structure each one preserved. Treat it as a regression check, not a measure of cost savings.",
+    summary: "Events link snapshots with observed usage. Eval compares strategies on frozen input, checks supported structures, and counts which sampled details remain. It reports missing measurements and coverage; model judgments, billing, and successful task continuation need separate evidence.",
   },
 ] as const;
 
 const trust = [
   {
-    label: "Transcripts are never destroyed",
-    detail: "Gobstopper snapshots a transcript before it changes a byte. By default, Claude Code and Codex compactions go to a separate copy and leave the source file alone. An idle Devin session is edited in place in one database transaction, after Gobstopper checks that Devin does not hold the session lock, and the watcher rewrites idle Claude Code sessions in place only if you turn that on. Rewrites keep the links a provider needs to resume the session, and gobstopper verify checks the result.",
+    label: "Source files stay unchanged",
+    detail: "Claude Code and Codex compaction writes a separate copy and archives the original and prepared bytes. Snapshot readers coordinate with cleanup, and damaged recovery data stops cleanup. Keep backups of the vault: local snapshots depend on your storage.",
   },
   {
-    label: "Running sessions are left alone",
-    detail: "Gobstopper does not edit a session while it is running. Claude Code and Devin report which sessions are live, and a Codex session counts as running if it was written in the last three minutes. For a running Claude Code or Devin session, Gobstopper's prompt hook can suggest /compact, and the provider does the compaction. Custom rewrites run only on idle sessions and forks.",
+    label: "Automatic provider compaction is disabled",
+    detail: "The source build refuses automatic provider compaction, including auto_compact_closed, and direct Devin-store or in-place edits. An idle check cannot establish that another process has finished using a session. Provider commands need separate testing before they can be enabled.",
   },
   {
-    label: "Failures are reported as failures",
-    detail: "A provider compaction that fails, including a quota rejection, is recorded as failed. Eval reports what a strategy kept and what verify found, not money saved, and this site labels projections separately from benchmark results.",
+    label: "Unknown outcomes stay unknown",
+    detail: "If a provider operation has an uncertain result, Gobstopper does not retry it automatically after a restart or cooldown. Missing usage stays unmeasured. Hook observations do not establish that Gobstopper caused a compaction.",
   },
 ] as const;
 
@@ -92,19 +91,19 @@ const questions = [
   },
   {
     question: "Does it edit my live session?",
-    answer: "No. For a running Claude Code or Devin session, Gobstopper's prompt hook can suggest `/compact`, and the provider does the compaction. If you set `auto_compact_closed`, Gobstopper asks the provider to compact a closed session: `thread/compact/start` over the Codex app-server protocol, `claude --resume <id> -p /compact` for Claude Code, and `/compact` over ACP for Devin. Otherwise it rewrites idle transcripts itself, always after a snapshot. By default, Claude Code and Codex rewrites go to a separate, validated copy, and an idle Devin session is edited in place in one database transaction.",
+    answer: "The source build prepares separate Claude Code and Codex copies and refuses direct Devin-store edits. It can recommend that you compact through the session's own provider controls, but automatic provider compaction is disabled. The existing session stays under its provider's control.",
   },
   {
     question: "What if a compaction loses something important?",
-    answer: "`gobstopper undo` restores the exact original bytes into a new fork and leaves the current transcript untouched. To choose a strategy before you rely on it, `gobstopper eval` runs every strategy on a copy of a transcript and reports probe recall (which exact details survived) along with any integrity problems the rewrite caused.",
+    answer: "Snapshot search can locate an archived record, and snapshot reads retrieve its verified bytes. For Claude Code and Codex, `gobstopper undo` prepares a separate fork with a new session identity. `gobstopper eval` measures literal probe retention and structural findings on copies. Those checks cannot guarantee that every task fact survives or that an agent will retrieve a missing fact.",
   },
   {
     question: "Which agents does it support?",
-    answer: "Codex, Claude Code, and Devin, each through its real session format. Edits are provider-neutral, so another agent that stores JSONL transcripts needs only a small adapter.",
+    answer: "Gobstopper inspects supported Codex, Claude Code, and Devin session formats and prepares separate Codex and Claude Code copies. Devin exports can be inspected but cannot replace its session store. New provider versions need format tests and separate resume tests.",
   },
   {
     question: "Can I run my own compaction logic?",
-    answer: "Yes. A `preset.command` sends the normalized transcript JSON to your program and applies the edits it returns. A versioned `gobstopper-plugin.json` bundle does the same with declared capabilities and a pinned executable. Gobstopper checks every proposed edit: none may grow the transcript, remove protected recent output, break the resume links, or exceed the digest size limit. Your program runs as an ordinary subprocess, not in a sandbox, so Gobstopper runs it only after you trust that exact executable.",
+    answer: "Yes. A trusted `preset.command` or plugin bundle receives normalized transcript data and proposes edits. Gobstopper checks which records may change, protected output, edit combinations, size estimates, digest limits, and supported structures. Your program runs as ordinary local code. Read-only MCP inspection refuses executable strategies.",
   },
   {
     question: "Who made it?",
@@ -153,7 +152,7 @@ export default function Home() {
                   className="hraness-material-pane"
                   caption="On a 333k-token Claude Code session, Claude's own autocompact cut the resume context by 82% and then said unfinished renames were done. Gobstopper's elide and compacted strategies cut about 30% and recalled the task correctly. One session, recorded on an earlier build; not a general benchmark."
                   credit="Recorded September 17, 2026 · chart is illustrative"
-                  title="The sawtooth: compact early, every crossing."
+                  title="Earlier compaction is a tradeoff."
                 >
                   <HeroGraphic />
                   <pre className="transcript" tabIndex={0}><code>{`# input tokens on resume · recalled?
@@ -180,7 +179,7 @@ autocompact 100    56,300  no`}</code></pre>
               summary: primitive.summary,
             }))}
             label=""
-            summary="Providers compact near the top of the context window, where each turn costs the most and long-context recall is weakest. Gobstopper lets you set a lower threshold and choose what happens when a session crosses it."
+            summary="Set a threshold, compare strategies on frozen input, and inspect the candidate before provider resume. Smaller context, cache behavior and task quality need separate evidence."
           />
 
           <MarketingInterfaceGrid
@@ -190,7 +189,7 @@ autocompact 100    56,300  no`}</code></pre>
             interfaces={[
               {
                 label: "CLI",
-                summary: "Find sessions, preview a plan, apply it, verify the result, and undo it if you need to. Nothing changes until you apply.",
+                summary: "Find sessions, preview a plan, and prepare a separate Codex or Claude Code copy. Inspect its supported structures and keep the original for recovery.",
                 example: (
                   <>
                     <TopicIcon slug="cli" />
@@ -202,13 +201,12 @@ gobstopper verify <session> && gobstopper undo <session>`}</code></pre>
               },
               {
                 label: "Watcher and hooks",
-                summary: "The watcher checks your sessions every 30 seconds by default and writes a validated copy of an idle Claude Code or Codex session once it crosses your threshold. Provider hooks snapshot and log each time the provider compacts on its own.",
+                summary: "The watcher checks sessions every 30 seconds by default and can prepare separate Claude Code or Codex copies. Dry-run mode previews the decisions. Hook setup writes a settings candidate for you to review; it does not change provider settings.",
                 example: (
                   <>
                     <TopicIcon slug="watcher" />
-                    <pre tabIndex={0}><code>{`gobstopper watch --dry-run
-gobstopper watch
-gobstopper install-hooks`}</code></pre>
+                    <pre tabIndex={0}><code>{`gobstopper watch --dry-run --once
+gobstopper install-hooks --output ./hook-candidates.json`}</code></pre>
                   </>
                 ),
               },
@@ -230,7 +228,7 @@ trusted_legacy_command = true`}</code></pre>
               },
             ]}
             label=""
-            summary="All three use the same plans, edits, and checks. None of them skips the snapshot or the validation."
+            summary="Built-in strategies and trusted programs go through the same checks before Gobstopper writes a copy."
           />
 
           <MarketingSection
@@ -252,41 +250,39 @@ trusted_legacy_command = true`}</code></pre>
 
           <MarketingInstallPanel
             eyebrow=""
-            heading="Install and compact your first session."
+            heading="Install and inspect your first session."
             headingId="install-title"
             id="install"
           >
-            <p className="install-note">{releaseVersion === undefined ? "No release yet. Install from source." : `Latest release: v${releaseVersion}`}</p>
-            {publishedRelease === null ? (
-              <>
-                <pre className="install-command" tabIndex={0}><code>{`cargo install --git ${repository} gobstopper
+            <p className="install-note">Install the current source build to use the behavior described on this page.</p>
+            <pre className="install-command" tabIndex={0}><code>{`cargo install --git ${repository} gobstopper --locked
 gobstopper --help`}</code></pre>
-                <pre className="install-command" tabIndex={0}><code>{`gobstopper detect
+            <pre className="install-command" tabIndex={0}><code>{`gobstopper detect
 gobstopper plan <session> --trigger 250000
-gobstopper watch`}</code></pre>
-              </>
+gobstopper watch --dry-run --once`}</code></pre>
+            {publishedRelease === null ? (
+              <p className="install-note">No release yet.</p>
             ) : (
               <>
-                <pre className="install-command" tabIndex={0}><code>{`cargo install --git ${repository} --tag v${releaseVersion} gobstopper
-gobstopper --help`}</code></pre>
-                <pre className="install-command" tabIndex={0}><code>{`gobstopper detect
-gobstopper plan <session> --trigger 250000
-gobstopper watch`}</code></pre>
                 <p className="install-note">
+                  Latest tagged release: <a href={`${repository}/releases/tag/v${releaseVersion}`}>v{releaseVersion}</a>.{" "}
                   <a href={publishedRelease.verificationRun}>See how this release was verified</a>.{" "}
                 </p>
                 {releasePredatesPage && (
-                  <>
-                    <p className="install-note">For Devin support and the other features newer than v{releaseVersion}, install from source:</p>
-                    <pre className="install-command" tabIndex={0}><code>{`cargo install --git ${repository} gobstopper`}</code></pre>
-                  </>
+                  <p className="install-note">Version {releaseVersion} predates Devin support and the source build&apos;s safeguards. The source install above includes both.</p>
                 )}
               </>
             )}
             <p className="install-note">
               Needs Rust 1.85 or newer. Gobstopper reads Codex, Claude Code, and Devin session data on your
-              machine and sends none of it anywhere.{" "}
+              machine. Built-in inspection makes no model call. If you enable a remote scorer,
+              it receives selected transcript text; trusted plugins run your code.{" "}
               <a href="/docs#install--use">Read the full reference</a>.
+            </p>
+            <p className="install-note">
+              <a href={`${repository}/blob/main/docs/assurance/qualification.json`}>Provider support status</a>{" · "}
+              <a href={`${repository}/blob/main/docs/assurance/operations.md`}>Recovery runbook</a>{" · "}
+              <a href={`${repository}/blob/main/verify/vault/README.md`}>Proof scopes and assumptions</a>
             </p>
           </MarketingInstallPanel>
 
@@ -360,13 +356,13 @@ gobstopper watch`}</code></pre>
                     name: "Soulscrape",
                     href: "https://soulscrape.com",
                     role: "A dated, cited dossier on a person",
-                    relationship: "Deep dossier research runs long; Gobstopper compacts the session without losing what the agent already established.",
+                    relationship: "Deep dossier research runs long; Gobstopper can compare smaller context candidates while retaining source bytes for inspection.",
                   },
                   {
                     name: "Textbutler",
                     href: "https://textbutler.app",
                     role: "A personal message butler for Mac",
-                    relationship: "Textbutler studies whole conversation histories; Gobstopper keeps the study session cheap.",
+                    relationship: "Textbutler studies whole conversation histories; Gobstopper can measure candidate context reduction separately from cost.",
                   },
                   {
                     name: "Wordcell",
@@ -389,9 +385,9 @@ gobstopper watch`}</code></pre>
               { href: "/docs", label: "Read the docs" },
             ]}
             footnote={footnote}
-            heading="Keep long sessions going for less."
+            heading="Inspect the tradeoff before you resume."
             headingId="cta-title"
-            summary="Set a trigger, pick a strategy, and stop sending the same 900k tokens on every turn."
+            summary="Set a trigger, compare a strategy, and retain the exact source behind every prepared copy."
           />
         </MarketingPage>
       </main>

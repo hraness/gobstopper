@@ -6,7 +6,6 @@ use std::fs;
 use std::io::{Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -93,15 +92,12 @@ fn bounded_id(s: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
 }
 
-fn validate_inspection(inspection: &Inspection, request: &Request) -> anyhow::Result<()> {
-    if inspection.provider_id != request.provider_id
-        || !identifier(&inspection.session_id)
-        || inspection.items.len() > gobstopper_core::validation::MAX_ITEMS
-        || inspection.usage.context_tokens > 100_000_000
-        || inspection.usage.lifetime_input_tokens > 10_000_000_000_000
-        || inspection.usage.lifetime_cached_tokens > inspection.usage.lifetime_input_tokens
-        || inspection
-            .usage
+fn validate_projection(items: &[TranscriptItem], usage: UsageSample) -> anyhow::Result<()> {
+    if items.len() > gobstopper_core::validation::MAX_ITEMS
+        || usage.context_tokens > 100_000_000
+        || usage.lifetime_input_tokens > 10_000_000_000_000
+        || usage.lifetime_cached_tokens > usage.lifetime_input_tokens
+        || usage
             .model_context_window
             .is_some_and(|window| window == 0 || window > 100_000_000)
     {
@@ -109,12 +105,18 @@ fn validate_inspection(inspection: &Inspection, request: &Request) -> anyhow::Re
     }
     let mut seen = std::collections::HashSet::new();
     let mut previous = None;
-    for item in &inspection.items {
+    let mut tokens = 0u64;
+    let mut bytes = 0u64;
+    let mut parts = 0u64;
+    let mut metadata = 0usize;
+    let mut tool_ids = 0usize;
+    for item in items {
         if item.line_index >= gobstopper_core::validation::MAX_ITEMS
             || !seen.insert(item.line_index)
             || previous.is_some_and(|line| item.line_index <= line)
             || item.label.is_empty()
             || item.label.len() > 128
+            || item.label.chars().any(char::is_control)
             || item.summary.as_ref().is_some_and(|text| text.len() > 512)
             || item.uuid.as_ref().is_some_and(|id| !bounded_id(id))
             || item.parent_uuid.as_ref().is_some_and(|id| !bounded_id(id))
@@ -132,16 +134,67 @@ fn validate_inspection(inspection: &Inspection, request: &Request) -> anyhow::Re
         {
             bail!("invalid provider item projection");
         }
+        tokens = tokens
+            .checked_add(item.est_tokens)
+            .context("plugin token total overflow")?;
+        bytes = bytes
+            .checked_add(item.elidable_bytes.unwrap_or(0))
+            .context("plugin byte total overflow")?;
+        parts = parts
+            .checked_add(u64::from(item.elidable_parts))
+            .context("plugin part total overflow")?;
+        tool_ids += item.tool_use_ids.len();
+        metadata += item.label.len()
+            + item.summary.as_ref().map_or(0, String::len)
+            + item.uuid.as_ref().map_or(0, String::len)
+            + item.parent_uuid.as_ref().map_or(0, String::len)
+            + item.tool_use_ids.iter().map(String::len).sum::<usize>();
+        if tokens > 100_000_000
+            || bytes > 512 * 1024 * 1024
+            || parts > 1_000_000
+            || tool_ids > 100_000
+            || metadata > 1024 * 1024
+        {
+            bail!("plugin aggregate projection exceeds bounds");
+        }
         previous = Some(item.line_index);
     }
     Ok(())
 }
 
-pub fn check(path: &Path) -> anyhow::Result<CheckedPlugin> {
-    let bytes = crate::transaction::read(path)?;
-    if bytes.len() > 64 * 1024 {
-        bail!("plugin manifest exceeds byte limit");
+fn validate_inspection(inspection: &Inspection, request: &Request) -> anyhow::Result<()> {
+    if inspection.provider_id != request.provider_id || !identifier(&inspection.session_id) {
+        bail!("provider inspection violates identity bounds");
     }
+    validate_projection(&inspection.items, inspection.usage)
+}
+
+fn read_bounded(path: &Path, limit: usize) -> anyhow::Result<Vec<u8>> {
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_file() || metadata.len() > limit as u64 {
+        bail!("plugin artifact exceeds file bounds");
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    if !file.metadata()?.is_file() {
+        bail!("plugin artifact is not a regular file");
+    }
+    let mut bytes = Vec::new();
+    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
+    if bytes.len() > limit {
+        bail!("plugin artifact exceeds byte limit");
+    }
+    Ok(bytes)
+}
+
+pub fn check(path: &Path) -> anyhow::Result<CheckedPlugin> {
+    let bytes = read_bounded(path, 64 * 1024)?;
     let manifest: Manifest = serde_json::from_slice(&bytes)
         .map_err(|_| anyhow::anyhow!("invalid plugin manifest schema"))?;
     if manifest.protocol_version != 1
@@ -161,11 +214,26 @@ pub fn check(path: &Path) -> anyhow::Result<CheckedPlugin> {
         || manifest.max_output_bytes > 1024 * 1024
         || manifest.capabilities.is_empty()
         || manifest.capabilities.len() > 3
+        || manifest
+            .capabilities
+            .iter()
+            .enumerate()
+            .any(|(i, value)| manifest.capabilities[..i].contains(value))
         || manifest.provider_ids.is_empty()
         || manifest.provider_ids.len() > 16
         || manifest.provider_ids.iter().any(|s| !identifier(s))
+        || manifest
+            .provider_ids
+            .iter()
+            .enumerate()
+            .any(|(i, value)| manifest.provider_ids[..i].contains(value))
         || manifest.environment.len() > 16
         || manifest.environment.iter().any(|s| !identifier(s))
+        || manifest
+            .environment
+            .iter()
+            .enumerate()
+            .any(|(i, value)| manifest.environment[..i].contains(value))
     {
         bail!("plugin manifest violates version, identity or resource bounds");
     }
@@ -206,7 +274,7 @@ pub fn check(path: &Path) -> anyhow::Result<CheckedPlugin> {
         if !artifact.canonicalize()?.starts_with(&root) {
             bail!("plugin artifact escapes bundle root");
         }
-        let bytes = crate::transaction::read(&artifact)?;
+        let bytes = read_bounded(&artifact, 16 * 1024 * 1024 - total)?;
         total += bytes.len();
         if total > 16 * 1024 * 1024 || crate::copy::sha256(&bytes) != *expected {
             bail!("plugin artifact integrity or size check failed");
@@ -219,106 +287,316 @@ pub fn check(path: &Path) -> anyhow::Result<CheckedPlugin> {
     })
 }
 
-struct ChildGuard(std::process::Child, bool);
-impl ChildGuard {
-    fn stop(&mut self) {
-        if self.1 {
-            return;
-        }
-        #[cfg(unix)]
-        {
-            let _ = Command::new("/bin/kill")
-                .args(["-KILL", "--", &format!("-{}", self.0.id())])
-                .stdin(Stdio::null())
-                .stdout(Stdio::null())
-                .stderr(Stdio::null())
-                .status();
-        }
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+#[cfg(unix)]
+fn nonblocking(pipe: &impl std::os::fd::AsRawFd) -> std::io::Result<()> {
+    let fd = pipe.as_raw_fd();
+    // SAFETY: the owned live pipe outlives both descriptor operations.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags == -1 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } == -1 {
+        return Err(std::io::Error::last_os_error());
     }
+    Ok(())
 }
-impl Drop for ChildGuard {
-    fn drop(&mut self) {
-        self.stop();
+
+#[cfg(unix)]
+struct ChildGuard {
+    child: std::process::Child,
+    reaped: bool,
+}
+
+#[cfg(unix)]
+impl ChildGuard {
+    fn has_exited(&self) -> std::io::Result<bool> {
+        // SAFETY: waitid initializes siginfo_t for our owned child. WNOWAIT
+        // reserves its PID until group cleanup, even after normal leader exit.
+        let mut info = unsafe { std::mem::zeroed::<libc::siginfo_t>() };
+        let result = unsafe {
+            libc::waitid(
+                libc::P_PID,
+                self.child.id() as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOHANG | libc::WNOWAIT,
+            )
+        };
+        if result == -1 {
+            return Err(std::io::Error::last_os_error());
+        }
+        // SAFETY: successful waitid populated info, or left si_pid zero.
+        Ok(unsafe { info.si_pid() } != 0)
+    }
+
+    fn stop(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        // SAFETY: process_group(0) created this exact group. No path reaps
+        // the leader before this signal, so the group identity cannot be reused.
+        unsafe {
+            libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL);
+        }
+        let _ = self.child.kill();
+        let status = self.child.wait()?;
+        self.reaped = true;
+        Ok(status)
     }
 }
 
+#[cfg(unix)]
+impl Drop for ChildGuard {
+    fn drop(&mut self) {
+        if !self.reaped {
+            let _ = self.stop();
+        }
+    }
+}
+
+/// Exact input/output caps and a monotonic deadline include stdin, both output
+/// pipes and the child lifecycle. Unix owned pipes use one nonblocking reactor:
+/// there are no detached reader/writer threads, even if a descendant inherits a
+/// pipe or leaves the process group. Only the created group may be signaled.
 pub fn run_bounded(
-    mut command: Command,
+    command: Command,
     input: Vec<u8>,
     timeout_ms: u64,
     output_limit: usize,
 ) -> anyhow::Result<Vec<u8>> {
     if input.len() > 2 * 1024 * 1024
+        || output_limit == 0
         || output_limit > 1024 * 1024
         || timeout_ms == 0
         || timeout_ms > 30_000
     {
         bail!("invalid subprocess resource bounds");
     }
-    #[cfg(unix)]
+    #[cfg(not(unix))]
     {
-        use std::os::unix::process::CommandExt;
-        command.process_group(0);
+        let _ = command;
+        bail!("bounded plugin process custody is unsupported on this platform");
     }
+    #[cfg(unix)]
+    run_unix(command, input, timeout_ms, output_limit)
+}
+
+/// The same owned reactor for explicitly selected local inference. Apple model
+/// warm-up has a longer declared deadline; plugin admission remains at 30s.
+pub fn run_bounded_inference(
+    command: Command,
+    input: Vec<u8>,
+    timeout_ms: u64,
+    output_limit: usize,
+) -> anyhow::Result<Vec<u8>> {
+    if input.len() > 2 * 1024 * 1024
+        || output_limit == 0
+        || output_limit > 1024 * 1024
+        || timeout_ms == 0
+        || timeout_ms > 600_000
+    {
+        bail!("invalid inference resource bounds");
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = command;
+        bail!("bounded inference process custody is unsupported on this platform");
+    }
+    #[cfg(unix)]
+    run_unix(command, input, timeout_ms, output_limit)
+}
+
+#[cfg(unix)]
+fn read_pipe(
+    stream: &mut impl Read,
+    output: Option<&mut Vec<u8>>,
+    total: &mut usize,
+    limit: usize,
+) -> anyhow::Result<bool> {
+    let mut buffer = [0u8; 8192];
+    match stream.read(&mut buffer) {
+        Ok(0) => Ok(false),
+        Ok(count) => {
+            if count > limit - *total {
+                bail!("plugin output exceeded byte limit");
+            }
+            *total += count;
+            if let Some(output) = output {
+                output.extend_from_slice(&buffer[..count]);
+            }
+            Ok(true)
+        }
+        Err(error)
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(_) => bail!("plugin output stream failed"),
+    }
+}
+
+#[cfg(unix)]
+fn run_unix(
+    mut command: Command,
+    input: Vec<u8>,
+    timeout_ms: u64,
+    output_limit: usize,
+) -> anyhow::Result<Vec<u8>> {
+    use std::os::unix::process::CommandExt;
+    let deadline = Instant::now()
+        .checked_add(Duration::from_millis(timeout_ms))
+        .context("invalid plugin deadline")?;
     command
+        .process_group(0)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
-    let mut child = ChildGuard(command.spawn().context("start plugin process")?, false);
-    let stdin = child.0.stdin.take().unwrap();
-    let stdout = child.0.stdout.take().unwrap();
-    let stderr = child.0.stderr.take().unwrap();
-    let (tx, rx) = mpsc::channel();
-    let input_tx = tx.clone();
-    std::thread::spawn(move || {
-        let mut stdin = stdin;
-        let result = stdin.write_all(&input).map(|_| Vec::new());
-        let _ = input_tx.send((0, result));
-    });
-    for (tag, mut stream) in [
-        (1, Box::new(stdout) as Box<dyn Read + Send>),
-        (2, Box::new(stderr) as Box<dyn Read + Send>),
-    ] {
-        let tx = tx.clone();
-        std::thread::spawn(move || {
-            let mut bytes = Vec::new();
-            let result = stream
-                .by_ref()
-                .take(output_limit as u64 + 1)
-                .read_to_end(&mut bytes)
-                .map(|_| bytes);
-            let _ = tx.send((tag, result));
-        });
-    }
-    drop(tx);
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
-    let mut output = None;
-    for _ in 0..3 {
-        let (tag, result) = rx
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|_| anyhow::anyhow!("plugin deadline exceeded"))?;
-        let bytes = result.context("plugin stream failed")?;
-        if bytes.len() > output_limit {
-            bail!("plugin output exceeded byte limit");
-        }
-        if tag == 1 {
-            output = Some(bytes);
-        }
-    }
+    let mut child = ChildGuard {
+        child: command.spawn().context("start plugin process")?,
+        reaped: false,
+    };
+    let mut stdin = child.child.stdin.take();
+    let mut stdout = child.child.stdout.take().context("missing plugin stdout")?;
+    let mut stderr = child.child.stderr.take().context("missing plugin stderr")?;
+    nonblocking(stdin.as_ref().context("missing plugin stdin")?)?;
+    nonblocking(&stdout)?;
+    nonblocking(&stderr)?;
+    let mut written = 0;
+    let mut output = Vec::new();
+    let mut total_output = 0;
     loop {
-        if let Some(status) = child.0.try_wait()? {
-            child.1 = true;
-            if !status.success() {
-                bail!("plugin process failed");
-            }
-            return output.context("plugin produced no output");
-        }
         if Instant::now() >= deadline {
             bail!("plugin deadline exceeded");
         }
-        std::thread::sleep(Duration::from_millis(5));
+        let mut progress = false;
+        if written == input.len() {
+            stdin.take();
+        }
+        if let Some(pipe) = &mut stdin {
+            match pipe.write(&input[written..input.len().min(written + 8192)]) {
+                Ok(0) => bail!("plugin input stream closed"),
+                Ok(count) => {
+                    written += count;
+                    progress = true;
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+                    ) => {}
+                Err(_) => bail!("plugin input stream failed"),
+            }
+        }
+        progress |= read_pipe(
+            &mut stdout,
+            Some(&mut output),
+            &mut total_output,
+            output_limit,
+        )?;
+        progress |= read_pipe(&mut stderr, None, &mut total_output, output_limit)?;
+        if child.has_exited()? {
+            // Cleanup before wait preserves group identity on success as well
+            // as failure. Then drain currently available bounded output only;
+            // an escaped descendant cannot keep an inherited pipe alive here.
+            let status = child.stop()?;
+            loop {
+                if Instant::now() >= deadline {
+                    bail!("plugin deadline exceeded");
+                }
+                let read_stdout = read_pipe(
+                    &mut stdout,
+                    Some(&mut output),
+                    &mut total_output,
+                    output_limit,
+                )?;
+                let read_stderr = read_pipe(&mut stderr, None, &mut total_output, output_limit)?;
+                if !read_stdout && !read_stderr {
+                    break;
+                }
+            }
+            if !status.success() || written != input.len() {
+                bail!("plugin process failed");
+            }
+            return Ok(output);
+        }
+        if !progress {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+}
+
+/// Execute a captured, hash-verified bundle, not paths which another installer
+/// can replace between checking and spawning. Interpreters, dynamic loaders,
+/// inherited configured environment and deliberate external paths remain TCB;
+/// this is not an OS sandbox against code running as the same user.
+struct CapturedBundle {
+    root: PathBuf,
+    manifest: PathBuf,
+}
+
+impl Drop for CapturedBundle {
+    fn drop(&mut self) {
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+impl CapturedBundle {
+    fn capture(path: &Path, checked: &CheckedPlugin) -> anyhow::Result<Self> {
+        static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "gobstopper-plugin-{}-{stamp}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        let mut builder = fs::DirBuilder::new();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(&root)?;
+        let captured = Self {
+            manifest: root.join(
+                path.file_name()
+                    .context("missing plugin manifest filename")?,
+            ),
+            root,
+        };
+        let manifest = read_bounded(path, 64 * 1024)?;
+        if crate::copy::sha256(&manifest) != checked.manifest_sha256 {
+            bail!("plugin identity changed before capture");
+        }
+        let mut total = 0;
+        for (relative, expected) in &checked.manifest.files {
+            let original = checked.root.join(relative);
+            let bytes = read_bounded(&original, 16 * 1024 * 1024 - total)?;
+            total += bytes.len();
+            if crate::copy::sha256(&bytes) != *expected {
+                bail!("plugin artifact changed before capture");
+            }
+            let target = captured.root.join(relative);
+            if let Some(parent) = target.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut options = fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+                let executable = relative == &checked.manifest.executable
+                    || fs::metadata(&original)?.permissions().mode() & 0o111 != 0;
+                options.mode(if executable { 0o700 } else { 0o600 });
+            }
+            options.open(target)?.write_all(&bytes)?;
+        }
+        let mut options = fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        options.open(&captured.manifest)?.write_all(&manifest)?;
+        Ok(captured)
     }
 }
 
@@ -334,17 +612,25 @@ pub fn invoke(path: &Path, trusted_sha256: &str, request: &Request) -> anyhow::R
         || !manifest.capabilities.contains(&request.operation)
         || !manifest.provider_ids.contains(&request.provider_id)
         || request.content.is_some() && !manifest.capabilities.contains(&Capability::ReadContent)
+        || !manifest.capabilities.contains(&Capability::ReadContent)
+            && request.items.iter().any(|item| item.summary.is_some())
     {
         bail!("plugin request exceeds declared capabilities");
     }
-    let input = serde_json::to_vec(request)?;
-    if input.len() > manifest.max_input_bytes {
-        bail!("plugin input exceeds byte limit");
-    }
-    let mut command = Command::new(checked.root.join(&manifest.executable));
+    validate_projection(&request.items, request.usage)?;
+    // Serialize into a fixed-capacity destination; reject before an oversized
+    // content vector or metadata encoding can grow an unbounded temporary.
+    let mut input = vec![0; manifest.max_input_bytes];
+    let mut cursor = std::io::Cursor::new(input.as_mut_slice());
+    serde_json::to_writer(&mut cursor, request)
+        .map_err(|_| anyhow::anyhow!("plugin input exceeds byte limit"))?;
+    let used = cursor.position() as usize;
+    input.truncate(used);
+    let captured = CapturedBundle::capture(path, &checked)?;
+    let mut command = Command::new(captured.root.join(&manifest.executable));
     command
         .args(&manifest.args)
-        .current_dir(&checked.root)
+        .current_dir(&captured.root)
         .env_clear();
     for key in &manifest.environment {
         if let Some(value) = std::env::var_os(key) {
@@ -357,7 +643,9 @@ pub fn invoke(path: &Path, trusted_sha256: &str, request: &Request) -> anyhow::R
         manifest.timeout_ms,
         manifest.max_output_bytes,
     )?;
-    if check(path)?.manifest_sha256 != trusted_sha256 {
+    if check(path)?.manifest_sha256 != trusted_sha256
+        || check(&captured.manifest)?.manifest_sha256 != trusted_sha256
+    {
         bail!("plugin identity changed during execution");
     }
     let response: Response = serde_json::from_slice(&output)
@@ -377,8 +665,19 @@ pub fn invoke(path: &Path, trusted_sha256: &str, request: &Request) -> anyhow::R
             bail!("provider inspection violates read-only contract");
         }
         validate_inspection(inspection, request)?;
+        if !manifest.capabilities.contains(&Capability::ReadContent)
+            && inspection.items.iter().any(|item| item.summary.is_some())
+        {
+            bail!("provider inspection returned undeclared content");
+        }
     } else if response.inspection.is_some() {
         bail!("strategy returned an unexpected provider inspection");
+    } else if response
+        .edits
+        .iter()
+        .any(|edit| matches!(edit, Edit::CacheEdit { .. } | Edit::ProviderCompact { .. }))
+    {
+        bail!("strategy response exceeds proposal capability");
     }
     Ok(response)
 }

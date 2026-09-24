@@ -380,15 +380,12 @@ export default function Benchmarks() {
           </p>
           <h3>How the live trials worked</h3>
           <p>
-            Each live trial resumed a real session after compaction and
-            measured:
+            These comparisons resumed real sessions after compaction. The tables
+            report answers to resume questions and observed provider tokens.
+            Some also include cache counters or transcript record changes.
+            Task completion, latency, and re-fetch rates require separate
+            measurements.
           </p>
-          <ul>
-            <li>Task completion on a held-out second prompt.</li>
-            <li>Observed input and output tokens from the provider.</li>
-            <li>Latency and re-fetch count.</li>
-            <li>Verbatim recall of elided tool output where relevant.</li>
-          </ul>
 
           <h3>One Claude session: live API token comparison</h3>
           <p>

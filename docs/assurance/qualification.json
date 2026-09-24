@@ -1,0 +1,38 @@
+{
+  "schema": "gobstopper.activation-qualification.v1",
+  "reviewed_at": "2026-09-23",
+  "artifact_policy": "Source/proof/test admission permits publication. It does not qualify remote provider behavior or enable unattended native mutation.",
+  "release_native_dispatch": "guarded_unqualified",
+  "runtime_guard": "crates/gobstopper-cli/src/native_operations.rs::admit_activation",
+  "qualified_live_cells": [],
+  "observed_local_executables": [
+    {"provider": "codex", "version": "0.156.1", "platform": "macos-arm64", "sha256": "0196e89fe5a7598f816ee54232c3d7c26d75e502ab5cfe2c9240e81d90f7255a", "evidence": "bounded --version only; no account, ownership, model or continuation qualification"},
+    {"provider": "claude_code", "version": "2.1.281", "platform": "macos-arm64", "sha256": "a922981f6f3b55a251ef9f9dbaa0621a5f99cbcb5ca67f8a797476ccfc83f626", "evidence": "bounded --version only; no account, ownership, model or continuation qualification"},
+    {"provider": "devin", "version": "3000.11.3 (9c803229faa4)", "platform": "macos-arm64", "sha256": "7ef3859e68d4eabc0115e51898fcd4eab1edde753c27a472349ef551180b38ff", "evidence": "bounded --version only; no account, ownership, model or continuation qualification"}
+  ],
+  "modes": [
+    {"mode": "read_only_inspection", "providers": ["codex", "claude_code", "devin"], "status": "artifact_admitted", "scope": "bounded supported dialect interpretation, not provider acceptance"},
+    {"mode": "detached_copy", "providers": ["codex", "claude_code"], "status": "artifact_admitted", "scope": "no-clobber copy and retained recovery bytes; subsequent provider resume remains unqualified"},
+    {"mode": "owner_delegation", "providers": ["codex", "claude_code", "devin"], "status": "advisory_only", "scope": "instructs the existing session owner; no remote execution or claimed savings"},
+    {"mode": "closed_native_compaction", "providers": ["codex", "claude_code", "devin"], "status": "guarded_unqualified", "scope": "all released CLI native dispatch blocked before provider execution, including prior auto_compact_closed opt-ins"},
+    {"mode": "native_fork_compaction", "providers": ["codex"], "status": "guarded_unqualified", "scope": "standalone apply refuses before fork, snapshot or dispatch when its plan requests native compaction"},
+    {"mode": "direct_provider_store_write", "providers": ["codex", "claude_code", "devin"], "status": "disabled", "scope": "no qualified lifetime custody; immediate refusal before effects"},
+    {"mode": "settings_update", "providers": ["codex", "claude_code", "devin"], "status": "candidate_only", "scope": "new private bundle only; original settings unchanged and activation unqualified"},
+    {"mode": "protocol_fixture", "providers": ["codex", "claude_code"], "status": "development_only", "scope": "debug build, exact compiled fixture bytes and isolated temporary roots; not live-provider evidence"}
+  ],
+  "platforms": [
+    {"platform": "macos-arm64-local-filesystem", "status": "local_fixture_evidence", "assumptions": "stable owner-controlled ancestors, cooperating flock users, successful filesystem sync contract"},
+    {"platform": "linux-x86_64-local-filesystem", "status": "required_ci_gate", "assumptions": "same custody and sync assumptions; exact-head CI receipt required before delivery"},
+    {"platform": "windows", "status": "unsupported_mutation_custody", "assumptions": "no mutation qualification"},
+    {"platform": "network_or_replaced_filesystem_roots", "status": "unqualified", "assumptions": "no recovery or custody guarantee"}
+  ],
+  "required_live_evidence": [
+    "Reviewed retained ownership and exact operation-correlation contract for the selected mode; idle age alone is insufficient",
+    "Synthetic session in a new private explicit home, existing authorized entitlement only, exact binary/version/model/platform/home hashes, no user-session input",
+    "Declared request, time, token and output budgets; prompt, pre/post source hashes and source-bound usage; no success inferred from exit code alone",
+    "Provider continuation selects the intended session and satisfies registered critical negation, superseded instruction, approval and pending-side-effect constraints",
+    "Concurrent owner opening, wrong identity, lost acknowledgment, rejection and timeout retain honest outcome/no-replay classification and owned-process cleanup",
+    "Version, binary, relevant account/model/home or protocol change invalidates the affected cell; source-reviewed guard change and exact artifact tests precede activation"
+  ],
+  "limits": "Synthetic structural fixtures and proofs cannot attest proprietary provider behavior. Lower-level adapter protocol functions are explicit caller-owned primitives, not qualified or journaled unattended entry points. This artifact deliberately activates no live native cell. No credentials were copied, no live user session was changed, and no billing claim follows."
+}

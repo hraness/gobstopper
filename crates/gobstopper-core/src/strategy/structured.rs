@@ -38,16 +38,19 @@ impl Strategy for StructuredStrategy {
             .items
             .iter()
             .rev()
-            .filter(|i| i.elidable_bytes.is_some())
+            .filter(|i| i.is_elidable())
             .take(policy.keep_recent_tool_outputs)
             .map(|i| i.line_index)
             .collect();
         let eligible: Vec<_> = covered
             .iter()
-            .filter(|i| i.elidable_bytes.is_some() && !protected.contains(&i.line_index))
+            .filter(|i| i.is_elidable() && !protected.contains(&i.line_index))
             .collect();
         let covered_lines: Vec<usize> = eligible.iter().map(|i| i.line_index).collect();
-        let elided_tokens: u64 = eligible.iter().map(|i| i.estimated_elision_savings()).sum();
+        let elided_tokens: u64 = eligible
+            .iter()
+            .map(|i| i.estimated_elision_savings())
+            .fold(0u64, crate::estimate::add_tokens);
 
         let mut edits = Vec::new();
         if !covered_lines.is_empty() {

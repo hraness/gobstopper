@@ -8,8 +8,57 @@
 
 use crate::Provider;
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+
+/// Accounting parsed from one retained byte sequence. This is provider-record
+/// evidence, not a billing measurement or a guarantee about a resumed context.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TokenObservation {
+    pub source_sha256: String,
+    pub source_identity_sha256: String,
+    pub snapshot_manifest_sha256: Option<String>,
+    pub context_state: crate::model::ContextState,
+    pub context_tokens: Option<u64>,
+    pub estimated_context_tokens: u64,
+    pub lifetime_scope: crate::model::LifetimeScope,
+    pub lifetime_input_tokens: Option<u64>,
+    pub lifetime_cached_tokens: Option<u64>,
+}
+
+fn valid_hash(digest: &str) -> bool {
+    digest.len() == 64
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+impl TokenObservation {
+    pub fn is_valid(&self) -> bool {
+        valid_hash(&self.source_sha256)
+            && valid_hash(&self.source_identity_sha256)
+            && self
+                .snapshot_manifest_sha256
+                .as_deref()
+                .is_none_or(valid_hash)
+            && (self.context_state == crate::model::ContextState::Reported)
+                == self.context_tokens.is_some()
+            && match (
+                self.lifetime_scope,
+                self.lifetime_input_tokens,
+                self.lifetime_cached_tokens,
+            ) {
+                (crate::model::LifetimeScope::Full, Some(input), Some(cached)) => cached <= input,
+                (
+                    crate::model::LifetimeScope::Absent | crate::model::LifetimeScope::Partial,
+                    None,
+                    None,
+                ) => true,
+                _ => false,
+            }
+    }
+}
 
 /// One compaction telemetry record — the unit written to `events.jsonl`.
 ///
@@ -49,6 +98,10 @@ pub struct CompactionEvent {
     /// (e.g. "io", "provider_rejected", "unresolved_context") — never a
     /// freeform message.
     pub error_code: Option<String>,
+    /// Hash of the canonical provider/store/session identity; never a path.
+    /// Absent for legacy events whose precise source was not retained.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_identity_sha256: Option<String>,
     /// Vault object holding the exact pre-compaction bytes, when the
     /// compaction path preserved them. Hash identifier only — never
     /// content.
@@ -57,6 +110,12 @@ pub struct CompactionEvent {
     /// Vault object holding the post-compaction bytes, when recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_after_sha256: Option<String>,
+    /// Evidence parsed from the corresponding retained bytes. Legacy numeric
+    /// estimates above remain readable but do not qualify as observed savings.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before_observation: Option<TokenObservation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after_observation: Option<TokenObservation>,
     /// Realized retention: heuristic checks bound to the before-state,
     /// scored against the after-state. `total`/`retained` (literal)/
     /// `lexical` (≥75% token coverage). Absent when unmeasured.
@@ -107,17 +166,67 @@ impl CompactionEvent {
             items_covered,
             duration_ms,
             error_code,
+            source_identity_sha256: None,
             snapshot_before_sha256: None,
             snapshot_after_sha256: None,
+            before_observation: None,
+            after_observation: None,
             retention_total: None,
             retention_retained: None,
             retention_lexical: None,
         }
     }
+
+    /// A same-source, retained-byte-bound reduction in positive provider
+    /// context reports, in tokens. Zero/reset/unknown, legacy estimates, and
+    /// unapplied plans remain unqualified. This is never billed-token savings.
+    pub fn recorded_context_reduction_tokens(&self) -> Option<u64> {
+        if self.outcome != "applied" || self.error_code.is_some() {
+            return None;
+        }
+        let (before, after) = (
+            self.before_observation.as_ref()?,
+            self.after_observation.as_ref()?,
+        );
+        if !before.is_valid()
+            || !after.is_valid()
+            || before.source_identity_sha256 != after.source_identity_sha256
+            || self.source_identity_sha256.as_ref() != Some(&before.source_identity_sha256)
+            || before.snapshot_manifest_sha256.is_none()
+            || after.snapshot_manifest_sha256.is_none()
+            || before.snapshot_manifest_sha256 != self.snapshot_before_sha256
+            || after.snapshot_manifest_sha256 != self.snapshot_after_sha256
+        {
+            return None;
+        }
+        let (before, after) = (before.context_tokens?, after.context_tokens?);
+        (before > 0 && after > 0).then_some(before.saturating_sub(after))
+    }
 }
 
 fn valid_event(event: &CompactionEvent) -> bool {
+    let valid_digest = |digest: &Option<String>| digest.as_deref().is_none_or(valid_hash);
     event.schema == CompactionEvent::SCHEMA
+        && valid_digest(&event.source_identity_sha256)
+        && valid_digest(&event.snapshot_before_sha256)
+        && valid_digest(&event.snapshot_after_sha256)
+        && event
+            .before_observation
+            .as_ref()
+            .is_none_or(TokenObservation::is_valid)
+        && event
+            .after_observation
+            .as_ref()
+            .is_none_or(TokenObservation::is_valid)
+        && match (
+            event.retention_total,
+            event.retention_retained,
+            event.retention_lexical,
+        ) {
+            (None, None, None) => true,
+            (Some(total), Some(literal), Some(lexical)) => literal <= total && lexical <= total,
+            _ => false,
+        }
         && !event.session_id.is_empty()
         && event.session_id.len() <= 256
         && event
@@ -144,7 +253,10 @@ fn valid_event(event: &CompactionEvent) -> bool {
                 "io" | "provider_rejected"
                     | "apply_failed"
                     | "verification_failed"
+                    | "custody_unavailable"
+                    | "unattributed_provider_hook"
                     | "unresolved_context"
+                    | "native_unqualified"
                     | "spawn_failed"
                     | "parent_thread"
                     | "provider_noop"
@@ -168,21 +280,60 @@ fn rotated_path(log_path: &Path) -> PathBuf {
 }
 
 /// Single-generation rotation: an oversize live log becomes
-/// `events.1.jsonl`, dropping any older generation. Best-effort — a
-/// failed rotation must never lose the event being appended.
-fn rotate_if_oversize(log_path: &Path) {
-    let Ok(meta) = std::fs::metadata(log_path) else {
-        return;
-    };
-    if meta.len() <= ROTATE_BYTES {
-        return;
+/// `events.1.jsonl`, dropping an older regular-file generation atomically.
+/// A failed rename leaves the admitted open file available for append. This is
+/// best-effort telemetry, not a transaction across concurrent rotations: parent
+/// directories must remain stable and owner-controlled.
+#[cfg(unix)]
+fn rotate_if_oversize(log_path: &Path, file: &std::fs::File) -> std::io::Result<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let opened = file.metadata()?;
+    if opened.len() <= ROTATE_BYTES {
+        return Ok(false);
+    }
+    let named = std::fs::symlink_metadata(log_path)?;
+    if !named.is_file() || named.dev() != opened.dev() || named.ino() != opened.ino() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "compaction event log identity changed",
+        ));
     }
     let rotated = rotated_path(log_path);
-    let _ = std::fs::remove_file(&rotated);
-    let _ = std::fs::rename(log_path, rotated);
+    match std::fs::symlink_metadata(&rotated) {
+        Ok(metadata) if !metadata.is_file() => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "compaction event generation is not a regular file",
+            ));
+        }
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    Ok(std::fs::rename(log_path, rotated).is_ok())
 }
 
-/// Append one event as a JSONL line, creating parent dirs as needed.
+#[cfg(unix)]
+fn open_event_append(path: &Path) -> std::io::Result<std::fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "compaction event log is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+/// Append one event as a JSONL line, creating parent dirs as needed. The log
+/// leaf must be a regular file; new logs have private permissions. Parent
+/// directory ownership and stability are the caller's responsibility.
 pub fn append_event(log_path: &Path, event: &CompactionEvent) -> std::io::Result<()> {
     if !valid_event(event) {
         return Err(std::io::Error::new(
@@ -190,18 +341,34 @@ pub fn append_event(log_path: &Path, event: &CompactionEvent) -> std::io::Result
             "compaction event violates schema bounds",
         ));
     }
-    if let Some(parent) = log_path.parent() {
-        std::fs::create_dir_all(parent)?;
+    #[cfg(unix)]
+    {
+        let mut line = serde_json::to_string(event).map_err(|_| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "compaction event serialization failed",
+            )
+        })?;
+        line.push('\n');
+        if let Some(parent) = log_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        // Admission precedes rotation; a FIFO cannot block open, and a symlink
+        // cannot redirect either the append or the rotation's source lookup.
+        let mut file = open_event_append(log_path)?;
+        if rotate_if_oversize(log_path, &file)? {
+            file = open_event_append(log_path)?;
+        }
+        file.write_all(line.as_bytes())
     }
-    rotate_if_oversize(log_path);
-    let mut line = serde_json::to_string(event)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
-    line.push('\n');
-    let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_path)?;
-    file.write_all(line.as_bytes())
+    #[cfg(not(unix))]
+    {
+        let _ = log_path;
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "bounded event log appends are unsupported on this platform",
+        ))
+    }
 }
 
 /// Default telemetry log: `$XDG_DATA_HOME/gobstopper/events.jsonl`,
@@ -224,25 +391,20 @@ pub fn read_events(log_path: &Path) -> std::io::Result<Vec<CompactionEvent>> {
     let mut events = Vec::new();
     let rotated = rotated_path(log_path);
     for path in [rotated.as_path(), log_path] {
-        let file = match std::fs::File::open(path) {
+        let file = match open_event_log(path, MAX_LOG_BYTES) {
             Ok(file) => file,
             // The previous generation is optional; the live log keeps
             // the original missing-file error contract.
             Err(e) if path == log_path => return Err(e),
-            Err(_) => continue,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
         };
-        if file.metadata().map(|m| m.len()).unwrap_or(0) > MAX_LOG_BYTES {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "compaction event log exceeds byte limit",
-            ));
-        }
-        for line in std::io::BufReader::new(file).lines() {
-            let line = line?;
-            if line.trim().is_empty() || line.len() > MAX_LINE_BYTES {
+        let bytes = bounded_log_bytes(file, MAX_LOG_BYTES)?;
+        for line in bytes.split(|byte| *byte == b'\n') {
+            if line.len() > MAX_LINE_BYTES || line.iter().all(u8::is_ascii_whitespace) {
                 continue;
             }
-            if let Some(event) = serde_json::from_str(&line).ok().filter(valid_event) {
+            if let Some(event) = serde_json::from_slice(line).ok().filter(valid_event) {
                 events.push(event);
             }
         }
@@ -250,9 +412,318 @@ pub fn read_events(log_path: &Path) -> std::io::Result<Vec<CompactionEvent>> {
     Ok(events)
 }
 
+fn open_event_log(path: &Path, max_bytes: u64) -> std::io::Result<std::fs::File> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        let file = std::fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)?;
+        let metadata = file.metadata()?;
+        if !metadata.is_file() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "compaction event log is not a regular file",
+            ));
+        }
+        if metadata.len() > max_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "compaction event log exceeds byte limit",
+            ));
+        }
+        Ok(file)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (path, max_bytes);
+        Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "bounded event log reads are unsupported on this platform",
+        ))
+    }
+}
+
+fn bounded_log_bytes(file: std::fs::File, max_bytes: u64) -> std::io::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+    // Metadata is only an early rejection; an appending writer cannot bypass
+    // the actual byte cap or make a single line allocate without a bound.
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "compaction event log exceeds byte limit",
+        ));
+    }
+    Ok(bytes)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn reader_fixture(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "gobstopper-event-reader-{}-{name}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn event_reader_caps_actual_bytes_after_admission() {
+        let dir = reader_fixture("growth");
+        let path = dir.join("events.jsonl");
+        std::fs::write(&path, b"{}\n").unwrap();
+        let file = open_event_log(&path, 8).unwrap();
+        // Deterministic interleaving: the admitted inode grows before read.
+        std::fs::OpenOptions::new()
+            .append(true)
+            .open(&path)
+            .unwrap()
+            .write_all(b"0123456789abcdef\n")
+            .unwrap();
+        let error = bounded_log_bytes(file, 8).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+        assert_eq!(error.to_string(), "compaction event log exceeds byte limit");
+        assert!(open_event_log(&path, 8).is_err());
+        std::fs::write(&path, b"12345678").unwrap();
+        assert_eq!(
+            bounded_log_bytes(open_event_log(&path, 8).unwrap(), 8).unwrap(),
+            b"12345678"
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn event_reader_refuses_fifo_without_waiting_for_a_writer() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::OpenOptionsExt;
+        let dir = reader_fixture("fifo");
+        let path = dir.join("events.jsonl");
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: the owned CString is NUL-terminated and remains alive for
+        // this call; mkfifo only creates the new private fixture path.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let reader_path = path.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let reader = std::thread::spawn(move || {
+            let _ = tx.send(read_events(&reader_path));
+        });
+        let result = rx.recv_timeout(std::time::Duration::from_secs(1));
+        if result.is_err() {
+            // Unblock a regressed blocking open before joining; never leak a
+            // test thread. Nonblocking writer open returns if no reader exists.
+            let _ = std::fs::OpenOptions::new()
+                .write(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&path);
+        }
+        reader.join().unwrap();
+        std::fs::remove_dir_all(dir).unwrap();
+        assert_eq!(
+            result
+                .expect("FIFO reader must refuse promptly")
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::InvalidData
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn event_reader_rejects_symlink_and_unsafe_rotated_generation() {
+        let dir = reader_fixture("symlink");
+        let path = dir.join("events.jsonl");
+        let target = dir.join("target");
+        std::fs::write(&target, b"").unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(read_events(&path).is_err());
+        std::fs::remove_file(&path).unwrap();
+        std::fs::write(&path, b"").unwrap();
+        std::os::unix::fs::symlink(&target, rotated_path(&path)).unwrap();
+        assert!(read_events(&path).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn event_append_refuses_fifo_without_effects_or_waiting() {
+        use std::os::unix::ffi::OsStrExt;
+        use std::os::unix::fs::OpenOptionsExt;
+        let dir = reader_fixture("append-fifo");
+        let path = dir.join("events.jsonl");
+        let previous = rotated_path(&path);
+        std::fs::write(&previous, b"previous generation").unwrap();
+        let name = std::ffi::CString::new(path.as_os_str().as_bytes()).unwrap();
+        // SAFETY: the owned CString remains NUL-terminated and alive during
+        // this call; the only created FIFO is in the private fixture directory.
+        assert_eq!(unsafe { libc::mkfifo(name.as_ptr(), 0o600) }, 0);
+        let writer_path = path.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let writer = std::thread::spawn(move || {
+            let _ = tx.send(append_event(&writer_path, &observed_event()));
+        });
+        let result = rx.recv_timeout(std::time::Duration::from_secs(1));
+        // Keep the nonblocking reader alive until join if a regression needs
+        // its blocked open released. The small event cannot fill the pipe.
+        let unblock = result.is_err().then(|| {
+            std::fs::OpenOptions::new()
+                .read(true)
+                .custom_flags(libc::O_NONBLOCK)
+                .open(&path)
+                .unwrap()
+        });
+        writer.join().unwrap();
+        drop(unblock);
+        assert!(result.expect("FIFO append must refuse promptly").is_err());
+        assert_eq!(std::fs::read(&previous).unwrap(), b"previous generation");
+        assert!(!std::fs::symlink_metadata(&path).unwrap().is_file());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn event_append_rejects_redirected_rotation_without_effects() {
+        let dir = reader_fixture("append-symlink");
+        let path = dir.join("events.jsonl");
+        let target = dir.join("target");
+        let previous = rotated_path(&path);
+        let original = vec![b'x'; ROTATE_BYTES as usize + 1];
+        std::fs::write(&target, &original).unwrap();
+        std::fs::write(&previous, b"previous generation").unwrap();
+        std::os::unix::fs::symlink(&target, &path).unwrap();
+        assert!(append_event(&path, &observed_event()).is_err());
+        assert_eq!(std::fs::read_link(&path).unwrap(), target);
+        assert_eq!(std::fs::read(&target).unwrap(), original);
+        assert_eq!(std::fs::read(&previous).unwrap(), b"previous generation");
+
+        std::fs::remove_file(&path).unwrap();
+        std::fs::rename(&target, &path).unwrap();
+        std::fs::remove_file(&previous).unwrap();
+        std::os::unix::fs::symlink("missing-target", &previous).unwrap();
+        assert!(append_event(&path, &observed_event()).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), original);
+        assert_eq!(
+            std::fs::read_link(&previous).unwrap(),
+            Path::new("missing-target")
+        );
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn event_rotation_refuses_a_replaced_admitted_inode() {
+        let dir = reader_fixture("append-identity");
+        let path = dir.join("events.jsonl");
+        let admitted = open_event_append(&path).unwrap();
+        admitted.set_len(ROTATE_BYTES + 1).unwrap();
+        std::fs::rename(&path, dir.join("admitted")).unwrap();
+        std::fs::write(&path, b"replacement").unwrap();
+        assert_eq!(
+            rotate_if_oversize(&path, &admitted).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidData
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), b"replacement");
+        assert!(!rotated_path(&path).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    fn observed_event() -> CompactionEvent {
+        use crate::model::{ContextState, LifetimeScope};
+        let observation = |source: char, manifest: char, context| TokenObservation {
+            source_sha256: source.to_string().repeat(64),
+            source_identity_sha256: "a".repeat(64),
+            snapshot_manifest_sha256: Some(manifest.to_string().repeat(64)),
+            context_state: ContextState::Reported,
+            context_tokens: Some(context),
+            estimated_context_tokens: 0,
+            lifetime_scope: LifetimeScope::Absent,
+            lifetime_input_tokens: None,
+            lifetime_cached_tokens: None,
+        };
+        let mut event = CompactionEvent::new(
+            Provider::Codex,
+            "s",
+            "auto",
+            "provider_compact",
+            "applied",
+            10,
+            900,
+            500,
+            0,
+            1,
+            None,
+        );
+        event.source_identity_sha256 = Some("a".repeat(64));
+        event.snapshot_before_sha256 = Some("b".repeat(64));
+        event.snapshot_after_sha256 = Some("c".repeat(64));
+        event.before_observation = Some(observation('d', 'b', 100));
+        event.after_observation = Some(observation('e', 'c', 40));
+        event
+    }
+
+    #[test]
+    fn context_reduction_requires_complete_positive_same_source_evidence() {
+        let event = observed_event();
+        assert!(valid_event(&event));
+        assert_eq!(event.recorded_context_reduction_tokens(), Some(60));
+        // Deliberately different legacy scalar estimates cannot affect the result.
+        assert_eq!(event.est_reclaimed_tokens, 400);
+        let mutate: [fn(&mut CompactionEvent); 7] = [
+            |e| e.outcome = "planned".into(),
+            |e| e.error_code = Some("unresolved_context".into()),
+            |e| e.after_observation = None,
+            |e| e.snapshot_before_sha256 = None,
+            |e| e.after_observation.as_mut().unwrap().source_identity_sha256 = "f".repeat(64),
+            |e| {
+                e.after_observation
+                    .as_mut()
+                    .unwrap()
+                    .snapshot_manifest_sha256 = Some("f".repeat(64))
+            },
+            |e| e.after_observation.as_mut().unwrap().context_tokens = Some(0),
+        ];
+        for mutation in mutate {
+            let mut changed = event.clone();
+            mutation(&mut changed);
+            assert_eq!(changed.recorded_context_reduction_tokens(), None);
+        }
+        for state in [
+            crate::model::ContextState::Absent,
+            crate::model::ContextState::Unknown,
+            crate::model::ContextState::Reset,
+        ] {
+            let mut changed = event.clone();
+            let observation = changed.after_observation.as_mut().unwrap();
+            observation.context_state = state;
+            observation.context_tokens = None;
+            assert!(observation.is_valid());
+            assert_eq!(changed.recorded_context_reduction_tokens(), None);
+        }
+    }
+
+    #[test]
+    fn retention_counts_and_observations_reject_invalid_denominators() {
+        let mut event = observed_event();
+        event.retention_total = Some(0);
+        event.retention_retained = Some(1);
+        event.retention_lexical = Some(0);
+        assert!(!valid_event(&event));
+        event.retention_retained = Some(0);
+        assert!(valid_event(&event));
+        event.retention_lexical = None;
+        assert!(!valid_event(&event));
+        let before = event.before_observation.as_mut().unwrap();
+        before.source_sha256 = "sensitive arbitrary content".into();
+        assert!(!before.is_valid());
+    }
 
     #[test]
     fn event_json_round_trip() {
@@ -416,9 +887,36 @@ mod tests {
         );
         append_event(&log, &e1).unwrap();
         append_event(&log, &e2).unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&log).unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
         let mut invalid = e1.clone();
         invalid.session_id = "/private/session/path".to_string();
         assert!(append_event(&log, &invalid).is_err());
+        let pristine = std::fs::read(&log).unwrap();
+        for value in [
+            "private-response-sentinel".into(),
+            "A".repeat(64),
+            "a".repeat(65),
+            "x".repeat(100_000),
+        ] {
+            for field in 0..3 {
+                let mut invalid = e1.clone();
+                match field {
+                    0 => invalid.source_identity_sha256 = Some(value.clone()),
+                    1 => invalid.snapshot_before_sha256 = Some(value.clone()),
+                    _ => invalid.snapshot_after_sha256 = Some(value.clone()),
+                }
+                let error = append_event(&log, &invalid).unwrap_err();
+                assert!(!error.to_string().contains(&value));
+                assert_eq!(std::fs::read(&log).unwrap(), pristine);
+            }
+        }
 
         // A torn write / foreign line is skipped, not fatal.
         let mut f = std::fs::OpenOptions::new().append(true).open(&log).unwrap();

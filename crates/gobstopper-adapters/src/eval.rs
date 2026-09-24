@@ -2,8 +2,8 @@
 //! strategy and report what it would reclaim and whether the rewritten
 //! file still verifies clean.
 //!
-//! Every file-mutating plan runs against its own throwaway copy in
-//! `temp_dir`; the source transcript is never touched. Plans that only
+//! Every file-mutating plan runs against its own detached in-memory bytes;
+//! the source transcript is never written. Plans that only
 //! delegate to the provider (`ProviderCompact`) rewrite nothing, so they
 //! report zero findings and zero apply duration.
 //!
@@ -21,16 +21,62 @@ use gobstopper_core::strategy::{
     builtin_strategies, strategy_by_id, PolicyConfig, ScoreDriver, ScoredStrategy, Strategy,
 };
 use gobstopper_core::{Provider, SessionHandle, Transcript};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use std::time::Instant;
 
 use crate::verify::{self, Severity, VerifyFinding};
 
-/// Temp-copy suffix counter, process-wide so concurrent evals and tests
-/// never collide on a scratch path.
-static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
+/// Bind token accounting to the SAME bytes retained in the vault. The handle
+/// must name the exact canonical store and metadata session. Resolving the path
+/// checks identity only; no transcript is reread and no provider is contacted.
+pub fn token_observation(
+    handle: &SessionHandle,
+    bytes: &[u8],
+    snapshot_manifest_sha256: Option<&str>,
+) -> anyhow::Result<gobstopper_core::events::TokenObservation> {
+    let canonical = std::fs::canonicalize(&handle.path)
+        .map_err(|_| anyhow::anyhow!("observation source identity unavailable"))?;
+    if canonical != handle.path
+        || crate::fork::source_session_id(handle.provider, bytes)? != handle.session_id
+        || verify::verify(handle.provider, bytes)
+            .iter()
+            .any(|finding| finding.severity == Severity::Error)
+    {
+        anyhow::bail!("observation source identity or structure mismatch");
+    }
+    let transcript = match handle.provider {
+        Provider::Codex => crate::codex::load_bytes(handle.clone(), bytes),
+        Provider::ClaudeCode => crate::claude::load_bytes(handle.clone(), bytes),
+        Provider::Devin => crate::devin::load_bytes(handle.clone(), bytes),
+    }?;
+    let full = transcript.usage.lifetime_scope == gobstopper_core::model::LifetimeScope::Full;
+    let observation = gobstopper_core::events::TokenObservation {
+        source_sha256: crate::copy::sha256(bytes),
+        source_identity_sha256: crate::copy::sha256(&serde_json::to_vec(&(
+            handle.provider,
+            &handle.session_id,
+            &canonical,
+        ))?),
+        snapshot_manifest_sha256: snapshot_manifest_sha256.map(str::to_owned),
+        context_state: transcript.usage.context_state,
+        context_tokens: transcript.usage.reported_context(),
+        estimated_context_tokens: transcript.estimated_context_tokens(),
+        lifetime_scope: transcript.usage.lifetime_scope,
+        lifetime_input_tokens: full.then_some(transcript.usage.lifetime_input_tokens),
+        lifetime_cached_tokens: full.then_some(
+            transcript
+                .usage
+                .lifetime_cached_tokens
+                .min(transcript.usage.lifetime_input_tokens),
+        ),
+    };
+    if !observation.is_valid() {
+        anyhow::bail!("observation violates evidence bounds");
+    }
+    Ok(observation)
+}
 
 /// One row of eval output: what a strategy would do to this transcript,
 /// what the plan claims to save, and whether the result verifies.
@@ -38,18 +84,29 @@ static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
 pub struct EvalRow {
     /// Id of the strategy that produced this row.
     pub strategy: String,
+    pub version: &'static str,
+    pub source_sha256: String,
+    pub result_sha256: Option<String>,
+    pub source_bytes: usize,
+    pub result_bytes: Option<usize>,
+    pub execution_state: &'static str,
+    pub token_basis: &'static str,
+    pub charged_tokens: Option<u64>,
+    pub cache_hits: Option<u64>,
+    pub refetches: Option<u64>,
+    pub continuation_success: Option<bool>,
     /// None when the strategy produced no plan under this trigger.
     pub plan: Option<CompactionPlan>,
     /// Tokens the plan claims to reclaim.
     pub est_reclaimed: u64,
-    /// Post-edit verify findings on the temp copy (empty when plan is
+    /// Post-edit verify findings on the prepared bytes (empty when plan is
     /// None or the strategy is provider-delegating — no file rewrite).
     pub findings: Vec<VerifyFinding>,
     /// Error-severity findings — rollup of `findings` for sorting.
     pub verify_errors: usize,
     /// Warning-severity findings — rollup of `findings`.
     pub verify_warnings: usize,
-    /// Probe-based quality score on the rewritten temp copy: which
+    /// Probe-based quality score on the prepared bytes: which
     /// verbatim probes extracted from the source survived. `None` when
     /// no rewrite ran — no plan, provider-delegated, or apply failure.
     pub probe_score: Option<ProbeScore>,
@@ -60,12 +117,11 @@ pub struct EvalRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic_score: Option<ProbeScore>,
     /// Estimated tokens left byte-identical before the first in-place edit.
-    /// A larger number means more of the provider's prompt cache prefix
-    /// is preserved on the next resume.
+    /// A byte-prefix estimate only; cache hits and charged usage are unmeasured.
     pub prefix_tokens: u64,
-    /// Apply duration on the temp copy.
+    /// In-memory transformation duration.
     pub duration_ms: u64,
-    /// Per-strategy failure (temp copy, apply, or read-back). One bad
+    /// Per-strategy transformation or decoding failure. One bad
     /// strategy never fails the whole eval.
     pub error: Option<String>,
 }
@@ -73,14 +129,9 @@ pub struct EvalRow {
 /// Parse `src` into a transcript using the given provider's dialect.
 /// The handle carries the file's real mtime age so `auto`'s live-session
 /// routing reports what it would actually do.
-fn load(provider: Provider, src: &Path) -> anyhow::Result<Transcript> {
-    let (session_id, cwd) = match provider {
-        Provider::Codex => crate::codex::scan_meta(src),
-        Provider::ClaudeCode => crate::claude::scan_meta(src),
-        // Eval sources are detached files; for Devin that means a
-        // canonical export (see `devin::export_bytes`).
-        Provider::Devin => crate::devin::scan_meta_export(src),
-    };
+fn load(provider: Provider, src: &Path, original: &[u8]) -> anyhow::Result<Transcript> {
+    let session_id = crate::fork::source_session_id(provider, original).ok();
+    let cwd = None;
     let age_secs = std::fs::metadata(src)
         .and_then(|m| m.modified())
         .ok()
@@ -99,19 +150,23 @@ fn load(provider: Provider, src: &Path) -> anyhow::Result<Transcript> {
         age_secs,
     };
     let transcript = match provider {
-        Provider::Codex => crate::codex::load(handle),
-        Provider::ClaudeCode => crate::claude::load(handle),
-        Provider::Devin => crate::devin::load(handle),
+        Provider::Codex => crate::codex::load_bytes(handle, original),
+        Provider::ClaudeCode => crate::claude::load_bytes(handle, original),
+        Provider::Devin => crate::devin::load_bytes(handle, original),
     }
     .with_context(|| format!("loading {}", src.display()))?;
     Ok(transcript)
 }
 
-fn apply(provider: Provider, path: &Path, edits: &[Edit]) -> Result<u64, crate::AdapterError> {
+fn transform(
+    provider: Provider,
+    original: &[u8],
+    edits: &[Edit],
+) -> Result<Vec<u8>, crate::AdapterError> {
     match provider {
-        Provider::Codex => crate::codex::apply(path, edits),
-        Provider::ClaudeCode => crate::claude::apply(path, edits),
-        Provider::Devin => crate::devin::apply(path, edits),
+        Provider::Codex => crate::codex::transform(original, edits),
+        Provider::ClaudeCode => crate::claude::transform(original, edits),
+        Provider::Devin => crate::devin::transform(original, edits),
     }
 }
 
@@ -182,8 +237,8 @@ fn live_context_text(transcript: &Transcript, raw: &str) -> String {
 
 /// Estimated tokens that remain byte-identical before the first in-place
 /// edit in `plan`. Provider-compact plans touch no local file, so the
-/// whole transcript is considered preserved. A larger number means more
-/// of the provider's prefix cache survives the rewrite.
+/// whole transcript is considered preserved. This estimates byte-prefix
+/// retention; it cannot establish cache hits on a provider resume.
 pub fn prefix_tokens(transcript: &Transcript, plan: &CompactionPlan) -> u64 {
     if plan
         .edits
@@ -220,33 +275,38 @@ pub struct EvalHooks<'a> {
     /// produce with no scorer env configured. Only used in the
     /// sequential planning phase, so no `Sync` bound is needed.
     pub scorer: Option<&'a dyn ScoreDriver>,
-    /// Semantic probe judge; scores each rewritten temp copy beyond
+    /// Semantic probe judge; scores each prepared transcript beyond
     /// verbatim matching. `None` skips the pass entirely. Shared across
     /// the parallel rewrite worker pool, so it must be `Sync`.
     pub probe_judge: Option<&'a (dyn ProbeJudge + Sync)>,
 }
 
-/// Copy `src` to `tmp`, run the plan's file edits against the copy,
+/// Run the plan's edits against detached source bytes,
 /// verify the result, and score probe recall. Returns (apply duration
 /// ms, findings, probe score, semantic probe score).
+struct PreparedOutcome {
+    duration_ms: u64,
+    findings: Vec<VerifyFinding>,
+    score: ProbeScore,
+    semantic: Option<ProbeScore>,
+    sha256: String,
+    bytes: usize,
+}
+
 fn run_on_copy(
     transcript: &Transcript,
-    src: &Path,
-    tmp: &Path,
+    original: &[u8],
     plan: &CompactionPlan,
     probes: &[Probe],
     tail_start_line: usize,
     judge: Option<&(dyn ProbeJudge + Sync)>,
-) -> anyhow::Result<(u64, Vec<VerifyFinding>, ProbeScore, Option<ProbeScore>)> {
+) -> anyhow::Result<PreparedOutcome> {
     let provider = transcript.session.provider;
-    std::fs::copy(src, tmp).with_context(|| format!("copy {} to temp eval file", src.display()))?;
     let started = Instant::now();
-    apply(provider, tmp, &plan.edits).map_err(|e| anyhow::anyhow!(e))?;
+    let bytes = transform(provider, original, &plan.edits)?;
     let duration_ms = started.elapsed().as_millis() as u64;
-    let bytes = std::fs::read(tmp).with_context(|| "reading back temp eval file")?;
     let findings = verify::verify(provider, &bytes);
-    let mut handle = transcript.session.clone();
-    handle.path = tmp.to_path_buf();
+    let handle = transcript.session.clone();
     let post_transcript = match provider {
         Provider::Codex => crate::codex::load_bytes(handle, &bytes),
         Provider::ClaudeCode => crate::claude::load_bytes(handle, &bytes),
@@ -273,24 +333,29 @@ fn run_on_copy(
                 if post_text.contains(&probe.text) {
                     1.0
                 } else {
-                    0.0
+                    f64::NAN // unanswered probes remain unavailable
                 }
             })
             .collect();
         for ((index, _), probability) in missed.iter().zip(judged) {
             probabilities[*index] = probability;
         }
-        Some(score_from_probabilities(
-            probes,
-            &probabilities,
-            tail_start_line,
-        ))
+        let mut result = score_from_probabilities(probes, &probabilities, tail_start_line);
+        result.basis = gobstopper_core::probe::ScoreBasis::LiteralAndModelJudgment;
+        Some(result)
     });
-    Ok((duration_ms, findings, score, semantic))
+    Ok(PreparedOutcome {
+        duration_ms,
+        findings,
+        score,
+        semantic,
+        sha256: crate::copy::sha256(&bytes),
+        bytes: bytes.len(),
+    })
 }
 
 /// `GOBSTOPPER_EVAL_PARALLEL`: worker-pool width for the per-strategy
-/// temp-copy rewrite phase. The (often remote) judge call dominates
+/// in-memory transformation phase. The (often remote) judge call dominates
 /// eval wall time, so rows fan out; `1` restores sequential behavior.
 const DEFAULT_EVAL_PARALLEL: usize = 4;
 const MAX_EVAL_PARALLEL: usize = 8;
@@ -354,20 +419,9 @@ where
         .collect()
 }
 
-/// Best-effort panic payload rendering for `row.error`: the payload is
-/// opaque, but panic messages are almost always `&'static str` or
-/// `String`.
-fn panic_message(payload: &(dyn std::any::Any + Send)) -> &str {
-    payload
-        .downcast_ref::<&str>()
-        .copied()
-        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
-        .unwrap_or("unknown panic")
-}
-
 /// Evaluate every built-in strategy (or `only` when set) against one
-/// transcript file. Each file-mutating strategy runs on its own temp
-/// copy; the source file is never modified.
+/// transcript file. Each file-mutating strategy transforms detached bytes;
+/// the source file is never modified.
 pub fn eval_transcript(
     provider: Provider,
     src: &Path,
@@ -388,6 +442,31 @@ pub fn eval_transcript_with_hooks(
     eval_transcript_inner(provider, src, policy, only, hooks, eval_parallelism())
 }
 
+/// Evaluate an exact discovered session. Devin stores are exported for this
+/// session once; database bytes are never interpreted as transcript JSONL.
+pub fn eval_session_with_hooks(
+    handle: &SessionHandle,
+    policy: &PolicyConfig,
+    only: Option<&str>,
+    hooks: &EvalHooks,
+) -> anyhow::Result<Vec<EvalRow>> {
+    let bytes = if handle.provider == Provider::Devin && crate::devin::is_store_path(&handle.path) {
+        crate::devin::export_bytes(&handle.path, &handle.session_id)?
+    } else {
+        crate::transaction::read(&handle.path)?
+    };
+    anyhow::ensure!(
+        crate::fork::source_session_id(handle.provider, &bytes)? == handle.session_id,
+        "evaluation source identity mismatch"
+    );
+    let transcript = match handle.provider {
+        Provider::Codex => crate::codex::load_bytes(handle.clone(), &bytes)?,
+        Provider::ClaudeCode => crate::claude::load_bytes(handle.clone(), &bytes)?,
+        Provider::Devin => crate::devin::load_bytes(handle.clone(), &bytes)?,
+    };
+    eval_frozen(transcript, bytes, policy, only, hooks, eval_parallelism())
+}
+
 /// [`eval_transcript_with_hooks`] with an explicit rewrite-pool width,
 /// so tests can pin concurrency without touching the process env.
 fn eval_transcript_inner(
@@ -398,12 +477,24 @@ fn eval_transcript_inner(
     hooks: &EvalHooks,
     parallelism: usize,
 ) -> anyhow::Result<Vec<EvalRow>> {
-    let transcript = load(provider, src)?;
-    let source_bytes = std::fs::read(src)
+    let source_bytes = crate::transaction::read(src)
         .with_context(|| format!("reading {} for probe extraction", src.display()))?;
+    // Plans and replay share the same captured bytes even if the source appends.
+    let transcript = load(provider, src, &source_bytes)?;
+    eval_frozen(transcript, source_bytes, policy, only, hooks, parallelism)
+}
 
+fn eval_frozen(
+    transcript: Transcript,
+    source_bytes: Vec<u8>,
+    policy: &PolicyConfig,
+    only: Option<&str>,
+    hooks: &EvalHooks,
+    parallelism: usize,
+) -> anyhow::Result<Vec<EvalRow>> {
     // Restrict extraction before the global/per-kind caps and deduplication:
     // old history must neither starve live probes nor satisfy their recall.
+    gobstopper_core::policy::validate_policy(policy).map_err(anyhow::Error::msg)?;
     let source_context = live_context_text(&transcript, &String::from_utf8_lossy(&source_bytes));
     let probes = extract_probes(&source_context);
     let tail_start = protected_tail_start(&transcript, policy);
@@ -418,12 +509,22 @@ fn eval_transcript_inner(
     // Phase 1 (sequential): build each row skeleton and compute its
     // plan. `hooks.scorer` is only ever used here, so it carries no
     // `Sync` bound. Plans that rewrite the file become phase-2 work
-    // items carrying their own temp path.
-    let mut items: Vec<(EvalRow, Option<(CompactionPlan, PathBuf)>)> =
-        Vec::with_capacity(strategies.len());
+    // items using the same captured source bytes.
+    let mut items: Vec<(EvalRow, Option<CompactionPlan>)> = Vec::with_capacity(strategies.len());
     for strat in &strategies {
         let mut row = EvalRow {
             strategy: strat.id().to_string(),
+            version: env!("CARGO_PKG_VERSION"),
+            source_sha256: crate::copy::sha256(&source_bytes),
+            result_sha256: None,
+            source_bytes: source_bytes.len(),
+            result_bytes: None,
+            execution_state: "not_planned",
+            token_basis: "projected_strategy_estimate_not_provider_usage_or_billing",
+            charged_tokens: None,
+            cache_hits: None,
+            refetches: None,
+            continuation_success: None,
             plan: None,
             est_reclaimed: 0,
             findings: Vec::new(),
@@ -457,21 +558,17 @@ fn eval_transcript_inner(
                 .iter()
                 .any(|e| !matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }));
             if needs_rewrite {
-                let tmp = std::env::temp_dir().join(format!(
-                    "gob-eval-{}-{}",
-                    std::process::id(),
-                    NEXT_TEMP.fetch_add(1, Ordering::Relaxed)
-                ));
-                work = Some((plan, tmp));
+                work = Some(plan);
             } else {
                 row.plan = Some(plan);
+                row.execution_state = "provider_not_executed";
             }
         }
         items.push((row, work));
     }
 
     // Phase 2 (parallel): every file-rewriting plan runs against its
-    // own temp copy through the bounded pool. Results merge back in
+    // own in-memory copy through the bounded pool. Results merge back in
     // strategy order; one row's failure or panic never touches another.
     let work_indices: Vec<usize> = items
         .iter()
@@ -480,23 +577,28 @@ fn eval_transcript_inner(
         .collect();
     let judge = hooks.probe_judge;
     let outcomes = run_indexed(work_indices.len(), parallelism, |k| {
-        let (plan, tmp) = items[work_indices[k]]
+        let plan = items[work_indices[k]]
             .1
             .as_ref()
             .expect("work item recorded for this row");
-        let outcome = run_on_copy(&transcript, src, tmp, plan, &probes, tail_start, judge);
-        // Always clean up: the temp copy itself, plus the intermediate
-        // an adapter may have written before a failed rename.
-        let _ = std::fs::remove_file(tmp);
-        let _ = std::fs::remove_file(tmp.with_extension("jsonl.gobstopper-tmp"));
-        outcome
+        run_on_copy(&transcript, &source_bytes, plan, &probes, tail_start, judge)
     });
     for (k, outcome) in outcomes.into_iter().enumerate() {
         let (row, work) = &mut items[work_indices[k]];
-        let (plan, _) = work.take().expect("work item still present");
+        let plan = work.take().expect("work item still present");
         row.plan = Some(plan);
         match outcome {
-            Ok(Ok((duration_ms, findings, score, semantic))) => {
+            Ok(Ok(PreparedOutcome {
+                duration_ms,
+                findings,
+                score,
+                semantic,
+                sha256,
+                bytes,
+            })) => {
+                row.execution_state = "detached_transform_complete";
+                row.result_sha256 = Some(sha256);
+                row.result_bytes = Some(bytes);
                 row.duration_ms = duration_ms;
                 row.verify_errors = findings
                     .iter()
@@ -510,12 +612,13 @@ fn eval_transcript_inner(
                 row.probe_score = Some(score);
                 row.semantic_score = semantic;
             }
-            Ok(Err(e)) => row.error = Some(e.to_string()),
-            Err(payload) => {
-                row.error = Some(format!(
-                    "eval worker panicked: {}",
-                    panic_message(&*payload)
-                ))
+            Ok(Err(_)) => {
+                row.execution_state = "failed";
+                row.error = Some("transformation_failed".into());
+            }
+            Err(_) => {
+                row.execution_state = "failed";
+                row.error = Some("worker_panicked".into());
             }
         }
     }
@@ -530,9 +633,9 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
-    /// Serializes tests that inspect `gob-eval-*` temp names: NEXT_TEMP is
-    /// process-global, so a concurrent eval could draw a name inside the
-    /// range another test is asserting on.
+    static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
+
+    /// Keep shared test observations stable while exercising parallel eval.
     static EVAL_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     struct TestDir(PathBuf);
@@ -763,10 +866,6 @@ mod tests {
         let src = write_claude_transcript(&dir.0);
         let before = fs::read(&src).unwrap();
 
-        // Snapshot the temp-name counter so the leftover check below only
-        // inspects names this eval call could have used — sibling tests
-        // running concurrently in this process draw other values.
-        let counter_start = NEXT_TEMP.load(Ordering::Relaxed);
         let rows = eval_transcript_with_hooks(
             Provider::ClaudeCode,
             &src,
@@ -775,7 +874,6 @@ mod tests {
             &EvalHooks::default(),
         )
         .unwrap();
-        let counter_end = NEXT_TEMP.load(Ordering::Relaxed);
 
         for id in ["auto", "sawtooth", "elide", "structured", "agentic"] {
             row(&rows, id);
@@ -795,14 +893,14 @@ mod tests {
         assert_eq!(sawtooth.duration_ms, 0);
         assert!(sawtooth.error.is_none());
 
-        // Elide rewrites a temp copy: real savings, still verifies clean.
+        // Elide transforms detached bytes: real savings, still verifies clean.
         let elide = row(&rows, "elide");
         assert!(elide.plan.is_some(), "elide should plan: {:?}", elide.error);
         assert!(elide.est_reclaimed > 0);
         assert!(elide.error.is_none());
         assert!(
             elide.findings.iter().all(|f| f.severity != Severity::Error),
-            "elide temp copy should have no error findings: {:?}",
+            "elide candidate should have no error findings: {:?}",
             elide.findings
         );
 
@@ -831,25 +929,8 @@ mod tests {
         // Source file byte-identical.
         assert_eq!(fs::read(&src).unwrap(), before);
 
-        // Every temp name this call could have drawn is gone — both the
-        // copy and the adapter's pre-rename intermediate.
-        for n in counter_start..counter_end {
-            let base = format!("gob-eval-{}-{n}", std::process::id());
-            assert!(
-                !std::env::temp_dir().join(&base).exists(),
-                "leftover temp copy {base}"
-            );
-            assert!(
-                !std::env::temp_dir()
-                    .join(format!("{base}.jsonl.gobstopper-tmp"))
-                    .exists(),
-                "leftover intermediate {base}.jsonl.gobstopper-tmp"
-            );
-        }
-        assert!(
-            counter_end > counter_start,
-            "elide should have run on a temp copy"
-        );
+        // Replay needs no durable output beside the fixture source.
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
     }
 
     #[test]
@@ -900,7 +981,7 @@ mod tests {
         let score = elide
             .probe_score
             .as_ref()
-            .expect("elide rewrites a temp copy and scores it");
+            .expect("elide transforms detached bytes and scores them");
         assert!(score.probes_total > 0);
         // Early tool payloads were elided: their probes are gone.
         assert!(score.probes_recalled < score.probes_total);
@@ -935,7 +1016,7 @@ mod tests {
         let dir = TestDir::new();
         let src = write_claude_transcript(&dir.0);
         let mut policy = low_policy();
-        policy.trigger_tokens = u64::MAX;
+        policy.trigger_tokens = gobstopper_core::admission::MAX_POLICY_TOKENS;
 
         let rows = eval_transcript_with_hooks(
             Provider::ClaudeCode,
@@ -1045,6 +1126,45 @@ mod tests {
     }
 
     #[test]
+    fn partial_judge_responses_retain_missingness_and_result_identity() {
+        struct NoAnswers;
+        impl ProbeJudge for NoAnswers {
+            fn score(&self, _: &[Probe], _: &str) -> Option<Vec<f64>> {
+                Some(Vec::new())
+            }
+        }
+        let _guard = EVAL_LOCK.lock().unwrap();
+        let dir = TestDir::new();
+        let src = write_probe_transcript(&dir.0);
+        let hooks = EvalHooks {
+            scorer: None,
+            probe_judge: Some(&NoAnswers),
+        };
+        let rows = eval_transcript_with_hooks(
+            Provider::ClaudeCode,
+            &src,
+            &low_policy(),
+            Some("elide"),
+            &hooks,
+        )
+        .unwrap();
+        let row = &rows[0];
+        assert_eq!(row.execution_state, "detached_transform_complete");
+        assert_eq!(
+            row.source_sha256,
+            crate::copy::sha256(&fs::read(&src).unwrap())
+        );
+        assert!(row.result_sha256.is_some());
+        assert!(row.charged_tokens.is_none() && row.continuation_success.is_none());
+        let literal = row.probe_score.as_ref().unwrap();
+        let judged = row.semantic_score.as_ref().unwrap();
+        assert!(literal.probes_recalled < literal.probes_total);
+        assert_eq!(judged.probes_requested, literal.probes_total);
+        assert_eq!(judged.probes_total, literal.probes_recalled);
+        assert!(!judged.complete);
+    }
+
+    #[test]
     fn semantic_judge_skips_verbatim_survivors() {
         let _guard = EVAL_LOCK.lock().unwrap();
         let dir = TestDir::new();
@@ -1064,12 +1184,14 @@ mod tests {
             calls: AtomicUsize::new(0),
             probes_seen: AtomicUsize::new(0),
         };
-        let tmp = dir.0.join("semantic-intact.jsonl");
-        let transcript = load(Provider::ClaudeCode, &src).unwrap();
-        let (_, _, verbatim, semantic) = run_on_copy(
+        let transcript = load(Provider::ClaudeCode, &src, &fs::read(&src).unwrap()).unwrap();
+        let PreparedOutcome {
+            score: verbatim,
+            semantic,
+            ..
+        } = run_on_copy(
             &transcript,
-            &src,
-            &tmp,
+            &fs::read(&src).unwrap(),
             &plan,
             &probes,
             usize::MAX,

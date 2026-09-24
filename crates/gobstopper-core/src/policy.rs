@@ -8,6 +8,84 @@
 
 use crate::strategy::PolicyConfig;
 
+/// One production policy admission boundary shared with CLI configuration.
+pub fn validate_policy(policy: &PolicyConfig) -> Result<(), &'static str> {
+    if policy
+        .keep_score_threshold
+        .is_some_and(|v| !v.is_finite() || !(0.0..=1.0).contains(&v))
+    {
+        return Err("keep_score_threshold must be a finite value between 0 and 1");
+    }
+    if policy.trigger_tokens == 0
+        || policy.trigger_tokens > crate::admission::MAX_POLICY_TOKENS
+        || policy.floor_tokens >= policy.trigger_tokens
+        || policy.keep_recent_tool_outputs > crate::admission::MAX_ITEMS
+        || policy.min_interval_secs > crate::admission::MAX_INTERVAL_SECS
+        || policy.apply_hold_secs > crate::admission::MAX_INTERVAL_SECS
+        || policy.min_savings_tokens > crate::admission::MAX_POLICY_TOKENS
+        || policy.block_tokens > crate::admission::MAX_POLICY_TOKENS
+    {
+        return Err("invalid policy bounds: require floor < trigger <= 10000000, min_savings_tokens <= 10000000, block_tokens <= 10000000, keep_recent_tool_outputs <= 100000, and min_interval_secs/apply_hold_secs <= 86400");
+    }
+    Ok(())
+}
+
+#[cfg(kani)]
+mod admission_proofs {
+    use super::*;
+
+    #[kani::proof]
+    fn policy_bounds_full_domain() {
+        let policy = PolicyConfig {
+            trigger_tokens: kani::any(),
+            floor_tokens: kani::any(),
+            keep_recent_tool_outputs: kani::any(),
+            keep_score_threshold: kani::any(),
+            min_interval_secs: kani::any(),
+            apply_hold_secs: kani::any(),
+            min_savings_tokens: kani::any(),
+            block_tokens: kani::any(),
+            ..PolicyConfig::default()
+        };
+        let numeric = (1..=10_000_000).contains(&policy.trigger_tokens)
+            && policy.floor_tokens < policy.trigger_tokens
+            && policy.keep_recent_tool_outputs <= 100_000
+            && policy.min_interval_secs <= 86_400
+            && policy.apply_hold_secs <= 86_400
+            && policy.min_savings_tokens <= 10_000_000
+            && policy.block_tokens <= 10_000_000;
+        let score = match policy.keep_score_threshold {
+            None => true,
+            Some(score) => score >= 0.0 && score <= 1.0,
+        };
+        let accepted = validate_policy(&policy).is_ok();
+        assert_eq!(
+            accepted,
+            numeric && score,
+            "production policy admission agrees with independent bounds"
+        );
+        kani::cover!(
+            accepted
+                && policy.trigger_tokens == 10_000_000
+                && policy.floor_tokens == 9_999_999
+                && policy.keep_recent_tool_outputs == 100_000,
+            "production policy maxima admitted"
+        );
+        kani::cover!(
+            !accepted && policy.trigger_tokens == u64::MAX,
+            "full width trigger refused"
+        );
+        kani::cover!(
+            !accepted && policy.keep_score_threshold.is_some_and(f64::is_nan),
+            "NaN score refused"
+        );
+        kani::cover!(
+            accepted && policy.keep_score_threshold == Some(1.0),
+            "score upper endpoint admitted"
+        );
+    }
+}
+
 /// Trigger is capped at this fraction of the provider-advertised window,
 /// so gobstopper fires well before the provider's own ~90% compaction
 /// threshold even when the configured trigger was sized for a larger

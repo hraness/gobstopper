@@ -1,6 +1,7 @@
 import argparse
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import time
@@ -134,12 +135,15 @@ def main():
         'tools': [],
         'customizations': ('project_memory_no_safe_mode' if args.seed_style == 'claude_md'
                            else 'safe_mode'),
+        'score_basis': 'literal_answer_checks_and_lexical_rule_markers_not_obedience_or_task_success',
+        'sample_selection': 'single_operator_selected_synthetic_seed',
         'checks': ['native_boundary_persisted', 'migration_not_allowed', 'pending_task', 'exact_command', 'receipt_code']
                   + (['constraint_rules_recalled'] if args.seed_style in RULE_MARKERS else []),
         'limitations': ['One synthetic compaction and recall probe, not a coding task benchmark.', 'Provider-reported cost is not an invoice or measured savings.', 'Does not validate Devin compaction or changes to any live session.'],
     }
     RUNNER.save(root / 'registration.json', registration)
-    result = {'status': 'not_started', 'provider_commands': 0, 'reported_cost_usd': 0.0,
+    result = {'status': 'not_started', 'provider_commands': 0, 'reported_cost_usd': None, 'reported_cost_samples': 0,
+              'cost_complete': True, 'task_success': None, 'semantic_equivalence': None,
               'native_boundary_persisted': False, 'recall_checks_passed': None}
     def invoke(argv, label, prompt=None):
         path = root / f'{label}.json'
@@ -177,7 +181,12 @@ def main():
                 response = invoke(argv, f'step-{index}', prompt)
                 if response.get('session_id') != sid:
                     raise RuntimeError('provider_session_identity_mismatch')
-                result['reported_cost_usd'] += response.get('total_cost_usd', 0.0)
+                cost = response.get('total_cost_usd')
+                if type(cost) in (int, float) and math.isfinite(cost) and cost >= 0:
+                    result['reported_cost_usd'] = (result['reported_cost_usd'] or 0.0) + cost
+                    result['reported_cost_samples'] += 1
+                else:
+                    result['cost_complete'] = False
                 if index == 1:
                     files = list((home / 'projects').glob(f'*/{sid}.jsonl'))
                     if len(files) == 1:
@@ -211,12 +220,15 @@ def main():
                         recalled = ' '.join(str(r) for r in answer.get('rules') or []).lower()
                         result['constraint_rules_recalled'] = sum(
                             marker in recalled for marker in RULE_MARKERS[args.seed_style])
-            result['status'] = 'qualified_synthetic_probe' if result['recall_checks_passed'] == 4 else 'recall_failed'
+            result['status'] = 'synthetic_literal_checks_passed' if result['recall_checks_passed'] == 4 else 'recall_failed'
     except (OSError, ValueError, RuntimeError) as error:
         result['status'] = str(error) if isinstance(error, RuntimeError) else 'io_or_response_failure'
+    result['cost_complete'] = (result['cost_complete'] and result['provider_commands'] > 0
+                               and result['reported_cost_samples'] == result['provider_commands'])
+    result['execution_complete'] = result['status'] in ('synthetic_literal_checks_passed', 'recall_failed')
     RUNNER.save(root / 'result.json', result)
     print(json.dumps(result))
-    return 0 if result['status'] == 'qualified_synthetic_probe' else 1
+    return 0 if result['status'] == 'synthetic_literal_checks_passed' else 1
 
 
 if __name__ == '__main__':

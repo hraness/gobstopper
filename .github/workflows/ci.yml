@@ -5,6 +5,8 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: '19 7 * * 1'
 
 permissions:
   contents: read
@@ -23,16 +25,24 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
-          toolchain: stable
+          toolchain: 1.97.1
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
-          shared-key: stable
+          shared-key: rust-1.97.1
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - run: cargo test --workspace --all-targets --all-features --locked
       - run: cargo test --workspace --doc --all-features --locked
+      - run: python3 scripts/check_assurance.py
       - run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+      - run: python3 -m unittest discover -s verify -p 'test_tools.py' -v
+      - run: python3 -m unittest discover -s verify/vault -p 'test_*.py' -v
+      - run: python3 -m unittest discover -s verify/watch -p 'test_*.py' -v
+      - run: python3 -m unittest discover -s verify/core -p 'test_*.py' -v
+      - run: python3 -m unittest discover -s verify/transcript -p 'test_*.py' -v
+      - run: python3 -m unittest discover -s verify/stress -p 'test_*.py' -v
+      - run: python3 scripts/check-dialects.py --cases 512 --seed 78422376057123
 
   msrv:
     name: MSRV 1.85.0
@@ -51,37 +61,138 @@ jobs:
       - run: cargo check --workspace --lib --bins --locked
 
   formal:
-    name: Vault protocol model
+    name: Vault and native protocol models
     runs-on: ubuntu-24.04
-    timeout-minutes: 6
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-      - name: Fetch pinned TLC and check protocol plus negative controls
+      - name: Fetch checksum-pinned Java and TLC
         run: |
-          curl --fail --location --retry 2 --max-time 60 \
-            https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar \
-            --output "$RUNNER_TEMP/tla2tools.jar"
-          python3 verify/vault/check.py --java java \
+          python3 verify/tools.py java --output "$RUNNER_TEMP/java.tar.gz" > "$RUNNER_TEMP/java-pin.json"
+          python3 verify/tools.py tlc --output "$RUNNER_TEMP/tla2tools.jar" > "$RUNNER_TEMP/tlc-pin.json"
+          mkdir "$RUNNER_TEMP/java"
+          tar -xzf "$RUNNER_TEMP/java.tar.gz" --strip-components=1 -C "$RUNNER_TEMP/java"
+      - name: Check custody and publication plus negative controls
+        run: |
+          python3 verify/vault/check.py --java "$RUNNER_TEMP/java/bin/java" \
             --tlc-jar "$RUNNER_TEMP/tla2tools.jar" \
             --output "$RUNNER_TEMP/vault-model-evidence"
-      - name: Report exact verification receipt
-        if: always()
+      - name: Check native dispatch plus negative controls
         run: |
-          if test -f "$RUNNER_TEMP/vault-model-evidence/receipt.json"; then
-            cat "$RUNNER_TEMP/vault-model-evidence/receipt.json"
-          fi
-          for log in "$RUNNER_TEMP"/vault-model-evidence/*.log; do
-            if test -f "$log"; then
-              cat "$log"
-            fi
-          done
+          python3 verify/watch/check.py --java "$RUNNER_TEMP/java/bin/java" \
+            --tlc-jar "$RUNNER_TEMP/tla2tools.jar" \
+            --output "$RUNNER_TEMP/watch-model-evidence"
+      - name: Retain complete protocol evidence, including failed runs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: protocol-evidence-${{ github.sha }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/*-pin.json
+            ${{ runner.temp }}/*-model-evidence/*.json
+            ${{ runner.temp }}/*-model-evidence/*.log
+
+  core-proofs:
+    name: Production Rust proof kernels
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.97.1
+      - name: Install pinned Kani and its exact compiler bundle
+        run: |
+          python3 verify/tools.py kani --output "$RUNNER_TEMP/kani.tar.gz" > "$RUNNER_TEMP/kani-pin.json"
+          cargo install --locked kani-verifier --version 0.68.0
+          cargo kani setup --use-local-bundle "$RUNNER_TEMP/kani.tar.gz"
+          cargo fetch --locked
+      - name: Prove production kernels and reject the exact boundary mutant
+        run: python3 verify/core/check.py --kani "$HOME/.cargo/bin/cargo-kani" --output "$RUNNER_TEMP/core-evidence"
+      - name: Retain complete proof reports, including failed runs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: core-proof-evidence-${{ github.sha }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/kani-pin.json
+            ${{ runner.temp }}/core-evidence/*.json
+            ${{ runner.temp }}/core-evidence/*.log
+
+  transcript-proofs:
+    name: Lean laws and Rust correspondence
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.97.1
+      - name: Fetch checksum-pinned Lean
+        run: |
+          python3 verify/tools.py lean --output "$RUNNER_TEMP/lean.tar.zst" > "$RUNNER_TEMP/lean-pin.json"
+          mkdir "$RUNNER_TEMP/lean"
+          tar --zstd -xf "$RUNNER_TEMP/lean.tar.zst" --strip-components=1 -C "$RUNNER_TEMP/lean"
+          cargo fetch --locked
+      - name: Prepare the Rust correspondence build and nested engine cache
+        run: cargo test -p gobstopper-adapters --test lean_correspondence --locked --no-run --jobs 2
+      - name: Prove algebra, audit axioms, and reject correspondence mutants
+        run: python3 verify/transcript/check.py --lake "$RUNNER_TEMP/lean/bin/lake" --output "$RUNNER_TEMP/transcript-evidence"
+      - name: Retain complete proof and correspondence evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: transcript-proof-evidence-${{ github.sha }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/lean-pin.json
+            ${{ runner.temp }}/transcript-evidence/*.json
+            ${{ runner.temp }}/transcript-evidence/*.log
+
+  bounded-stress:
+    name: Bounded fault and process suites
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.97.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
+        with:
+          shared-key: rust-1.97.1
+      - name: Prepare dependencies and test binaries within the job deadline
+        run: cargo test --workspace --all-targets --locked --no-run --jobs 2
+      - name: Run exact named suites with bounded resources
+        run: python3 verify/stress/check.py --output "$RUNNER_TEMP/stress-evidence"
+      - name: Retain bounded workload evidence, including failed runs
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: stress-evidence-${{ github.sha }}
+          retention-days: 30
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/stress-evidence/*.json
+            ${{ runner.temp }}/stress-evidence/*.log
 
   required:
     name: Required
     if: always()
-    needs: [quality, msrv, formal]
+    needs: [quality, msrv, formal, core-proofs, transcript-proofs, bounded-stress]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -90,4 +201,7 @@ jobs:
           QUALITY: ${{ needs.quality.result }}
           MSRV: ${{ needs.msrv.result }}
           FORMAL: ${{ needs.formal.result }}
-        run: test "$QUALITY" = success && test "$MSRV" = success && test "$FORMAL" = success
+          CORE_PROOFS: ${{ needs.core-proofs.result }}
+          TRANSCRIPT_PROOFS: ${{ needs.transcript-proofs.result }}
+          BOUNDED_STRESS: ${{ needs.bounded-stress.result }}
+        run: test "$QUALITY" = success && test "$MSRV" = success && test "$FORMAL" = success && test "$CORE_PROOFS" = success && test "$TRANSCRIPT_PROOFS" = success && test "$BOUNDED_STRESS" = success

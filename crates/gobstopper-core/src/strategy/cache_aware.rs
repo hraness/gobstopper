@@ -27,11 +27,10 @@ impl Strategy for CacheAwareStrategy {
         let elidable: Vec<&crate::model::TranscriptItem> = transcript
             .items
             .iter()
-            .filter(|i| i.elidable_bytes.is_some())
+            .filter(|i| i.is_elidable())
             .collect();
-        let keep_from = elidable
-            .len()
-            .saturating_sub(policy.keep_recent_tool_outputs);
+        let keep_from =
+            crate::admission::unprotected_len(elidable.len(), policy.keep_recent_tool_outputs);
         let candidates = &elidable[..keep_from.min(elidable.len())];
         if candidates.is_empty() {
             return None;

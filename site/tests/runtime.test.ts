@@ -112,7 +112,13 @@ describe("built Gobstopper site", () => {
       const home = rawHome.replaceAll(/https:\/\/[a-z0-9-]+\.vercel\.app/gu, "https://gobstopper.sh");
       const docs = rawDocs.replaceAll(/https:\/\/[a-z0-9-]+\.vercel\.app/gu, "https://gobstopper.sh");
       expect(homeResponse.status).toBe(200);
-      expect(home).toContain(publishedRelease === null ? "No release yet" : `Latest release: v${publishedRelease.version}`);
+      expect(home).toContain("cargo install --git https://github.com/hraness/gobstopper gobstopper --locked");
+      if (publishedRelease === null) {
+        expect(home).toContain("No release yet");
+      } else {
+        expect(home).toContain(`href="https://github.com/hraness/gobstopper/releases/tag/v${publishedRelease.version}"`);
+        expect(home).toContain(publishedRelease.verificationRun);
+      }
       expect(home).toContain('<link rel="canonical" href="https://gobstopper.sh"');
       expect(home).toContain('aria-label="Ask AI about this"');
       expect(home).toMatch(/<meta\s+property="og:image"\s+content="https:\/\/gobstopper\.sh\/opengraph-image(?:\?[^"]+)?"/u);

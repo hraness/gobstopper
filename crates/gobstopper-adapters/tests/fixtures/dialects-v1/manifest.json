@@ -1,0 +1,286 @@
+{
+  "schema": 1,
+  "source": "hand-authored synthetic contracts",
+  "provider_qualification": "unqualified",
+  "fixtures": [
+    {
+      "file": "codex-window.jsonl",
+      "provider": "codex",
+      "sha256": "c938478b25fa9075406fc4c5c6e83703db5bef3deaa1984c81010936e2dc6d8e",
+      "items": [
+        {
+          "line": 1,
+          "kind": "ToolCall",
+          "active": false,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": null,
+          "parent": null
+        },
+        {
+          "line": 2,
+          "kind": "ToolResult",
+          "active": false,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": null,
+          "parent": null
+        },
+        {
+          "line": 3,
+          "kind": "ToolResult",
+          "active": true,
+          "elidable_bytes": 300,
+          "parts": 1,
+          "uuid": null,
+          "parent": null
+        },
+        {
+          "line": 5,
+          "kind": "User",
+          "active": true,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": null,
+          "parent": null
+        },
+        {
+          "line": 6,
+          "kind": "ToolCall",
+          "active": true,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": null,
+          "parent": null
+        },
+        {
+          "line": 7,
+          "kind": "ToolResult",
+          "active": true,
+          "elidable_bytes": 304,
+          "parts": 1,
+          "uuid": null,
+          "parent": null
+        },
+        {
+          "line": 8,
+          "kind": "ToolCall",
+          "active": true,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": null,
+          "parent": null
+        },
+        {
+          "line": 9,
+          "kind": "ToolResult",
+          "active": true,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": null,
+          "parent": null
+        }
+      ],
+      "context_tokens": 211,
+      "changes": [
+        {
+          "line": 3,
+          "pointer": "/payload/replacement_history/3/output",
+          "value": "[elided]"
+        },
+        {
+          "line": 7,
+          "pointer": "/payload/output/0/text",
+          "value": "[elided]"
+        },
+        {
+          "line": 7,
+          "pointer": "/payload/output/1/text",
+          "value": ""
+        }
+      ],
+      "findings": [
+        "unsupported_response_item"
+      ]
+    },
+    {
+      "file": "claude-branch.jsonl",
+      "provider": "claude-code",
+      "sha256": "a39ccf3cc1e6597861a17deae7858e7d430b57b986620beaf2ffddf9543d72ea",
+      "items": [
+        {
+          "line": 0,
+          "kind": "User",
+          "active": true,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": "u",
+          "parent": null
+        },
+        {
+          "line": 1,
+          "kind": "Assistant",
+          "active": true,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": "a",
+          "parent": "u"
+        },
+        {
+          "line": 2,
+          "kind": "ToolResult",
+          "active": false,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": "dead",
+          "parent": "a"
+        },
+        {
+          "line": 3,
+          "kind": "ToolResult",
+          "active": true,
+          "elidable_bytes": 304,
+          "parts": 1,
+          "uuid": "live",
+          "parent": "a"
+        },
+        {
+          "line": 4,
+          "kind": "Assistant",
+          "active": false,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": "dead-a",
+          "parent": "dead"
+        },
+        {
+          "line": 5,
+          "kind": "Assistant",
+          "active": true,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": "live-a",
+          "parent": "live"
+        },
+        {
+          "line": 7,
+          "kind": "System",
+          "active": true,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": null,
+          "parent": null
+        },
+        {
+          "line": 8,
+          "kind": "Meta",
+          "active": true,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": null,
+          "parent": null
+        }
+      ],
+      "context_tokens": 112,
+      "changes": [
+        {
+          "line": 3,
+          "pointer": "/message/content/1/content/0/text",
+          "value": "[elided]"
+        },
+        {
+          "line": 3,
+          "pointer": "/message/content/1/content/1/text",
+          "value": ""
+        }
+      ],
+      "findings": []
+    },
+    {
+      "file": "devin-physical-branch.jsonl",
+      "provider": "devin",
+      "sha256": "a2691562fd9d7f725b44beb8a7475034da2cdc02bfd9ba407d9efe63b65d7499",
+      "items": [
+        {
+          "line": 2,
+          "kind": "System",
+          "active": true,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": "m0",
+          "parent": null
+        },
+        {
+          "line": 3,
+          "kind": "User",
+          "active": true,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": "m1",
+          "parent": "m0"
+        },
+        {
+          "line": 4,
+          "kind": "Assistant",
+          "active": true,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": "m2",
+          "parent": "m1"
+        },
+        {
+          "line": 6,
+          "kind": "ToolResult",
+          "active": false,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": "m3",
+          "parent": "m2"
+        },
+        {
+          "line": 7,
+          "kind": "ToolResult",
+          "active": true,
+          "elidable_bytes": 304,
+          "parts": 1,
+          "uuid": "m4",
+          "parent": "m2"
+        },
+        {
+          "line": 8,
+          "kind": "Assistant",
+          "active": true,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": "m5",
+          "parent": "m4"
+        },
+        {
+          "line": 9,
+          "kind": "Assistant",
+          "active": false,
+          "elidable_bytes": null,
+          "parts": 0,
+          "uuid": "m6",
+          "parent": "m3"
+        }
+      ],
+      "context_tokens": 213,
+      "changes": [
+        {
+          "line": 7,
+          "pointer": "/chat_message/content/0/text",
+          "value": "[elided]"
+        },
+        {
+          "line": 7,
+          "pointer": "/chat_message/content/1/text",
+          "value": ""
+        }
+      ],
+      "findings": [
+        "blank_line"
+      ]
+    }
+  ]
+}

@@ -57,11 +57,20 @@ fn apply(
     path: &Path,
     edits: &[Edit],
 ) -> Result<u64, gobstopper_adapters::AdapterError> {
-    match provider {
-        Provider::Codex => codex::apply(path, edits),
-        Provider::ClaudeCode => claude::apply(path, edits),
+    // Only this test harness publishes into its own Scratch fixture. Product
+    // transformations return bytes and have no filesystem mutation authority.
+    let original = gobstopper_adapters::transaction::read(path)?;
+    let transformed = match provider {
+        Provider::Codex => codex::transform(&original, edits),
+        Provider::ClaudeCode => claude::transform(&original, edits),
         Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
-    }
+    }?;
+    let reclaimed = original.len().saturating_sub(transformed.len()) as u64;
+    fs::write(path, transformed).map_err(|source| gobstopper_adapters::AdapterError::Io {
+        path: path.into(),
+        source,
+    })?;
+    Ok(reclaimed)
 }
 
 fn assert_unicode_state_card_plan(provider: Provider) {
@@ -163,7 +172,7 @@ fn claude_digest_preserves_the_live_branch() {
     let dir = Scratch::new();
     let path = dir.0.join("claude.jsonl");
     fs::write(&path, "{\"type\":\"user\",\"uuid\":\"u1\",\"sessionId\":\"audit\",\"message\":{\"role\":\"user\",\"content\":\"goal\"}}\n{\"type\":\"assistant\",\"uuid\":\"a1\",\"parentUuid\":\"u1\",\"message\":{\"role\":\"assistant\",\"content\":\"decision\"}}\n").unwrap();
-    claude::apply(&path, &[digest()]).unwrap();
+    apply(Provider::ClaudeCode, &path, &[digest()]).unwrap();
     let transcript = claude::load(handle(Provider::ClaudeCode, &path)).unwrap();
     assert_eq!(
         transcript.items.iter().filter(|i| i.est_tokens > 0).count(),
@@ -205,7 +214,8 @@ fn claude_subfloor_blocks_are_not_elidable_or_reserialized() {
     let t = claude::load(handle(Provider::ClaudeCode, &path)).unwrap();
     assert_eq!(t.items[0].elidable_bytes, None);
     assert_eq!(
-        claude::apply(
+        apply(
+            Provider::ClaudeCode,
             &path,
             &[Edit::Elide {
                 line_indexes: vec![0],
@@ -286,7 +296,8 @@ fn failed_later_edit_leaves_source_byte_identical() {
         json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"t","output":"x".repeat(400)}})
     );
     fs::write(&path, &original).unwrap();
-    assert!(codex::apply(
+    assert!(apply(
+        Provider::Codex,
         &path,
         &[
             Edit::Elide {
@@ -309,8 +320,9 @@ fn compact_copy_keeps_open_writer_and_is_idempotent() {
     let dir = Scratch::new();
     let path = dir.0.join("rollout-audit.jsonl");
     let original = format!(
-        "{}\n{}\n",
+        "{}\n{}\n{}\n",
         json!({"type":"session_meta","payload":{"id":"audit"}}),
+        json!({"type":"response_item","payload":{"type":"function_call","call_id":"t","name":"read"}}),
         json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"t","output":"x".repeat(4000)}})
     );
     fs::write(&path, &original).unwrap();
@@ -323,7 +335,7 @@ fn compact_copy_keeps_open_writer_and_is_idempotent() {
         context_tokens_before: 1000,
         context_tokens_after: 10,
         edits: vec![Edit::Elide {
-            line_indexes: vec![1],
+            line_indexes: vec![2],
             stub_template: "[elided]".into(),
             per_item_stubs: Default::default(),
         }],
@@ -337,13 +349,13 @@ fn compact_copy_keeps_open_writer_and_is_idempotent() {
     );
     let recovered = gobstopper_adapters::recovery::read_snapshot_record(
         snapshot,
-        1,
+        2,
         0,
         16384,
         &dir.0.join("vault"),
     )
     .unwrap();
-    assert_eq!(recovered.content, original.lines().nth(1).unwrap());
+    assert_eq!(recovered.content, original.lines().nth(2).unwrap());
     assert_eq!(fs::read_to_string(&path).unwrap(), original);
     assert_eq!(
         receipt.reclaimed_bytes,
@@ -373,21 +385,19 @@ fn compact_copy_keeps_open_writer_and_is_idempotent() {
         .contains("recovery snapshot does not match source"));
     assert_eq!(fs::read(&receipt.path).unwrap(), saved_output);
     assert_eq!(fs::read_to_string(&path).unwrap(), original);
-    // Receipts made before the additive recovery field retain idempotency.
+    // A v2 intent cannot silently omit its required recovery binding.
     changed
         .as_object_mut()
         .unwrap()
         .remove("snapshot_manifest_sha256");
     fs::write(&receipt_path, serde_json::to_vec(&changed).unwrap()).unwrap();
-    assert!(copy::compact(&h, &hash, &plan, &root)
-        .unwrap()
-        .snapshot_manifest_sha256
-        .is_none());
+    assert!(copy::compact(&h, &hash, &plan, &root).is_err());
     fs::write(&receipt_path, saved_receipt).unwrap();
     writeln!(writer, "{}", json!({"type":"response_item","payload":{"type":"message","role":"user","content":"new turn"}})).unwrap();
     assert!(fs::read_to_string(&path).unwrap().contains("new turn"));
     let appended = fs::read(&path).unwrap();
-    assert!(copy::compact(&h, &hash, &plan, &dir.0.join("vault")).is_err());
+    let reconciled = copy::compact(&h, &hash, &plan, &dir.0.join("vault")).unwrap();
+    assert_eq!(reconciled.path, receipt.path);
     assert_eq!(fs::read(&path).unwrap(), appended);
     assert!(verify::verify_path(Provider::Codex, &receipt.path)
         .unwrap()
@@ -534,13 +544,14 @@ fn corrupt_existing_snapshot_aborts_admission() {
 
 #[test]
 #[cfg(unix)]
-fn rewrite_never_broadens_private_permissions() {
+fn refused_rewrite_preserves_private_permissions_and_bytes() {
     use std::os::unix::fs::PermissionsExt;
     let dir = Scratch::new();
     let path = dir.0.join("source.jsonl");
     fs::write(&path, json!({"type":"response_item","payload":{"type":"function_call_output","call_id":"t","output":"x".repeat(400)}}).to_string()).unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
-    codex::apply(
+    let before = fs::read(&path).unwrap();
+    let error = codex::apply(
         &path,
         &[Edit::Elide {
             line_indexes: vec![0],
@@ -548,7 +559,12 @@ fn rewrite_never_broadens_private_permissions() {
             per_item_stubs: Default::default(),
         }],
     )
-    .unwrap();
+    .unwrap_err();
+    assert!(matches!(
+        error,
+        gobstopper_adapters::AdapterError::DirectMutationDisabled
+    ));
+    assert_eq!(fs::read(&path).unwrap(), before);
     assert_eq!(
         fs::metadata(&path).unwrap().permissions().mode() & 0o777,
         0o600
@@ -625,7 +641,7 @@ fn claude_digest_and_usage_follow_the_canonical_leaf() {
     assert_eq!(transcript.usage.context_tokens, 110);
     assert_eq!(claude::scan_usage(&path).context_tokens, 110);
 
-    claude::apply(&path, &[digest()]).unwrap();
+    apply(Provider::ClaudeCode, &path, &[digest()]).unwrap();
     let records: Vec<Value> = fs::read_to_string(&path)
         .unwrap()
         .lines()
@@ -693,4 +709,54 @@ fn dedupe_uses_exact_payload_digests() {
         })
         .unwrap();
     assert_eq!(selected, [1]);
+}
+
+#[test]
+fn public_provider_rewrites_refuse_before_io_and_preserve_open_appends() {
+    use gobstopper_adapters::{codex_compact, devin, AdapterError};
+    use std::io::Write;
+    type Rewrite = fn(&Path, &[Edit]) -> Result<u64, AdapterError>;
+    let dir = Scratch::new();
+    let missing = dir.0.join("missing").join("source.jsonl");
+    let writers: [Rewrite; 3] = [codex::apply, claude::apply, devin::apply];
+    for (index, writer) in writers.into_iter().enumerate() {
+        assert!(matches!(
+            writer(&missing, &[digest()]),
+            Err(AdapterError::DirectMutationDisabled)
+        ));
+        assert!(!missing.parent().unwrap().exists());
+        let path = dir.0.join(format!("source-{index}.jsonl"));
+        // Invalid input must not be inspected before refusing mutation authority.
+        let original = b"unparsed provider bytes\xff";
+        fs::write(&path, original).unwrap();
+        let mut provider_append = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        assert!(matches!(
+            writer(&path, &[digest()]),
+            Err(AdapterError::DirectMutationDisabled)
+        ));
+        assert_eq!(fs::read(&path).unwrap(), original);
+        provider_append.write_all(b"\nprovider append\n").unwrap();
+        let mut expected = original.to_vec();
+        expected.extend_from_slice(b"\nprovider append\n");
+        assert_eq!(
+            fs::read(&path).unwrap(),
+            expected,
+            "open provider append was lost"
+        );
+    }
+    for path in [missing, dir.0.join("source-0.jsonl")] {
+        let before = fs::read(&path).ok();
+        let error =
+            codex_compact::compact_with_digest(&path, &DigestBlock::default(), 0).unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<AdapterError>(),
+            Some(AdapterError::DirectMutationDisabled)
+        ));
+        assert_eq!(fs::read(&path).ok(), before);
+    }
+    assert_eq!(
+        fs::read_dir(&dir.0).unwrap().count(),
+        3,
+        "refusal created a temporary file or directory"
+    );
 }

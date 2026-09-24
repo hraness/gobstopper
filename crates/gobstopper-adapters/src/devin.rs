@@ -16,18 +16,15 @@
 //! read substrate; the byte identity of a session is the sha256 of its
 //! export.
 //!
-//! Reads are always available; writes (`apply_store`, `restore_store`)
-//! run only for idle sessions — the provider's `session_locks/<id>.lock`
-//! flock must be free, then a single `BEGIN IMMEDIATE` transaction does
-//! the work: re-export + sha identity check (no drift since planning),
-//! conditional payload updates keyed on the stored `chat_message` text,
-//! an in-tx `verify` pass, then commit. Live sessions stay delegated to
-//! native `/compact`.
+//! Inspection exports and detached byte transformations are available. Direct
+//! store/file mutation is disabled because the observed lock probe does not
+//! establish provider-compatible lifetime custody. Native `/compact` remains
+//! delegated to the provider under its separately qualified control contract.
 
 use gobstopper_core::estimate::estimate_tokens;
 use gobstopper_core::model::{ItemKind, SessionHandle, TranscriptItem, UsageSample};
 use gobstopper_core::{Provider, Transcript};
-use rusqlite::{Connection, OpenFlags, TransactionBehavior};
+use rusqlite::{Connection, OpenFlags};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -38,14 +35,46 @@ use crate::AdapterError;
 /// Devin-owned marker meaning "session is live": while a CLI process has
 /// the session open it holds an `flock` on `session_locks/<id>.lock`.
 /// Lock files persist after the process exits, so existence alone is not
-/// proof — only a still-held flock counts. Stale files lock cleanly.
+/// proof. Stale regular files lock cleanly. Unreadable/unsupported lock state
+/// conservatively counts as active; an absent lock alone counts as inactive.
+/// This probe does not establish provider-compatible mutation custody.
 pub fn session_active(root: &Path, session_id: &str) -> bool {
-    let path = root
-        .join("session_locks")
-        .join(format!("{session_id}.lock"));
-    let Ok(file) = std::fs::File::open(&path) else {
-        return false;
+    if session_id.is_empty()
+        || session_id.len() > 256
+        || !session_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+    {
+        return true;
+    }
+    let directory = root.join("session_locks");
+    match std::fs::symlink_metadata(&directory) {
+        Ok(metadata) if metadata.is_dir() => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        _ => return true,
+    }
+    let path = directory.join(format!("{session_id}.lock"));
+    let mut options = std::fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    #[cfg(not(unix))]
+    match std::fs::symlink_metadata(&path) {
+        Ok(metadata) if metadata.is_file() => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        _ => return true,
+    }
+    let file = match options.open(&path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
+        Err(_) => return true,
     };
+    if !file.metadata().is_ok_and(|metadata| metadata.is_file()) {
+        return true;
+    }
     fs2::FileExt::try_lock_exclusive(&file).is_err()
 }
 
@@ -54,33 +83,53 @@ pub fn db_path(root: &Path) -> PathBuf {
 }
 
 /// Whether `path` is the shared provider store rather than a detached
-/// export file. Export files are safe rewrite targets (they are copies);
-/// the store is never written by this adapter today.
+/// export file. This filename distinction is only a parsing hint; it does
+/// not establish write custody for either path.
 pub fn is_store_path(path: &Path) -> bool {
     path.file_name().is_some_and(|n| n == "sessions.db")
 }
 
 fn open_readonly(db: &Path) -> Result<Connection, AdapterError> {
+    // SQLite may block while opening a FIFO before it can reject its format.
+    // Admit only an existing regular leaf; stable owner-controlled parents are
+    // required, and SQLite's NOFOLLOW also rejects leaf replacement by a link.
+    if !std::fs::symlink_metadata(db)
+        .map_err(|source| AdapterError::Io {
+            path: db.to_path_buf(),
+            source,
+        })?
+        .is_file()
+    {
+        return Err(AdapterError::InvalidEdit(
+            "Devin store must be a regular file, not a symlink or special file",
+        ));
+    }
+    // Common home/temp aliases (for example macOS /var) are allowed as stable
+    // parents. Canonicalize only the parent: resolving the leaf would undo the
+    // no-symlink admission if an installer replaced it between these steps.
+    let parent = db
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+        .canonicalize()
+        .map_err(|source| AdapterError::Io {
+            path: db.to_path_buf(),
+            source,
+        })?;
+    let sqlite_path = parent.join(
+        db.file_name()
+            .ok_or(AdapterError::InvalidEdit("Devin store has no filename"))?,
+    );
     Connection::open_with_flags(
-        db,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+        sqlite_path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX
+            | OpenFlags::SQLITE_OPEN_NOFOLLOW,
     )
     .map_err(|e| AdapterError::Io {
         path: db.to_path_buf(),
         source: std::io::Error::other(e),
     })
-}
-
-fn open_readwrite(db: &Path) -> Result<Connection, AdapterError> {
-    let conn = Connection::open(db).map_err(|e| AdapterError::Io {
-        path: db.to_path_buf(),
-        source: std::io::Error::other(e),
-    })?;
-    // A writer that already holds the WAL write lock makes BEGIN
-    // IMMEDIATE wait briefly, then fail — never block a provider.
-    conn.busy_timeout(std::time::Duration::from_secs(5))
-        .map_err(rusqlite_io(db))?;
-    Ok(conn)
 }
 
 fn rusqlite_io(db: &Path) -> impl Fn(rusqlite::Error) -> AdapterError + '_ {
@@ -210,7 +259,7 @@ pub fn find(root: &Path, query: &str) -> Vec<Discovered> {
 }
 
 /// O(1) content version for watch suppression caching: main-chain head
-/// plus node count. Any provider append or Gobstopper store write moves
+/// plus node count. A provider append that changes either moves
 /// it, so an unchanged fingerprint means the session is byte-identical.
 pub fn chain_fingerprint(db: &Path, session_id: &str) -> Option<String> {
     let conn = open_readonly(db).ok()?;
@@ -292,89 +341,91 @@ pub fn current_session(root: &Path, cwd: &Path) -> Option<String> {
 /// assistant message approximates context occupancy; lifetime sums the
 /// same inputs across every assistant message in the session.
 pub fn scan_usage(conn: &Connection, session_id: &str) -> UsageSample {
-    let mut stmt = match conn.prepare(
-        "SELECT m.chat_message, m.metadata FROM message_nodes m \
-         WHERE m.session_id = ?1 ORDER BY m.node_id",
-    ) {
-        Ok(stmt) => stmt,
-        Err(_) => return UsageSample::default(),
-    };
-    let rows = stmt
-        .query_map([session_id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-        })
-        .map(|it| it.flatten().collect::<Vec<_>>())
-        .unwrap_or_default();
-    let mut usage = UsageSample::default();
-    let mut preceding: Option<u64> = None;
-    for (raw, meta) in &rows {
-        let Ok(msg) = serde_json::from_str::<Value>(raw) else {
-            continue;
+    with_read_snapshot(conn, || {
+        let bytes = export_bytes_conn(conn, Path::new(""), session_id).ok()?;
+        let handle = SessionHandle {
+            provider: Provider::Devin,
+            session_id: session_id.to_string(),
+            path: PathBuf::new(),
+            cwd: None,
+            age_secs: u64::MAX,
         };
-        if let Some(n) = meta
-            .as_deref()
-            .and_then(|m| serde_json::from_str::<Value>(m).ok())
-            .and_then(|m| m.get("num_tokens_preceding").and_then(Value::as_u64))
-        {
-            preceding = Some(n);
-        }
-        // A scan lacks the chain walk (cheap by design); the latest
-        // assistant metrics approximate live context. `load` performs the
-        // exact live-chain accounting.
-        absorb_usage(&msg, &mut usage, true);
-    }
-    if usage.context_tokens == 0 {
-        usage.context_tokens = preceding.unwrap_or(0);
-    }
-    usage
+        load_bytes(handle, &bytes).ok().map(|t| t.usage)
+    })
+    .unwrap_or_else(|| {
+        let mut usage = UsageSample::default();
+        usage.invalidate_context();
+        usage
+    })
 }
 
-/// Context-only usage for watch discovery: scans just the newest rows
-/// so the latest assistant metrics (or the provider's
-/// `num_tokens_preceding`) approximate context occupancy. `chat_message`
-/// payloads overflow the row pages in this schema, so `scan_usage`'s
-/// full scan reads the whole store once per session; this tail read is
-/// bounded per session instead. Lifetime counters stay zero.
+/// Pin head and node reads to one SQLite snapshot. A caller's existing
+/// transaction already provides that snapshot and is never committed here.
+fn with_read_snapshot<T>(conn: &Connection, read: impl FnOnce() -> Option<T>) -> Option<T> {
+    let own = conn.is_autocommit();
+    if own && conn.execute_batch("BEGIN DEFERRED").is_err() {
+        return None;
+    }
+    let result = read();
+    if own && conn.execute_batch("ROLLBACK").is_err() {
+        return None;
+    }
+    result
+}
+
+/// Context-only discovery validates the bounded identity graph, then reads at
+/// most 32 live-chain payloads. A newer dead sibling is never a context sample.
+/// Lifetime counters are unavailable in this deliberately partial payload scan.
 fn scan_context(conn: &Connection, session_id: &str) -> UsageSample {
-    let mut stmt = match conn.prepare(
-        "SELECT m.chat_message, m.metadata FROM message_nodes m \
-         WHERE m.session_id = ?1 ORDER BY m.node_id DESC LIMIT 32",
-    ) {
-        Ok(stmt) => stmt,
-        Err(_) => return UsageSample::default(),
-    };
-    let mut rows = stmt
-        .query_map([session_id], |r| {
-            Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?))
-        })
-        .map(|it| it.flatten().collect::<Vec<_>>())
-        .unwrap_or_default();
-    // Rows arrive newest-first; absorb oldest→newest so "last wins"
-    // matches scan_usage ordering.
-    rows.reverse();
-    let mut usage = UsageSample::default();
-    let mut preceding: Option<u64> = None;
-    for (raw, meta) in &rows {
-        let Ok(msg) = serde_json::from_str::<Value>(raw) else {
-            continue;
-        };
-        if let Some(n) = meta
-            .as_deref()
-            .and_then(|m| serde_json::from_str::<Value>(m).ok())
-            .and_then(|m| m.get("num_tokens_preceding").and_then(Value::as_u64))
-        {
-            preceding = Some(n);
+    with_read_snapshot(conn, || {
+        let head: Option<i64> = conn.query_row(
+            "SELECT main_chain_id FROM sessions WHERE id = ?1", [session_id], |r| r.get(0),
+        ).ok()?;
+        let mut stmt = conn.prepare(
+            "SELECT node_id, parent_node_id FROM message_nodes WHERE session_id = ?1 ORDER BY node_id LIMIT ?2",
+        ).ok()?;
+        let mut query = stmt.query(rusqlite::params![session_id, (gobstopper_core::validation::MAX_ITEMS + 1) as i64]).ok()?;
+        let mut graph = Vec::new();
+        while let Some(row) = query.next().ok()? {
+            if graph.len() >= gobstopper_core::validation::MAX_ITEMS { return None; }
+            graph.push(NodeRow {
+                line_index: graph.len(), node_id: row.get(0).ok()?, parent_node_id: row.get(1).ok()?,
+                message: Value::Null, num_tokens_preceding: None,
+            });
         }
-        absorb_usage(&msg, &mut usage, true);
-    }
-    if usage.context_tokens == 0 {
-        usage.context_tokens = preceding.unwrap_or(0);
-    }
-    // absorb_usage summed tail rows into the lifetime counters — a
-    // partial window must not masquerade as lifetime totals.
-    usage.lifetime_input_tokens = 0;
-    usage.lifetime_cached_tokens = 0;
-    usage
+        let live = live_nodes(&graph, head);
+        if live.is_empty() { return None; }
+        let ids: Vec<_> = graph.iter().rev().filter(|row| live.contains(&row.node_id))
+            .take(32).map(|row| row.node_id).collect();
+        let mut stmt = conn.prepare(
+            "SELECT chat_message, metadata FROM message_nodes WHERE session_id = ?1 AND node_id = ?2",
+        ).ok()?;
+        let mut usage = UsageSample::default();
+        let mut preceding = None;
+        let mut payload_bytes = 0u64;
+        for id in ids.into_iter().rev() {
+            let (raw, meta): (String, Option<String>) = stmt.query_row(
+                rusqlite::params![session_id, id], |r| Ok((r.get(0)?, r.get(1)?)),
+            ).ok()?;
+            payload_bytes = payload_bytes.checked_add(raw.len() as u64)?
+                .checked_add(meta.as_ref().map_or(0, |m| m.len() as u64))?;
+            if payload_bytes > crate::transaction::max_transcript_bytes() { return None; }
+            let message = crate::payload::decode_record(&raw).ok()?;
+            if !message.is_object() { return None; }
+            if let Some(meta) = meta {
+                let meta = crate::payload::decode_record(&meta).ok()?;
+                if let Some(n) = meta.get("num_tokens_preceding").and_then(Value::as_u64) { preceding = Some(n); }
+            }
+            absorb_usage(&message, &mut usage, true);
+        }
+        if usage.context_state != gobstopper_core::model::ContextState::Reported {
+            if let Some(n) = preceding { usage.context_tokens = n; usage.context_state = gobstopper_core::model::ContextState::Unknown; }
+        }
+        usage.lifetime_input_tokens = 0;
+        usage.lifetime_cached_tokens = 0;
+        usage.lifetime_scope = gobstopper_core::model::LifetimeScope::Absent;
+        Some(usage)
+    }).unwrap_or_else(|| { let mut usage = UsageSample::default(); usage.invalidate_context(); usage })
 }
 
 /// Deterministic byte identity for one session: a `session_meta` record
@@ -392,8 +443,7 @@ pub fn export_bytes(db: &Path, session_id: &str) -> Result<Vec<u8>, AdapterError
     out
 }
 
-/// Export using an existing connection — used inside write transactions
-/// so the identity check and the mutation see the same snapshot.
+/// Export metadata and nodes using the same pinned read transaction.
 fn export_bytes_conn(
     conn: &Connection,
     db: &Path,
@@ -436,19 +486,29 @@ fn export_bytes_conn(
         .map_err(rusqlite_io(db))?;
     let mut out = serde_json::to_vec(&session).unwrap_or_default();
     out.push(b'\n');
-    for row in rows {
+    for (index, row) in rows.enumerate() {
+        if index >= gobstopper_core::validation::MAX_ITEMS - 1 {
+            return Err(AdapterError::InvalidEdit("transcript exceeds record limit"));
+        }
         let row = row.map_err(rusqlite_io(db))?;
         // chat_message and metadata are JSON text columns; embed them as
         // values rather than escaped strings so consumers parse once.
         let mut record = row;
         for key in ["chat_message", "metadata"] {
             if let Some(raw) = record.get(key).and_then(Value::as_str) {
-                if let Ok(parsed) = serde_json::from_str::<Value>(raw) {
-                    record[key] = parsed;
-                }
+                let parsed = crate::payload::decode_record(raw).map_err(|_| {
+                    AdapterError::InvalidEdit("Devin store contains invalid or ambiguous JSON")
+                })?;
+                record[key] = parsed;
             }
         }
-        out.extend_from_slice(&serde_json::to_vec(&record).unwrap_or_default());
+        let encoded = serde_json::to_vec(&record).unwrap_or_default();
+        if out.len().saturating_add(encoded.len()).saturating_add(1) as u64
+            > crate::transaction::max_transcript_bytes()
+        {
+            return Err(AdapterError::InvalidEdit("transcript exceeds byte limit"));
+        }
+        out.extend_from_slice(&encoded);
         out.push(b'\n');
     }
     Ok(out)
@@ -461,7 +521,10 @@ fn export_bytes_conn(
 /// (a `file_compactor` summary node lands on the main chain). Print-mode
 /// `-p "/compact"` is a silent no-op by contrast — verified empirically.
 ///
-/// The caller must already have proved the session's flock is free;
+/// The caller should make an idle-session observation before dispatch; this
+/// observation does not establish lifetime custody. Provider session/load must
+/// reject an already-owned session; qualification of that contract is separate.
+///
 /// `session/load` on a live-owned session would fork the context the
 /// TUI holds. Initialize and session/load are acknowledged sequentially
 /// before dispatching /compact. Success needs both its acknowledgment and
@@ -890,13 +953,7 @@ pub fn acp_compact_in_home(
 /// Session id and working directory from an export file's first record.
 /// Used when a detached export is passed to `plan`/`verify` by path.
 pub fn scan_meta_export(path: &Path) -> (Option<String>, Option<PathBuf>) {
-    let Ok(bytes) = crate::transaction::read(path) else {
-        return (None, None);
-    };
-    let Some(line) = bytes.split(|b| *b == b'\n').next() else {
-        return (None, None);
-    };
-    let Ok(record) = serde_json::from_slice::<Value>(line) else {
+    let Some(record) = crate::payload::head_records(path, 1).into_iter().next() else {
         return (None, None);
     };
     if record.get("type").and_then(Value::as_str) != Some("session_meta") {
@@ -917,16 +974,24 @@ pub fn scan_meta_export(path: &Path) -> (Option<String>, Option<PathBuf>) {
 /// Token accounting from a detached export file.
 pub fn scan_usage_export(path: &Path) -> UsageSample {
     let Ok(bytes) = crate::transaction::read(path) else {
-        return UsageSample::default();
+        let mut usage = UsageSample::default();
+        usage.invalidate_context();
+        return usage;
     };
-    let Ok((_, rows)) = parse_export(&bytes) else {
-        return UsageSample::default();
+    let handle = SessionHandle {
+        provider: Provider::Devin,
+        session_id: "detached".into(),
+        path: path.into(),
+        cwd: None,
+        age_secs: u64::MAX,
     };
-    let mut usage = UsageSample::default();
-    for row in &rows {
-        absorb_usage(&row.message, &mut usage, true);
-    }
-    usage
+    load_bytes(handle, &bytes)
+        .map(|t| t.usage)
+        .unwrap_or_else(|_| {
+            let mut usage = UsageSample::default();
+            usage.invalidate_context();
+            usage
+        })
 }
 
 /// Parse a session into a normalized transcript. `handle.path` may be the
@@ -941,17 +1006,20 @@ pub fn load(handle: SessionHandle) -> Result<Transcript, AdapterError> {
     load_bytes(handle, &bytes)
 }
 
-/// Rewrite `elidable` `chat_message` payloads inside a detached export
-/// file. The provider store is never a valid target: `sessions.db` writes
-/// require the guarded, still-unwired transactional path, so applying to
-/// it is refused here as defense in depth.
-pub fn apply(path: &Path, edits: &[gobstopper_core::plan::Edit]) -> Result<u64, AdapterError> {
-    if is_store_path(path) {
-        return Err(AdapterError::UnsupportedProvider);
-    }
-    crate::transaction::apply(Provider::Devin, path, |candidate| {
-        apply_inner(candidate, edits)
-    })
+/// Direct path mutation is disabled, including detached-looking paths.
+/// A caller-provided filename does not prove ownership; use [`transform`].
+pub fn apply(_path: &Path, _edits: &[gobstopper_core::plan::Edit]) -> Result<u64, AdapterError> {
+    Err(AdapterError::DirectMutationDisabled)
+}
+
+/// Transform a canonical detached export in memory. This never opens the
+/// provider database or changes the caller's source bytes.
+pub fn transform(
+    original: &[u8],
+    edits: &[gobstopper_core::plan::Edit],
+) -> Result<Vec<u8>, AdapterError> {
+    crate::payload::check_edit_bounds(edits)?;
+    crate::transaction::prepare(Provider::Devin, original, |text| apply_inner(text, edits))
 }
 
 fn stub_for(template: &str, bytes: u64, kind: &str) -> String {
@@ -961,10 +1029,12 @@ fn stub_for(template: &str, bytes: u64, kind: &str) -> String {
 }
 
 fn elide_record(line: &str, stub_template: &str, stub_override: Option<&str>) -> (String, u64) {
-    let Ok(mut record) = serde_json::from_str::<Value>(line) else {
+    let Ok(mut record) = crate::payload::decode_record(line) else {
         return (line.to_string(), 0);
     };
-    if record.get("type").and_then(Value::as_str) != Some("message_node") {
+    if record.get("type").and_then(Value::as_str) != Some("message_node")
+        || record.pointer("/chat_message/role").and_then(Value::as_str) != Some("tool")
+    {
         return (line.to_string(), 0);
     }
     let Some(content) = record
@@ -1033,21 +1103,6 @@ fn digest_message(digest: &gobstopper_core::plan::DigestBlock) -> Value {
     })
 }
 
-/// Whether a stored `chat_message` is one of our injected digest nodes —
-/// used by `restore_store` to distinguish them from provider writes.
-fn is_digest_message(message: &Value) -> bool {
-    message.get("role").and_then(Value::as_str) == Some("user")
-        && message
-            .get("content")
-            .and_then(Value::as_str)
-            .is_some_and(|c| c.starts_with(DIGEST_MARKER))
-        && message
-            .get("metadata")
-            .and_then(|m| m.get("is_user_input"))
-            .and_then(Value::as_bool)
-            .unwrap_or(false)
-}
-
 fn apply_inner(
     original: &str,
     edits: &[gobstopper_core::plan::Edit],
@@ -1061,8 +1116,7 @@ fn apply_inner(
                 stub_template,
                 per_item_stubs,
             } => {
-                let targets: std::collections::HashSet<usize> =
-                    line_indexes.iter().copied().collect();
+                let targets = crate::payload::elision_targets(Provider::Devin, &raw, line_indexes)?;
                 let mut out = String::with_capacity(raw.len());
                 for (idx, line) in raw.split_inclusive('\n').enumerate() {
                     if !targets.contains(&idx) {
@@ -1090,7 +1144,7 @@ fn apply_inner(
                 let mut last_node: Option<i64> = None;
                 let mut meta_line: Option<usize> = None;
                 for (index, line) in raw.lines().enumerate() {
-                    let Ok(record) = serde_json::from_str::<Value>(line) else {
+                    let Ok(record) = crate::payload::decode_record(line) else {
                         continue;
                     };
                     match record.get("type").and_then(Value::as_str) {
@@ -1111,7 +1165,15 @@ fn apply_inner(
                         "devin export has no session head for digest attachment",
                     ));
                 };
-                let new_id = last_node.map_or(0, |m| m.saturating_add(1));
+                let (parsed_head, rows) = parse_export(raw.as_bytes())?;
+                if parsed_head != Some(head) || live_nodes(&rows, parsed_head).is_empty() {
+                    return Err(AdapterError::InvalidEdit(
+                        "Devin digest attachment has ambiguous or broken linkage",
+                    ));
+                }
+                let new_id = last_node
+                    .and_then(|m| m.checked_add(1))
+                    .ok_or(AdapterError::InvalidEdit("Devin node identity exhausted"))?;
                 let mut lines: Vec<String> = raw.split('\n').map(str::to_string).collect();
                 let mut meta: Value = serde_json::from_str(&lines[meta_index]).map_err(|_| {
                     AdapterError::InvalidEdit("devin session_meta is not parseable")
@@ -1148,331 +1210,32 @@ pub struct StoreReport {
     pub resume_hint: String,
 }
 
-/// One `(node_id, raw chat_message)` pair in `ORDER BY node_id` — the
-/// same order export lines use, so export `line_index` i maps to
-/// `nodes[i - 1]` (line 0 is `session_meta`).
-fn store_nodes(
-    conn: &Connection,
-    db: &Path,
-    session_id: &str,
-) -> Result<Vec<(i64, String)>, AdapterError> {
-    let mut stmt = conn
-        .prepare(
-            "SELECT node_id, chat_message FROM message_nodes \
-             WHERE session_id = ?1 ORDER BY node_id",
-        )
-        .map_err(rusqlite_io(db))?;
-    let rows = stmt
-        .query_map([session_id], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?))
-        })
-        .map_err(rusqlite_io(db))?;
-    let mut out = Vec::new();
-    for row in rows {
-        out.push(row.map_err(rusqlite_io(db))?);
-    }
-    Ok(out)
-}
-
-/// Rewrite elided `chat_message` payloads and inject digest nodes inside
-/// the session store, in one immediate transaction.
-///
-/// Safety order: refuse while the provider holds the session lock, then
-/// re-export inside the transaction and require the canonical sha to
-/// equal `source_sha256` (the bytes the plan was computed against), so
-/// any concurrent provider write between plan and apply aborts cleanly.
-/// Each elide is a conditional `UPDATE ... WHERE chat_message = <raw>` —
-/// zero rows means intra-transaction inconsistency and rolls back.
-/// A digest becomes a new `message_nodes` row whose `parent_node_id` is
-/// the old head, plus a conditional `main_chain_id` move; verification
-/// re-exports the candidate state and rejects any new finding before
-/// commit.
+/// Direct provider-store writes are disabled until compatible lifetime custody
+/// and target/recovery binding are qualified. Refusal precedes path resolution,
+/// database opening, lock probing and every other effect.
 pub fn apply_store(
-    root: &Path,
-    session_id: &str,
-    source_sha256: &str,
-    edits: &[gobstopper_core::plan::Edit],
+    _root: &Path,
+    _session_id: &str,
+    _source_sha256: &str,
+    _edits: &[gobstopper_core::plan::Edit],
 ) -> Result<StoreReport, AdapterError> {
-    use gobstopper_core::plan::Edit;
-    if edits
-        .iter()
-        .any(|e| matches!(e, Edit::ProviderCompact { .. } | Edit::CacheEdit { .. }))
-    {
-        return Err(AdapterError::UnsupportedProvider);
-    }
-    let db = db_path(root);
-    if session_active(root, session_id) {
-        return Err(AdapterError::InvalidEdit(
-            "session is live (provider holds its lock); compact with /compact in-session",
-        ));
-    }
-    let mut conn = open_readwrite(&db)?;
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(rusqlite_io(&db))?;
-    let report = (|| -> Result<StoreReport, AdapterError> {
-        let before = export_bytes_conn(&tx, &db, session_id)?;
-        if crate::copy::sha256(&before) != source_sha256 {
-            return Err(AdapterError::ChangedDuringWrite { path: db.clone() });
-        }
-        let nodes = store_nodes(&tx, &db, session_id)?;
-        let mut reclaimed = 0u64;
-        let mut rewritten = 0u64;
-        let mut digest_node_id = None;
-        for edit in edits {
-            match edit {
-                Edit::Elide {
-                    line_indexes,
-                    stub_template,
-                    per_item_stubs,
-                } => {
-                    for &line_index in line_indexes {
-                        let Some((node_id, raw)) =
-                            line_index.checked_sub(1).and_then(|i| nodes.get(i))
-                        else {
-                            return Err(AdapterError::InvalidEdit(
-                                "elide target line is out of range for this session",
-                            ));
-                        };
-                        let Ok(mut message) = serde_json::from_str::<Value>(raw) else {
-                            continue;
-                        };
-                        let Some(content) = message.get_mut("content") else {
-                            continue;
-                        };
-                        let eligible = crate::payload::eligible_bytes(content);
-                        if eligible == 0 {
-                            continue;
-                        }
-                        let stub = per_item_stubs
-                            .get(&line_index)
-                            .cloned()
-                            .unwrap_or_else(|| stub_for(stub_template, eligible, "tool_result"));
-                        let shrunk = crate::payload::elide(content, stub);
-                        if shrunk == 0 {
-                            continue;
-                        }
-                        let candidate = serde_json::to_string(&message).map_err(|_| {
-                            AdapterError::InvalidEdit("rewritten message not serializable")
-                        })?;
-                        let changed = tx
-                            .execute(
-                                "UPDATE message_nodes SET chat_message = ?1 \
-                                 WHERE session_id = ?2 AND node_id = ?3 AND chat_message = ?4",
-                                rusqlite::params![candidate, session_id, node_id, raw],
-                            )
-                            .map_err(rusqlite_io(&db))?;
-                        if changed != 1 {
-                            return Err(AdapterError::ChangedDuringWrite { path: db.clone() });
-                        }
-                        reclaimed += shrunk;
-                        rewritten += 1;
-                    }
-                }
-                Edit::InjectDigest { digest } => {
-                    let head: Option<i64> = tx
-                        .query_row(
-                            "SELECT main_chain_id FROM sessions WHERE id = ?1",
-                            [session_id],
-                            |r| r.get(0),
-                        )
-                        .map_err(rusqlite_io(&db))?;
-                    let Some(head) = head else {
-                        return Err(AdapterError::InvalidEdit("session has no main chain head"));
-                    };
-                    let new_id: i64 = tx
-                        .query_row(
-                            "SELECT COALESCE(MAX(node_id), -1) + 1 FROM message_nodes \
-                             WHERE session_id = ?1",
-                            [session_id],
-                            |r| r.get(0),
-                        )
-                        .map_err(rusqlite_io(&db))?;
-                    let message = serde_json::to_string(&digest_message(digest)).map_err(|_| {
-                        AdapterError::InvalidEdit("digest message not serializable")
-                    })?;
-                    tx.execute(
-                        "INSERT INTO message_nodes (session_id, node_id, parent_node_id, \
-                         chat_message, created_at, metadata) VALUES (?1, ?2, ?3, ?4, ?5, NULL)",
-                        rusqlite::params![session_id, new_id, head, message, now_secs() as i64],
-                    )
-                    .map_err(rusqlite_io(&db))?;
-                    let moved = tx
-                        .execute(
-                            "UPDATE sessions SET main_chain_id = ?1 \
-                             WHERE id = ?2 AND main_chain_id = ?3",
-                            rusqlite::params![new_id, session_id, head],
-                        )
-                        .map_err(rusqlite_io(&db))?;
-                    if moved != 1 {
-                        return Err(AdapterError::ChangedDuringWrite { path: db.clone() });
-                    }
-                    digest_node_id = Some(new_id);
-                }
-                Edit::ProviderCompact { .. } | Edit::CacheEdit { .. } => {}
-            }
-        }
-        let after = export_bytes_conn(&tx, &db, session_id)?;
-        let before_findings = crate::verify::verify(Provider::Devin, &before);
-        let after_findings = crate::verify::verify(Provider::Devin, &after);
-        if after_findings.iter().any(|f| !before_findings.contains(f)) {
-            return Err(AdapterError::InvalidEdit(
-                "rewrite introduces structural findings; rolled back",
-            ));
-        }
-        Ok(StoreReport {
-            nodes_rewritten: rewritten,
-            digest_node_id,
-            reclaimed_bytes: reclaimed,
-            export_sha256: crate::copy::sha256(&after),
-            resume_hint: format!("devin --resume {session_id}"),
-        })
-    })()?;
-    tx.commit().map_err(rusqlite_io(&db))?;
-    Ok(report)
+    Err(AdapterError::DirectMutationDisabled)
 }
 
-/// Undo a store apply: restore the snapshot's `chat_message` payloads and
-/// `main_chain_id`, and delete injected digest nodes. Refuses when the
-/// session has any node the snapshot does not know and that is not one of
-/// ours — restoring would orphan a genuine provider write.
+/// Direct store restoration is disabled before inspecting the supplied store
+/// or snapshot. Matching session IDs alone cannot authorize a database write.
 pub fn restore_store(
-    root: &Path,
-    session_id: &str,
-    snapshot_bytes: &[u8],
+    _root: &Path,
+    _session_id: &str,
+    _snapshot_bytes: &[u8],
 ) -> Result<StoreReport, AdapterError> {
-    if snapshot_bytes.len() as u64 > crate::transaction::max_transcript_bytes() {
-        return Err(AdapterError::InvalidEdit(
-            "snapshot exceeds transcript byte limit",
-        ));
-    }
-    // Node IDs are local to a session and frequently overlap. Reject a
-    // foreign snapshot before opening the target database for writes.
-    let text = std::str::from_utf8(snapshot_bytes)
-        .map_err(|_| AdapterError::InvalidEdit("devin snapshot is not valid UTF-8"))?;
-    let mut records = text.lines();
-    let meta: Value = records
-        .next()
-        .and_then(|line| serde_json::from_str(line).ok())
-        .ok_or(AdapterError::InvalidEdit("snapshot lacks session metadata"))?;
-    if meta.get("type").and_then(Value::as_str) != Some("session_meta")
-        || meta.get("session_id").and_then(Value::as_str) != Some(session_id)
-    {
-        return Err(AdapterError::InvalidEdit(
-            "snapshot belongs to a different session",
-        ));
-    }
-    for (index, line) in records.enumerate() {
-        if index + 1 >= gobstopper_core::validation::MAX_ITEMS {
-            return Err(AdapterError::InvalidEdit("snapshot exceeds record limit"));
-        }
-        let record: Value = serde_json::from_str(line)
-            .map_err(|_| AdapterError::InvalidEdit("snapshot contains invalid JSON"))?;
-        if record.get("type").and_then(Value::as_str) != Some("message_node") {
-            return Err(AdapterError::InvalidEdit(
-                "snapshot contains unexpected record type",
-            ));
-        }
-    }
-    let db = db_path(root);
-    if session_active(root, session_id) {
-        return Err(AdapterError::InvalidEdit(
-            "session is live (provider holds its lock); restore after it closes",
-        ));
-    }
-    let (snapshot_head, snapshot_rows) = parse_export(snapshot_bytes)?;
-    let mut snapshot_msgs = std::collections::HashMap::new();
-    for row in &snapshot_rows {
-        snapshot_msgs.insert(row.node_id, row.message.clone());
-    }
-    let mut conn = open_readwrite(&db)?;
-    let tx = conn
-        .transaction_with_behavior(TransactionBehavior::Immediate)
-        .map_err(rusqlite_io(&db))?;
-    let report = (|| -> Result<StoreReport, AdapterError> {
-        let before = export_bytes_conn(&tx, &db, session_id)?;
-        let nodes = store_nodes(&tx, &db, session_id)?;
-        let mut injected = Vec::new();
-        for (node_id, raw) in &nodes {
-            match snapshot_msgs.get(node_id) {
-                Some(_) => {}
-                None => {
-                    let parsed: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
-                    if is_digest_message(&parsed) {
-                        injected.push(*node_id);
-                    } else {
-                        // A foreign node written since the snapshot —
-                        // restoring would orphan provider state.
-                        return Err(AdapterError::ChangedDuringWrite { path: db.clone() });
-                    }
-                }
-            }
-        }
-        let mut rewritten = 0u64;
-        for (node_id, message) in &snapshot_msgs {
-            let text = serde_json::to_string(message)
-                .map_err(|_| AdapterError::InvalidEdit("snapshot message not serializable"))?;
-            let changed = tx
-                .execute(
-                    "UPDATE message_nodes SET chat_message = ?1 \
-                     WHERE session_id = ?2 AND node_id = ?3",
-                    rusqlite::params![text, session_id, node_id],
-                )
-                .map_err(rusqlite_io(&db))?;
-            if changed == 0 {
-                return Err(AdapterError::ChangedDuringWrite { path: db.clone() });
-            }
-            rewritten += 1;
-        }
-        for node_id in &injected {
-            tx.execute(
-                "DELETE FROM message_nodes WHERE session_id = ?1 AND node_id = ?2",
-                rusqlite::params![session_id, node_id],
-            )
-            .map_err(rusqlite_io(&db))?;
-        }
-        let current_head: Option<i64> = tx
-            .query_row(
-                "SELECT main_chain_id FROM sessions WHERE id = ?1",
-                [session_id],
-                |r| r.get(0),
-            )
-            .map_err(rusqlite_io(&db))?;
-        if current_head != snapshot_head {
-            let moved = tx
-                .execute(
-                    "UPDATE sessions SET main_chain_id = ?1 \
-                     WHERE id = ?2 AND main_chain_id = ?3",
-                    rusqlite::params![snapshot_head, session_id, current_head],
-                )
-                .map_err(rusqlite_io(&db))?;
-            if moved != 1 {
-                return Err(AdapterError::ChangedDuringWrite { path: db.clone() });
-            }
-        }
-        let after = export_bytes_conn(&tx, &db, session_id)?;
-        let before_findings = crate::verify::verify(Provider::Devin, &before);
-        let after_findings = crate::verify::verify(Provider::Devin, &after);
-        if after_findings.iter().any(|f| !before_findings.contains(f)) {
-            return Err(AdapterError::InvalidEdit(
-                "restore introduces findings; rolled back",
-            ));
-        }
-        Ok(StoreReport {
-            nodes_rewritten: rewritten,
-            digest_node_id: None,
-            reclaimed_bytes: 0,
-            export_sha256: crate::copy::sha256(&after),
-            resume_hint: format!("devin --resume {session_id}"),
-        })
-    })()?;
-    tx.commit().map_err(rusqlite_io(&db))?;
-    Ok(report)
+    Err(AdapterError::DirectMutationDisabled)
 }
 
 /// Assistant `tool_calls[].id` → call name/label, used to annotate the
 /// tool results that answer them and for orphan checks in `verify`.
 struct NodeRow {
+    line_index: usize,
     node_id: i64,
     parent_node_id: Option<i64>,
     message: Value,
@@ -1484,6 +1247,8 @@ fn parse_export(bytes: &[u8]) -> Result<(Option<i64>, Vec<NodeRow>), AdapterErro
         .map_err(|_| AdapterError::InvalidEdit("devin export is not valid UTF-8"))?;
     let mut main_chain_id = None;
     let mut rows = Vec::new();
+    let mut saw_meta = false;
+    let mut ambiguous = false;
     for (index, line) in text.lines().enumerate() {
         if index >= gobstopper_core::validation::MAX_ITEMS {
             return Err(AdapterError::InvalidEdit("transcript exceeds record limit"));
@@ -1491,11 +1256,17 @@ fn parse_export(bytes: &[u8]) -> Result<(Option<i64>, Vec<NodeRow>), AdapterErro
         if line.trim().is_empty() {
             continue;
         }
-        let Ok(record) = serde_json::from_str::<Value>(line) else {
+        let Ok(record) = crate::payload::decode_record(line) else {
+            ambiguous = true;
             continue;
         };
         match record.get("type").and_then(Value::as_str) {
             Some("session_meta") => {
+                ambiguous |= saw_meta
+                    || !record
+                        .get("main_chain_id")
+                        .is_some_and(|v| v.is_null() || v.as_i64().is_some_and(|id| id >= 0));
+                saw_meta = true;
                 main_chain_id = record
                     .get("main_chain_id")
                     .and_then(Value::as_i64)
@@ -1503,14 +1274,20 @@ fn parse_export(bytes: &[u8]) -> Result<(Option<i64>, Vec<NodeRow>), AdapterErro
             }
             Some("message_node") => {
                 let Some(node_id) = record.get("node_id").and_then(Value::as_i64) else {
+                    ambiguous = true;
                     continue;
                 };
+                ambiguous |= !record
+                    .get("parent_node_id")
+                    .is_some_and(|v| v.is_null() || v.as_i64().is_some_and(|id| id >= 0));
                 let message = record.get("chat_message").cloned().unwrap_or(Value::Null);
+                ambiguous |= !message.is_object();
                 let num_tokens_preceding = record
                     .get("metadata")
                     .and_then(|m| m.get("num_tokens_preceding"))
                     .and_then(Value::as_u64);
                 rows.push(NodeRow {
+                    line_index: index,
                     node_id,
                     parent_node_id: record.get("parent_node_id").and_then(Value::as_i64),
                     message,
@@ -1520,20 +1297,45 @@ fn parse_export(bytes: &[u8]) -> Result<(Option<i64>, Vec<NodeRow>), AdapterErro
             _ => continue,
         }
     }
-    Ok((main_chain_id, rows))
+    Ok((
+        if ambiguous || !saw_meta {
+            None
+        } else {
+            main_chain_id
+        },
+        rows,
+    ))
 }
 
 /// Node ids reachable by walking `parent_node_id` up from the chain head.
 fn live_nodes(rows: &[NodeRow], head: Option<i64>) -> std::collections::HashSet<i64> {
-    let parents: std::collections::HashMap<i64, Option<i64>> =
-        rows.iter().map(|r| (r.node_id, r.parent_node_id)).collect();
+    let mut parents = std::collections::HashMap::new();
+    for row in rows {
+        if row.node_id < 0
+            || parents
+                .insert(row.node_id, (row.parent_node_id, row.line_index))
+                .is_some()
+        {
+            return Default::default();
+        }
+    }
     let mut live = std::collections::HashSet::new();
     let mut cursor = head;
     while let Some(id) = cursor {
+        let Some((parent, line)) = parents.get(&id) else {
+            return Default::default();
+        };
         if !live.insert(id) {
-            break; // cycle guard
+            return Default::default();
         }
-        cursor = parents.get(&id).copied().flatten();
+        if parent.is_some_and(|id| {
+            parents
+                .get(&id)
+                .is_none_or(|(_, parent_line)| parent_line >= line)
+        }) {
+            return Default::default();
+        }
+        cursor = *parent;
     }
     live
 }
@@ -1542,29 +1344,46 @@ fn live_nodes(rows: &[NodeRow], head: Option<i64>) -> std::collections::HashSet<
 /// gates `context_tokens` (the latest live assistant reading wins) while
 /// lifetime counters accumulate across every assistant message.
 fn absorb_usage(message: &Value, usage: &mut UsageSample, on_live: bool) {
+    use gobstopper_core::model::{ContextState, LifetimeScope};
     if message.get("role").and_then(Value::as_str) != Some("assistant") {
         return;
     }
-    let metrics = message.pointer("/metadata/metrics");
-    let get = |key: &str| {
-        metrics
-            .and_then(|m| m.get(key))
-            .and_then(Value::as_u64)
-            .unwrap_or(0)
-    };
-    let input = get("input_tokens")
-        .saturating_add(get("cache_read_tokens"))
-        .saturating_add(get("cache_creation_tokens"));
-    if on_live {
-        let context = input.saturating_add(get("output_tokens"));
-        if context > 0 {
-            usage.context_tokens = context;
+    let parts = (|| {
+        let metrics = message.pointer("/metadata/metrics")?.as_object()?;
+        let component = |key: &str| match metrics.get(key) {
+            None => Some(0),
+            Some(value) => value.as_u64(),
+        };
+        let input = metrics
+            .get("input_tokens")?
+            .as_u64()?
+            .saturating_add(component("cache_read_tokens")?)
+            .saturating_add(component("cache_creation_tokens")?);
+        Some((
+            input,
+            component("cache_read_tokens")?,
+            input.saturating_add(component("output_tokens")?),
+        ))
+    })();
+    let Some((input, cached, context)) = parts else {
+        usage.lifetime_scope = LifetimeScope::Partial;
+        if on_live {
+            usage.invalidate_context();
         }
+        return;
+    };
+    if on_live {
+        usage.context_tokens = context;
+        usage.context_state = ContextState::Reported;
     }
     usage.lifetime_input_tokens = usage.lifetime_input_tokens.saturating_add(input);
     usage.lifetime_cached_tokens = usage
         .lifetime_cached_tokens
-        .saturating_add(get("cache_read_tokens"));
+        .saturating_add(cached)
+        .min(usage.lifetime_input_tokens);
+    if usage.lifetime_scope != LifetimeScope::Partial {
+        usage.lifetime_scope = LifetimeScope::Full;
+    }
 }
 
 fn item_tokens(message: &Value) -> u64 {
@@ -1580,27 +1399,56 @@ fn item_tokens(message: &Value) -> u64 {
     )
 }
 
-fn tool_call_map(rows: &[NodeRow]) -> std::collections::HashMap<String, String> {
-    let mut map = std::collections::HashMap::new();
-    for row in rows {
-        if row.message.get("role").and_then(Value::as_str) != Some("assistant") {
-            continue;
-        }
-        let Some(calls) = row.message.get("tool_calls").and_then(Value::as_array) else {
-            continue;
-        };
-        for call in calls {
-            if let Some(id) = call.get("id").and_then(Value::as_str) {
-                map.entry(id.to_string()).or_insert_with(|| {
-                    call.get("name")
-                        .and_then(Value::as_str)
-                        .unwrap_or("?")
-                        .to_string()
-                });
-            }
+fn collect_tool_calls(message: &Value, map: &mut std::collections::HashMap<String, String>) {
+    if message.get("role").and_then(Value::as_str) != Some("assistant") {
+        return;
+    }
+    let Some(calls) = message.get("tool_calls").and_then(Value::as_array) else {
+        return;
+    };
+    for call in calls {
+        if let Some(id) = call
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| valid_tool_id(id))
+        {
+            map.entry(id.to_string()).or_insert_with(|| {
+                call.get("name")
+                    .and_then(Value::as_str)
+                    .unwrap_or("?")
+                    .to_string()
+            });
         }
     }
-    map
+}
+
+pub(crate) fn valid_tool_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
+}
+
+/// Exact identity takes precedence. Otherwise one supported '#' prefix must
+/// uniquely resolve; overlapping nonce namespaces are ambiguous, never guessed.
+pub(crate) fn matching_tool_call<'a, V>(
+    calls: &std::collections::HashMap<String, V>,
+    result: &'a str,
+) -> Option<&'a str> {
+    if !valid_tool_id(result) {
+        return None;
+    }
+    if calls.contains_key(result) {
+        return Some(result);
+    }
+    let mut found = None;
+    for (index, _) in result.match_indices('#') {
+        let prefix = &result[..index + 1];
+        if index + 1 < result.len() && calls.contains_key(prefix) {
+            if found.is_some() {
+                return None;
+            }
+            found = Some(prefix);
+        }
+    }
+    found
 }
 
 fn user_prompt_summary(message: &Value) -> Option<String> {
@@ -1634,14 +1482,16 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                 .map(|id| (r.node_id, id.to_string()))
         })
         .collect();
-    let calls = tool_call_map(&rows);
+    let mut calls = std::collections::HashMap::new();
     let mut usage = UsageSample::default();
     let mut preceding_on_live: Option<u64> = None;
     let mut items = Vec::with_capacity(rows.len() + 1);
-    for (index, row) in rows.iter().enumerate() {
-        // +1: export line 0 is the session_meta record.
-        let line_index = index + 1;
+    for row in &rows {
+        let line_index = row.line_index;
         let on_live = live.contains(&row.node_id);
+        if on_live {
+            collect_tool_calls(&row.message, &mut calls);
+        }
         let role = row
             .message
             .get("role")
@@ -1680,21 +1530,27 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
                     .get("tool_call_id")
                     .and_then(Value::as_str)
                     .map(str::to_string);
-                // `tool_call_id` may carry a `#<nonce>` suffix beyond the
-                // call's `id`; match exactly or as a prefix.
                 let name = id
                     .as_deref()
-                    .and_then(|i| {
-                        calls.get(i).cloned().or_else(|| {
-                            calls
-                                .iter()
-                                .find(|(cid, _)| i.starts_with(cid.as_str()))
-                                .map(|(_, n)| n.clone())
-                        })
-                    })
+                    .and_then(|id| matching_tool_call(&calls, id))
+                    .and_then(|id| calls.get(id))
+                    .cloned()
                     .unwrap_or_else(|| "?".to_string());
                 let content = row.message.get("content").cloned().unwrap_or(Value::Null);
-                let elidable = crate::payload::eligible_bytes(&content);
+                let supported = id.as_deref().is_some_and(valid_tool_id)
+                    && row.message.as_object().is_some_and(|object| {
+                        object.keys().all(|key| {
+                            matches!(
+                                key.as_str(),
+                                "role" | "message_id" | "content" | "tool_call_id" | "metadata"
+                            )
+                        })
+                    });
+                let elidable = if supported {
+                    crate::payload::eligible_bytes(&content)
+                } else {
+                    0
+                };
                 (
                     ItemKind::ToolResult,
                     (elidable > 0).then_some(elidable),
@@ -1717,7 +1573,7 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
             kind,
             est_tokens,
             elidable_bytes,
-            elidable_parts: 1,
+            elidable_parts: u32::from(elidable_bytes.is_some()),
             label,
             summary: user_prompt_summary(&row.message),
             uuid: message_ids
@@ -1734,8 +1590,29 @@ pub fn load_bytes(handle: SessionHandle, bytes: &[u8]) -> Result<Transcript, Ada
             payload_sha256,
         });
     }
-    if usage.context_tokens == 0 {
-        usage.context_tokens = preceding_on_live.unwrap_or(0);
+    if usage.context_state != gobstopper_core::model::ContextState::Reported {
+        if let Some(n) = preceding_on_live {
+            // This excludes the current message, so it is an estimator only.
+            usage.context_tokens = n;
+            usage.context_state = gobstopper_core::model::ContextState::Unknown;
+        }
+    }
+    if live.is_empty() && !rows.is_empty() {
+        usage.invalidate_context();
+        usage.lifetime_scope = gobstopper_core::model::LifetimeScope::Partial;
+    }
+    if crate::verify::verify(Provider::Devin, bytes)
+        .iter()
+        .any(|f| f.code == "duplicate_tool_call_id")
+    {
+        usage.invalidate_context();
+        for item in &mut items {
+            item.est_tokens = 0;
+            item.elidable_bytes = None;
+            item.elidable_parts = 0;
+            item.tool_use_ids.clear();
+            item.payload_sha256 = None;
+        }
     }
     Ok(Transcript {
         session: handle,
@@ -1925,7 +1802,7 @@ mod tests {
     #[test]
     fn context_only_scan_matches_tail_context_without_lifetime() {
         let fx = Fixture::new("tailscan");
-        fx.add_session("sess-t", "tail", 40, 1_790_006_000);
+        fx.add_session("sess-t", "tail", 39, 1_790_006_000);
         // 40 filler user nodes push the first assistant message outside
         // the 32-row tail window; only the tail assistant's metrics may
         // contribute context.
@@ -1965,6 +1842,62 @@ mod tests {
         assert_eq!(tail[0].usage.context_tokens, 2000 + 3000 + 100);
         assert_eq!(full[0].usage.lifetime_input_tokens, 111 + 2000 + 3000);
         assert_eq!(tail[0].usage.lifetime_input_tokens, 0);
+    }
+
+    #[test]
+    fn discovery_accounting_uses_pinned_live_graph_and_rejects_embedded_duplicates() {
+        let fx = Fixture::new("canonical-accounting");
+        fx.add_session("s", "fixture", 1, 1_790_006_000);
+        fx.add_node(
+            "s",
+            0,
+            None,
+            serde_json::json!({"role":"user","content":"goal"}),
+            None,
+        );
+        fx.add_node(
+            "s",
+            1,
+            Some(0),
+            assistant(
+                "live",
+                Some(serde_json::json!({"input_tokens":100,"output_tokens":2})),
+            ),
+            None,
+        );
+        fx.add_node(
+            "s",
+            2,
+            Some(0),
+            assistant(
+                "dead",
+                Some(serde_json::json!({"input_tokens":9000,"output_tokens":3})),
+            ),
+            None,
+        );
+        let conn = open_readonly(&db_path(&fx.root)).unwrap();
+        assert_eq!(scan_usage(&conn, "s").context_tokens, 102);
+        assert_eq!(scan_usage(&conn, "s").lifetime_input_tokens, 9100);
+        assert_eq!(scan_context(&conn, "s").context_tokens, 102);
+        assert_eq!(scan_context(&conn, "s").lifetime_input_tokens, 0);
+        let writer = Connection::open(db_path(&fx.root)).unwrap();
+        writer
+            .execute("UPDATE sessions SET main_chain_id = 99 WHERE id = 's'", [])
+            .unwrap();
+        assert_eq!(scan_context(&conn, "s").context_tokens, 0);
+        assert_eq!(scan_usage(&conn, "s").context_tokens, 0);
+        writer
+            .execute("UPDATE sessions SET main_chain_id = 1 WHERE id = 's'", [])
+            .unwrap();
+        writer
+            .execute(
+                "UPDATE message_nodes SET chat_message = ?1 WHERE session_id = 's' AND node_id = 1",
+                [r#"{"role":"assistant","role":"tool","content":"duplicate"}"#],
+            )
+            .unwrap();
+        assert!(export_bytes(&db_path(&fx.root), "s").is_err());
+        assert_eq!(scan_context(&conn, "s").context_tokens, 0);
+        assert_eq!(scan_usage(&conn, "s").context_tokens, 0);
     }
 
     #[test]
@@ -2066,6 +1999,45 @@ mod tests {
         held.unlock().unwrap();
         drop(held);
         assert!(!session_active(&fx.root, "sess-l"));
+        for id in [
+            "",
+            "../escape",
+            "nested/session",
+            "line\nbreak",
+            &"s".repeat(257),
+        ] {
+            assert!(session_active(&fx.root, id));
+        }
+        fs::create_dir(locks.join("directory.lock")).unwrap();
+        assert!(session_active(&fx.root, "directory"));
+        #[cfg(unix)]
+        {
+            use std::os::unix::ffi::OsStrExt;
+            use std::os::unix::fs::symlink;
+            let fifo = locks.join("pipe.lock");
+            let raw = std::ffi::CString::new(fifo.as_os_str().as_bytes()).unwrap();
+            // SAFETY: a valid fresh fixture path and mode, no external target.
+            assert_eq!(unsafe { libc::mkfifo(raw.as_ptr(), 0o600) }, 0);
+            assert!(session_active(&fx.root, "pipe"));
+            symlink(locks.join("sess-l.lock"), locks.join("linked.lock")).unwrap();
+            symlink(locks.join("absent.lock"), locks.join("dangling.lock")).unwrap();
+            assert!(session_active(&fx.root, "linked"));
+            assert!(session_active(&fx.root, "dangling"));
+
+            // The SQLite read boundary must likewise refuse special/link leaves
+            // before asking SQLite to open them. A valid database still exports.
+            assert!(open_readonly(&fifo).is_err());
+            let db_link = fx.root.join("linked.db");
+            symlink(db_path(&fx.root), &db_link).unwrap();
+            assert!(open_readonly(&db_link).is_err());
+            assert!(open_readonly(&locks).is_err());
+            assert!(open_readonly(&db_path(&fx.root)).is_ok());
+
+            let moved = fx.root.join("old-locks");
+            fs::rename(&locks, &moved).unwrap();
+            symlink(&moved, &locks).unwrap();
+            assert!(session_active(&fx.root, "sess-l"));
+        }
     }
 
     #[test]
@@ -2230,7 +2202,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_store_elides_and_injects_in_place() {
+    fn transform_export_elides_and_injects_without_writing_store() {
         let fx = Fixture::new("apply-store");
         fx.add_session("sess-w", "write", 3, 1_790_006_000);
         fx.add_node(
@@ -2257,7 +2229,7 @@ mod tests {
         fx.add_node("sess-w", 3, Some(2), assistant("done", None), None);
 
         let before = export_bytes(&db_path(&fx.root), "sess-w").unwrap();
-        let sha = crate::copy::sha256(&before);
+        let database_before = fs::read(db_path(&fx.root)).unwrap();
         let edits = vec![
             gobstopper_core::plan::Edit::Elide {
                 // export line 3 = node 2 (line 0 is session_meta).
@@ -2269,28 +2241,31 @@ mod tests {
                 digest: digest_block(),
             },
         ];
-        let report = apply_store(&fx.root, "sess-w", &sha, &edits).unwrap();
-        assert_eq!(report.nodes_rewritten, 1);
-        assert_eq!(report.digest_node_id, Some(4));
-        assert!(report.reclaimed_bytes > 0);
-
-        let elided = node_payload(&fx.root, "sess-w", 2);
+        let after = transform(&before, &edits).unwrap();
+        assert!(after.len() < before.len());
+        let records: Vec<Value> = std::str::from_utf8(&after)
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        let elided = records[3]["chat_message"]["content"].as_str().unwrap();
         assert!(elided.contains("[elided 3000 bytes]"));
         assert!(!elided.contains(&"x".repeat(3000)));
-        assert_eq!(chain_head(&fx.root, "sess-w"), 4);
-        let digest = node_payload(&fx.root, "sess-w", 4);
+        assert_eq!(records[0]["main_chain_id"], 4);
+        let digest = records[5]["chat_message"]["content"].as_str().unwrap();
         assert!(digest.contains("[gobstopper state card]"));
         assert!(digest.contains("goal: ship it"));
-
-        // The committed export still verifies clean and round-trips.
-        let after = export_bytes(&db_path(&fx.root), "sess-w").unwrap();
         assert!(crate::verify::verify(Provider::Devin, &after).is_empty());
-        let t = load(fx.handle("sess-w")).unwrap();
-        assert_eq!(t.items.len(), 5);
+        assert_eq!(
+            load_bytes(fx.handle("sess-w"), &after).unwrap().items.len(),
+            5
+        );
+        assert_eq!(fs::read(db_path(&fx.root)).unwrap(), database_before);
+        assert_eq!(export_bytes(&db_path(&fx.root), "sess-w").unwrap(), before);
     }
 
     #[test]
-    fn apply_store_aborts_on_drift_without_writes() {
+    fn disabled_apply_preserves_provider_append() {
         let fx = Fixture::new("apply-drift");
         fx.add_session("sess-d", "drift", 1, 1_790_006_000);
         fx.add_node(
@@ -2314,10 +2289,13 @@ mod tests {
         let edits = vec![gobstopper_core::plan::Edit::InjectDigest {
             digest: digest_block(),
         }];
+        let database_before = fs::read(db_path(&fx.root)).unwrap();
         let err = apply_store(&fx.root, "sess-d", &sha, &edits).unwrap_err();
-        assert!(matches!(err, AdapterError::ChangedDuringWrite { .. }));
-        assert_eq!(chain_head(&fx.root, "sess-d"), 1, "rolled back head move");
+        assert!(matches!(err, AdapterError::DirectMutationDisabled));
+        assert_eq!(fs::read(db_path(&fx.root)).unwrap(), database_before);
+        assert_eq!(chain_head(&fx.root, "sess-d"), 1);
         assert!(node_payload(&fx.root, "sess-d", 1).contains("ok"));
+        assert!(node_payload(&fx.root, "sess-d", 2).contains("new"));
     }
 
     #[test]
@@ -2344,163 +2322,255 @@ mod tests {
         held.lock_exclusive().unwrap();
         let sha = crate::copy::sha256(&export_bytes(&db_path(&fx.root), "sess-l2").unwrap());
         let err = apply_store(&fx.root, "sess-l2", &sha, &[]).unwrap_err();
-        assert!(matches!(err, AdapterError::InvalidEdit(_)));
+        assert!(matches!(err, AdapterError::DirectMutationDisabled));
         drop(held);
     }
 
+    // Capture the complete fixture tree, including SQLite WAL/SHM and lock files.
+    fn fixture_image(root: &Path) -> std::collections::BTreeMap<PathBuf, Vec<u8>> {
+        fn visit(
+            root: &Path,
+            path: &Path,
+            image: &mut std::collections::BTreeMap<PathBuf, Vec<u8>>,
+        ) {
+            if path.is_dir() {
+                for entry in fs::read_dir(path).unwrap() {
+                    visit(root, &entry.unwrap().path(), image);
+                }
+            } else {
+                image.insert(
+                    path.strip_prefix(root).unwrap().to_path_buf(),
+                    fs::read(path).unwrap(),
+                );
+            }
+        }
+        let mut image = std::collections::BTreeMap::new();
+        visit(root, root, &mut image);
+        image
+    }
+
     #[test]
-    fn copy_store_binds_the_database_target_and_operation_identity() {
-        let source = Fixture::new("copy-store-source");
-        let other = Fixture::new("copy-store-other");
-        for fixture in [&source, &other] {
-            fixture.add_session("shared-id", "same session", 0, 1_790_006_000);
+    fn disabled_store_operations_refuse_foreign_identity_and_graph_without_effects() {
+        let source = Fixture::new("disabled-source");
+        let target = Fixture::new("disabled-target");
+        for fixture in [&source, &target] {
+            fixture.add_session("same-id", "session", 0, 1_790_006_000);
             fixture.add_node(
-                "shared-id",
+                "same-id",
                 0,
                 None,
-                serde_json::json!({"role":"user", "content":"same original"}),
+                serde_json::json!({"role":"user", "content":"original"}),
                 None,
             );
         }
-        let original = export_bytes(&db_path(&source.root), "shared-id").unwrap();
-        assert_eq!(
-            export_bytes(&db_path(&other.root), "shared-id").unwrap(),
-            original
+        // Same session id and overlapping node ids do not establish store or graph identity.
+        target.add_node(
+            "same-id",
+            1,
+            Some(0),
+            assistant("foreign graph", None),
+            None,
         );
-        let hash = crate::copy::sha256(&original);
+        target.add_session("unrelated", "other", 0, 1_790_006_000);
+        target.add_node("unrelated", 0, None, assistant("preserve me", None), None);
+        let snapshot = export_bytes(&db_path(&source.root), "same-id").unwrap();
+        let target_snapshot = export_bytes(&db_path(&target.root), "same-id").unwrap();
+        let unrelated = export_bytes(&db_path(&target.root), "unrelated").unwrap();
+        let conn = Connection::open(db_path(&target.root)).unwrap();
+        conn.execute_batch(
+            "PRAGMA journal_mode=WAL; UPDATE sessions SET title='wal fixture' WHERE id='same-id';",
+        )
+        .unwrap();
+        assert!(target.root.join("sessions.db-wal").exists());
+        assert!(target.root.join("sessions.db-shm").exists());
+        let source_before = fixture_image(&source.root);
+        let target_before = fixture_image(&target.root);
         let plan = gobstopper_core::CompactionPlan {
             strategy: "structured".into(),
-            rationale: "target binding fixture".into(),
+            rationale: "refusal fixture".into(),
             context_tokens_before: 100,
             context_tokens_after: 10,
             edits: vec![gobstopper_core::Edit::InjectDigest {
                 digest: digest_block(),
             }],
         };
-        let vault = source.root.join("vault");
-        let error = crate::copy::compact_devin_store(
-            &source.handle("shared-id"),
-            &hash,
-            &plan,
-            &vault,
-            &other.root,
-        )
-        .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("differs from the planned source"));
-        assert_eq!(
-            export_bytes(&db_path(&source.root), "shared-id").unwrap(),
-            original
-        );
-        assert_eq!(
-            export_bytes(&db_path(&other.root), "shared-id").unwrap(),
-            original
-        );
-        assert!(
-            !vault.exists(),
-            "wrong target must fail before snapshot publication"
-        );
-
-        // Identical exports in different stores are distinct operations:
-        // their receipts must not collide after the second DB commits.
-        for fixture in [&source, &other] {
-            crate::copy::compact_devin_store(
-                &fixture.handle("shared-id"),
+        let hash = crate::copy::sha256(&snapshot);
+        let vault = target.root.join("vault");
+        for store in [&source, &target] {
+            assert!(matches!(
+                apply_store(&store.root, "same-id", &hash, &plan.edits),
+                Err(AdapterError::DirectMutationDisabled)
+            ));
+            // Current, foreign-store, foreign-graph, foreign-session, and malformed snapshots
+            // all reach the same refusal before a connection, lock probe, or parse.
+            for bytes in [
+                &snapshot[..],
+                &target_snapshot[..],
+                &unrelated[..],
+                b"not JSON",
+            ] {
+                assert!(matches!(
+                    restore_store(&store.root, "same-id", bytes),
+                    Err(AdapterError::DirectMutationDisabled)
+                ));
+            }
+            let error = crate::copy::compact_devin_store(
+                &source.handle("same-id"),
                 &hash,
                 &plan,
                 &vault,
-                &fixture.root,
+                &store.root,
             )
-            .unwrap();
+            .unwrap_err();
+            assert!(matches!(
+                error.downcast_ref::<AdapterError>(),
+                Some(AdapterError::DirectMutationDisabled)
+            ));
         }
-        let receipts = fs::read_dir(vault.join("operations"))
-            .unwrap()
-            .map(|entry| entry.unwrap().path())
-            .filter(|path| path.extension().is_some_and(|ext| ext == "json"))
-            .count();
-        assert_eq!(receipts, 2);
-    }
-
-    #[test]
-    fn restore_store_rejects_foreign_snapshot_with_overlapping_node_ids() {
-        let fx = Fixture::new("foreign-restore");
-        for session in ["source", "target"] {
-            fx.add_session(session, session, 0, 1_790_006_000);
-            fx.add_node(
-                session,
-                0,
-                None,
-                serde_json::json!({"role":"user", "content":session}),
-                None,
-            );
-        }
-        let snapshot = export_bytes(&db_path(&fx.root), "source").unwrap();
-        let before = export_bytes(&db_path(&fx.root), "target").unwrap();
-        let error = restore_store(&fx.root, "target", &snapshot).unwrap_err();
-        assert!(error.to_string().contains("different session"));
-        assert_eq!(export_bytes(&db_path(&fx.root), "target").unwrap(), before);
+        assert_eq!(fixture_image(&source.root), source_before);
+        assert_eq!(fixture_image(&target.root), target_before);
+        assert!(!vault.exists());
+        drop(conn);
         assert_eq!(
-            export_bytes(&db_path(&fx.root), "source").unwrap(),
+            export_bytes(&db_path(&source.root), "same-id").unwrap(),
             snapshot
         );
+        assert_eq!(
+            export_bytes(&db_path(&target.root), "same-id").unwrap(),
+            target_snapshot
+        );
+        assert_eq!(
+            export_bytes(&db_path(&target.root), "unrelated").unwrap(),
+            unrelated
+        );
     }
 
     #[test]
-    fn restore_store_undoes_apply() {
-        let fx = Fixture::new("restore");
-        fx.add_session("sess-r", "undo", 2, 1_790_006_000);
+    fn disabled_store_operations_do_not_create_missing_paths() {
+        let parent = tmpdir("disabled-missing");
+        let missing = parent.join("missing");
+        assert!(matches!(
+            apply(&missing.join("export.jsonl"), &[]),
+            Err(AdapterError::DirectMutationDisabled)
+        ));
+        assert!(matches!(
+            apply_store(&missing, "unknown", "invalid hash", &[]),
+            Err(AdapterError::DirectMutationDisabled)
+        ));
+        assert!(matches!(
+            restore_store(&missing, "unknown", b"invalid export"),
+            Err(AdapterError::DirectMutationDisabled)
+        ));
+        assert!(!missing.exists());
+        assert_eq!(fs::read_dir(&parent).unwrap().count(), 0);
+    }
+
+    // This child is a fixture provider with explicit test-only flock custody, not
+    // evidence that an installed provider supports direct mutation admission.
+    #[test]
+    fn provider_session_lock_holder() {
+        use fs2::FileExt;
+        let Some(root) = std::env::var_os("GOBSTOPPER_TEST_CUSTODY_ROOT") else {
+            return;
+        };
+        let root = PathBuf::from(root);
+        let locks = root.join("session_locks");
+        fs::create_dir(&locks).unwrap();
+        let lock = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(locks.join("custody.lock"))
+            .unwrap();
+        lock.lock_exclusive().unwrap();
+        let conn = Connection::open(db_path(&root)).unwrap();
+        conn.execute("INSERT INTO message_nodes (session_id,node_id,parent_node_id,chat_message,created_at) VALUES ('custody',1,0,?1,1790000001)", [serde_json::json!({"role":"assistant","content":"provider append"}).to_string()]).unwrap();
+        conn.execute("UPDATE sessions SET main_chain_id=1 WHERE id='custody'", [])
+            .unwrap();
+        drop(conn);
+        fs::write(root.join("ready"), b"ready").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !root.join("release").exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture parent did not release child"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        drop(lock);
+    }
+
+    #[test]
+    fn provider_start_before_and_after_mutation_refusal_preserves_state() {
+        struct OwnedChild(std::process::Child);
+        impl Drop for OwnedChild {
+            fn drop(&mut self) {
+                let _ = self.0.kill();
+                let _ = self.0.wait();
+            }
+        }
+        let fx = Fixture::new("custody-orderings");
+        fx.add_session("custody", "custody", 0, 1_790_006_000);
         fx.add_node(
-            "sess-r",
+            "custody",
             0,
             None,
-            serde_json::json!({"role": "user", "content": "go"}),
+            serde_json::json!({"role":"user","content":"original"}),
             None,
         );
-        fx.add_node(
-            "sess-r",
-            1,
-            Some(0),
-            serde_json::json!({"role": "assistant", "tool_calls": [{"id": "c1", "name": "exec"}]}),
-            None,
+        let snapshot = export_bytes(&db_path(&fx.root), "custody").unwrap();
+        let hash = crate::copy::sha256(&snapshot);
+        let before = fixture_image(&fx.root);
+        // Mutation runs before the provider starts. It must not admit an idle store.
+        assert!(matches!(
+            apply_store(&fx.root, "custody", &hash, &[]),
+            Err(AdapterError::DirectMutationDisabled)
+        ));
+        assert!(matches!(
+            restore_store(&fx.root, "custody", &snapshot),
+            Err(AdapterError::DirectMutationDisabled)
+        ));
+        assert_eq!(fixture_image(&fx.root), before);
+        let mut child = OwnedChild(
+            std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "devin::tests::provider_session_lock_holder",
+                    "--nocapture",
+                ])
+                .env("GOBSTOPPER_TEST_CUSTODY_ROOT", &fx.root)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
         );
-        fx.add_node(
-            "sess-r",
-            2,
-            Some(1),
-            serde_json::json!({"role": "tool", "tool_call_id": "c1", "content": "y".repeat(4000)}),
-            None,
-        );
-        let snapshot = export_bytes(&db_path(&fx.root), "sess-r").unwrap();
-        let sha = crate::copy::sha256(&snapshot);
-        let edits = vec![
-            gobstopper_core::plan::Edit::Elide {
-                line_indexes: vec![3],
-                stub_template: "[gone {bytes}]".into(),
-                per_item_stubs: Default::default(),
-            },
-            gobstopper_core::plan::Edit::InjectDigest {
-                digest: digest_block(),
-            },
-        ];
-        apply_store(&fx.root, "sess-r", &sha, &edits).unwrap();
-        assert_eq!(chain_head(&fx.root, "sess-r"), 3);
-
-        let report = restore_store(&fx.root, "sess-r", &snapshot).unwrap();
-        assert_eq!(report.nodes_rewritten, 3);
-        assert_eq!(chain_head(&fx.root, "sess-r"), 2);
-        let restored = node_payload(&fx.root, "sess-r", 2);
-        assert!(restored.contains(&"y".repeat(4000)));
-        // Injected digest node is gone, not just orphaned.
-        let conn = Connection::open(db_path(&fx.root)).unwrap();
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM message_nodes WHERE session_id = 'sess-r'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(count, 3);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !fx.root.join("ready").exists() {
+            assert!(
+                child.0.try_wait().unwrap().is_none(),
+                "fixture provider exited before ready"
+            );
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture provider did not become ready"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // Provider owns the fixture lock and has appended. Refusal is still unconditional.
+        let live = fixture_image(&fx.root);
+        assert!(matches!(
+            apply_store(&fx.root, "custody", &hash, &[]),
+            Err(AdapterError::DirectMutationDisabled)
+        ));
+        assert!(matches!(
+            restore_store(&fx.root, "custody", &snapshot),
+            Err(AdapterError::DirectMutationDisabled)
+        ));
+        assert_eq!(fixture_image(&fx.root), live);
+        fs::write(fx.root.join("release"), b"release").unwrap();
+        assert!(child.0.wait().unwrap().success());
+        assert_eq!(chain_head(&fx.root, "custody"), 1);
+        assert!(node_payload(&fx.root, "custody", 1).contains("provider append"));
     }
 
     #[test]
@@ -2532,8 +2602,8 @@ mod tests {
         )
         .unwrap();
         let bytes = crate::vault::read_object(&entry.sha256, &vault_root).unwrap();
-        // The object is the session's canonical export — the same bytes
-        // restore_store consumes — not a raw copy of the shared store.
+        // The object is the session's canonical detached export, not a raw
+        // backup of the shared SQLite store.
         let text = String::from_utf8(bytes).unwrap();
         let lines: Vec<&str> = text.lines().collect();
         assert!(lines[0].contains("\"session_meta\""));
@@ -2551,7 +2621,7 @@ mod tests {
     }
 
     #[test]
-    fn export_apply_repoints_head_so_digest_stays_live() {
+    fn export_transform_repoints_head_so_digest_stays_live() {
         let fx = Fixture::new("export-digest");
         fx.add_session("sess-e", "export", 1, 1_790_006_000);
         fx.add_node(
@@ -2574,8 +2644,8 @@ mod tests {
         let edits = vec![gobstopper_core::plan::Edit::InjectDigest {
             digest: digest_block(),
         }];
-        apply(&path, &edits).unwrap();
-        let after = fs::read(&path).unwrap();
+        let after = transform(&bytes, &edits).unwrap();
+        assert_eq!(fs::read(&path).unwrap(), bytes);
         let mut lines = after.split(|b| *b == b'\n');
         let meta: Value = serde_json::from_slice(lines.next().unwrap()).unwrap();
         assert_eq!(meta["main_chain_id"].as_i64().unwrap(), 2);
@@ -2614,8 +2684,11 @@ mod tests {
             serde_json::json!({"role": "user", "content": "real"}),
             None,
         );
+        let before = fixture_image(&fx.root);
         let err = restore_store(&fx.root, "sess-rd", &snapshot).unwrap_err();
-        assert!(matches!(err, AdapterError::ChangedDuringWrite { .. }));
+        assert!(matches!(err, AdapterError::DirectMutationDisabled));
+        assert_eq!(fixture_image(&fx.root), before);
+        assert!(node_payload(&fx.root, "sess-rd", 1).contains("real"));
     }
 
     #[test]

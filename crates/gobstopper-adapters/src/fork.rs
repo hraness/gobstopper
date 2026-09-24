@@ -20,6 +20,7 @@
 use anyhow::{bail, Context};
 use gobstopper_core::Provider;
 use serde_json::Value;
+#[cfg(test)]
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -78,7 +79,7 @@ pub(crate) fn generate_session_id(seed: &Path) -> String {
 
 /// A caller-supplied id lands in a filename; restrict it to the
 /// uuid-ish alphabet so it can never traverse directories.
-fn validate_session_id(id: &str) -> anyhow::Result<()> {
+pub(crate) fn validate_session_id(id: &str) -> anyhow::Result<()> {
     if id.is_empty() || !id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-') {
         bail!("invalid session id {id:?}: expected [0-9a-zA-Z-]+");
     }
@@ -98,7 +99,7 @@ where
             Some(b) => (b, "\n"),
             None => (line, ""),
         };
-        let rewritten = serde_json::from_str::<Value>(body)
+        let rewritten = crate::payload::decode_record(body)
             .ok()
             .and_then(|mut record| {
                 let changed = record.as_object_mut().is_some_and(&mut rewrite);
@@ -196,81 +197,142 @@ fn codex_fork_name(src: &Path, old_id: Option<&str>, new_id: &str) -> String {
 
 /// Fork `src` into a sibling transcript with a fresh session id.
 /// Returns the new file's path. The original is never modified.
+/// Legacy entry point refuses before I/O: recovery publication requires an
+/// explicit vault root. Use `fork_with_vault`.
 pub fn fork(
+    _provider: Provider,
+    _src: &Path,
+    _new_session_id: Option<String>,
+) -> anyhow::Result<ForkResult> {
+    bail!("fork requires an explicit recovery vault; use fork_with_vault")
+}
+
+pub fn fork_with_vault(
     provider: Provider,
     src: &Path,
     new_session_id: Option<String>,
+    root: &Path,
 ) -> anyhow::Result<ForkResult> {
-    // A Devin session is rows inside a shared database; a file fork is
-    // not a resumable artifact for it. Bail before reading `src`.
     if provider == Provider::Devin {
         bail!("devin sessions cannot be forked to transcript files");
     }
     let src = src.canonicalize()?;
     let original = crate::transaction::read(&src)?;
-    let new_id = match new_session_id {
-        Some(id) => {
-            validate_session_id(&id)?;
-            id
-        }
-        None => generate_session_id(&src),
-    };
+    if crate::detect::sniff_provider(&src).is_some_and(|actual| actual != provider) {
+        bail!("source provider does not match fork provider");
+    }
+    let new_id = new_session_id.unwrap_or_else(|| generate_session_id(&src));
+    validate_session_id(&new_id)?;
+    publish_fork(provider, &src, &original, new_id, "fork", root)
+}
 
-    // A wrong-provider fork would produce a corrupt sibling; bail only
-    // on a confident mismatch so head-truncated files still fork.
-    if let Some(actual) = crate::detect::sniff_provider(&src) {
-        if actual != provider {
-            bail!(
-                "{} looks like a {} transcript, not {}",
-                src.display(),
-                actual.as_str(),
-                provider.as_str()
-            );
+/// Recover one exact identity from frozen bytes. Missing, conflicting, malformed
+/// or duplicate-key metadata grants no authority to target a provider session.
+/// This checks local identity, not provider acceptance or live ownership.
+pub fn source_session_id(provider: Provider, bytes: &[u8]) -> anyhow::Result<String> {
+    if bytes.len() as u64 > crate::transaction::max_transcript_bytes() {
+        bail!("source identity exceeds transcript byte limit");
+    }
+    let text =
+        std::str::from_utf8(bytes).map_err(|_| anyhow::anyhow!("source identity is not UTF-8"))?;
+    let mut identity: Option<String> = None;
+    for (line_index, line) in text.lines().enumerate() {
+        if line_index >= gobstopper_core::validation::MAX_ITEMS {
+            bail!("source identity exceeds record limit");
+        }
+        if line.trim().is_empty() {
+            continue;
+        }
+        let value = crate::payload::decode_record(line)
+            .map_err(|_| anyhow::anyhow!("source identity contains malformed or ambiguous JSON"))?;
+        let ids: Vec<&Value> = match provider {
+            Provider::Codex if value["type"] == "session_meta" => {
+                let payload = value
+                    .get("payload")
+                    .filter(|v| v.is_object())
+                    .ok_or_else(|| anyhow::anyhow!("source metadata is missing"))?;
+                let ids: Vec<_> = [payload.get("id"), payload.get("session_id")]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                if ids.is_empty() {
+                    bail!("source metadata has no session identity");
+                }
+                ids
+            }
+            Provider::ClaudeCode => value.get("sessionId").into_iter().collect(),
+            Provider::Devin if value["type"] == "session_meta" => vec![value
+                .get("session_id")
+                .ok_or_else(|| anyhow::anyhow!("source metadata is missing"))?],
+            _ => Vec::new(),
+        };
+        for value in ids {
+            let id = value
+                .as_str()
+                .filter(|id| {
+                    !id.is_empty()
+                        && id.len() <= 256
+                        && id.bytes().all(|byte| {
+                            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.')
+                        })
+                })
+                .ok_or_else(|| anyhow::anyhow!("source session identity is invalid"))?;
+            if identity.as_deref().is_some_and(|prior| prior != id) {
+                bail!("source session identities disagree");
+            }
+            identity = Some(id.to_owned());
         }
     }
+    identity.ok_or_else(|| anyhow::anyhow!("source session identity is unavailable"))
+}
 
-    let dir = src.parent().unwrap_or_else(|| Path::new("."));
-    let name = match provider {
-        Provider::ClaudeCode => format!("{new_id}.jsonl"),
-        Provider::Codex => {
-            let old_id = crate::codex::scan_meta(&src).0;
-            codex_fork_name(&src, old_id.as_deref(), &new_id)
-        }
-        Provider::Devin => unreachable!("devin forks bail before naming"),
-    };
-    let target = dir.join(&name);
-    // symlink_metadata (not exists) so a dangling symlink can't be
-    // silently replaced either.
-    if fs::symlink_metadata(&target).is_ok() {
-        bail!("fork target {} already exists", target.display());
+fn publish_fork(
+    provider: Provider,
+    source: &Path,
+    bytes: &[u8],
+    session_id: String,
+    kind: &str,
+    root: &Path,
+) -> anyhow::Result<ForkResult> {
+    let source_session_id = source_session_id(provider, bytes)?;
+    if crate::verify::verify(provider, bytes)
+        .iter()
+        .any(|finding| finding.severity == crate::verify::Severity::Error)
+    {
+        bail!("fork source has unsupported structural defects");
     }
-
-    let raw = std::str::from_utf8(&original).context("transcript is not UTF-8")?;
-    let out = match provider {
-        Provider::ClaudeCode => fork_claude(raw, &new_id),
-        Provider::Codex => fork_codex(raw, &new_id),
-        Provider::Devin => unreachable!("devin forks bail before rewriting"),
+    let output = crate::transaction::prepare(provider, bytes, |raw| {
+        Ok(rewrite_identity(provider, raw, &session_id))
+    })?;
+    let op = crate::copy::OperationIdentity {
+        revision: 2,
+        kind: kind.into(),
+        provider,
+        source_path: source.into(),
+        source_session_id,
+        source_sha256: crate::copy::sha256(bytes),
+        inputs_sha256: crate::copy::sha256(session_id.as_bytes()),
+        output_session_id: session_id.clone(),
     };
-
-    // Temp file + rename in the same directory: a killed fork never
-    // leaves a half-written transcript behind the new id's name.
-    if crate::transaction::read(&src)? != original {
-        bail!("source changed while preparing fork");
-    }
-    crate::transaction::publish_new(&target, out.as_bytes())?;
-
-    let resume_hint = match provider {
-        Provider::ClaudeCode => format!("claude --resume {new_id}"),
-        Provider::Codex => format!("codex fork {new_id}"),
-        Provider::Devin => unreachable!("devin forks bail before resuming"),
-    };
+    let receipt = crate::copy::publish_prepared(op, bytes, &output, Some(kind), root)?;
     Ok(ForkResult {
-        path: target,
-        session_id: new_id,
-        resume_hint,
+        path: receipt.path,
+        session_id: session_id.clone(),
+        resume_hint: match provider {
+            Provider::Codex if kind == "fork" => format!("codex fork {session_id}"),
+            Provider::Codex => format!("codex resume {session_id}"),
+            Provider::ClaudeCode => format!("claude --resume {session_id}"),
+            Provider::Devin => unreachable!(),
+        },
     })
 }
 
+/// Restore one exact archived object into a new no-clobber sibling session.
+/// `source` supplies only the destination directory and naming anchor; it may
+/// be missing or corrupt, so its current contents are not recovery authority.
+/// Callers selecting an existing session must independently check that the
+/// archived bytes and index binding match that expected provider/session/store
+/// before invoking this function. The snapshot's own identity is validated here.
 pub fn restore_copy(
     provider: Provider,
     source: &Path,
@@ -280,27 +342,34 @@ pub fn restore_copy(
     if provider == Provider::Devin {
         bail!("devin session-store restores are not implemented");
     }
-    let bytes = crate::vault::read_object(sha256, root)?;
+    let reader = crate::vault::Reader::open(root)?;
+    let bytes = reader.read_object(sha256)?;
     if crate::verify::verify(provider, &bytes)
         .iter()
         .any(|f| f.severity == crate::verify::Severity::Error)
     {
         bail!("snapshot has structural errors; source was not modified");
     }
-    let session_id = generate_session_id(source);
-    let output = rewrite_identity(provider, std::str::from_utf8(&bytes)?, &session_id);
-    let path = target_path(provider, source, &session_id);
-    crate::transaction::publish_new(&path, output.as_bytes())?;
-    let resume_hint = match provider {
-        Provider::Codex => format!("codex resume {session_id}"),
-        Provider::ClaudeCode => format!("claude --resume {session_id}"),
-        Provider::Devin => unreachable!("devin restores bail before resuming"),
+    let source = if source.is_absolute() {
+        source.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(source)
     };
-    Ok(ForkResult {
-        path,
-        session_id,
-        resume_hint,
-    })
+    let source = source.canonicalize().or_else(|_| {
+        let parent = source
+            .parent()
+            .context("source has no parent")?
+            .canonicalize()?;
+        Ok::<_, anyhow::Error>(parent.join(source.file_name().context("source has no filename")?))
+    })?;
+    publish_fork(
+        provider,
+        &source,
+        &bytes,
+        generate_session_id(&source),
+        "restore",
+        root,
+    )
 }
 
 pub(crate) fn rewrite_identity(provider: Provider, raw: &str, id: &str) -> String {
@@ -313,12 +382,15 @@ pub(crate) fn rewrite_identity(provider: Provider, raw: &str, id: &str) -> Strin
     }
 }
 
-pub(crate) fn target_path(provider: Provider, source: &Path, id: &str) -> PathBuf {
+pub(crate) fn target_path_bound(
+    provider: Provider,
+    source: &Path,
+    old_id: &str,
+    id: &str,
+) -> PathBuf {
     let name = match provider {
         Provider::ClaudeCode => format!("{id}.jsonl"),
-        Provider::Codex => {
-            codex_fork_name(source, crate::codex::scan_meta(source).0.as_deref(), id)
-        }
+        Provider::Codex => codex_fork_name(source, Some(old_id), id),
         Provider::Devin => format!("{id}.devin-export.jsonl"),
     };
     source.parent().unwrap_or_else(|| Path::new(".")).join(name)
@@ -327,6 +399,9 @@ pub(crate) fn target_path(provider: Provider, source: &Path, id: &str) -> PathBu
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn fork(provider: Provider, src: &Path, id: Option<String>) -> anyhow::Result<ForkResult> {
+        fork_with_vault(provider, src, id, &src.parent().unwrap().join("vault"))
+    }
     use crate::verify::{verify, Severity};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
@@ -537,7 +612,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_fork_name_survives_missing_meta() {
+    fn codex_fork_refuses_missing_identity_even_with_uuid_filename() {
         // No session_meta record: fall back to the uuid-shaped filename
         // suffix to recover the timestamp portion.
         let dir = TestDir::new();
@@ -551,10 +626,47 @@ mod tests {
         )
         .unwrap();
 
-        let res = fork(Provider::Codex, &src, None).unwrap();
+        assert!(fork(Provider::Codex, &src, None).is_err());
+        assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn identity_authority_rejects_ambiguous_metadata_before_creating_recovery_or_output() {
+        let dir = TestDir::new();
+        let source = dir.0.join("source.jsonl");
+        for raw in [
+            r#"{"type":"session_meta","payload":{"id":"a","id":"b"}}"#,
+            r#"{"type":"session_meta","payload":{"id":"a","session_id":"b"}}"#,
+            r#"{"type":"session_meta","payload":{"id":null,"session_id":"b"}}"#,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"a\"}}\n{\"type\":\"session_meta\",\"payload\":{\"id\":\"b\"}}",
+        ] {
+            fs::write(&source, raw).unwrap();
+            assert!(source_session_id(Provider::Codex, raw.as_bytes()).is_err());
+            assert!(fork(Provider::Codex, &source, Some("new-session".into())).is_err());
+            assert_eq!(fs::read_to_string(&source).unwrap(), raw);
+            assert_eq!(fs::read_dir(&dir.0).unwrap().count(), 1);
+        }
+        for raw in [
+            r#"{"type":"session_meta","payload":{"id":"a"}}"#,
+            r#"{"type":"session_meta","payload":{"session_id":"a"}}"#,
+            r#"{"type":"session_meta","payload":{"id":"a","session_id":"a"}}"#,
+        ] {
+            assert_eq!(
+                source_session_id(Provider::Codex, raw.as_bytes()).unwrap(),
+                "a"
+            );
+        }
+        assert!(source_session_id(
+            Provider::ClaudeCode,
+            b"{\"sessionId\":\"a\"}\n{\"sessionId\":\"b\"}"
+        )
+        .is_err());
+        // Even the non-authoritative pure mapper preserves duplicate-key input;
+        // it cannot silently delete a field before a later verifier sees it.
+        let duplicate = r#"{"type":"user","sessionId":"a","sessionId":"b"}"#;
         assert_eq!(
-            res.path.file_name().unwrap().to_str().unwrap(),
-            format!("rollout-2025-06-03T09-30-00-{}.jsonl", res.session_id)
+            rewrite_identity(Provider::ClaudeCode, duplicate, "new"),
+            duplicate
         );
     }
 }

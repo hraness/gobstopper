@@ -15,7 +15,7 @@
 //!   GOBSTOPPER_LLM_BATCH_SIZE - 16 (1..64)
 //!   GOBSTOPPER_LLM_MAX_BATCHES - 4 (0..16)
 
-use anyhow::{bail, Context};
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::process::Command;
@@ -29,7 +29,7 @@ const MAX_CANDIDATES: usize = 256;
 const MAX_BATCH_SIZE: usize = 64;
 const MAX_BATCHES: usize = 16;
 
-#[derive(Debug, Clone, Default)]
+#[derive(Clone, Default)]
 pub struct LlmConfig {
     pub api_key: String,
     pub endpoint: String,
@@ -120,6 +120,7 @@ struct ChatCompletionResponse {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct LlmScore {
     id: usize,
     keep_probability: f64,
@@ -172,8 +173,8 @@ pub(crate) fn scoring_context(
                 format!(
                     "[{}] {} = {}",
                     i,
-                    item.label,
-                    item.summary.as_deref().unwrap_or("(no summary)")
+                    bounded_text(&item.label, 256),
+                    bounded_text(item.summary.as_deref().unwrap_or("(no summary)"), 512)
                 ),
             ));
         }
@@ -188,14 +189,18 @@ pub(crate) fn scoring_context(
                     !s.starts_with('<') && !s.starts_with("[gobstopper state card]")
                 })
         })
-        .and_then(|i| i.summary.clone())
+        .and_then(|i| i.summary.as_deref().map(|text| bounded_text(text, 1024)))
         .unwrap_or_else(|| "(no explicit goal)".into());
     let tail = transcript
         .items
         .iter()
         .rev()
         .take(6)
-        .filter_map(|i| i.summary.as_ref().map(|s| format!("- {}", s)))
+        .filter_map(|i| {
+            i.summary
+                .as_ref()
+                .map(|s| format!("- {}", bounded_text(s, 512)))
+        })
         .collect::<Vec<_>>()
         .join("\n");
     ScoringContext { inputs, goal, tail }
@@ -203,8 +208,8 @@ pub(crate) fn scoring_context(
 
 /// Overlay model answers — keyed by the candidate's local position in
 /// the prompt (the `[id]` bracket, an index into `candidates`) — onto
-/// heuristic-seeded results. Each answered local is clamped into 0..=1;
-/// duplicate ids are first-answer-wins, and locals the model never answered
+/// heuristic-seeded results. Only unique finite probabilities in 0..=1 are
+/// accepted; duplicate/invalid ids and locals the model never answered
 /// keep their deterministic heuristic score. Returns the number of distinct
 /// items overlaid.
 pub(crate) fn overlay_answers(
@@ -224,10 +229,13 @@ pub(crate) fn overlay_answers(
             continue;
         };
         if let Some(&position) = positions.get(&item_index) {
-            if !seen.insert(position) {
+            if !valid_probability(probability)
+                || answers.iter().filter(|(id, _)| *id == local).count() != 1
+                || !seen.insert(position)
+            {
                 continue;
             }
-            results[position].keep_probability = probability.clamp(0.0, 1.0);
+            results[position].keep_probability = probability;
             overlaid += 1;
         }
     }
@@ -332,9 +340,11 @@ impl ScoreDriver for LlmScorer {
                 for h in handles {
                     match h.join() {
                         Ok(Ok(scores)) => all_scores.extend(scores),
-                        Ok(Err(e)) => {
+                        Ok(Err(_)) => {
                             failed += 1;
-                            eprintln!("llm scorer batch failed: {e:#}");
+                            eprintln!(
+                                "llm scorer: response_unavailable; retaining heuristic scores"
+                            );
                         }
                         Err(_) => {
                             failed += 1;
@@ -400,7 +410,13 @@ fn score_batch(
         ],
     };
 
-    call_llm(&request, cfg)
+    let scores = call_llm(&request, cfg)?;
+    let expected: HashSet<_> = batch.iter().map(|(id, _, _)| *id).collect();
+    anyhow::ensure!(
+        scores.iter().all(|s| expected.contains(&s.id)),
+        "llm_score_identity_invalid"
+    );
+    Ok(scores)
 }
 
 fn call_llm(request: &ChatCompletionRequest, cfg: &LlmConfig) -> anyhow::Result<Vec<LlmScore>> {
@@ -414,36 +430,61 @@ fn call_llm(request: &ChatCompletionRequest, cfg: &LlmConfig) -> anyhow::Result<
         .arg("Content-Type: application/json")
         .arg("-d")
         .arg("@-")
+        .arg("--proto")
+        .arg("=http,https")
+        .arg("--fail")
+        .arg("--url")
         .arg(&cfg.endpoint);
 
-    let raw = gobstopper_adapters::plugins::run_bounded(cmd, body, cfg.timeout_ms, 1024 * 1024)?;
-    let text = std::str::from_utf8(&raw).context("llm response is not utf8")?;
+    let raw = gobstopper_adapters::plugins::run_bounded(cmd, body, cfg.timeout_ms, 1024 * 1024)
+        .map_err(|_| anyhow::anyhow!("llm_transport_failed"))?;
+    decode_llm_response(&raw)
+}
+
+fn decode_llm_response(raw: &[u8]) -> anyhow::Result<Vec<LlmScore>> {
+    let value =
+        crate::mcp::strict_json(raw).map_err(|_| anyhow::anyhow!("llm_response_invalid"))?;
     let parsed: ChatCompletionResponse =
-        serde_json::from_str(text).with_context(|| format!("parse llm response: {text}"))?;
+        serde_json::from_value(value).map_err(|_| anyhow::anyhow!("llm_response_invalid"))?;
     let content = parsed
         .choices
         .first()
         .map(|c| c.message.content.trim())
-        .unwrap_or("{}");
-
-    // Some cheap Qwen models return the JSON inside markdown fences; strip them.
+        .context("llm_response_missing")?;
     let content = content
         .strip_prefix("```json")
         .or_else(|| content.strip_prefix("```"))
         .and_then(|s| s.strip_suffix("```"))
-        .map(|s| s.trim())
+        .map(str::trim)
         .unwrap_or(content);
-
-    let wrapper: serde_json::Value = serde_json::from_str(content)
-        .with_context(|| format!("parse llm content as json: {content}"))?;
-    let scores = if let Ok(r) = serde_json::from_value::<ScoreResponse>(wrapper.clone()) {
-        r.scores
-    } else if let Ok(arr) = serde_json::from_value::<Vec<LlmScore>>(wrapper) {
-        arr
+    let wrapper = crate::mcp::strict_json(content.as_bytes())
+        .map_err(|_| anyhow::anyhow!("llm_scores_invalid"))?;
+    let scores = if wrapper.is_array() {
+        serde_json::from_value::<Vec<LlmScore>>(wrapper)
     } else {
-        bail!("llm response did not contain a `scores` array");
-    };
+        serde_json::from_value::<ScoreResponse>(wrapper).map(|response| response.scores)
+    }
+    .map_err(|_| anyhow::anyhow!("llm_scores_invalid"))?;
+    let mut seen = HashSet::new();
+    anyhow::ensure!(
+        scores.len() <= MAX_CANDIDATES
+            && scores
+                .iter()
+                .all(|score| valid_probability(score.keep_probability) && seen.insert(score.id)),
+        "llm_scores_invalid"
+    );
     Ok(scores)
+}
+
+pub(crate) fn valid_probability(value: f64) -> bool {
+    value.is_finite() && (0.0..=1.0).contains(&value)
+}
+pub(crate) fn bounded_text(value: &str, max: usize) -> String {
+    let mut end = value.len().min(max);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_string()
 }
 
 /// Resolve an LLM driver when `AI_GATEWAY_API_KEY` is configured. Falls back
@@ -455,6 +496,24 @@ pub fn maybe_llm_scorer() -> Option<Box<dyn ScoreDriver>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn response_contract_rejects_duplicates_ranges_and_private_diagnostics() {
+        for content in [
+            r#"{"scores":[{"id":0,"keep_probability":-1}]}"#,
+            r#"{"scores":[{"id":0,"keep_probability":0.1},{"id":0,"keep_probability":0.9}]}"#,
+            r#"{"scores":[{"id":0,"id":1,"keep_probability":0.1}]}"#,
+            "PRIVATE_SENTINEL",
+        ] {
+            let raw = serde_json::json!({"choices":[{"message":{"content":content}}]}).to_string();
+            let error = decode_llm_response(raw.as_bytes()).unwrap_err();
+            assert!(!format!("{error:#}").contains("PRIVATE_SENTINEL"));
+        }
+        assert!(!valid_probability(f64::NAN));
+        assert!(!valid_probability(f64::INFINITY));
+        let raw = serde_json::json!({"choices":[{"message":{"content":r#"{"scores":[{"id":0,"keep_probability":0.2}]}"#}}]}).to_string();
+        assert_eq!(decode_llm_response(raw.as_bytes()).unwrap().len(), 1);
+    }
 
     fn test_item(line_index: usize, label: &str, summary: &str) -> gobstopper_core::TranscriptItem {
         gobstopper_core::TranscriptItem {
@@ -624,14 +683,14 @@ mod tests {
     }
 
     #[test]
-    fn overlay_keeps_heuristic_for_unanswered_and_clamps_answers() {
+    fn overlay_keeps_heuristic_for_unanswered_invalid_and_duplicate_answers() {
         let candidates = [4, 7, 9];
         let mut results = vec![scored(4, 0.11), scored(7, 0.22), scored(9, 0.33)];
         let overlaid = overlay_answers(&mut results, &candidates, &[(0, 1.7), (0, 0.2), (2, -0.4)]);
-        assert_eq!(overlaid, 2);
-        assert_eq!(results[0].keep_probability, 1.0);
+        assert_eq!(overlaid, 0);
+        assert_eq!(results[0].keep_probability, 0.11);
         assert_eq!(results[1].keep_probability, 0.22);
-        assert_eq!(results[2].keep_probability, 0.0);
+        assert_eq!(results[2].keep_probability, 0.33);
     }
 
     #[test]

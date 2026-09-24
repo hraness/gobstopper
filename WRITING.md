@@ -70,3 +70,8 @@ Apply its controlled dictionary and numeric limits only when the task requires S
 - The vocabulary of `AGENTS.md`, CI, and admission ledgers is internal. Use it in commits, pull requests, and agent notes when it is the precise term; translate it when the text will reach a reader outside the repository.
 - Knowledge-base notes use complete thoughts, durable context, source links, and descriptive titles.
 - Riffs preserve first-person voice and uncertainty while they repair transcription errors. Do not flatten personality into a summary.
+
+## Repository additions
+
+- Preserve the current behavior facts in [STYLE.md](STYLE.md#facts-public-copy-must-keep) when writing reviews, plans, or summaries. A historical trial or compatibility flag does not enable a disabled operation.
+- Report source review, synthetic tests, formal proofs, live provider testing, and delivery status separately. Name each proof's assumptions and bounds; do not call a successful model check a proof of the entire application.

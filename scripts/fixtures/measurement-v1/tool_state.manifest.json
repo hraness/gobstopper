@@ -1,0 +1,17 @@
+{
+  "checks": [
+    {
+      "end_byte": 75,
+      "id": "tool_state",
+      "kind": "open_task",
+      "pointer": "/payload/output",
+      "record_index": 3,
+      "sha256": "59b07bce6c099b363679c0ddbec1b76bdbe7b25b76b85e3e4c7b86c37a64f428",
+      "start_byte": 0
+    }
+  ],
+  "growth": [],
+  "label_source": "synthetic",
+  "schema": "gobstopper-retention-v1",
+  "source_sha256": "d09fb755f29d37f0b099c9757a999bf75f4108510759260f22889dfdcb2415ae"
+}

@@ -1,6 +1,6 @@
 # Gobstopper
 
-> Gobstopper compacts Claude Code, Codex, and Devin sessions at a context size you choose and snapshots every transcript first, so the original is never lost. Its token figures are offline projections, not measured billing savings or task quality.
+> Gobstopper inspects Claude Code, Codex, and Devin sessions and prepares compacted transcript copies. The source build prepares separate Codex and Claude Code copies and disables direct provider-store edits and automatic provider compaction.
 
 When to use this site:
 - Use gobstopper.sh to learn what Gobstopper does, which strategies it runs, and how to install it.
