@@ -280,9 +280,33 @@ fn inherited_pipe_outside_group_cannot_hold_runner_threads() {
     let fixture = Fixture::new();
     let done = fixture.0.join("done");
     let mut command = Command::new("/usr/bin/python3");
-    command.args(["-c", "import os,sys,time\npid=os.fork()\nif pid==0:\n os.setsid()\n time.sleep(2)\n open(os.environ['DONE'],'w').close()\n os._exit(0)\nsys.stdout.write('ok');sys.stdout.flush();os._exit(0)\n"])
+    // The leader may exit only after its child leaves the owned group. Without
+    // this handshake, correct group cleanup can kill the child before setsid.
+    command
+        .args([
+            "-c",
+            r#"import os,sys,time
+ready_read,ready_write=os.pipe()
+pid=os.fork()
+if pid==0:
+ os.close(ready_read)
+ os.setsid()
+ os.write(ready_write,b'R')
+ os.close(ready_write)
+ time.sleep(2)
+ open(os.environ['DONE'],'w').close()
+ os._exit(0)
+os.close(ready_write)
+ready=os.read(ready_read,1)
+os.close(ready_read)
+if ready!=b'R':
+ os._exit(1)
+sys.stdout.write('ok');sys.stdout.flush();os._exit(0)
+"#,
+        ])
         .env("DONE", &done);
     let result = plugins::run_bounded(command, vec![], 1500, 64);
+    let returned_before_done = !done.exists();
     // This deliberately escaped descendant is outside signaling authority.
     // Its fixture-owned bounded lifetime is collected cooperatively, never by
     // signaling a stale PID after releasing the process-group identity.
@@ -291,5 +315,9 @@ fn inherited_pipe_outside_group_cannot_hold_runner_threads() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(done.exists());
+    assert!(
+        returned_before_done,
+        "runner waited for an escaped descendant to close its inherited pipes"
+    );
     assert_eq!(result.unwrap(), b"ok");
 }
