@@ -24,6 +24,16 @@ use gobstopper_adapters::{detect, eval, recovery, transaction, vault, verify};
 
 const PROTOCOL_VERSION: &str = "2025-06-18";
 
+/// `YYYY-MM-DD`, the shape of every published protocol revision.
+fn is_dated_version(version: &str) -> bool {
+    let bytes = version.as_bytes();
+    bytes.len() == 10
+        && bytes.iter().enumerate().all(|(i, b)| match i {
+            4 | 7 => *b == b'-',
+            _ => b.is_ascii_digit(),
+        })
+}
+
 const MAX_FRAME_BYTES: usize = 64 * 1024;
 
 /// Read at most one bounded newline-delimited request. A peer that never
@@ -244,22 +254,29 @@ fn handle(cli: &Cli, cfg: &config::Config, message: &Value) -> Option<Value> {
     let params = message.get("params");
     Some(match method {
         "initialize" => {
-            let version = params
+            let requested = params
                 .and_then(|p| p.get("protocolVersion"))
                 .and_then(Value::as_str);
-            if !matches!(
-                version,
-                Some("2024-11-05" | "2025-03-26" | PROTOCOL_VERSION)
-            ) || params.is_none_or(|p| {
-                p.as_object().unwrap().keys().any(|key| {
-                    !matches!(
-                        key.as_str(),
-                        "protocolVersion" | "capabilities" | "clientInfo" | "_meta"
-                    )
+            // Answer a dated version this server does not implement with the
+            // newest one it does, as the protocol's negotiation requires; the
+            // client decides whether to continue. Anything else is refused.
+            let version = match requested {
+                Some(v @ ("2024-11-05" | "2025-03-26" | PROTOCOL_VERSION)) => Some(v),
+                Some(v) if is_dated_version(v) => Some(PROTOCOL_VERSION),
+                _ => None,
+            };
+            if version.is_none()
+                || params.is_none_or(|p| {
+                    p.as_object().unwrap().keys().any(|key| {
+                        !matches!(
+                            key.as_str(),
+                            "protocolVersion" | "capabilities" | "clientInfo" | "_meta"
+                        )
+                    })
                 })
-            }) || params
-                .and_then(|p| p.get("capabilities"))
-                .is_some_and(|v| !v.is_object())
+                || params
+                    .and_then(|p| p.get("capabilities"))
+                    .is_some_and(|v| !v.is_object())
                 || params
                     .and_then(|p| p.get("clientInfo"))
                     .is_some_and(|v| !v.is_object())
@@ -835,6 +852,30 @@ mod tests {
         let response = handle(&cli(), &cfg(), &msg).unwrap();
         assert_eq!(response["result"]["protocolVersion"], "2024-11-05");
         assert_eq!(response["result"]["serverInfo"]["name"], "gobstopper");
+    }
+
+    #[test]
+    fn initialize_answers_a_newer_client_with_the_latest_supported_version() {
+        // Claude Code 2.1.282 requests 2025-11-25 with these client fields.
+        let msg = json!({
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {"roots": {"listChanged": true}, "elicitation": {}},
+                "clientInfo": {"name": "claude-code", "title": "Claude Code", "version": "2.1.282"}
+            },
+        });
+        let response = handle(&cli(), &cfg(), &msg).unwrap();
+        assert_eq!(response["result"]["protocolVersion"], PROTOCOL_VERSION);
+        for invalid in ["2025-1-25", "next", "2025-11-25T00"] {
+            let msg = json!({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": invalid}});
+            assert_eq!(
+                handle(&cli(), &cfg(), &msg).unwrap()["error"]["code"],
+                -32602
+            );
+        }
     }
 
     #[test]
