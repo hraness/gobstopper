@@ -520,6 +520,10 @@ keep_recent_tool_outputs = 0 # no extra protected result tail
 [presets.custom-script]      # legacy userspace code preset
 command = "python3 ~/bin/my_compactor.py"
 trusted_legacy_command = true
+
+[discovery]
+max_age_secs = 604800        # rolling window for `watch` and `report`;
+                             # 0 = every session regardless of age
 ```
 
 For sessions stored outside the default directories, such as in a sandboxed
@@ -529,7 +533,10 @@ home, pass `--codex-home` or `--claude-home`.
 
 Standalone `watch` cannot compact the context already held by another Codex
 process. It reports native delegation as `skipped`, with zero credited savings;
-the program running that session has to request the compaction. `--active-only` limits discovery
+the program running that session has to request the compaction. Without
+`--active-only`, `watch` and `report` consider sessions active within
+`[discovery] max_age_secs` (7 days by default); `watch --max-age` and
+`report --max-age`/`--all` override it. `--active-only` limits discovery
 to files updated within the last 180 seconds (a recency heuristic, not proof of
 an owning process), and `--once` exits after one pass. A dry run writes no forks
 or compaction events. Installed provider-managed lifecycle hooks can archive

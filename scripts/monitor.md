@@ -10,11 +10,13 @@ python3 scripts/monitor.py \
   --session 01a00000-aaaa-7000-aaaa-aaaaaaaaaaaa
 ```
 
-Repeat `--session` for more exact native session IDs. At least one is required;
-prefixes do not match report rows. Optional `--provider codex`,
-`--provider claude_code` also includes reported active
-sessions of that provider in `context_samples`, up to 256 samples total. That
-option broadens the retained identifier scope; it does not enable compaction.
+Repeat `--session` for more exact native session IDs; prefixes do not match
+report rows. `--provider codex` or `--provider claude_code` also includes
+reported active sessions of that provider in `context_samples`, up to 256
+samples total — provider opt-in is the self-maintaining way to observe new
+sessions without editing a session list. At least one `--session` or
+`--provider` is required. Provider opt-in broadens the retained identifier
+scope; it does not enable compaction.
 Use Python 3.9 or later on macOS/Linux. This
 script does not install a service. A supervisor can invoke it periodically;
 an exclusive lock prevents overlapping passes. Each pass gives each child

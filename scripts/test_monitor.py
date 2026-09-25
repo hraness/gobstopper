@@ -402,6 +402,17 @@ else:
         with self.assertRaises(monitor.MonitorError):
             monitor.observe(self.binary, self.output, [A], providers=["other"])
 
+    def test_provider_opt_in_needs_no_session_allowlist(self):
+        # Auto-coverage: every active session of an opted-in provider is
+        # sampled without a --session list to keep fresh.
+        observation = monitor.observe(
+            self.binary, self.output, [], providers=["codex"])
+        sampled = {r["session_id"] for r in observation["context_samples"]}
+        self.assertEqual(sampled, {A, UNRELATED})
+        self.assertEqual(observation["sessions"], [])
+        with self.assertRaises(monitor.MonitorError):
+            monitor.observe(self.binary, self.output, [])
+
     def test_unavailable_fields_and_compaction_boundary_are_not_zero_savings(self):
         self.sample()
         value = report(context=0, native=None)

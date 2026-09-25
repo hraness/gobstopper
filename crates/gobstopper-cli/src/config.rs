@@ -107,6 +107,23 @@ impl PolicyPatch {
     }
 }
 
+/// Rolling discovery window. `watch` and `report` ignore sessions whose
+/// last activity is older than this many seconds unless a command line
+/// asks for a different bound (`--active-only`, `--all`, `--max-age`).
+/// Default 604800 (7 days); `0` means "every session, any age".
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DiscoveryConfig {
+    pub max_age_secs: Option<u64>,
+}
+
+impl DiscoveryConfig {
+    pub fn max_age_secs_or_default(&self) -> u64 {
+        self.max_age_secs
+            .unwrap_or_else(gobstopper_adapters::detect::default_max_age_secs)
+    }
+}
+
 #[derive(Debug, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
@@ -114,6 +131,7 @@ pub struct Config {
     pub provider: BTreeMap<String, PolicyPatch>,
     pub presets: BTreeMap<String, PolicyPatch>,
     pub sessions: BTreeMap<String, PolicyPatch>,
+    pub discovery: DiscoveryConfig,
     /// Rollout gates for the prompt-policy advisory, keyed by provider id
     /// (`codex`, `claude_code`) with a 0-100 percentage. Sessions
     /// are bucketed deterministically by id: `codex = 50` shows the

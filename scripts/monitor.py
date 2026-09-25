@@ -799,8 +799,10 @@ def retention_summary(log_path, selected):
 
 
 def observe(binary, output_dir, sessions, providers=()):
-    if not sessions or len(sessions) > 128 or any(not SESSION_ID.fullmatch(s) for s in sessions):
+    if len(sessions) > 128 or any(not SESSION_ID.fullmatch(s) for s in sessions):
         raise MonitorError("invalid_sessions")
+    if not sessions and not providers:
+        raise MonitorError("no_sessions_or_providers")
     if len(providers) > 8 or any(p not in ("codex", "claude_code") for p in providers):
         raise MonitorError("invalid_providers")
     sessions = list(dict.fromkeys(sessions))
@@ -905,7 +907,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
-    parser.add_argument("--session", required=True, action="append")
+    parser.add_argument("--session", action="append", default=[],
+                        help="track this codex session id in detail")
     parser.add_argument("--provider", action="append", default=[],
                         help="also observe every active session of this provider")
     args = parser.parse_args()

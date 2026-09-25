@@ -402,3 +402,54 @@ fn lossy_event_history_cannot_qualify_report_cohort_retention_or_adaptive_input(
         }
     }
 }
+
+#[test]
+fn report_discovery_window_filters_stale_sessions_and_all_overrides() {
+    let fixture = Fixture::new();
+    let nine_days_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(9 * 86400);
+    for path in [
+        "codex/sessions/codex.jsonl",
+        "claude/projects/synthetic/claude.jsonl",
+    ] {
+        fs::File::options()
+            .write(true)
+            .open(fixture.0.join(path))
+            .unwrap()
+            .set_times(fs::FileTimes::new().set_modified(nine_days_ago))
+            .unwrap();
+    }
+    // The default 7-day rolling window skips them entirely.
+    for args in [
+        &["report", "--context-only"][..],
+        &["report", "--context-only", "--max-age", "3600"][..],
+    ] {
+        assert!(fixture.report(args)["sessions"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+    // --all and a zero bound keep them.
+    for args in [
+        &["report", "--context-only", "--all"][..],
+        &["report", "--context-only", "--max-age", "0"][..],
+    ] {
+        assert_eq!(
+            fixture.report(args)["sessions"].as_array().unwrap().len(),
+            2
+        );
+    }
+    // The config window alone admits otherwise-stale sessions.
+    fs::create_dir_all(fixture.0.join("config/gobstopper")).unwrap();
+    fs::write(
+        fixture.0.join("config/gobstopper/config.toml"),
+        "[discovery]\nmax_age_secs = 0\n",
+    )
+    .unwrap();
+    assert_eq!(
+        fixture.report(&["report", "--context-only"])["sessions"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+}
