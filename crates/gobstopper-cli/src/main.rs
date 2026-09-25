@@ -9,6 +9,7 @@ mod jev;
 mod llm_scorer;
 mod mcp;
 mod native_operations;
+mod proxy;
 mod report;
 mod secrets;
 mod telemetry;
@@ -394,6 +395,13 @@ enum Cmd {
         /// becomes visible to the connected agent/model service. Off by default.
         #[arg(long)]
         allow_transcript_content: bool,
+    },
+    /// Compact live Claude Code and Codex requests before the provider's own
+    /// compaction fires: a loopback proxy that applies the cliff rule to each
+    /// outgoing request and leaves transcript files alone.
+    Proxy {
+        #[command(subcommand)]
+        command: proxy::ProxyCmd,
     },
     /// Inspect durable native operation metadata and unresolved dispatches.
     /// Does not clear uncertainty, retry a provider call, or create state.
@@ -5678,6 +5686,10 @@ fn main() -> Result<()> {
         } => cmd_bench(&cli, *all, *trigger, *floor, output.as_deref()),
         Cmd::Snapshot { session, label } => cmd_snapshot(&cli, &cfg, session, label.as_deref()),
         Cmd::Mcp { .. } => mcp::run(&cli, &cfg),
+        Cmd::Proxy { command } => proxy::run(command, &|session: &str| {
+            let d = find_session(&cli, &cfg, session)?;
+            Ok((d.handle.provider, d.handle.path.clone()))
+        }),
         Cmd::NativeOperations => {
             let mut rows = native_operations::inspect()?;
             let mut legacy: Vec<_> = legacy_native_uncertainty()?.into_iter().collect();

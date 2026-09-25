@@ -171,7 +171,7 @@ fn synth_resp_id(seed: &[u8]) -> String {
 
 /// `YYYY-MM-DDTHH:MM:SS.mmmZ` — the timestamp format observed on rollout
 /// records, produced without a chrono dependency.
-fn rfc3339_now() -> String {
+pub fn rfc3339_now() -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();

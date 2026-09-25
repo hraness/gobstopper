@@ -3,6 +3,11 @@
 
 Gobstopper inspects Claude Code, Codex, and Devin sessions and prepares compacted transcript copies.
 
+To keep a running Claude Code or Codex session small, run `gobstopper proxy`
+and point the client at it. The proxy compacts each outgoing request that
+passes a token threshold, so the client's own auto-compaction does not reach
+its trigger; see [Compact live Claude Code and Codex requests](#compact-live-claude-code-and-codex-requests).
+
 Preview compaction at a context size you choose, then prepare a separate Codex
 or Claude Code copy. Gobstopper archives the exact source and candidate bytes
 and checks supported structural properties and protected recent output.
@@ -38,6 +43,65 @@ The [published studies](https://gobstopper.sh/benchmarks) report context reducti
 retention, no-op cases, and limitations separately.
 
 Gobstopper keeps the exact source in a local vault before any compaction changes it, so a compaction is a recorded edit you can recover from rather than a silent loss: the design every Hraness project shares. [The thread through hraness](https://hraness.com/writing/the-thread-through-hraness) follows that design across the projects, and the [ALGAL vision](https://algal.computer/docs/vision/) states the bet behind it.
+
+## Compact live Claude Code and Codex requests
+
+`gobstopper proxy` is a local HTTP proxy for Claude Code and Codex, in the
+current `main` source build. Each time the client resends its history, the
+proxy estimates the request size. Past the threshold (128,000 tokens by
+default), it sends the system prompt and the first task verbatim, one
+mechanical summary of the older turns, and the newest three turns verbatim.
+The provider then reports the compacted size back to the client, so the
+client's own auto-compaction does not reach its trigger. The rule is
+CliffCompaction's; see [How Gobstopper compares with CliffCompaction](#how-gobstopper-compares-with-cliffcompaction).
+
+The summary keeps human and assistant text, keeps tool results of at most 500
+characters, and reduces each tool call to a one-line signature; longer tool
+results are dropped because the agent can read the file or rerun the command.
+The next compaction starts again from the history the client resends and
+discards the previous summary. Between compactions, requests reuse the same
+compacted prefix, so the provider's prompt cache can match it.
+
+```sh
+gobstopper proxy run -- claude            # one session through a temporary proxy
+gobstopper proxy serve                    # background proxy on http://127.0.0.1:8260
+export ANTHROPIC_BASE_URL=http://127.0.0.1:8260
+gobstopper proxy replay <session>         # what the proxy would have sent; calls no provider
+gobstopper proxy status                   # settings and counters of the running proxy
+```
+
+Codex routes through a provider block in `~/.codex/config.toml`; see
+[docs/proxy.md](docs/proxy.md) for Codex, a macOS LaunchAgent, and every
+setting. Flags: `--threshold` (keep it below the client's auto-compaction
+point), `--keep-recent`, `--result-max-chars`, `--drop-thinking`, `--shadow`
+(log what would change and forward everything unchanged), and `--strict`.
+
+- The proxy listens on 127.0.0.1 and refuses requests addressed to other
+  host names. It forwards through the system `curl` (8.3 or later) and hands
+  request headers, which carry your API key or sign-in token, to curl through
+  its environment instead of its command line. Logs contain sizes and counts,
+  never request or response text.
+- On any failure it forwards the client's original bytes: an unparseable or
+  compressed body, an internal error, or a provider that rejects the
+  rewritten request for a reason other than length. When the provider rejects
+  a request for length, the proxy compacts further and retries.
+- Transcript files are not changed. Claude Code and Codex keep the full
+  history, so resume and the file commands below work as before.
+- Devin CLI sends its requests through Cognition's service and has no
+  setting for a model address, so it cannot use the proxy; see
+  [docs/devin.md](docs/devin.md) for what Gobstopper does with Devin.
+- Sizes are estimates at four characters per token, with images priced by
+  their dimensions. A history the client already compacted itself can start
+  with a long head that the proxy keeps verbatim; the threshold then rises to
+  that head plus half the configured threshold.
+
+On September 25, 2026, `gobstopper proxy replay` over nine recorded sessions
+on one Mac kept six Claude Code sessions, whose recorded requests peaked at
+273k to 652k estimated tokens, at or under about 127k, and one Codex session
+that peaked at 242k under about 127k. Two Codex sessions that Codex had
+already compacted itself began with heads near 160k and stayed under about
+243k. No replayed request was left with an unpaired tool call. These are
+estimates over recorded histories, not billed tokens or task results.
 
 ## Recoverable history
 
@@ -133,7 +197,7 @@ the strategy and where it cuts matter as much as the timing.
 | `sawtooth` | provider | proposes provider-native compaction to the session owner; released CLI dispatch is blocked pending qualification |
 | `cache_edits` | provider | emits bounded Claude `tool_use_id` values for API-layer context editing; never rewrites a transcript |
 | `elide` | transcript | stubs stale tool outputs oldest-first until the floor |
-| `cliff` | transcript | keeps the head, the newest three assistant steps, and the newest `keep_recent_tool_outputs` tool results (default 8) byte-for-byte and drops older eligible tool results over 500 bytes; no floor seeking and no state card (see [CliffCompaction](#how-gobstopper-compares-with-cliffcompaction)) |
+| `cliff` | transcript | keeps the head, the newest three assistant steps, and the newest `keep_recent_tool_outputs` tool results (default 8) byte-for-byte and drops older eligible tool results over 500 bytes; no floor seeking and no state card (see [CliffCompaction](#how-gobstopper-compares-with-cliffcompaction); for running sessions, use [`gobstopper proxy`](#compact-live-claude-code-and-codex-requests)) |
 | `cache_aware` | transcript | elides a tailward stale-output window and injects a bounded state card while preserving the longest practical prefix |
 | `compacted` | transcript | elides stale outputs and injects the state card; synthetic Codex `compacted` records require `--experimental-compacted` |
 | `scored` | transcript | ranks candidates with deterministic recency, error, reference, TF-IDF, duplicate, and tool-type signals before elision |
@@ -182,7 +246,39 @@ gobstopper diff <sha-a> <sha-b>    # structural comparison of two vault snapshot
 gobstopper bench                   # compare strategies on recently changed sessions
 gobstopper tune <session>          # preview the adaptive trigger/floor for a session
 gobstopper mcp                     # deterministic inspection; executable strategies are rejected
+gobstopper proxy serve             # compact live Claude Code and Codex requests on 127.0.0.1:8260
 ```
+
+### Set up Gobstopper for Claude Code, Codex, and Devin
+
+1. Install the binary from `main` and check it:
+
+   ```sh
+   cargo install --git https://github.com/hraness/gobstopper gobstopper
+   gobstopper --version
+   ```
+
+2. Register the MCP server with each agent you use:
+
+   ```sh
+   claude mcp add -s user gobstopper -- gobstopper mcp
+   codex mcp add gobstopper -- gobstopper mcp
+   devin mcp add -s user gobstopper -- gobstopper mcp
+   ```
+
+   Confirm with `claude mcp list`, `codex mcp list`, or `devin mcp get gobstopper`.
+   Add `--allow-transcript-content` after `mcp` only if the agent should be
+   able to search and read archived transcript text.
+
+3. For Claude Code and Codex, start the proxy and point each client at it as
+   described in [docs/proxy.md](docs/proxy.md).
+
+4. For Devin, export the hook candidates with
+   `gobstopper install-hooks --output ./hook-candidates.json`, review the
+   Devin entry, and add its `UserPromptSubmit` and `PostCompaction` handlers
+   to `~/.config/devin/config.json`. The first suggests `/compact` at your
+   Gobstopper threshold; the second archives the session after each Devin
+   compaction so exact records stay searchable.
 
 Hook installation and removal export candidates without changing provider settings.
 The bundle includes the exact original settings and hashes, so keep it private.
@@ -639,39 +735,53 @@ bounded context with maintained or improved Terminal-Bench 2.0 results for the
 Kimi and GLM models they tested; those are the authors' benchmark figures, not
 measurements of Gobstopper.
 
-The two tools work at different layers and can be described side by side:
+Gobstopper runs the same rule in its own proxy and also works on saved
+session files:
 
 | | CliffCompaction | Gobstopper |
 |---|---|---|
-| Where it runs | A local HTTP proxy between the agent and the Anthropic or OpenAI API | A CLI over the session files Claude Code, Codex, and Devin write |
-| What it changes | Each outgoing request, transparently, while the session runs | A separate compacted copy of a session you then resume; the source file is unchanged |
-| How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | Strategies that drop or stub stale tool results by rule; `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
-| Recompaction | Rebuilt from the original history; the prior summary is discarded | `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy |
-| What holds the originals | The agent's own history and the files on disk; the proxy keeps only an in-memory cache of compacted prefixes | A content-addressed vault with `search-snapshot` and `read-snapshot` for the exact archived record |
-| Evidence published | Terminal-Bench 2.0, SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models | Offline replays of 729 archived sessions, literal retention probes, and dated single-session trials; no task-success or billing claims |
-| Model needed | None; the summary is mechanical | None for built-in strategies; optional model scorers |
+| Where it runs | A local HTTP proxy between the agent and the Anthropic or OpenAI API | A local HTTP proxy for Claude Code and Codex, plus a CLI over the session files Claude Code, Codex, and Devin write |
+| Clients | Any client of the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses API | Claude Code (Anthropic Messages) and Codex (OpenAI Responses); Devin cannot be proxied |
+| What it changes | Each outgoing request, transparently, while the session runs | The proxy rewrites outgoing requests over the threshold; file commands publish a separate compacted copy and leave the source unchanged |
+| How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy applies the same rule; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
+| Recompaction | Rebuilt from the original history; the prior summary is discarded | The proxy rebuilds from the original history; `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy |
+| What holds the originals | The agent's own history and the files on disk; the proxy keeps only an in-memory cache of compacted prefixes | For proxied requests, the agent's own transcript and an in-memory cache; for copies, a content-addressed vault with `search-snapshot` and `read-snapshot` |
+| Evidence published | Terminal-Bench 2.0, SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models | Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, literal retention probes, and dated single-session trials; no task-success or billing claims |
+| Model needed | None; the summary is mechanical | None for the proxy or the built-in strategies; optional model scorers |
 
-The `cliff` strategy applies CliffCompaction's rule to a transcript copy:
+`gobstopper proxy` is a Rust port of CliffCompaction's request engine: the
+same summary format and header, prefix reuse between compactions, harsher
+settings when one pass leaves a request over the threshold, and a retry when
+the provider rejects a request for length. It adds two behaviors. When the
+provider rejects a rewritten request for another reason, it resends the
+original. When the verbatim head alone approaches the threshold, it raises
+the threshold instead of compacting every request. The port's MIT notice is
+in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+The `cliff` strategy applies the drop rule to a transcript copy instead:
 the head and the newest `keep_recent_turns` assistant steps stay
 byte-for-byte, older tool results over `result_max_bytes` are dropped unless they are among
 the newest `keep_recent_tool_outputs` (default 8), smaller ones stay, and nothing is summarized or added. A step starts where the
 assistant side resumes after a user prompt or a tool result and includes the
-tool results that answer it. Two parts of the proxy's rule are not part of the
-file transform: tool-call signatures and reasoning caps, because Gobstopper's
-copy transforms only replace tool-result payloads. Codex `compacted` records
-count as one result. When both passes run at the same cut and both produce a plan,
-the records dropped from the source and then from the copy are, together, the records a single compaction
-from the source would drop; one unit test checks this on a synthetic transcript. A copy below the trigger or the minimum savings is not compacted again, so under the default policy the two paths can differ. The dropped bytes stay
-in the vault, not in the copy.
+tool results that answer it. Tool-call signatures and reasoning caps are not
+part of the file transform, because Gobstopper's copy transforms only replace
+tool-result payloads. Codex `compacted` records count as one result. When both
+passes run at the same cut and both produce a plan, the records dropped from
+the source and then from the copy are, together, the records a single
+compaction from the source would drop; one unit test checks this on a
+synthetic transcript. A copy below the trigger or the minimum savings is not
+compacted again, so under the default policy the two paths can differ. The
+dropped bytes stay in the vault, not in the copy.
 
 ```sh
 gobstopper plan <session> --strategy cliff
 gobstopper eval <session>               # cliff appears beside the other strategies
 ```
 
-`auto` does not select `cliff`; choose it explicitly or through a preset. The
-two tools have not been tested together, and Gobstopper does not proxy API
-requests. The comparison page at
+`auto` does not select `cliff`; choose it explicitly or through a preset. Run
+one proxy per client: chaining CliffCompaction and `gobstopper proxy` would
+compact each other's output, and the two have not been tested together. The
+comparison page at
 [gobstopper.sh/compare/cliffcompaction](https://gobstopper.sh/compare/cliffcompaction)
 carries the same table.
 

@@ -2,7 +2,8 @@
 
 - `crates/gobstopper-core/` holds the normalized transcript model, the `Edit` IR, the `Strategy` trait, all built-in strategies, and the `compaction-events-v1` telemetry schema. No I/O beyond event-log append.
 - `crates/gobstopper-adapters/` holds session discovery, Codex and Claude Code JSONL parsing and pure byte transforms, separate-copy publication, the Devin session-store reader/exporter (`devin.rs`), structural verification, and the `vault` content-addressed snapshot store. Direct provider-file replacement and Devin store write/restore APIs refuse mutation.
-- `crates/gobstopper-cli/` holds the `gobstopper` binary, layered config/preset resolution, and the read-only `mcp` stdio server (`mcp.rs`) that exposes vault/recall/plan/verify as agent tools; it must never surface a mutating operation.
+- `crates/gobstopper-adapters/src/request/` holds the request-time compaction engine (a port of CliffCompaction's rule; MIT notice in `THIRD_PARTY_NOTICES.md`): Anthropic Messages and OpenAI Responses dialects, the prefix store, and offline replay. It is pure JSON in, JSON out.
+- `crates/gobstopper-cli/` holds the `gobstopper` binary, layered config/preset resolution, the read-only `mcp` stdio server (`mcp.rs`) that exposes vault/recall/plan/verify as agent tools (it must never surface a mutating operation), and the loopback `proxy` (`proxy.rs`).
 - `docs/design.md` is the architecture and research record; `docs/roadmap.md` is the phased plan; `docs/devin.md` documents Devin support; `docs/integration-contract.md` is the historical integration contract for the runtime that preceded xcb (retired 2026-09-19).
 - `STYLE.md` and `WRITING.md` are synced from hraness/.github. Their “Repository additions” list the Gobstopper facts that public copy most often gets wrong.
 
@@ -15,6 +16,7 @@
 - Every mutating path (`apply`, `watch`) snapshots into the vault before writing and emits a `compaction-events-v1` record after; telemetry failures are non-fatal, snapshot failures abort the edit.
 - The `auto` strategy prefers provider delegation for live sessions. Released native dispatch is disabled until provider ownership and correlation are verified; direct provider-store writes are disabled. Separate copies require source binding and structural verification.
 - Keep dependency count small; prefer `std` + `serde_json` over new crates.
+- The proxy binds loopback only, passes request headers to `curl` through its environment (never argv), logs no request or response content, and forwards the client's original bytes on any parse, engine, or non-length provider failure.
 
 # Local development and install
 

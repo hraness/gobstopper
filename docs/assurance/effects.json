@@ -1708,6 +1708,57 @@
         "E-FOUNDATION-SOURCE"
       ],
       "next_gate": "C15"
+    },
+    {
+      "id": "request-proxy",
+      "owner": "CLI proxy",
+      "reads": [],
+      "writes": [
+        {
+          "state": "process_state",
+          "mode": "spawn",
+          "condition": "One curl child per upstream request; `proxy run` also spawns the caller's command with loopback base-URL variables."
+        },
+        {
+          "state": "output",
+          "mode": "emit",
+          "condition": "Upstream responses relayed to the loopback client; stderr carries paths, sizes, counts and error summaries, never request or response text."
+        }
+      ],
+      "outbound": [
+        "Client requests, compacted when over the threshold, reach the configured Anthropic, OpenAI or ChatGPT upstream with the client's own headers; header values pass to curl through its environment, not argv."
+      ],
+      "authority": "Explicit `gobstopper proxy serve|run` invocation; credentials are the client's own request headers.",
+      "invariants": [
+        "PRIV-1",
+        "OBS-1",
+        "RES-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-AUTH",
+        "A-EXT"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/proxy.rs",
+          "anchor": "pub fn run"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/request/engine.rs",
+          "anchor": "pub fn prepare"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Loopback bind with a host check; 64 KiB request heads, 256 MiB bodies, 256 connections; curl connect 30 s, stall 900 s, total 7200 s. Parse, engine and non-length provider failures forward the original bytes.",
+      "exclusions": [
+        "No live task-quality or billing claim",
+        "Estimates use four characters per token; provider counts can differ"
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "next_gate": "C15"
     }
   ],
   "cli": [
@@ -2037,6 +2088,19 @@
         "output"
       ],
       "contract": "Bounded deterministic inspection; extension strategies refused and external scorers/digests skipped. --allow-transcript-content gates explicit recovery content only.",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "anchor": "enum Cmd"
+      }
+    },
+    {
+      "name": "Proxy",
+      "effects": [
+        "request-proxy",
+        "inspect",
+        "output"
+      ],
+      "contract": "serve/run forward loopback client requests through curl, compacting Anthropic Messages and OpenAI Responses bodies over the threshold and forwarding the original bytes on any failure; replay reads one recorded Claude Code or Codex transcript and calls no provider; status reads a local proxy's counters.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2647,6 +2711,13 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/codex_compact.rs",
+      "symbol": "rfc3339_now",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/codex_compact.rs",
       "symbol": "tail_response_items",
       "effects": [
         "inspect"
@@ -3172,6 +3243,321 @@
       "symbol": "search_snapshot",
       "effects": [
         "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/anthropic.rs",
+      "symbol": "digest_message",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/anthropic.rs",
+      "symbol": "is_assistant",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/anthropic.rs",
+      "symbol": "is_summary_message",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/anthropic.rs",
+      "symbol": "summarize_message",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/anthropic.rs",
+      "symbol": "trim_from_head",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/anthropic.rs",
+      "symbol": "user_message",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/engine.rs",
+      "symbol": "config",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/engine.rs",
+      "symbol": "into_store",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/engine.rs",
+      "symbol": "messages",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/engine.rs",
+      "symbol": "new",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/engine.rs",
+      "symbol": "original_len",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/engine.rs",
+      "symbol": "outgoing_body",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/engine.rs",
+      "symbol": "prepare",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/engine.rs",
+      "symbol": "reactive",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/engine.rs",
+      "symbol": "store_stats",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/engine.rs",
+      "symbol": "with_store",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/images.rs",
+      "symbol": "payloads",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/images.rs",
+      "symbol": "tokens_for_payload",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/mod.rs",
+      "symbol": "billable_chars",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/mod.rs",
+      "symbol": "canonical_json",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/mod.rs",
+      "symbol": "chain_hashes",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/mod.rs",
+      "symbol": "compact",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/mod.rs",
+      "symbol": "detect",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/mod.rs",
+      "symbol": "digest",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/mod.rs",
+      "symbol": "estimate_tokens",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/mod.rs",
+      "symbol": "is_assistant",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/mod.rs",
+      "symbol": "is_summary",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/mod.rs",
+      "symbol": "messages_key",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/mod.rs",
+      "symbol": "name",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/replay.rs",
+      "symbol": "claude_history",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/replay.rs",
+      "symbol": "codex_history",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/replay.rs",
+      "symbol": "history_from_file",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/replay.rs",
+      "symbol": "pairing_intact",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/replay.rs",
+      "symbol": "replay",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/responses.rs",
+      "symbol": "digest_message",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/responses.rs",
+      "symbol": "is_assistant",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/responses.rs",
+      "symbol": "is_summary_message",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/responses.rs",
+      "symbol": "summarize_message",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/responses.rs",
+      "symbol": "user_message",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/store.rs",
+      "symbol": "bytes",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/store.rs",
+      "symbol": "get",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/store.rs",
+      "symbol": "is_empty",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/store.rs",
+      "symbol": "len",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/store.rs",
+      "symbol": "new",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/store.rs",
+      "symbol": "put",
+      "effects": [
+        "pure"
       ]
     },
     {
@@ -4017,6 +4403,15 @@
       "symbol": "selected",
       "effects": [
         "test-fixture"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy.rs",
+      "symbol": "run",
+      "effects": [
+        "request-proxy",
+        "inspect",
+        "output"
       ]
     },
     {

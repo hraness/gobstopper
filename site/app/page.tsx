@@ -50,7 +50,7 @@ const primitives = [
   {
     icon: "strategies",
     label: "Strategies",
-    summary: "The default, auto, picks a strategy from the transcript. Sawtooth recommends provider compaction, elide replaces eligible stale tool output, cliff keeps the newest assistant steps and drops older tool results over 500 bytes, and structured writes a state card from metadata. Scored ranks candidates; optional on-device models can score or draft cards. Agentic accepts edits proposed by a program you trust.",
+    summary: "The default, auto, picks a strategy from the transcript. Sawtooth recommends provider compaction, elide replaces eligible stale tool output, cliff keeps the newest assistant steps and drops older tool results over 500 bytes, and structured writes a state card from metadata. For running Claude Code and Codex sessions, gobstopper proxy applies CliffCompaction's rule to each outgoing request. Scored ranks candidates; optional on-device models can score or draft cards. Agentic accepts edits proposed by a program you trust.",
   },
   {
     icon: "presets-config",
@@ -91,7 +91,7 @@ const questions = [
   },
   {
     question: "Does it edit my live session?",
-    answer: "The source build prepares separate Claude Code and Codex copies and refuses direct Devin-store edits. It can recommend that you compact through the session's own provider controls, but automatic provider compaction is disabled. The existing session stays under its provider's control.",
+    answer: "Session files, no. The source build prepares separate Claude Code and Codex copies and refuses direct Devin-store edits. If you point Claude Code or Codex at `gobstopper proxy`, it compacts the requests the client sends while the session runs and leaves the session files unchanged. Automatic provider compaction stays disabled, and Devin cannot be proxied.",
   },
   {
     question: "What if a compaction loses something important?",
@@ -99,11 +99,11 @@ const questions = [
   },
   {
     question: "Which agents does it support?",
-    answer: "Gobstopper inspects supported Codex, Claude Code, and Devin session formats and prepares separate Codex and Claude Code copies. Devin exports can be inspected but cannot replace its session store. New provider versions need format tests and separate resume tests.",
+    answer: "Gobstopper inspects supported Codex, Claude Code, and Devin session formats and prepares separate Codex and Claude Code copies. Claude Code and Codex requests can also run through `gobstopper proxy`. Devin exports can be inspected but cannot replace its session store, and Devin requests cannot be proxied. New provider versions need format tests and separate resume tests.",
   },
   {
     question: "How is this different from CliffCompaction?",
-    answer: "CliffCompaction is an API proxy: it rewrites each request over a token threshold while the session runs, keeps the head and the last three turns verbatim, drops tool results over 500 characters, and never paraphrases. Gobstopper works on the session files instead and prepares a copy you inspect and resume, with the source archived in a vault. Its `cliff` strategy applies the same drop rule to that copy. The comparison page lists the differences and the authors' benchmark figures.",
+    answer: "CliffCompaction is an API proxy: it rewrites each request over a token threshold while the session runs, keeps the head and the last three turns verbatim, drops tool results over 500 characters, and never paraphrases. `gobstopper proxy` ports that rule for Claude Code and Codex. Gobstopper's file commands prepare copies you inspect and resume, with the source archived in a vault, and the `cliff` strategy applies the drop rule to those copies. The comparison page lists the differences and the authors' benchmark figures.",
   },
   {
     question: "Can I run my own compaction logic?",

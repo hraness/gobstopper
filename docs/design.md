@@ -59,6 +59,43 @@ provider-qualification evidence for this implementation.
   checks a synthetic case, and trigger or minimum-savings gating on the smaller copy can make the paths differ. Tool-call signatures and reasoning caps are outside the copy
   transform, which replaces tool-result payloads only.
 
+## Request-time compaction (`gobstopper proxy`)
+
+File compaction cannot get ahead of a running client's own compaction: the
+client resends the history it holds in memory, so a rewritten file changes
+nothing until a resume. CliffCompaction's answer is to sit in the request
+path. Claude Code accepts `ANTHROPIC_BASE_URL`, and Codex accepts a
+`model_providers` entry, so a loopback proxy sees every request before the
+provider does. Once the proxy compacts, the provider reports the compacted
+size and the client's auto-compaction does not reach its trigger. Devin CLI
+routes requests through Cognition's service without a configurable model
+address, so it stays on hooks, MCP, and its own `/compact`.
+
+- `gobstopper_adapters::request` is the pure engine: dialect digests that
+  ignore volatile fields (`cache_control`, thinking signatures, Responses
+  item `id` and `status`), a hash chain over the original messages, an LRU
+  prefix store, the cliff step, the replay of threshold crossings, the
+  escalation steps, and image pricing by dimensions. It is a port of the
+  reference implementation, which is MIT-licensed (notice in
+  `THIRD_PARTY_NOTICES.md`).
+- Two behaviors differ from the reference. A rewritten request the provider
+  rejects for a reason other than length is resent in its original form.
+  When the verbatim floor (fixed request fields plus the head) approaches
+  the threshold, the applied threshold becomes the floor plus half the
+  configured value. Replays of Codex sessions that Codex had already
+  compacted itself showed why: their heads were near 160k estimated tokens,
+  and without the adjustment nearly every request compacted again and no
+  prefix was reused.
+- `crates/gobstopper-cli/src/proxy.rs` owns the socket side: a thread per
+  connection on 127.0.0.1, a host check against DNS rebinding, and the
+  system `curl` for upstream HTTPS, as the model scorers already use.
+  Request headers reach curl as `--variable`/`--expand-header` environment
+  values, so tokens stay out of argv. Responses are relayed as they arrive.
+- `gobstopper proxy replay` rebuilds the request stream of a recorded Claude
+  Code or Codex session and runs it through the engine, with a pairing check
+  that separates breakage already in the recording (interrupted or rewound
+  turns) from breakage the proxy would introduce.
+
 ## Provider levers (historical version-specific observations)
 
 ### Codex (0.153.2, app-server v2)
