@@ -49,7 +49,6 @@ pub fn token_observation(
     let transcript = match handle.provider {
         Provider::Codex => crate::codex::load_bytes(handle.clone(), bytes),
         Provider::ClaudeCode => crate::claude::load_bytes(handle.clone(), bytes),
-        Provider::Devin => crate::devin::load_bytes(handle.clone(), bytes),
     }?;
     let full = transcript.usage.lifetime_scope == gobstopper_core::model::LifetimeScope::Full;
     let observation = gobstopper_core::events::TokenObservation {
@@ -148,7 +147,6 @@ fn load(provider: Provider, src: &Path, original: &[u8]) -> anyhow::Result<Trans
     let transcript = match provider {
         Provider::Codex => crate::codex::load_bytes(handle, original),
         Provider::ClaudeCode => crate::claude::load_bytes(handle, original),
-        Provider::Devin => crate::devin::load_bytes(handle, original),
     }
     .with_context(|| format!("loading {}", src.display()))?;
     Ok(transcript)
@@ -162,7 +160,6 @@ fn transform(
     match provider {
         Provider::Codex => crate::codex::transform(original, edits),
         Provider::ClaudeCode => crate::claude::transform(original, edits),
-        Provider::Devin => crate::devin::transform(original, edits),
     }
 }
 
@@ -306,7 +303,6 @@ fn run_on_copy(
     let post_transcript = match provider {
         Provider::Codex => crate::codex::load_bytes(handle, &bytes),
         Provider::ClaudeCode => crate::claude::load_bytes(handle, &bytes),
-        Provider::Devin => crate::devin::load_bytes(handle, &bytes),
     }
     .context("loading rewritten live context for probe scoring")?;
     let post_text = live_context_text(&post_transcript, &String::from_utf8_lossy(&bytes));
@@ -438,19 +434,14 @@ pub fn eval_transcript_with_hooks(
     eval_transcript_inner(provider, src, policy, only, hooks, eval_parallelism())
 }
 
-/// Evaluate an exact discovered session. Devin stores are exported for this
-/// session once; database bytes are never interpreted as transcript JSONL.
+/// Evaluate an exact discovered session.
 pub fn eval_session_with_hooks(
     handle: &SessionHandle,
     policy: &PolicyConfig,
     only: Option<&str>,
     hooks: &EvalHooks,
 ) -> anyhow::Result<Vec<EvalRow>> {
-    let bytes = if handle.provider == Provider::Devin && crate::devin::is_store_path(&handle.path) {
-        crate::devin::export_bytes(&handle.path, &handle.session_id)?
-    } else {
-        crate::transaction::read(&handle.path)?
-    };
+    let bytes = crate::transaction::read(&handle.path)?;
     anyhow::ensure!(
         crate::fork::source_session_id(handle.provider, &bytes)? == handle.session_id,
         "evaluation source identity mismatch"
@@ -458,7 +449,6 @@ pub fn eval_session_with_hooks(
     let transcript = match handle.provider {
         Provider::Codex => crate::codex::load_bytes(handle.clone(), &bytes)?,
         Provider::ClaudeCode => crate::claude::load_bytes(handle.clone(), &bytes)?,
-        Provider::Devin => crate::devin::load_bytes(handle.clone(), &bytes)?,
     };
     eval_frozen(transcript, bytes, policy, only, hooks, eval_parallelism())
 }

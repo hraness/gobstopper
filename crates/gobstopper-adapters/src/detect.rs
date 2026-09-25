@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::{claude, codex, devin};
+use crate::{claude, codex};
 
 /// Where to look for provider state. Overridable because managed
 /// runtimes (e.g. oompa profiles) relocate these roots.
@@ -17,10 +17,6 @@ pub struct Roots {
     pub codex_home: PathBuf,
     /// `~/.claude` or `$CLAUDE_CONFIG_DIR`-style root.
     pub claude_home: PathBuf,
-    /// Directory containing `sessions.db` and `session_locks/`:
-    /// `$DEVIN_DATA_DIR`, else `$XDG_DATA_HOME/devin/cli`, else
-    /// `~/.local/share/devin/cli`.
-    pub devin_home: PathBuf,
 }
 
 impl Roots {
@@ -34,17 +30,9 @@ impl Roots {
         let claude_home = std::env::var_os("CLAUDE_CONFIG_DIR")
             .map(PathBuf::from)
             .unwrap_or_else(|| home.join(".claude"));
-        let devin_home = std::env::var_os("DEVIN_DATA_DIR")
-            .map(PathBuf::from)
-            .or_else(|| {
-                std::env::var_os("XDG_DATA_HOME")
-                    .map(|p| PathBuf::from(p).join("devin").join("cli"))
-            })
-            .unwrap_or_else(|| home.join(".local/share/devin/cli"));
         Self {
             codex_home,
             claude_home,
-            devin_home,
         }
     }
 }
@@ -244,9 +232,6 @@ pub fn discover(roots: &Roots, max_age_secs: u64) -> Vec<Discovered> {
 #[derive(Default)]
 pub struct DiscoveryCache {
     files: std::collections::HashMap<(Provider, PathBuf), CachedSession>,
-    /// Devin sessions live in rows of a shared store; their advisory cache
-    /// is keyed by session id on (activity, chain head), not by file path.
-    pub devin: crate::devin::DevinContextCache,
 }
 struct CachedSession {
     fingerprint: (u64, Option<SystemTime>, u64, u64, i64, i64),
@@ -285,10 +270,6 @@ pub struct DiscoveryCacheFile {
     pub written_unix: u64,
     #[serde(default)]
     pub entries: Vec<DiscoveryCacheRow>,
-    /// Devin context rows live in the same snapshot: the shared store has
-    /// no per-file fingerprint, so rows carry (activity, chain head).
-    #[serde(default)]
-    pub devin_entries: Vec<crate::devin::DevinContextRow>,
 }
 
 impl DiscoveryCacheFile {
@@ -332,23 +313,6 @@ impl DiscoveryCache {
                 usage: e.usage,
             })
             .collect()
-    }
-
-    /// Persisted Devin context rows owned by this cache.
-    pub fn devin_rows(&self) -> Vec<crate::devin::DevinContextRow> {
-        self.devin.0.values().cloned().collect()
-    }
-
-    /// Merge persisted Devin context rows. Fingerprint staleness is
-    /// re-checked against the live (activity, chain head) pair at use
-    /// time, so a stale row can only cost a lookup, never a decision.
-    pub fn merge_devin_rows(&mut self, rows: Vec<crate::devin::DevinContextRow>) {
-        for row in rows {
-            if self.devin.0.len() >= crate::devin::DevinContextCache::MAX_ENTRIES {
-                break;
-            }
-            self.devin.0.insert(row.session_id.clone(), row);
-        }
     }
 
     /// Merge rows from a persisted snapshot. Non-identified rows expire
@@ -429,9 +393,6 @@ impl DiscoveryCache {
         let (meta, usage) = match provider {
             Provider::Codex => (codex::scan_meta(path), codex::scan_usage(path)),
             Provider::ClaudeCode => (claude::scan_meta(path), claude::scan_usage(path)),
-            // Devin sessions live in rows of a shared database, not in
-            // per-session files, so they bypass the file cache entirely.
-            Provider::Devin => ((None, None), UsageSample::default()),
         };
         if self.files.len() >= Self::MAX_ENTRIES {
             self.files.clear();
@@ -451,11 +412,9 @@ impl DiscoveryCache {
 }
 
 /// `provider` scopes the scan to one provider so `watch --provider
-/// claude_code` never opens the Devin store (and vice versa). When
+/// claude_code` never touches Codex roots (and vice versa). When
 /// `context_only` is set, providers may return a `context_tokens`-only
-/// `UsageSample` — lifetime counters can be left zero. Watch passes
-/// true: it consumes only context occupancy, and the full usage scan on
-/// the shared Devin store reads every message payload.
+/// `UsageSample` — lifetime counters can be left zero.
 pub fn discover_cached(
     roots: &Roots,
     max_age_secs: u64,
@@ -471,7 +430,7 @@ pub fn discover_cached_with_status(
     max_age_secs: u64,
     cache: &mut DiscoveryCache,
     provider: Option<Provider>,
-    context_only: bool,
+    _context_only: bool,
 ) -> DiscoveryResult {
     let limit = if max_age_secs == 0 {
         u64::MAX
@@ -557,17 +516,6 @@ pub fn discover_cached_with_status(
         providers.push(status);
     }
 
-    if provider.is_none_or(|p| p == Provider::Devin) {
-        let (sessions, status) = devin::discover_with_status_in(
-            &roots.devin_home,
-            limit,
-            context_only,
-            Some(&mut cache.devin),
-        );
-        found.extend(sessions);
-        providers.push(status);
-    }
-
     found.sort_by_key(|d| d.handle.age_secs);
     DiscoveryResult {
         sessions: found,
@@ -597,14 +545,6 @@ pub fn sniff_provider(path: &Path) -> Option<Provider> {
                 ))
         {
             return Some(Provider::Codex);
-        }
-        // Devin canonical exports: `session_meta` + `main_chain_id`, or
-        // `message_node` records. Checked before Claude because the devin
-        // meta record also carries a `session_id` field.
-        if (ty == Some("session_meta") && v.get("main_chain_id").is_some())
-            || (ty == Some("message_node") && v.get("node_id").is_some())
-        {
-            return Some(Provider::Devin);
         }
         if v.get("sessionId").is_some() || v.get("session_id").is_some() {
             return Some(Provider::ClaudeCode);
@@ -652,7 +592,6 @@ pub fn find(roots: &Roots, query: &str) -> Vec<Discovered> {
             found.push(Discovered { handle, usage });
         }
     }
-    found.extend(devin::find(&roots.devin_home, query));
     found
 }
 
@@ -660,7 +599,6 @@ pub fn find(roots: &Roots, query: &str) -> Vec<Discovered> {
 pub fn load(d: &Discovered) -> Result<gobstopper_core::Transcript, crate::AdapterError> {
     match d.handle.provider {
         Provider::Codex => codex::load(d.handle.clone()),
-        Provider::Devin => devin::load(d.handle.clone()),
         Provider::ClaudeCode => claude::load(d.handle.clone()),
     }
 }
@@ -778,7 +716,6 @@ mod tests {
         let roots = Roots {
             codex_home: fixture.0.join("codex"),
             claude_home: home,
-            devin_home: fixture.0.join("devin"),
         };
         let mut cache = DiscoveryCache::default();
         let result =

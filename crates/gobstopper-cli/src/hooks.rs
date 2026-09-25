@@ -80,8 +80,6 @@ pub(super) fn read_stdin_bounded() -> Result<Option<String>> {
 const CMD_PRECOMPACT: &str = "gobstopper hook precompact";
 const CMD_SESSION_START: &str = "gobstopper hook session-start";
 const CMD_PROMPT_POLICY_CLAUDE: &str = "gobstopper hook prompt-policy:claude";
-const CMD_PROMPT_POLICY_DEVIN: &str = "gobstopper hook prompt-policy:devin";
-const CMD_POSTCOMPACT: &str = "gobstopper hook postcompact";
 
 /// A provider hook point gobstopper can install into.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,8 +89,6 @@ pub enum HookTarget {
     ClaudeUserPromptSubmit,
     CodexPreCompact,
     CodexSessionStart,
-    DevinUserPromptSubmit,
-    DevinPostCompaction,
 }
 
 impl HookTarget {
@@ -104,8 +100,6 @@ impl HookTarget {
             HookTarget::ClaudeUserPromptSubmit,
             HookTarget::CodexPreCompact,
             HookTarget::CodexSessionStart,
-            HookTarget::DevinUserPromptSubmit,
-            HookTarget::DevinPostCompaction,
         ]
     }
 
@@ -114,10 +108,7 @@ impl HookTarget {
         match self {
             HookTarget::ClaudePreCompact | HookTarget::CodexPreCompact => "PreCompact",
             HookTarget::ClaudeSessionStart | HookTarget::CodexSessionStart => "SessionStart",
-            HookTarget::ClaudeUserPromptSubmit | HookTarget::DevinUserPromptSubmit => {
-                "UserPromptSubmit"
-            }
-            HookTarget::DevinPostCompaction => "PostCompaction",
+            HookTarget::ClaudeUserPromptSubmit => "UserPromptSubmit",
         }
     }
 
@@ -129,9 +120,7 @@ impl HookTarget {
             HookTarget::ClaudeSessionStart => "compact",
             // Codex documents anchored regexes for source matching.
             HookTarget::CodexSessionStart => "^compact$",
-            HookTarget::ClaudeUserPromptSubmit
-            | HookTarget::DevinUserPromptSubmit
-            | HookTarget::DevinPostCompaction => "",
+            HookTarget::ClaudeUserPromptSubmit => "",
         }
     }
 
@@ -140,8 +129,6 @@ impl HookTarget {
             HookTarget::ClaudePreCompact | HookTarget::CodexPreCompact => CMD_PRECOMPACT,
             HookTarget::ClaudeSessionStart | HookTarget::CodexSessionStart => CMD_SESSION_START,
             HookTarget::ClaudeUserPromptSubmit => CMD_PROMPT_POLICY_CLAUDE,
-            HookTarget::DevinUserPromptSubmit => CMD_PROMPT_POLICY_DEVIN,
-            HookTarget::DevinPostCompaction => CMD_POSTCOMPACT,
         }
     }
 
@@ -150,10 +137,7 @@ impl HookTarget {
         match self {
             // Prompt-submit hooks run on every user message; bound them so
             // a stalled check never delays a prompt.
-            HookTarget::ClaudeUserPromptSubmit | HookTarget::DevinUserPromptSubmit => Some(10),
-            // Post-compact export can take seconds on large sessions;
-            // bound it so a stalled snapshot never wedges the provider.
-            HookTarget::DevinPostCompaction => Some(60),
+            HookTarget::ClaudeUserPromptSubmit => Some(10),
             _ => None,
         }
     }
@@ -165,7 +149,6 @@ impl HookTarget {
             | HookTarget::ClaudeSessionStart
             | HookTarget::ClaudeUserPromptSubmit => "claude",
             HookTarget::CodexPreCompact | HookTarget::CodexSessionStart => "codex",
-            HookTarget::DevinUserPromptSubmit | HookTarget::DevinPostCompaction => "devin",
         };
         format!("{provider}:{}", self.event_name())
     }
@@ -263,9 +246,8 @@ pub struct SettingsCandidate {
     pub activation: &'static str,
 }
 
-/// The event map inside a settings document: Claude/Codex nest events
-/// under `"hooks"`, while Devin's `hooks.v1.json` maps event names at
-/// the top level (`wrapper = None`).
+/// The event map inside a settings document: Claude and Codex nest events
+/// under `"hooks"`.
 fn event_map<'a>(
     doc: &'a mut Value,
     wrapper: Option<&str>,
@@ -527,44 +509,10 @@ fn snapshot_and_log(
     Some(handle)
 }
 
-/// Devin lacks a pre-compaction callback and an operation identifier here.
-/// Export only the exact session from the explicit store. Do not pair it with
-/// historical snapshots or report applied/retention/savings from this callback.
-fn postcompact_devin(
-    cfg: &crate::config::Config,
-    payload: &Value,
-    roots: &detect::Roots,
-    vault_root: &Path,
-    log_path: &Path,
-) {
-    let Some(session_id) = safe_session_id(payload) else {
-        return;
-    };
-    let db = gobstopper_adapters::devin::db_path(&roots.devin_home);
-    let Ok(path) = fs::canonicalize(db) else {
-        return;
-    };
-    let Ok(bytes) = gobstopper_adapters::devin::export_bytes(&path, session_id) else {
-        eprintln!("gobstopper hook: source_unavailable (non-fatal)");
-        return;
-    };
-    if !bytes_match_session(&bytes, Provider::Devin, session_id) {
-        return;
-    }
-    let handle = SessionHandle {
-        provider: Provider::Devin,
-        session_id: session_id.into(),
-        path,
-        cwd: None,
-        age_secs: 0,
-    };
-    record_hook_snapshot(cfg, &handle, &bytes, false, vault_root, log_path);
-}
-
 fn verified_archive(handle: &SessionHandle, vault_root: &Path) -> Option<String> {
     let reader = vault::Reader::open(vault_root).ok()?;
     let entry = reader.entries().ok()?.into_iter().find(|entry| {
-        entry.provider == handle.provider
+        entry.provider == handle.provider.as_str()
             && entry.session_id == handle.session_id
             && entry.path == handle.path
             && entry.strategy.as_deref() == Some("pre-compact")
@@ -595,7 +543,7 @@ pub(crate) fn rollout_cohort(
 /// never invokes a control itself.
 ///
 /// `[rollout]` in config.toml gates the advisory per provider: sessions
-/// are bucketed deterministically by id, so `devin = 50` advises a stable
+/// are bucketed deterministically by id, so `claude = 50` advises a stable
 /// half of sessions (treatment) and silences the rest (control). Every
 /// resolved decision is logged as a `prompt-policy:<cohort>` telemetry
 /// event so the experiment has both numerator and denominator data.
@@ -628,17 +576,6 @@ fn prompt_policy(
         return Ok(None);
     }
     let mut observations = Vec::new();
-    if provider_hint.is_none_or(|hint| hint == "devin") {
-        if let Some((usage, locked)) =
-            gobstopper_adapters::devin::session_observation(&roots.devin_home, session_id)
-        {
-            if let Ok(path) =
-                fs::canonicalize(gobstopper_adapters::devin::db_path(&roots.devin_home))
-            {
-                observations.push((Provider::Devin, usage.reported_context(), locked, path));
-            }
-        }
-    }
     if provider_hint.is_none_or(|hint| hint == "claude") {
         observations.extend(
             detect::find(roots, session_id)
@@ -861,10 +798,7 @@ fn handle_inner(
     let Ok(payload) = crate::mcp::strict_json(stdin_json.as_bytes()) else {
         return Ok(None);
     };
-    if matches!(
-        event,
-        "prompt-policy" | "prompt-policy:claude" | "prompt-policy:devin"
-    ) {
+    if matches!(event, "prompt-policy" | "prompt-policy:claude") {
         let hint = event.strip_prefix("prompt-policy").unwrap_or("");
         let hint = hint.strip_prefix(':').unwrap_or(hint);
         return prompt_policy(
@@ -882,10 +816,6 @@ fn handle_inner(
     match event {
         "precompact" => {
             snapshot_and_log(cfg, &payload, true, roots, vault_root, log_path);
-            Ok(None)
-        }
-        "postcompact" => {
-            postcompact_devin(cfg, &payload, roots, vault_root, log_path);
             Ok(None)
         }
         "session-start" => {
@@ -919,7 +849,7 @@ fn handle_inner(
 /// `stdin_json`, snapshot the transcript into the vault, append a
 /// compaction-event record, and return the JSON string to print on
 /// stdout (`Some`) or `None`. `event` is "precompact" | "session-start" |
-/// "postcompact" | "prompt-policy[:provider]".
+/// "prompt-policy[:provider]".
 pub fn handle(
     event: &str,
     stdin_json: &str,
@@ -958,7 +888,6 @@ mod tests {
         detect::Roots {
             codex_home: dir.join("codex"),
             claude_home: dir.join("claude"),
-            devin_home: dir.join("devin"),
         }
     }
 
@@ -1051,10 +980,6 @@ mod tests {
         let candidate = prepare_settings(&path, targets, Some("hooks"), false).unwrap();
         assert!(!path.exists());
         assert!(!path.parent().unwrap().exists());
-        assert_eq!(
-            candidate.candidate["hooks"]["PostCompaction"][0]["hooks"][0]["timeout"],
-            60
-        );
         assert_eq!(
             candidate.candidate["hooks"]["UserPromptSubmit"][0]["hooks"][0]["timeout"],
             10
@@ -1306,49 +1231,6 @@ mod tests {
             ctx.contains("no pre-compact recovery snapshot"),
             "got: {ctx}"
         );
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn handle_postcompact_without_store_cannot_claim_applied() {
-        let dir = tmpdir("postcompact-nodb");
-        let vault_root = dir.join("vault");
-        let log = dir.join("events.jsonl");
-        let cfg = crate::config::Config::default();
-        // Session id present but no sessions.db under devin_home — the
-        // event still lands; the export failure is non-fatal.
-        let stdin = r#"{"session_id":"devin-sess-1","summary":"compacted"}"#;
-        let out = handle_inner(
-            "postcompact",
-            stdin,
-            &vault_root,
-            &log,
-            &test_roots(&dir),
-            &cfg,
-        )
-        .unwrap();
-        assert!(out.is_none());
-        assert!(!log.exists());
-        fs::remove_dir_all(&dir).ok();
-    }
-
-    #[test]
-    fn handle_postcompact_empty_payload_is_noop() {
-        let dir = tmpdir("postcompact-empty");
-        let vault_root = dir.join("vault");
-        let log = dir.join("events.jsonl");
-        let cfg = crate::config::Config::default();
-        let out = handle_inner(
-            "postcompact",
-            r#"{"hook_event_name":"PostCompaction"}"#,
-            &vault_root,
-            &log,
-            &test_roots(&dir),
-            &cfg,
-        )
-        .unwrap();
-        assert!(out.is_none());
-        assert!(!log.exists());
         fs::remove_dir_all(&dir).ok();
     }
 
@@ -1719,24 +1601,24 @@ mod tests {
     fn rollout_cohort_is_deterministic_and_ungated_when_absent() {
         let mut cfg = crate::config::Config::default();
         // No rollout entry: ungated.
-        assert_eq!(rollout_cohort(&cfg, "devin", "sess-x"), None);
+        assert_eq!(rollout_cohort(&cfg, "codex", "sess-x"), None);
         // 0% → every bucket is control; 100% → every bucket is treatment.
-        cfg.rollout.insert("devin".into(), 0);
-        assert_eq!(rollout_cohort(&cfg, "devin", "sess-x"), Some(false));
-        cfg.rollout.insert("devin".into(), 100);
-        assert_eq!(rollout_cohort(&cfg, "devin", "sess-x"), Some(true));
+        cfg.rollout.insert("codex".into(), 0);
+        assert_eq!(rollout_cohort(&cfg, "codex", "sess-x"), Some(false));
+        cfg.rollout.insert("codex".into(), 100);
+        assert_eq!(rollout_cohort(&cfg, "codex", "sess-x"), Some(true));
         // Stable for a fixed session id across calls and provider views.
-        cfg.rollout.insert("devin".into(), 50);
-        let a = rollout_cohort(&cfg, "devin", "stable-session");
-        let b = rollout_cohort(&cfg, "devin", "stable-session");
+        cfg.rollout.insert("codex".into(), 50);
+        let a = rollout_cohort(&cfg, "codex", "stable-session");
+        let b = rollout_cohort(&cfg, "codex", "stable-session");
         assert_eq!(a, b);
         // Bucketing splits ids: over many ids a 50% gate must see both arms.
         let arms: std::collections::BTreeSet<_> = (0..64)
-            .map(|i| rollout_cohort(&cfg, "devin", &format!("sess-{i}")))
+            .map(|i| rollout_cohort(&cfg, "codex", &format!("sess-{i}")))
             .collect();
         assert_eq!(arms, [Some(true), Some(false)].into_iter().collect());
         // Another provider without an entry stays ungated.
-        assert_eq!(rollout_cohort(&cfg, "codex", "sess-x"), None);
+        assert_eq!(rollout_cohort(&cfg, "claude_code", "sess-x"), None);
     }
 
     #[test]
@@ -1982,7 +1864,7 @@ mod tests {
         let _ = writeln!(std::io::sink(), "{:?}", report.path);
         assert_eq!(report.added, ["a"]);
         assert!(report.skipped.is_empty());
-        assert_eq!(HookTarget::all().len(), 7);
+        assert_eq!(HookTarget::all().len(), 5);
         assert!(codex_hooks_supported());
     }
 }

@@ -112,9 +112,7 @@ export default function CompareCliffCompaction() {
             threshold (128,000 estimated tokens by default) it sends the head,
             one mechanical summary, and the newest three turns, so the provider
             reports a smaller context and the client&apos;s own auto-compaction
-            does not reach its trigger. The session files stay unchanged. Devin
-            CLI cannot use the proxy because it sends requests through
-            Cognition&apos;s service and has no setting for a model address.
+            does not reach its trigger. The session files stay unchanged.
           </p>
           <pre tabIndex={0}><code>{`gobstopper proxy run -- claude       # one session through a temporary proxy
 gobstopper proxy serve               # background proxy on http://127.0.0.1:8260

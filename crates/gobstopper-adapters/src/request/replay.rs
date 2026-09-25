@@ -135,9 +135,6 @@ pub fn history_from_file(
     match provider {
         gobstopper_core::Provider::ClaudeCode => Ok((Dialect::Anthropic, claude_history(&raw))),
         gobstopper_core::Provider::Codex => Ok((Dialect::Responses, codex_history(&raw))),
-        gobstopper_core::Provider::Devin => anyhow::bail!(
-            "Devin sends its requests through its own service, so there is no request stream to replay or proxy"
-        ),
     }
 }
 

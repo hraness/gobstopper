@@ -42,9 +42,8 @@ test("the homepage shares the README identity and installs the guarded source bu
   } else {
     expect(html).toContain(`href="https://github.com/hraness/gobstopper/releases/tag/v${publishedRelease.version}"`);
     expect(html).toContain(publishedRelease.verificationRun);
-    // This tag predates both Devin support and the guarded source behavior.
     if (publishedRelease.version === "0.2.1") {
-      expect(html).toMatch(/predates Devin support[^<]+safeguards/u);
+      expect(html).toMatch(/predates the proxy and the source build's safeguards/u);
     }
   }
   expect(html).toMatch(/automatic provider compaction is disabled/iu);

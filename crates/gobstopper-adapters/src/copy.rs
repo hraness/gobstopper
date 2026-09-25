@@ -17,18 +17,10 @@ pub fn sha256(bytes: &[u8]) -> String {
 }
 
 pub fn load_bound(handle: SessionHandle) -> anyhow::Result<(Transcript, String)> {
-    // For Devin the transcript's byte identity is the canonical session
-    // export, not the shared database file — hashing `sessions.db` would
-    // pin every other session's rows too.
-    let bytes = match handle.provider {
-        Provider::Devin => crate::devin::export_bytes(&handle.path, &handle.session_id)
-            .map_err(|e| anyhow::anyhow!(e))?,
-        _ => transaction::read(&handle.path)?,
-    };
+    let bytes = transaction::read(&handle.path)?;
     let transcript = match handle.provider {
         Provider::Codex => codex::load_bytes(handle, &bytes)?,
         Provider::ClaudeCode => claude::load_bytes(handle, &bytes)?,
-        Provider::Devin => crate::devin::load_bytes(handle, &bytes)?,
     };
     Ok((transcript, sha256(&bytes)))
 }
@@ -111,7 +103,6 @@ fn validate_receipt(receipt: &CopyReceipt, operation_id: &str) -> anyhow::Result
                     op.kind.as_str(),
                     "compact" | "compacted" | "fork" | "restore"
                 )
-                || op.provider == Provider::Devin
                 || !op.source_path.is_absolute()
                 || op.source_session_id.is_empty()
                 || op.source_session_id.len() > 256
@@ -201,6 +192,25 @@ fn source_roots(
 
 /// Strict operation-root decoder shared by recovery and collection. Every pin
 /// is verified before deletion admission. Pins have no automatic expiry.
+/// Legacy Devin store receipt kept only so vault recovery can still parse
+/// receipts written before Devin support was removed.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DevinStoreReceipt {
+    pub schema_version: u32,
+    pub source_sha256: String,
+    pub export_sha256: String,
+    pub session_id: String,
+    pub nodes_rewritten: u64,
+    pub digest_node_id: Option<i64>,
+    pub reclaimed_bytes: u64,
+    pub snapshot_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_manifest_sha256: Option<String>,
+    #[serde(default)]
+    pub resume_hint: String,
+}
+
 pub(crate) fn recovery_roots_locked(
     raw: &[u8],
     operation_id: &str,
@@ -401,9 +411,6 @@ fn compact_common<F>(
 where
     F: FnOnce(&[u8]) -> anyhow::Result<Vec<u8>>,
 {
-    if handle.provider == Provider::Devin {
-        return Err(crate::AdapterError::DirectMutationDisabled.into());
-    }
     if !digest_valid(source) {
         bail!("invalid source digest");
     }
@@ -514,9 +521,6 @@ pub fn compact(
     plan: &CompactionPlan,
     vault_root: &Path,
 ) -> anyhow::Result<CopyReceipt> {
-    if handle.provider == Provider::Devin {
-        return Err(crate::AdapterError::DirectMutationDisabled.into());
-    }
     let source_path = handle.path.canonicalize()?;
     let legacy = sha256(&serde_json::to_vec(&(
         handle.provider,
@@ -536,7 +540,6 @@ pub fn compact(
             Ok(match handle.provider {
                 Provider::Codex => codex::transform(bytes, &plan.edits)?,
                 Provider::ClaudeCode => claude::transform(bytes, &plan.edits)?,
-                Provider::Devin => unreachable!(),
             })
         },
     )
@@ -582,33 +585,4 @@ pub fn compact_via_compacted(
             Ok(codex_compact::transform_with_digest(&candidate, digest, keep_tail)?.0)
         },
     )
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct DevinStoreReceipt {
-    pub schema_version: u32,
-    pub source_sha256: String,
-    pub export_sha256: String,
-    pub session_id: String,
-    pub nodes_rewritten: u64,
-    pub digest_node_id: Option<i64>,
-    pub reclaimed_bytes: u64,
-    pub snapshot_sha256: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub snapshot_manifest_sha256: Option<String>,
-    /// Provider-native resume command for the mutated session.
-    #[serde(default)]
-    pub resume_hint: String,
-}
-
-/// Direct store mutation remains disabled until provider custody is qualified.
-pub fn compact_devin_store(
-    _handle: &SessionHandle,
-    _source_sha256: &str,
-    _plan: &CompactionPlan,
-    _vault_root: &Path,
-    _devin_root: &Path,
-) -> anyhow::Result<DevinStoreReceipt> {
-    Err(crate::AdapterError::DirectMutationDisabled.into())
 }

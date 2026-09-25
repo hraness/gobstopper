@@ -4,7 +4,7 @@
 
 Long coding-agent sessions collect tool output that mattered once: test logs from runs that have since passed, file listings from before a refactor, stack traces for bugs already fixed. Every turn sends all of it to the model again. Gobstopper is a free, open-source command-line tool that finds your Claude Code and Codex sessions, shows what each compaction strategy would cut, and writes a smaller copy. Before it writes, it stores the original bytes in a content-addressed vault on your machine, so you can search for the exact record a compaction left out or restore the whole session.
 
-The source build also runs a local proxy that compacts live Claude Code and Codex requests, reads Devin sessions for inspection, and keeps direct provider-store edits and automatic provider compaction disabled.
+The source build also runs a local proxy that compacts live Claude Code and Codex requests and keeps direct provider-store edits and automatic provider compaction disabled.
 
 When to use this site:
 - Use gobstopper.sh to learn what Gobstopper does, which strategies it runs, and how to install it.

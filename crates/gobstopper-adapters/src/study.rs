@@ -423,7 +423,6 @@ fn slots(transcript: &Transcript, bytes: &[u8]) -> Result<Vec<Slot>> {
         let value: Value = serde_json::from_slice(line).context("invalid live record")?;
         match transcript.session.provider {
             Provider::ClaudeCode => message(&value["message"], "/message", record, &mut out),
-            Provider::Devin => message(&value["chat_message"], "/chat_message", record, &mut out),
             Provider::Codex => {
                 if value["type"] == "compacted" {
                     if let Some(history) = value
@@ -487,7 +486,6 @@ fn parse_with_limit(
     let mut transcript = match handle.provider {
         Provider::Codex => crate::codex::load_bytes(handle, bytes),
         Provider::ClaudeCode => crate::claude::load_bytes(handle, bytes),
-        Provider::Devin => crate::devin::load_bytes(handle, bytes),
     }?;
     transcript.usage.invalidate_context();
     Ok(transcript)
@@ -624,10 +622,6 @@ pub fn evaluate(
     let mut growth_rounds = HashSet::new();
     for growth in &manifest.growth {
         ensure!(
-            handle.provider != Provider::Devin,
-            "Devin study growth requires provider-authored chain snapshots; static replay only"
-        );
-        ensure!(
             growth.after_round > 0
                 && growth.after_round < rounds
                 && growth_rounds.insert(growth.after_round)
@@ -720,7 +714,6 @@ pub fn evaluate(
                 match handle.provider {
                     Provider::Codex => crate::codex::transform(&before, &plan.edits),
                     Provider::ClaudeCode => crate::claude::transform(&before, &plan.edits),
-                    Provider::Devin => crate::devin::transform(&before, &plan.edits),
                 }?
             } else {
                 before.clone()
@@ -1012,20 +1005,6 @@ mod tests {
         assert_eq!(result.source_bound_retained, 0);
         assert_eq!(result.elidable_retained, 0);
         assert_eq!(result.missing_ids, vec!["rule"]);
-    }
-
-    #[test]
-    fn devin_projection_ignores_dead_nodes() {
-        let raw = format!(
-            "{}\n{}\n{}\n",
-            json!({"type":"session_meta","session_id":"study","main_chain_id":0}),
-            json!({"type":"message_node","node_id":0,"parent_node_id":null,"chat_message":{"role":"user","content":"Never lose the live rule."}}),
-            json!({"type":"message_node","node_id":1,"parent_node_id":null,"chat_message":{"role":"user","content":"dead rule"}})
-        );
-        let transcript = parse(handle(Provider::Devin), raw.as_bytes()).unwrap();
-        let values = slots(&transcript, raw.as_bytes()).unwrap();
-        assert_eq!(values.len(), 1);
-        assert_eq!(values[0].text, "Never lose the live rule.");
     }
 
     #[test]

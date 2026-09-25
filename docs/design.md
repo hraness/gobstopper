@@ -67,9 +67,7 @@ nothing until a resume. CliffCompaction's answer is to sit in the request
 path. Claude Code accepts `ANTHROPIC_BASE_URL`, and Codex accepts a
 `model_providers` entry, so a loopback proxy sees every request before the
 provider does. Once the proxy compacts, the provider reports the compacted
-size and the client's auto-compaction does not reach its trigger. Devin CLI
-routes requests through Cognition's service without a configurable model
-address, so it stays on hooks, MCP, and its own `/compact`.
+size and the client's auto-compaction does not reach its trigger.
 
 - `gobstopper_adapters::request` is the pure engine: dialect digests that
   ignore volatile fields (`cache_control`, thinking signatures, Responses
@@ -209,17 +207,16 @@ The preferred extension surface is a versioned plugin manifest with an exact
 trusted manifest SHA-256, content-addressed bundle files, closed capabilities,
 cleared environment, and bounded stdin/stdout/deadline. Strategy plugins
 receive normalized items and propose `Edit[]`; provider plugins perform
-inspection of bounded source bytes without returning edit proposals, and may use logical record indexes
-for whole-document formats such as Devin ATIF. The host validates every edit.
+inspection of bounded source bytes without returning edit proposals. The host
+validates every edit.
 The protocol does not prevent a trusted subprocess from performing other OS
 effects. Legacy `preset.command` remains available only with
 `trusted_legacy_command = true` and has no sandbox guarantee.
 
 ## Failure and safety posture
 
-- Codex/Claude file `apply` and `undo` publish copies. Direct Devin store
-  apply/restore, arbitrary-path rewrite APIs and legacy in-place watch modes
-  refuse mutation: an idle check and reread-before-rename do not establish
+- Codex/Claude file `apply` and `undo` publish copies. Arbitrary-path rewrite
+  APIs and legacy in-place watch modes refuse mutation: an idle check and reread-before-rename do not establish
   compatible lifetime custody. Existing configuration flags remain accepted,
   but cannot enable those effects. Byte transforms remain available for owned
   in-memory data; fork publication requires an explicit vault root.
@@ -296,8 +293,8 @@ to count a recorded reduction; estimates and unknown values are not zero-cost
 observations. Literal retention, lexical token coverage and optional model
 judgment have separate meanings and explicit coverage. Neither model judgment
 nor a Wilson interval over sampled checks establishes task success.
-Evaluation freezes one canonical source image per session, including a
-per-session export for Devin stores. Benchmark output retains discovered
+Evaluation freezes one canonical source image per session. Benchmark output
+retains discovered
 evaluation failures and distinguishes provider proposals from detached
 transforms. The retention study includes an unchanged baseline; its other
 arms do not stand in for unexecuted provider-native experiments.
@@ -309,13 +306,12 @@ Evidence from `scripts/retention-audit.py` over vault snapshot pairs plus
 presence in live records, not semantic equivalence. These earlier cohorts are
 not live qualification of the current artifact or a general retention bound.
 
-- Three provider compaction shapes: Codex rewrites history verbatim
-  (`replacement_history`), Claude writes a `compact_boundary` plus paraphrased
-  summary, Devin appends an additive `summarized_from` summary node that
-  shortcuts the live chain.
+- Two provider compaction shapes: Codex rewrites history verbatim
+  (`replacement_history`); Claude writes a `compact_boundary` plus paraphrased
+  summary.
 - Literal vs lexical: Claude summary pairs score ~0-10% literal but ~25-50%
   lexical (>=75% of a check's content tokens in one slot). Codex tracks
-  lit~lex (~60-95%). Devin sits between (~5-50% literal, ~60-90% lexical).
+  lit~lex (~60-95%).
 - Constraint-class content is the worst-retained kind in Claude summaries
   (per-kind lexical counts), behind procedures and facts.
 - In three constraint-heavy synthetic seed framings, follow-up answers refused

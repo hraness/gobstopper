@@ -89,9 +89,7 @@ and the README's comparison section records the differences. Since
 September 25, 2026, `gobstopper proxy` also runs that rule on the wire for
 Claude Code and Codex, because only the request path can compact a running
 session before the client's own compaction fires. Open: measure task quality
-and cost of proxied sessions against unproxied ones, and ask Cognition for a
-Devin hook that could supply a compacted context (Devin CLI has no model
-address to proxy).
+and cost of proxied sessions against unproxied ones.
 File-layer tools (cc-session, coldxx, claude-journal, compactdiff,
 claude-streaming-compactor) are manual or single-provider/single-
 strategy. Nobody composes: watch → policy → transcript surgery →

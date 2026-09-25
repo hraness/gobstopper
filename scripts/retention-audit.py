@@ -26,9 +26,6 @@ SKIP_PREFIXES = ('/tmp/', '/var/', '/private/tmp/', '/private/var/')
 MARKER = {
     'claude_code': b'compact_boundary',
     'codex': b'"type":"compacted"',
-    # Devin /compact lands a summary node with metadata.summarized_from set
-    # to the node it summarizes (int); unrelated nodes carry null.
-    'devin': re.compile(rb'"summarized_from":\d'),
 }
 MAX_TRANSIT_BYTES = 512 * 1024 * 1024  # mirrors transaction::max_transcript_bytes
 MAX_PAIRS_PER_SESSION = 3
@@ -342,7 +339,7 @@ def main():
         'limitations': ['Heuristic labels on the before-state only; retention is conditional on annotation coverage.',
                         'Consecutive snapshots can include intervening growth; a dropped check is only attributable when nothing else rewrote the transcript between them.',
                         'Provider-native compaction replaces records wholesale: source_bound is expected to be 0; retained/same_origin carry the signal.',
-                        'Unsupported, corrupt or oversized snapshots are excluded; canonical Devin session exports are distinct from raw shared-store images.'],
+                        'Unsupported, corrupt or oversized snapshots are excluded.'],
     }
     RUNNER.save(root / 'registration.json', registration)
     results = []

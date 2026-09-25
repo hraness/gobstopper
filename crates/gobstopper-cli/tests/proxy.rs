@@ -188,7 +188,13 @@ fn start_proxy_inner(
     env: &[(&str, &str)],
 ) -> ProxyProcess {
     let mut command = Command::new(env!("CARGO_BIN_EXE_gobstopper"));
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GOBSTOPPER_") {
+            command.env_remove(key);
+        }
+    }
     command
+        .env("XDG_CONFIG_HOME", std::env::temp_dir())
         .args(["proxy", "serve", "--port", "0"])
         .args(["--anthropic-upstream", anthropic])
         .args(["--openai-upstream", openai])

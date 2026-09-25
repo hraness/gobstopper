@@ -213,9 +213,6 @@ pub fn fork_with_vault(
     new_session_id: Option<String>,
     root: &Path,
 ) -> anyhow::Result<ForkResult> {
-    if provider == Provider::Devin {
-        bail!("devin sessions cannot be forked to transcript files");
-    }
     let src = src.canonicalize()?;
     let original = crate::transaction::read(&src)?;
     if crate::detect::sniff_provider(&src).is_some_and(|actual| actual != provider) {
@@ -261,9 +258,6 @@ pub fn source_session_id(provider: Provider, bytes: &[u8]) -> anyhow::Result<Str
                 ids
             }
             Provider::ClaudeCode => value.get("sessionId").into_iter().collect(),
-            Provider::Devin if value["type"] == "session_meta" => vec![value
-                .get("session_id")
-                .ok_or_else(|| anyhow::anyhow!("source metadata is missing"))?],
             _ => Vec::new(),
         };
         for value in ids {
@@ -322,7 +316,6 @@ fn publish_fork(
             Provider::Codex if kind == "fork" => format!("codex fork {session_id}"),
             Provider::Codex => format!("codex resume {session_id}"),
             Provider::ClaudeCode => format!("claude --resume {session_id}"),
-            Provider::Devin => unreachable!(),
         },
     })
 }
@@ -339,9 +332,6 @@ pub fn restore_copy(
     sha256: &str,
     root: &Path,
 ) -> anyhow::Result<ForkResult> {
-    if provider == Provider::Devin {
-        bail!("devin session-store restores are not implemented");
-    }
     let reader = crate::vault::Reader::open(root)?;
     let bytes = reader.read_object(sha256)?;
     if crate::verify::verify(provider, &bytes)
@@ -376,9 +366,6 @@ pub(crate) fn rewrite_identity(provider: Provider, raw: &str, id: &str) -> Strin
     match provider {
         Provider::Codex => fork_codex(raw, id),
         Provider::ClaudeCode => fork_claude(raw, id),
-        // Devin exports carry no file-level identity to rewrite; callers
-        // bail before reaching this for store-backed sessions.
-        Provider::Devin => raw.to_string(),
     }
 }
 
@@ -391,7 +378,6 @@ pub(crate) fn target_path_bound(
     let name = match provider {
         Provider::ClaudeCode => format!("{id}.jsonl"),
         Provider::Codex => codex_fork_name(source, Some(old_id), id),
-        Provider::Devin => format!("{id}.devin-export.jsonl"),
     };
     source.parent().unwrap_or_else(|| Path::new(".")).join(name)
 }

@@ -110,9 +110,9 @@ class MonitorTests(unittest.TestCase):
     def test_coverage_distinguishes_empty_selection_unknown_usage_and_caps(self):
         value = report()
         value["gobstopper"] = {"coverage": {"truncated": True}, "discovery": [
-            {"provider": provider, "source_state": "unavailable" if provider == "devin" else "available",
-             "scanned": 1, "selected": 1, "invalid_records": 0, "io_errors": int(provider == "devin"),
-             "omitted": 0, "truncated": False} for provider in ("codex", "claude_code", "devin")]}
+            {"provider": provider, "source_state": "unavailable" if provider == "claude_code" else "available",
+             "scanned": 1, "selected": 1, "invalid_records": 0, "io_errors": int(provider == "claude_code"),
+             "omitted": 0, "truncated": False} for provider in ("codex", "claude_code")]}
         coverage = monitor.coverage_summary(value, [B], ["codex"], monitor.context_samples(value, [B], ["codex"]))
         self.assertEqual(coverage["selected_active_overlap"], 0)
         self.assertEqual(coverage["selected_unavailable"], 1)
@@ -122,11 +122,11 @@ class MonitorTests(unittest.TestCase):
         self.assertIn("selected_overlap_empty", coverage["issues"])
         self.assertIn("discovery_gaps", coverage["issues"])
         self.assertIn("coverage_truncated", coverage["issues"])
-        value["gobstopper"]["discovery"][2] = value["gobstopper"]["discovery"][0]
+        value["gobstopper"]["discovery"][1] = value["gobstopper"]["discovery"][0]
         duplicate = monitor.coverage_summary(value, [B], ["codex"], [])
         self.assertFalse(duplicate["discovery_available"])
-        value["gobstopper"]["discovery"][2] = {
-            "provider": "devin", "source_state": "available", "scanned": 0, "selected": 0,
+        value["gobstopper"]["discovery"][1] = {
+            "provider": "claude_code", "source_state": "available", "scanned": 0, "selected": 0,
             "invalid_records": 0, "io_errors": "private", "omitted": 0, "truncated": False}
         invalid = monitor.coverage_summary(value, [B], ["codex"], [])
         self.assertFalse(invalid["discovery_available"])
@@ -155,7 +155,7 @@ class MonitorTests(unittest.TestCase):
             path.chmod(0o600)
         write()
         rows = monitor.watcher_checkpoints(runtime, "a" * 64, 1500)
-        self.assertEqual([row["status"] for row in rows], ["fresh", "missing", "missing"])
+        self.assertEqual([row["status"] for row in rows], ["fresh", "missing"])
         self.assertNotIn("PRIVATE", json.dumps(rows))
         self.assertEqual(rows[0]["decisions"]["native_unqualified"], 2)
         checkpoint["settled"] = {"ignored": "x" * monitor.WATCH_STATE_BYTES}
@@ -380,23 +380,23 @@ else:
 
     def test_context_samples_respect_allowlist_and_provider_opt_in(self):
         value = report()
-        devin_row = json.loads(json.dumps(value["sessions"][0]))
-        devin_row["provider"] = "devin"
-        devin_row["gobstopper"]["sessionIdNative"] = "devin-session-1"
-        value["sessions"].append(devin_row)
+        claude_row = json.loads(json.dumps(value["sessions"][0]))
+        claude_row["provider"] = "claude_code"
+        claude_row["gobstopper"]["sessionIdNative"] = "claude-session-1"
+        value["sessions"].append(claude_row)
         self.report_file.write_text(json.dumps(value))
 
         # Default: only allowlisted sessions; neither the unrelated codex
-        # row nor the devin row is sampled.
+        # row nor the claude row is sampled.
         observation = self.sample()
         sampled = {(r["provider"], r["session_id"]) for r in observation["context_samples"]}
         self.assertEqual(sampled, {("codex", A)})
 
         # Opted-in provider rows join the allowlist; unrelated codex stays out.
         observation = monitor.observe(
-            self.binary, self.output, [A, B], providers=["devin"])
+            self.binary, self.output, [A, B], providers=["claude_code"])
         sampled = {(r["provider"], r["session_id"]) for r in observation["context_samples"]}
-        self.assertEqual(sampled, {("codex", A), ("devin", "devin-session-1")})
+        self.assertEqual(sampled, {("codex", A), ("claude_code", "claude-session-1")})
 
         # An unknown provider name is rejected before any child runs.
         with self.assertRaises(monitor.MonitorError):
@@ -580,7 +580,7 @@ else:
         foreign["source_identity_sha256"] = "f" * 64
         for side in ("before", "after"):
             foreign[f"{side}_observation"]["source_identity_sha256"] = "f" * 64
-        rows = [valid, valid, foreign, {**valid, "provider": "devin"},
+        rows = [valid, valid, foreign, {**valid, "provider": "claude_code"},
                 {**valid, "error_code": "unresolved_context"}]
         log.write_text("".join(json.dumps(row) + "\n" for row in rows))
         result = monitor.retention_summary(log, selected_sources(A))

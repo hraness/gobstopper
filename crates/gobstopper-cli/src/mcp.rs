@@ -415,11 +415,11 @@ fn tools(cli: &Cli) -> Value {
         },
         {
             "name": "policy_check",
-            "description": "Evaluate numeric compaction policy for Codex, Claude Code, or Devin without reading or modifying session storage.",
+            "description": "Evaluate numeric compaction policy for Codex or Claude Code without reading or modifying session storage.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "provider": {"type": "string", "enum": ["codex", "claude_code", "devin"]},
+                    "provider": {"type": "string", "enum": ["codex", "claude_code"]},
                     "context_tokens": {"type": "integer", "minimum": 0, "maximum": 100000000},
                     "session_active": {"type": "boolean"},
                     "quota_pressure": {"type": "string", "enum": ["low", "normal", "high"]}
@@ -617,7 +617,7 @@ fn run_tool(cli: &Cli, cfg: &config::Config, name: &str, args: &Value) -> Result
             let mut entries = vault::list(&root)?;
             let canonical = d.handle.path.canonicalize()?;
             entries.retain(|e| {
-                e.provider == d.handle.provider
+                e.provider == d.handle.provider.as_str()
                     && e.session_id == d.handle.session_id
                     && (e.path == d.handle.path || e.path == canonical)
             });
@@ -701,13 +701,7 @@ fn run_tool(cli: &Cli, cfg: &config::Config, name: &str, args: &Value) -> Result
         "verify" => {
             let session = get_str("session").unwrap_or_default();
             let d = find_session(cli, cfg, session)?;
-            let bytes = if d.handle.provider == gobstopper_core::Provider::Devin
-                && gobstopper_adapters::devin::is_store_path(&d.handle.path)
-            {
-                gobstopper_adapters::devin::export_bytes(&d.handle.path, &d.handle.session_id)?
-            } else {
-                transaction::read(&d.handle.path)?
-            };
+            let bytes = transaction::read(&d.handle.path)?;
             let findings = verify::verify(d.handle.provider, &bytes);
             let errors = findings
                 .iter()
@@ -731,7 +725,6 @@ mod tests {
         Cli {
             codex_home: None,
             claude_home: None,
-            devin_home: None,
             codex_bin: None,
             command: crate::Cmd::Mcp {
                 allow_transcript_content: false,
@@ -812,10 +805,6 @@ mod tests {
             ("list_sessions", json!({"all":"false"})),
             ("plan", json!({"session":"s","trigger":-1})),
             ("plan", json!({"session":"s","adaptive":null})),
-            (
-                "policy_check",
-                json!({"provider":"devin","context_tokens":100,"session_active":1}),
-            ),
             (
                 "policy_check",
                 json!({"provider":"custom","context_tokens":100}),
@@ -913,20 +902,6 @@ mod tests {
     }
 
     #[test]
-    fn devin_policy_check_routes_to_native_compaction() {
-        let value = run_tool(
-            &cli(),
-            &cfg(),
-            "policy_check",
-            &json!({"provider": "devin", "context_tokens": 300000}),
-        )
-        .unwrap();
-        assert_eq!(value["action"], "provider_compact");
-        assert_eq!(value["control"], "/compact");
-        assert_eq!(value["provider"], "devin");
-    }
-
-    #[test]
     fn unknown_method_and_tool_fail_cleanly() {
         let msg = json!({"jsonrpc": "2.0", "id": 3, "method": "bogus/method"});
         let response = handle(&cli(), &cfg(), &msg).unwrap();
@@ -983,7 +958,7 @@ mod tests {
         let row = vault::RecallDigest {
             snapshot_sha: "a".repeat(64),
             ts: 1,
-            provider: gobstopper_core::Provider::Codex,
+            provider: "codex".into(),
             session_id: "synthetic".into(),
             record_index: 0,
             score: 1,

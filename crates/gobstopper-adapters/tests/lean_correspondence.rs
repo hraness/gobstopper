@@ -1,6 +1,6 @@
 //! Finite correspondence with the independently executable Lean algebra.
 //! These synthetic linear histories are not live-provider qualification.
-use gobstopper_adapters::{claude, codex, devin, verify};
+use gobstopper_adapters::{claude, codex, verify};
 use gobstopper_core::{
     validation::validate_edits, DigestBlock, Edit, PolicyConfig, Provider, SessionHandle,
     Transcript,
@@ -21,9 +21,6 @@ fn fixture(provider: Provider) -> Vec<u8> {
             rows.push(json!({"type":"session_meta","payload":{"id":"lean-fixture"}}))
         }
         Provider::ClaudeCode => {}
-        Provider::Devin => {
-            rows.push(json!({"type":"session_meta","session_id":"lean-fixture","main_chain_id":7}))
-        }
     }
     for key in 0u64..8 {
         let call = [1, 3, 5].contains(&key);
@@ -52,16 +49,6 @@ fn fixture(provider: Provider) -> Vec<u8> {
                     "parentUuid":key.checked_sub(1).map(|p|format!("oracle-{p}")),
                     "sessionId":"lean-fixture","cwd":"synthetic-fixture","message":message})
             }
-            Provider::Devin => {
-                let message = if call {
-                    json!({"role":"assistant","tool_calls":[{"id":format!("tool-{tool}"),"name":"read"}],"content":text(key+1)})
-                } else if result {
-                    json!({"role":"tool","tool_call_id":format!("tool-{tool}"),"content":text(key+1)})
-                } else {
-                    json!({"role":"user","content":text(key+1)})
-                };
-                json!({"type":"message_node","node_id":key,"parent_node_id":key.checked_sub(1),"chat_message":message})
-            }
         };
         rows.push(record);
     }
@@ -85,7 +72,6 @@ fn load(provider: Provider, raw: &[u8]) -> Transcript {
     match provider {
         Provider::Codex => codex::load_bytes(handle, raw),
         Provider::ClaudeCode => claude::load_bytes(handle, raw),
-        Provider::Devin => devin::load_bytes(handle, raw),
     }
     .expect("synthetic projection")
 }
@@ -94,7 +80,6 @@ fn transform(provider: Provider, raw: &[u8], edits: &[Edit]) -> Vec<u8> {
     match provider {
         Provider::Codex => codex::transform(raw, edits),
         Provider::ClaudeCode => claude::transform(raw, edits),
-        Provider::Devin => devin::transform(raw, edits),
     }
     .expect("admitted synthetic transformation")
 }
@@ -125,7 +110,6 @@ fn semantic_rows(provider: Provider, raw: &[u8]) -> Vec<(usize, u64, Value)> {
                     .strip_prefix("oracle-")
                     .and_then(|s| s.parse().ok())
                     .unwrap_or(8),
-                Provider::Devin if r["type"] == "message_node" => r["node_id"].as_u64().unwrap(),
                 _ => return None,
             };
             Some((line, key, r))
@@ -139,7 +123,6 @@ fn content(provider: Provider, key: u64, record: &Value) -> (u64, Value) {
     let body = match provider {
         Provider::Codex => &record["payload"],
         Provider::ClaudeCode => &record["message"],
-        Provider::Devin => &record["chat_message"],
     };
     let id = if call { key.div_ceil(2) } else { key / 2 };
     let event = if call || result {
@@ -147,8 +130,6 @@ fn content(provider: Provider, key: u64, record: &Value) -> (u64, Value) {
             Provider::Codex => &body["call_id"],
             Provider::ClaudeCode if call => &body["content"][0]["id"],
             Provider::ClaudeCode => &body["content"][0]["tool_use_id"],
-            Provider::Devin if call => &body["tool_calls"][0]["id"],
-            Provider::Devin => &body["tool_call_id"],
         };
         assert_eq!(actual, &format!("tool-{id}"));
         json!({"kind":if call {"call"} else {"result"},"id":id})
@@ -192,7 +173,6 @@ fn substitute_payload(provider: Provider, record: &mut Value) {
     match provider {
         Provider::Codex => record["payload"]["output"] = json!(STUB),
         Provider::ClaudeCode => record["message"]["content"][0]["content"] = json!(STUB),
-        Provider::Devin => record["chat_message"]["content"] = json!(STUB),
     }
 }
 
@@ -235,7 +215,6 @@ fn compare(provider: Provider, case: &str, raw: &[u8], original: &[u8], expected
                     assert!(!old.iter().any(|(_, _, r)| r["uuid"] == row["uuid"]));
                     assert_eq!(row["parentUuid"], "oracle-7");
                 }
-                Provider::Devin => assert_eq!(row["parent_node_id"], 7),
                 Provider::Codex => assert_eq!(row["payload"]["role"], "user"),
             }
         }
@@ -281,7 +260,7 @@ fn lean_vectors_match_production() {
     let mut accepted = 0;
     let mut refused = 0;
     let mut digests = 0;
-    for provider in [Provider::Codex, Provider::ClaudeCode, Provider::Devin] {
+    for provider in [Provider::Codex, Provider::ClaudeCode] {
         for case in cases {
             let name = case["name"].as_str().unwrap();
             let original = fixture(provider);
@@ -361,5 +340,5 @@ fn lean_vectors_match_production() {
             }
         }
     }
-    assert_eq!((accepted, refused, digests), (36, 33, 9));
+    assert_eq!((accepted, refused, digests), (24, 22, 6));
 }

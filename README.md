@@ -89,9 +89,6 @@ point), `--keep-recent`, `--result-max-chars`, `--drop-thinking`, `--shadow`
   a request for length, the proxy compacts further and retries.
 - Transcript files are not changed. Claude Code and Codex keep the full
   history, so resume and the file commands below work as before.
-- Devin CLI sends its requests through Cognition's service and has no
-  setting for a model address, so it cannot use the proxy; see
-  [docs/devin.md](docs/devin.md) for what Gobstopper does with Devin.
 - Sizes are estimates at four characters per token, with images priced by
   their dimensions. A history the client already compacted itself can start
   with a long head that the proxy keeps verbatim; the threshold then rises to
@@ -112,8 +109,7 @@ source and candidate bytes in a content-addressed vault
 (`~/.local/share/gobstopper/vault/`). Snapshots use deduplicated 1 MiB chunks,
 so appended versions reuse
 unchanged prefix storage without creating one filesystem object per JSONL
-record. Devin snapshots instead contain a canonical per-session export, not
-the shared database or every provider-owned artifact.
+record.
 
 `gobstopper recall --query <q>` searches the state cards in every archived
 snapshot, ranks matches by relevance to the query, and returns the high-level
@@ -178,15 +174,7 @@ run code you trust with your user permissions, without an OS sandbox:
 ```sh
 claude mcp add gobstopper -- gobstopper mcp
 # ~/.codex/config.toml: [mcp_servers.gobstopper] command = "gobstopper", args = ["mcp"]
-devin mcp add -s user gobstopper -- gobstopper mcp
 ```
-
-For Devin, `policy_check` accepts `provider = "devin"` and returns `/compact`
-when the configured threshold is crossed. While a Devin session is running,
-Devin owns its store. Direct-store `apply` and `undo` are disabled; use the
-provider's `/compact` or inspect a canonical export instead. See
-[docs/devin.md](docs/devin.md). `devin --export out.json` can be inspected
-through a trusted provider-reader plugin when offline analysis is needed.
 
 Provider-generated summaries can cost a large input call and lose detail, so
 the strategy and where it cuts matter as much as the timing.
@@ -251,7 +239,7 @@ gobstopper mcp                     # deterministic inspection; executable strate
 gobstopper proxy serve             # compact live Claude Code and Codex requests on 127.0.0.1:8260
 ```
 
-### Set up Gobstopper for Claude Code, Codex, and Devin
+### Set up Gobstopper for Claude Code and Codex
 
 1. Install the binary from `main` and check it:
 
@@ -265,22 +253,14 @@ gobstopper proxy serve             # compact live Claude Code and Codex requests
    ```sh
    claude mcp add -s user gobstopper -- gobstopper mcp
    codex mcp add gobstopper -- gobstopper mcp
-   devin mcp add -s user gobstopper -- gobstopper mcp
    ```
 
-   Confirm with `claude mcp list`, `codex mcp list`, or `devin mcp get gobstopper`.
+   Confirm with `claude mcp list` or `codex mcp list`.
    Add `--allow-transcript-content` after `mcp` only if the agent should be
    able to search and read archived transcript text.
 
-3. For Claude Code and Codex, start the proxy and point each client at it as
-   described in [docs/proxy.md](docs/proxy.md).
-
-4. For Devin, export the hook candidates with
-   `gobstopper install-hooks --output ./hook-candidates.json`, review the
-   Devin entry, and add its `UserPromptSubmit` and `PostCompaction` handlers
-   to `~/.config/devin/config.json`. The first suggests `/compact` at your
-   Gobstopper threshold; the second archives the session after each Devin
-   compaction so exact records stay searchable.
+3. Start the proxy and point each client at it as described in
+   [docs/proxy.md](docs/proxy.md).
 
 Hook installation and removal export candidates without changing provider settings.
 The bundle includes the exact original settings and hashes, so keep it private.
@@ -333,8 +313,7 @@ Telemetry is best effort:
 successful event writes use the `gobstopper/compaction-events-v1` schema.
 
 `eval` and `bench` freeze each session's source before comparing strategies.
-For Devin, that source is the canonical per-session export, never the SQLite
-database file. `bench` selects sessions updated within seven days by default;
+`bench` selects sessions updated within seven days by default;
 `--all` removes that age filter but retains discovery and input limits. Its
 24-column CSV includes source/result hashes, `execution_state`, `token_basis`,
 retention availability and a closed `failure` category. Discovered sessions
@@ -395,23 +374,19 @@ protected recent tool-output tail.
 `--against AFTER` switches to a score-only realized audit: the manifest binds
 to the session's before-state and retention is scored against independent
 after-bytes, with no replay and no mutation. Either spec may be a `vault:<sha256>`
-snapshot reference (Devin store snapshots are exported to the transcript
-dialect first). `scripts/retention-audit.py` scans the vault for consecutive
+snapshot reference. `scripts/retention-audit.py` scans the vault for consecutive
 snapshots whose provider compaction-marker count increased (Claude
 `compact_boundary`, Codex `"type":"compacted"`; hook bracket labels alone can
 miss the actual write), pairs surgery-labeled snapshots with the next
 snapshot, and runs the audit over each pair. The result is realized, per-kind
 retention of compactions that already happened, including provider-native
-ones. Devin's marker is `metadata.summarized_from`: its `/compact` appends a
-summary node rather than rewriting history, so expect flat context deltas and
-nonzero source-bound retention.
+ones.
 
 Without new work, replay is explicitly `static_stress`; unchanged passes do not
 count as applied compactions. For Codex/Claude fixtures, optional `growth`
 entries (`after_round`, `records`) append complete provider records between
 rounds and are verified before use. Checks still refer to the initial source;
 this is not a test of revised tasks, independent tasks, or agent reasoning.
-Devin growth is rejected until provider-authored chain progression is supported.
 Provider-native compaction, semantic summarization, continuation success, cost,
 and retrieval are not measured, and the report does not score them as
 successful or free. The built-in `structured` strategy is not used as a
@@ -475,9 +450,6 @@ adaptive = true              # derive trigger/floor per session; see `gobstopper
 [provider.codex]             # per-provider overrides
 trigger_tokens = 200_000
 
-[provider.devin]             # policy can advise /compact; see docs/devin.md
-trigger_tokens = 200_000
-
 [sessions."01a08d7c-…"]      # per-session overrides
 strategy = "structured"
 trigger_tokens = 120_000
@@ -498,7 +470,7 @@ trusted_legacy_command = true
 ```
 
 For sessions stored outside the default directories, such as in a sandboxed
-home, pass `--codex-home`, `--claude-home`, or `--devin-home`.
+home, pass `--codex-home` or `--claude-home`.
 
 ### Monitoring an existing Codex desktop session
 
@@ -742,8 +714,8 @@ session files:
 
 | | CliffCompaction | Gobstopper |
 |---|---|---|
-| Where it runs | A local HTTP proxy between the agent and the Anthropic or OpenAI API | A local HTTP proxy for Claude Code and Codex, plus a CLI over the session files Claude Code, Codex, and Devin write |
-| Clients | Any client of the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses API | Claude Code (Anthropic Messages) and Codex (OpenAI Responses); Devin cannot be proxied |
+| Where it runs | A local HTTP proxy between the agent and the Anthropic or OpenAI API | A local HTTP proxy for Claude Code and Codex, plus a CLI over the session files Claude Code and Codex write |
+| Clients | Any client of the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses API | Claude Code (Anthropic Messages) and Codex (OpenAI Responses) |
 | What it changes | Each outgoing request, transparently, while the session runs | The proxy rewrites outgoing requests over the threshold; file commands publish a separate compacted copy and leave the source unchanged |
 | How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy applies the same rule; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
 | Recompaction | Rebuilt from the original history; the prior summary is discarded | The proxy rebuilds from the original history; `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy |
@@ -854,8 +826,8 @@ The compatibility settings `auto_apply_inplace`, `auto_apply_store`, and
   the `Strategy` trait, all built-in strategies, and the telemetry schema.
   Its only file I/O is the telemetry event log.
 - `crates/gobstopper-adapters`: session discovery, Codex and Claude Code JSONL
-  parsing and copy preparation, read-only Devin exports, no-clobber
-  publication, verification, plugin hosting, and the snapshot vault.
+  parsing and copy preparation, no-clobber publication, verification, plugin
+  hosting, and the snapshot vault.
 - `crates/gobstopper-cli`: the `gobstopper` binary (run `gobstopper --help`
   for every subcommand), layered configuration, hooks, and the read-only MCP
   server.
@@ -966,17 +938,14 @@ behavior, proprietary provider acceptance, or preservation of every task fact.
 
 Direct provider controls still belong to the live session owner. Synthetic
 Codex `compacted` records, external model scoring, and semantic editor plugins
-remain explicitly experimental or trusted extension paths. Devin support covers
-detection, numeric policy/MCP handoff, frozen export evaluation and per-session
-vault exports. Released
-native dispatch remains guarded for all three providers. Direct-store and
+remain explicitly experimental or trusted extension paths. Released
+native dispatch remains guarded for both providers. In-place and
 arbitrary-path rewrite APIs refuse mutation. Deterministic MCP inspection rejects
 executable strategies; explicitly invoked extensions remain trusted code rather
 than an OS sandbox. The [activation matrix](docs/assurance/qualification.json)
 and [recovery runbook](docs/assurance/operations.md) define the supported modes.
-See [docs/design.md](docs/design.md), [docs/roadmap.md](docs/roadmap.md),
-[docs/plugin-protocol.md](docs/plugin-protocol.md), and
-[docs/devin.md](docs/devin.md) for details.
+See [docs/design.md](docs/design.md), [docs/roadmap.md](docs/roadmap.md), and
+[docs/plugin-protocol.md](docs/plugin-protocol.md) for details.
 
 ## License
 

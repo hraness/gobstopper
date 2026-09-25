@@ -31,8 +31,7 @@ pub(crate) fn parse_limit(value: Option<&str>) -> u64 {
 }
 
 /// Upper bound on transcript bytes loaded or rewritten. Guards memory
-/// use on pathological inputs; store-backed providers (Devin) export
-/// proportionally large canonical forms, so operators can raise it with
+/// use on pathological inputs; operators can raise it with
 /// `GOBSTOPPER_MAX_TRANSCRIPT_BYTES` (a byte count, minimum 1 KiB).
 pub fn max_transcript_bytes() -> u64 {
     static CACHED: std::sync::OnceLock<u64> = std::sync::OnceLock::new();

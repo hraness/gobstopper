@@ -182,9 +182,7 @@
         "policy_change_invalidates_unchanged_session_decisions",
         "standalone_native_noop_and_failure_never_credit_the_projected_floor",
         "unqualified_watch_suppresses_restarts_but_rechecks_source_policy_and_artifact",
-        "unqualified_watch_preserves_control_cohort_before_artifact_refusal",
-        "unqualified_devin_unknown_context_never_exports_or_snapshots",
-        "active_auto_unknown_devin_delegates_without_export_or_snapshot"
+        "unqualified_watch_preserves_control_cohort_before_artifact_refusal"
       ],
       "seconds": 360
     },
@@ -208,35 +206,6 @@
         "invalid_native_identity_or_deadline_never_starts_provider"
       ],
       "seconds": 60
-    },
-    {
-      "name": "acp-process",
-      "argv": [
-        "cargo",
-        "test",
-        "-p",
-        "gobstopper-adapters",
-        "--locked",
-        "--lib",
-        "devin::tests::acp_",
-        "--",
-        "--nocapture",
-        "--test-threads=1"
-      ],
-      "source": "crates/gobstopper-adapters/src/devin.rs",
-      "tests": [
-        "devin::tests::acp_compact_accepts_completion_before_ack",
-        "devin::tests::acp_compact_rejects_foreign_or_display_text_completion",
-        "devin::tests::acp_compact_never_echoes_private_error_payloads",
-        "devin::tests::acp_compact_refuses_malformed_or_locked_load_before_prompt",
-        "devin::tests::acp_compact_bounds_requests_before_spawn_and_bounds_response_frames",
-        "devin::tests::acp_compact_drains_history_bursts_through_bounded_queue",
-        "devin::tests::acp_compact_terminates_descendants_on_completion_and_timeout",
-        "devin::tests::acp_request_write_observes_deadline_when_bridge_stops_reading",
-        "devin::tests::acp_compact_loads_session_and_sends_compact",
-        "devin::tests::acp_compact_times_out_and_handles_bridge_death"
-      ],
-      "seconds": 90
     },
     {
       "name": "codex-process",

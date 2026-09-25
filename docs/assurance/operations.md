@@ -6,11 +6,10 @@ establish compatibility with an installed provider version or account.
 
 ## Provider files and settings
 
-Direct Codex/Claude transcript replacement and Devin database mutation are
-disabled. A Gobstopper lock is not custody honored by a provider that already
-has the file open. Codex/Claude copy preparation retains the exact original and
-candidate in the vault and publishes a new session without replacing a target.
-Devin apply/undo refuse before snapshots, prompts or writes.
+Direct Codex/Claude transcript replacement is disabled. A Gobstopper lock is
+not custody honored by a provider that already has the file open. Codex/Claude
+copy preparation retains the exact original and candidate in the vault and
+publishes a new session without replacing a target.
 
 `install-hooks --output <new-file>` and `uninstall-hooks --output <new-file>`
 export an inert settings bundle. Without `--output`, both commands refuse.
@@ -71,10 +70,9 @@ strategy that may have changed. An existing exact output may be reconciled;
 conflicting bytes, a missing completed output, and legacy pending receipts
 without a retained candidate require explicit repair.
 
-Replay accepts canonical Devin session exports. Raw SQLite store images retained
-in an archive remain readable as archive bytes but are refused as replay inputs:
-they may be torn or depend on an unavailable WAL. Replay never materializes such
-an image into a shared temporary filename or attempts to repair the provider store.
+Non-transcript archive objects remain readable as archive bytes but are refused
+as replay inputs. Replay never materializes them into shared temporary filenames
+or attempts to repair provider state.
 
 Evaluation validates command-line policy overrides before invoking scorers.
 `bench --output <new-file>` publishes one private, no-clobber CSV artifact; an

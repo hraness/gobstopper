@@ -1,6 +1,6 @@
 [package]
 name = "gobstopper"
-description = "Inspects Claude Code, Codex, and Devin sessions and prepares compacted transcript copies"
+description = "Inspects Claude Code and Codex sessions and prepares compacted transcript copies"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -25,4 +25,3 @@ keyring = { version = "3.6.2", default-features = false, features = ["apple-nati
 libc = "0.2"
 
 [dev-dependencies]
-rusqlite = { workspace = true }

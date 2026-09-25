@@ -405,7 +405,7 @@ def valid_compaction_event(event):
     """
     if (not isinstance(event, dict)
             or event.get("schema") != "gobstopper/compaction-events-v1"
-            or event.get("provider") not in ("codex", "claude_code", "devin")
+            or event.get("provider") not in ("codex", "claude_code")
             or event.get("action") not in ("provider_compact", "transcript_compact", "none")
             or event.get("outcome") not in ("applied", "planned", "failed", "skipped", "blocked")):
         return False
@@ -524,7 +524,7 @@ def context_samples(report, sessions, providers):
         session = gobstopper.get("sessionIdNative")
         provider = row.get("provider")
         if (not isinstance(session, str) or not SESSION_ID.fullmatch(session)
-                or provider not in ("codex", "claude_code", "devin")
+                or provider not in ("codex", "claude_code")
                 or (session not in wanted and provider not in providers)):
             continue
         samples.append({
@@ -546,7 +546,7 @@ def coverage_summary(report, sessions, providers, samples):
             continue
         fields = row["gobstopper"]
         session, provider = fields.get("sessionIdNative"), row.get("provider")
-        if provider not in ("codex", "claude_code", "devin"):
+        if provider not in ("codex", "claude_code"):
             continue
         if not isinstance(session, str) or not SESSION_ID.fullmatch(session):
             if provider in opted_in:
@@ -554,7 +554,7 @@ def coverage_summary(report, sessions, providers, samples):
             continue
         if session in wanted and provider == "codex":
             matched.add(session)
-        if provider in ("codex", "claude_code", "devin") and (session in wanted or provider in opted_in):
+        if provider in ("codex", "claude_code") and (session in wanted or provider in opted_in):
             eligible += 1
     for sample in samples:
         state = sample["context_state"]
@@ -566,9 +566,9 @@ def coverage_summary(report, sessions, providers, samples):
     raw_discovery = extension.get("discovery") if isinstance(extension, dict) else None
     discovery = []
     discovery_seen = set()
-    if isinstance(raw_discovery, list) and len(raw_discovery) <= 3:
+    if isinstance(raw_discovery, list) and len(raw_discovery) <= 2:
         for row in raw_discovery:
-            if (not isinstance(row, dict) or row.get("provider") not in ("codex", "claude_code", "devin")
+            if (not isinstance(row, dict) or row.get("provider") not in ("codex", "claude_code")
                     or row.get("source_state") not in ("available", "missing", "unavailable")
                     or row["provider"] in discovery_seen
                     or any(number(row.get(key)) is None for key in
@@ -593,7 +593,7 @@ def coverage_summary(report, sessions, providers, samples):
         issues.append("incomplete_context_measurements")
     if identifier_omissions:
         issues.append("unsupported_session_identifiers")
-    if len(discovery) != 3:
+    if len(discovery) != 2:
         issues.append("discovery_status_unavailable")
     if any(row["source_state"] != "available" or row["io_errors"] or row["invalid_records"] for row in discovery):
         issues.append("discovery_gaps")
@@ -607,7 +607,7 @@ def coverage_summary(report, sessions, providers, samples):
             "context_states": states, "context_reasons": reasons,
             "complete_context_samples": sum(s["context_tokens"] is not None for s in samples),
             "partial_component_samples": sum(s["measured_component_subtotal"] is not None for s in samples),
-            "discovery": discovery, "discovery_available": len(discovery) == 3,
+            "discovery": discovery, "discovery_available": len(discovery) == 2,
             "report_truncated": exported.get("truncated") if type(exported.get("truncated")) is bool else None,
             "issues": issues, "scope": "selected_codex_sessions_and_explicit_provider_opt_ins"}
 
@@ -617,7 +617,7 @@ def watcher_checkpoints(runtime, binary_sha256, now_ms):
     result = []
     decisions = ("discovered", "legacy_unresolved", "native_unresolved", "settled",
                  "cooldown", "below_trigger", "native_unqualified")
-    for provider in ("codex", "claude_code", "devin"):
+    for provider in ("codex", "claude_code"):
         row = {"provider": provider, "available": False, "status": "unavailable"}
         path = runtime / ("watch-state-" + provider + ".json")
         try:
@@ -801,7 +801,7 @@ def retention_summary(log_path, selected):
 def observe(binary, output_dir, sessions, providers=()):
     if not sessions or len(sessions) > 128 or any(not SESSION_ID.fullmatch(s) for s in sessions):
         raise MonitorError("invalid_sessions")
-    if len(providers) > 8 or any(p not in ("codex", "claude_code", "devin") for p in providers):
+    if len(providers) > 8 or any(p not in ("codex", "claude_code") for p in providers):
         raise MonitorError("invalid_providers")
     sessions = list(dict.fromkeys(sessions))
     executable, digest = binary_hash(binary)

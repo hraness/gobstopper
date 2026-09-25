@@ -18,7 +18,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
 use gobstopper_adapters::detect::{self, Discovered, Roots};
 use gobstopper_adapters::{
-    codex, copy, devin, eval, fork, plugins, recovery, study, vault, verify, AdapterError,
+    codex, copy, eval, fork, plugins, recovery, study, vault, verify, AdapterError,
 };
 use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
 use gobstopper_core::plan::{CompactionPlan, Edit};
@@ -41,10 +41,6 @@ struct Cli {
     /// Claude state root (default: $CLAUDE_CONFIG_DIR or ~/.claude).
     #[arg(long, global = true)]
     claude_home: Option<PathBuf>,
-    /// Devin data dir containing sessions.db (default: $DEVIN_DATA_DIR or
-    /// $XDG_DATA_HOME/devin/cli or ~/.local/share/devin/cli).
-    #[arg(long, global = true)]
-    devin_home: Option<PathBuf>,
     /// Codex CLI binary for provider controls (default: $GOBSTOPPER_CODEX_BIN or `codex` on PATH).
     #[arg(long, global = true)]
     codex_bin: Option<PathBuf>,
@@ -228,7 +224,7 @@ enum Cmd {
     /// Invoked by provider hook configs, not by users.
     #[command(hide = true)]
     Hook {
-        /// "precompact" | "session-start" | "prompt-policy[:devin|:claude]"
+        /// "precompact" | "session-start" | "prompt-policy[:claude]"
         event: String,
     },
     /// Emit a session-observations-v1 report (aicharts schema) joining
@@ -420,7 +416,7 @@ enum Cmd {
         /// Inspect only recently updated sessions (activity is an mtime heuristic).
         #[arg(long)]
         active_only: bool,
-        /// Restrict watch to one provider (e.g. `devin`); default watches all.
+        /// Restrict watch to one provider; default watches all.
         #[arg(long)]
         provider: Option<String>,
         /// Run one discovery pass and exit, useful for supervised monitoring.
@@ -450,12 +446,11 @@ enum Cmd {
     PolicyCheck {
         #[arg(long)]
         provider: String,
-        /// Context occupancy. Optional when `--session` resolves it from
-        /// the provider's own store (currently devin only).
+        /// Context occupancy.
         #[arg(long)]
         context_tokens: Option<u64>,
-        /// Devin session id: read context_tokens and lock state straight
-        /// from sessions.db instead of trusting caller-reported flags.
+        /// Read the named Claude Code session's recorded usage instead of
+        /// caller-supplied context numbers.
         #[arg(long)]
         session: Option<String>,
         #[arg(long, default_value = "false")]
@@ -468,9 +463,8 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Write a session's canonical transcript form to stdout. For Devin
-    /// this is the sessions.db row set serialized as export JSONL — the
-    /// same bytes `plan`/`verify`/`eval` consume and snapshots preserve.
+    /// Write a session's canonical transcript form to stdout — the same
+    /// bytes `plan`/`verify`/`eval` consume and snapshots preserve.
     Export {
         /// Session id prefix, or path to a transcript file.
         session: String,
@@ -528,9 +522,6 @@ fn roots(cli: &Cli) -> Roots {
     if let Some(p) = &cli.claude_home {
         r.claude_home = p.clone();
     }
-    if let Some(p) = &cli.devin_home {
-        r.devin_home = p.clone();
-    }
     r
 }
 
@@ -562,7 +553,7 @@ fn find_session(cli: &Cli, cfg: &config::Config, query: &str) -> Result<Discover
         };
         if read_magic && magic == *b"SQLite format 3\0" {
             bail!(
-                "{} is a SQLite store; pass a devin session id (e.g. `gobstopper plan <id>`), not the file",
+                "{} is a SQLite store, not a transcript file",
                 path.display()
             );
         }
@@ -577,12 +568,10 @@ fn find_session(cli: &Cli, cfg: &config::Config, query: &str) -> Result<Discover
         let meta = match provider {
             Provider::Codex => gobstopper_adapters::codex::scan_meta(&path),
             Provider::ClaudeCode => gobstopper_adapters::claude::scan_meta(&path),
-            Provider::Devin => gobstopper_adapters::devin::scan_meta_export(&path),
         };
         let usage = match provider {
             Provider::Codex => gobstopper_adapters::codex::scan_usage(&path),
             Provider::ClaudeCode => gobstopper_adapters::claude::scan_usage(&path),
-            Provider::Devin => gobstopper_adapters::devin::scan_usage_export(&path),
         };
         let age = std::fs::metadata(&path)
             .and_then(|m| m.modified())
@@ -615,8 +604,7 @@ fn find_session(cli: &Cli, cfg: &config::Config, query: &str) -> Result<Discover
 }
 
 /// Resolve an eval-study byte source: a session id/transcript path, or
-/// `vault:<sha256>` for a snapshot object. Devin snapshots must contain the
-/// canonical single-session export, never an unqualified raw store image.
+/// `vault:<sha256>` for a snapshot object.
 fn eval_spec_bytes(
     cli: &Cli,
     cfg: &config::Config,
@@ -629,17 +617,15 @@ fn eval_spec_bytes(
             .find(|e| e.sha256 == sha)
             .with_context(|| format!("no vault entry for {sha}"))?;
         let bytes = vault::read_object(&entry.sha256, &root)?;
-        // Current snapshots always use the canonical export. Raw store images
-        // may be torn or depend on a missing WAL; retain them for explicit
-        // recovery, without materializing them into a predictable shared file.
-        if entry.provider == Provider::Devin && bytes.starts_with(b"SQLite format 3") {
-            bail!(
-                "raw Devin store images are unavailable for replay; use a canonical session export"
-            );
-        }
         return Ok((
             SessionHandle {
-                provider: entry.provider,
+                provider: match entry.provider.as_str() {
+                    "codex" => Provider::Codex,
+                    "claude_code" => Provider::ClaudeCode,
+                    other => {
+                        anyhow::bail!("snapshot was recorded by unsupported provider {other:?}")
+                    }
+                },
                 session_id: entry.session_id.clone(),
                 path: entry.path.clone(),
                 cwd: None,
@@ -649,11 +635,7 @@ fn eval_spec_bytes(
         ));
     }
     let d = find_session(cli, cfg, spec)?;
-    let bytes = if d.handle.provider == Provider::Devin && devin::is_store_path(&d.handle.path) {
-        devin::export_bytes(&d.handle.path, &d.handle.session_id)?
-    } else {
-        gobstopper_adapters::transaction::read(&d.handle.path)?
-    };
+    let bytes = gobstopper_adapters::transaction::read(&d.handle.path)?;
     Ok((d.handle, bytes))
 }
 
@@ -1283,10 +1265,6 @@ fn prepare_native_operation(
             &roots.claude_home,
             "private-resume-exit-status-assumption-v1",
         ),
-        Provider::Devin => (
-            &roots.devin_home,
-            "private-acp-session-terminal-no-overlapping-operation-assumption-v1",
-        ),
     };
     native_operations::Operation::prepare(
         &d.handle,
@@ -1350,10 +1328,6 @@ fn provider_compact(
         Provider::ClaudeCode => bail!(
             "claude sessions compact via /compact in-session or --autocompact at launch; \
              gobstopper cannot inject into a running TUI"
-        ),
-        Provider::Devin => bail!(
-            "devin sessions compact via /compact in-session; \
-             gobstopper cannot inject into a running Devin CLI"
         ),
     }
 }
@@ -1941,18 +1915,8 @@ fn cmd_detect(cli: &Cli, all: bool, json: bool) -> Result<()> {
 
 fn cmd_verify(cli: &Cli, cfg: &config::Config, session: &str, json: bool) -> Result<()> {
     let d = find_session(cli, cfg, session)?;
-    // Devin verification runs on the session's canonical export, not the
-    // shared database file (which is not a readable transcript).
-    let findings = if d.handle.provider == Provider::Devin
-        && gobstopper_adapters::devin::is_store_path(&d.handle.path)
-    {
-        let bytes = gobstopper_adapters::devin::export_bytes(&d.handle.path, &d.handle.session_id)
-            .map_err(|e| anyhow::anyhow!(e))?;
-        verify::verify(d.handle.provider, &bytes)
-    } else {
-        verify::verify_path(d.handle.provider, &d.handle.path)
-            .with_context(|| format!("reading {}", d.handle.path.display()))?
-    };
+    let findings = verify::verify_path(d.handle.provider, &d.handle.path)
+        .with_context(|| format!("reading {}", d.handle.path.display()))?;
     if json {
         println!("{}", serde_json::to_string_pretty(&findings)?);
     } else if findings.is_empty() {
@@ -1992,9 +1956,6 @@ fn cmd_undo(
         bail!("standalone in-place restore is retired because a provider may hold an open writer; omit --in-place to restore a verified fork");
     }
     let d = find_session(cli, cfg, session)?;
-    if d.handle.provider == Provider::Devin {
-        bail!("direct Devin store mutation is disabled: lifetime provider custody is unavailable; use provider-owned /compact or inspect an exported copy");
-    }
     let root = vault::default_root();
     let reader = vault::Reader::open(&root)?;
     let entries: Vec<_> = reader
@@ -2110,7 +2071,7 @@ fn cmd_vault(
         let canonical_path =
             std::fs::canonicalize(&d.handle.path).unwrap_or_else(|_| d.handle.path.clone());
         entries.retain(|e| {
-            e.provider == d.handle.provider
+            e.provider == d.handle.provider.as_str()
                 && e.session_id == d.handle.session_id
                 && (e.path == d.handle.path || e.path == canonical_path)
         });
@@ -2166,7 +2127,7 @@ fn cmd_history(cli: &Cli, cfg: &config::Config, session: &str, json: bool) -> Re
     let canonical_path =
         std::fs::canonicalize(&d.handle.path).unwrap_or_else(|_| d.handle.path.clone());
     entries.retain(|e| {
-        e.provider == d.handle.provider
+        e.provider == d.handle.provider.as_str()
             && e.session_id == d.handle.session_id
             && (e.path == d.handle.path || e.path == canonical_path)
     });
@@ -2197,7 +2158,7 @@ fn matches_snapshot_session(entry: &vault::VaultEntry, handle: &SessionHandle) -
         .path
         .canonicalize()
         .unwrap_or_else(|_| handle.path.clone());
-    entry.provider == handle.provider
+    entry.provider == handle.provider.as_str()
         && entry.session_id == handle.session_id
         && (entry.path == handle.path || entry.path == canonical)
 }
@@ -2231,7 +2192,7 @@ fn show_summary(cli: &Cli, cfg: &config::Config, target: &str) -> Result<serde_j
             .collect();
         let selected = matches.first().unwrap();
         if matches.iter().any(|entry| {
-            entry.provider != selected.provider
+            entry.provider != selected.provider.as_str()
                 || entry.session_id != selected.session_id
                 || entry.path != selected.path
         }) {
@@ -2498,19 +2459,6 @@ fn cmd_snapshot(cli: &Cli, cfg: &config::Config, session: &str, label: Option<&s
     Ok(())
 }
 
-/// Devin's hook config lives in the *config* dir, not the data dir:
-/// `$DEVIN_CONFIG_DIR/hooks.v1.json`, else `$XDG_CONFIG_HOME/devin/
-/// hooks.v1.json`, else `~/.config/devin/hooks.v1.json`.
-fn devin_config_home() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    std::env::var_os("DEVIN_CONFIG_DIR")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("XDG_CONFIG_HOME").map(|p| PathBuf::from(p).join("devin")))
-        .unwrap_or_else(|| home.join(".config").join("devin"))
-}
-
 fn cmd_install_hooks(uninstall: bool, roots: &Roots, output: Option<&Path>) -> Result<()> {
     let Some(output) = output else {
         bail!("provider settings custody is unavailable; use --output <new-file> to export an inert candidate bundle");
@@ -2522,13 +2470,6 @@ fn cmd_install_hooks(uninstall: bool, roots: &Roots, output: Option<&Path>) -> R
                 hooks::HookTarget::ClaudePreCompact,
                 hooks::HookTarget::ClaudeSessionStart,
                 hooks::HookTarget::ClaudeUserPromptSubmit,
-            ],
-        ),
-        (
-            devin_config_home().join("config.json"),
-            vec![
-                hooks::HookTarget::DevinUserPromptSubmit,
-                hooks::HookTarget::DevinPostCompaction,
             ],
         ),
         (
@@ -3350,9 +3291,6 @@ fn cmd_apply(
         bail!("standalone in-place compaction is retired because a provider may hold an open writer; omit --in-place to publish a verified fork");
     }
     let d = find_session(cli, cfg, session)?;
-    if d.handle.provider == Provider::Devin {
-        bail!("direct Devin store mutation is disabled: lifetime provider custody is unavailable; use provider-owned /compact or inspect an exported copy");
-    }
     if d.handle.provider == Provider::Codex {
         if let Some(parent) = codex::parent_thread(&d.handle.path) {
             if parent != d.handle.session_id {
@@ -3393,10 +3331,6 @@ fn cmd_apply(
                 &homes.claude_home,
                 claude_bin().context("Claude executable unavailable")?,
             ),
-            Provider::Devin => (
-                &homes.devin_home,
-                devin_bin().context("Devin executable unavailable")?,
-            ),
         };
         native_operations::check_activation(&d.handle, home, &binary)?;
     }
@@ -3423,12 +3357,6 @@ fn cmd_apply(
         .cloned()
         .collect();
     if d.handle.is_active() {
-        // Devin has no fork artifact: a live session must use /compact.
-        if d.handle.provider == Provider::Devin && !file_edits.is_empty() {
-            bail!(
-                "devin session is live (provider holds its lock); compact with /compact in-session"
-            );
-        }
         println!("session appears live; only a separate fork will be prepared; the source remains unchanged");
     }
     if !yes {
@@ -3649,13 +3577,11 @@ fn cmd_apply(
 }
 
 /// Cheap per-session decision version for watch suppression caching:
-/// file identity+change clocks for JSONL providers, chain head+node count for
-/// Devin's shared store, and observed usage plus the live/idle bit. This is a
-/// cheap decision version, not a byte-integrity proof or dispatch authority.
+/// file identity+change clocks, and observed usage plus the live/idle bit.
+/// This is a cheap decision version, not a byte-integrity proof or dispatch
+/// authority.
 fn session_fingerprint(d: &Discovered) -> Option<String> {
-    let content = if d.handle.provider == Provider::Devin {
-        devin::chain_fingerprint(&d.handle.path, &d.handle.session_id)?
-    } else {
+    let content = {
         let m = std::fs::metadata(&d.handle.path).ok()?;
         let mtime = m
             .modified()
@@ -3681,20 +3607,13 @@ fn session_fingerprint(d: &Discovered) -> Option<String> {
     Some(format!("{content}:{:?}:{}", d.usage, d.handle.is_active()))
 }
 
-/// Cheap per-pass cost estimate for ordering watch work: Devin sessions
-/// cost their chain length (the export walk is the expensive part),
-/// file providers cost their transcript bytes. Unknown sizes sort last
-/// so a giant session cannot starve every small session behind it in a
-/// serial pass.
+/// Cheap per-pass cost estimate for ordering watch work: sessions cost
+/// their transcript bytes. Unknown sizes sort last so a giant session
+/// cannot starve every small session behind it in a serial pass.
 fn session_cost_hint(d: &Discovered) -> u64 {
-    match d.handle.provider {
-        Provider::Devin => devin::chain_fingerprint(&d.handle.path, &d.handle.session_id)
-            .and_then(|fp| fp.split(':').nth(1)?.parse().ok())
-            .unwrap_or(u64::MAX),
-        _ => std::fs::metadata(&d.handle.path)
-            .map(|m| m.len())
-            .unwrap_or(u64::MAX),
-    }
+    std::fs::metadata(&d.handle.path)
+        .map(|m| m.len())
+        .unwrap_or(u64::MAX)
 }
 
 /// Per-daemon persisted watch state: terminal-decision fingerprints,
@@ -3725,7 +3644,7 @@ struct WatchState {
     decisions: WatchDecisions,
     /// Decision-vocabulary version. `settled` records *why* a session was
     /// suppressed only implicitly — entries written under an older lever
-    /// set (e.g. before Devin ACP compact existed) would suppress the new
+    /// set before a provider-native compact existed would suppress the new
     /// path forever. Bump on any change that adds or alters a terminal
     /// decision; on load, stale-generation suppressions are dropped.
     #[serde(default)]
@@ -3739,7 +3658,7 @@ struct WatchState {
     /// Terminal provider outcomes suppress a session for a cooldown
     /// window, keyed on session — not fingerprint. A failed provider
     /// turn still appends to the rollout (codex `task_started`/
-    /// `task_complete`), and the devin store is shared across sessions,
+    /// `task_complete`), and shared store identity is part of the key,
     /// so a fingerprint-keyed settle can never hold for these.
     #[serde(default)]
     holddown: std::collections::HashMap<String, u64>,
@@ -3773,15 +3692,9 @@ struct WatchDecisions {
     native_unqualified: u64,
 }
 
-/// Current decision vocabulary. v1: initial watch state. v2: Devin ACP
+/// Current decision vocabulary. v1: initial watch state. v2: provider-native
 /// provider-native compact added — pre-v2 suppressions may encode "no
-/// lever existed" verdicts that are no longer true. v3: ACP requests
-/// serialize (pipelined prompts raced session/load into "not found"),
-/// so earlier provider_rejected verdicts are stale too. v4: acp_compact
-/// waits for the async `_cognition.ai/compaction` terminal status — v3
-/// recorded "applied" on the prompt ack alone, before compaction ran.
-/// v5: acp_timeout_secs (default 1800) — session/load timeouts recorded
-/// under the 600s budget may succeed now. v6: codex closed-session
+/// lever existed" verdicts that are no longer true. v6: codex closed-session
 /// `thread/compact` added — pre-v6 codex suppressions may encode "no
 /// closed-session lever" verdicts, and v6 codex failures distinguish
 /// permanent rejections (settle) from transient infra errors (retry).
@@ -3860,25 +3773,6 @@ fn claude_bin() -> Option<PathBuf> {
     candidates.into_iter().find(|c| c.is_file())
 }
 
-/// Locate the `devin` executable for ACP `session/load` + `/compact`.
-/// Same minimal-PATH problem as `claude_bin` under LaunchAgents.
-fn devin_bin() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("GOBSTOPPER_DEVIN_BIN").filter(|path| !path.is_empty()) {
-        return Some(PathBuf::from(path));
-    }
-    let mut candidates: Vec<PathBuf> = std::env::var_os("PATH")
-        .map(|p| std::env::split_paths(&p).map(|d| d.join("devin")).collect())
-        .unwrap_or_default();
-    if let Some(home) = std::env::var_os("HOME") {
-        let home = PathBuf::from(home);
-        candidates.push(home.join(".local/bin/devin"));
-        candidates.push(home.join(".local/share/devin/cli/_versions/current/bin/devin"));
-    }
-    candidates.push(PathBuf::from("/opt/homebrew/bin/devin"));
-    candidates.push(PathBuf::from("/usr/local/bin/devin"));
-    candidates.into_iter().find(|c| c.is_file())
-}
-
 fn load_watch_state(path: &Path) -> Result<WatchState> {
     use std::io::Read;
     let mut options = std::fs::OpenOptions::new();
@@ -3920,12 +3814,7 @@ fn load_watch_state(path: &Path) -> Result<WatchState> {
 
 fn legacy_native_uncertainty() -> Result<std::collections::HashSet<String>> {
     let mut unresolved = std::collections::HashSet::new();
-    for provider in [
-        None,
-        Some(Provider::Codex),
-        Some(Provider::ClaudeCode),
-        Some(Provider::Devin),
-    ] {
+    for provider in [None, Some(Provider::Codex), Some(Provider::ClaudeCode)] {
         unresolved.extend(load_watch_state(&watch_state_path(provider))?.legacy_unresolved);
     }
     Ok(unresolved)
@@ -3980,7 +3869,7 @@ fn discovery_cache_path(dir: &Path, provider: Provider) -> PathBuf {
 }
 
 fn persisted_providers(provider: Option<Provider>) -> impl Iterator<Item = Provider> {
-    [Provider::Codex, Provider::ClaudeCode, Provider::Devin]
+    [Provider::Codex, Provider::ClaudeCode]
         .into_iter()
         .filter(move |p| provider.is_none_or(|q| q == *p))
 }
@@ -4001,11 +3890,7 @@ fn load_persisted_discovery(
         if file.schema != detect::DiscoveryCacheFile::SCHEMA || file.provider != p.as_str() {
             continue;
         }
-        if p == Provider::Devin {
-            cache.merge_devin_rows(file.devin_entries);
-        } else {
-            cache.merge_persisted(p, file.entries);
-        }
+        cache.merge_persisted(p, file.entries);
     }
 }
 
@@ -4018,12 +3903,8 @@ fn save_persisted_discovery(
     static NEXT_WRITE: AtomicU64 = AtomicU64::new(0);
     for p in persisted_providers(provider) {
         let path = discovery_cache_path(dir, p);
-        let (entries, devin_entries) = if p == Provider::Devin {
-            (Vec::new(), cache.devin_rows())
-        } else {
-            (cache.persist_rows(p), Vec::new())
-        };
-        if entries.is_empty() && devin_entries.is_empty() {
+        let entries = cache.persist_rows(p);
+        if entries.is_empty() {
             continue;
         }
         let file = detect::DiscoveryCacheFile {
@@ -4031,7 +3912,6 @@ fn save_persisted_discovery(
             provider: p.as_str().to_owned(),
             written_unix: now_secs(),
             entries,
-            devin_entries,
         };
         let tmp = dir.join(format!(
             ".discovery-cache-{}-{}.tmp",
@@ -4084,7 +3964,6 @@ fn cmd_watch(
         .map(|p| match p {
             "codex" => Ok(Provider::Codex),
             "claude" | "claude_code" => Ok(Provider::ClaudeCode),
-            "devin" => Ok(Provider::Devin),
             other => bail!("unknown provider '{other}'"),
         })
         .transpose()?;
@@ -4120,12 +3999,10 @@ fn cmd_watch(
         .collect();
     // Terminal-decision suppression: session_key -> fingerprint recorded
     // when a session was applied, failed, or judged unplannable. Skips
-    // the expensive load until the provider actually appends — Devin
-    // store metrics go stale post-apply, so context alone re-triggers
-    // every pass otherwise.
+    // the expensive load until the provider actually appends — context
+    // metrics alone can otherwise re-trigger every pass.
     // Stale-generation suppressions encode verdicts from an older lever
-    // set (e.g. "unplannable" recorded before the Devin ACP compact path
-    // existed). Drop them once; sessions re-enter and re-decide under the
+    // set. Drop them once; sessions re-enter and re-decide under the
     // current vocabulary. Clocks and delegation dedup stay — they are
     // rate-limit state, not terminal decisions.
     let mut settled = if persisted.generation >= WATCH_STATE_GENERATION {
@@ -4209,7 +4086,6 @@ fn cmd_watch(
     }
     // Resolved once: the claude binary path doesn't change mid-watch.
     let claude_bin = claude_bin();
-    let devin_bin = devin_bin();
     loop {
         if !dry_run {
             native_operations::artifact_sha256()?;
@@ -4283,8 +4159,6 @@ fn cmd_watch(
             if active_only && !d.handle.is_active() {
                 continue;
             }
-            // Devin sessions share one store path, so the key must carry
-            // the session id, not just the file.
             let session_key = format!(
                 "{}:{}:{}",
                 d.handle.provider.as_str(),
@@ -4306,7 +4180,6 @@ fn cmd_watch(
                 let home = match d.handle.provider {
                     Provider::Codex => &homes.codex_home,
                     Provider::ClaudeCode => &homes.claude_home,
-                    Provider::Devin => &homes.devin_home,
                 };
                 match native_operations::Operation::pending(&d.handle, home) {
                     Ok(false) => {}
@@ -4413,7 +4286,6 @@ fn cmd_watch(
                 let (home, binary) = match d.handle.provider {
                     Provider::Codex => (&homes.codex_home, Some(codex_binary.as_path())),
                     Provider::ClaudeCode => (&homes.claude_home, claude_bin.as_deref()),
-                    Provider::Devin => (&homes.devin_home, devin_bin.as_deref()),
                 };
                 if let Err(error) =
                     native_operations::check_artifact_activation(&d.handle, home, binary)
@@ -4460,7 +4332,6 @@ fn cmd_watch(
                         control: match d.handle.provider {
                             Provider::Codex => "codex app-server: thread/compact/start",
                             Provider::ClaudeCode => "claude: /compact (or --autocompact at launch)",
-                            Provider::Devin => "devin: /compact",
                         }
                         .to_string(),
                     }],
@@ -4494,8 +4365,8 @@ fn cmd_watch(
                 continue;
             }
             // A session with no usable provider usage sample still needs a
-            // context estimate for the trigger gate — but only then. A Devin
-            // export or a full transcript parse just to answer "below
+            // context estimate for the trigger gate — but only then. A full
+            // transcript parse just to answer "below
             // trigger?" is the expensive part of a pass; any measured hint
             // (reported context, preceding-token total, or a partial
             // component subtotal) answers it without loading. Bounded by
@@ -4516,211 +4387,8 @@ fn cmd_watch(
                 decisions.below_trigger += 1;
                 continue;
             }
-            // Provider-native Devin compaction needs nothing from our
-            // planner — the provider summarizes the session itself. For
-            // an idle treatment session with `auto_compact_closed`, try
-            // `devin acp` `session/load` + `/compact` before paying the
-            // export+evaluate cost. Native dispatch never falls through into
-            // store surgery after an uncertain outcome. Live sessions defer.
-            if !dry_run && d.handle.provider == Provider::Devin && resolved.auto_compact_closed {
-                let event_context = native_event_context;
-                if d.handle.is_active() {
-                    continue;
-                }
-                if hooks::rollout_cohort(&cfg, d.handle.provider.as_str(), &d.handle.session_id)
-                    == Some(false)
-                {
-                    let control = CompactionPlan {
-                        strategy: "watch-apply:control".to_string(),
-                        rationale: "auto (closed devin): rollout control".to_string(),
-                        edits: vec![],
-                        context_tokens_before: ctx,
-                        context_tokens_after: ctx,
-                    };
-                    emit_event(
-                        event_context,
-                        &d,
-                        &control,
-                        "provider_compact",
-                        "skipped",
-                        trigger,
-                        0,
-                        None,
-                    );
-                    if let Some(fp) = &fp {
-                        settled.insert(session_key.clone(), fp.clone());
-                    }
-                    continue;
-                }
-                if let Some(bin) = &devin_bin {
-                    if devin::session_active(&roots(cli).devin_home, &d.handle.session_id)
-                        || session_fingerprint(&d) != fp
-                    {
-                        continue;
-                    }
-                    // Provider-delegated compaction still mutates the
-                    // session — preserve the exact before-state first, same
-                    // guarantee as the transcript-apply path. A failed
-                    // snapshot aborts this pass rather than compacting with
-                    // no recovery point.
-                    let pre_snapshot = match snapshot_before_edit(&d, "pre-compact") {
-                        Ok(entry) => entry,
-                        Err(_) => {
-                            eprintln!("acp /compact skipped: pre-compact snapshot failed");
-                            continue;
-                        }
-                    };
-                    let started = std::time::Instant::now();
-                    let cwd = d
-                        .handle
-                        .cwd
-                        .clone()
-                        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-                        .unwrap_or_else(|| PathBuf::from("/"));
-                    last_fire.insert(session_key.clone(), started);
-                    holddown.insert(
-                        session_key.clone(),
-                        now_secs()
-                            .saturating_add(resolved.acp_timeout_secs)
-                            .saturating_add(3600),
-                    );
-                    persist_watch_state!()?;
-                    let mut operation = match prepare_native_operation(
-                        cli,
-                        &d,
-                        bin,
-                        &pre_snapshot,
-                        &decision_config,
-                    ) {
-                        Ok(operation) => operation,
-                        Err(error) => {
-                            holddown.remove(&session_key);
-                            record_native_admission_failure(
-                                event_context,
-                                &d,
-                                &resolved.strategy,
-                                ctx,
-                                trigger,
-                                &error,
-                            );
-                            continue;
-                        }
-                    };
-                    operation
-                        .dispatch()
-                        .map_err(|_| anyhow::anyhow!("native dispatch checkpoint failed"))?;
-                    let outcome = gobstopper_adapters::devin::acp_compact_in_home(
-                        operation.binary(),
-                        &d.handle.session_id,
-                        &cwd,
-                        resolved.acp_timeout_secs,
-                        Some(&roots(cli).devin_home),
-                    );
-                    holddown.remove(&session_key);
-                    match outcome {
-                        Ok(()) => {
-                            // A store write may lag the terminal notification. Wait
-                            // only while both the observed context and chain remain
-                            // unchanged; a usage reset is not zero reclaimed context.
-                            for attempt in 0..6 {
-                                let after = devin::session_observation(
-                                    &roots(cli).devin_home,
-                                    &d.handle.session_id,
-                                )
-                                .map(|(usage, _)| usage.context_tokens);
-                                if after.is_none_or(|after| after < ctx)
-                                    || session_fingerprint(&d) != fp
-                                    || attempt == 5
-                                {
-                                    break;
-                                }
-                                std::thread::sleep(std::time::Duration::from_secs(15));
-                            }
-                            let done = CompactionPlan {
-                                strategy: resolved.strategy.clone(),
-                                rationale: "auto (closed devin): acp /compact".to_string(),
-                                edits: vec![],
-                                context_tokens_before: ctx,
-                                context_tokens_after: ctx,
-                            };
-                            last_fire.insert(session_key.clone(), std::time::Instant::now());
-                            let observed = record_native_completion(
-                                event_context,
-                                &d,
-                                &done,
-                                &pre_snapshot,
-                                trigger,
-                                started,
-                            );
-                            operation
-                                .finish(
-                                    observed,
-                                    Some(native_operations::TerminalEvidence {
-                                        session_id: d.handle.session_id.clone(),
-                                        turn_id: None,
-                                        item_id: None,
-                                    }),
-                                )
-                                .map_err(|_| {
-                                    anyhow::anyhow!(
-                                        "native completion checkpoint failed; outcome unresolved"
-                                    )
-                                })?;
-                            if observed == Some(true) {
-                                if let Some(nfp) = session_fingerprint(&d) {
-                                    settled.insert(session_key.clone(), nfp);
-                                }
-                                last_apply.insert(session_key.clone(), std::time::Instant::now());
-                            } else {
-                                holddown.insert(session_key.clone(), now_secs() + 3600);
-                            }
-                            continue;
-                        }
-                        Err(_error) => {
-                            operation.finish(None, None).map_err(|_| {
-                                anyhow::anyhow!(
-                                    "native completion checkpoint failed; outcome unresolved"
-                                )
-                            })?;
-                            let failed = CompactionPlan {
-                                strategy: resolved.strategy.clone(),
-                                rationale: "auto (closed devin): acp /compact".to_string(),
-                                edits: vec![],
-                                context_tokens_before: ctx,
-                                context_tokens_after: ctx,
-                            };
-                            let mut ev = build_event(
-                                event_context,
-                                &d,
-                                &failed,
-                                "provider_compact",
-                                "failed",
-                                trigger,
-                                started.elapsed().as_millis() as u64,
-                                Some("provider_rejected"),
-                            );
-                            ev.snapshot_before_sha256 = Some(pre_snapshot.sha256.clone());
-                            if append_event(&default_log_path(), &ev).is_err() {
-                                eprintln!(
-                                    "telemetry write failed (non-fatal): event_append_failed"
-                                );
-                            }
-                            // The bridge can lose a prompt response before it sees
-                            // the provider's started event. Any bridge error may
-                            // therefore follow dispatch; do not perform a second,
-                            // different mutation underneath an uncertain operation.
-                            eprintln!("native devin compaction did not confirm completion; direct store rewrite suppressed");
-                            holddown.insert(session_key.clone(), now_secs() + 3600);
-                            continue;
-                        }
-                    }
-                }
-                eprintln!("native devin compaction unavailable: provider executable not found");
-                last_fire.insert(session_key.clone(), std::time::Instant::now());
-                continue;
-            }
-            // Provider-native Codex compaction also needs nothing from
-            // our planner — same shape as the Devin arm above. Running
+            // Provider-native Codex compaction needs nothing from our
+            // planner. Running
             // it before load+evaluate matters doubly here: a `None`
             // plan would otherwise settle an over-trigger session the
             // native lever can compact, and codex rollouts are large
@@ -4915,7 +4583,7 @@ fn cmd_watch(
                 continue;
             }
             // Native summarization does not require an acceptable file-elision
-            // plan. Keep it ahead of load/evaluate, as for Codex and Devin.
+            // plan. Keep it ahead of load/evaluate, as for Codex.
             if !dry_run && d.handle.provider == Provider::ClaudeCode && resolved.auto_compact_closed
             {
                 let event_context = native_event_context;
@@ -5154,10 +4822,7 @@ fn cmd_watch(
                         }
                         continue;
                     }
-                    if d.handle.provider == Provider::Devin
-                        || (d.handle.provider == Provider::ClaudeCode
-                            && resolved.auto_apply_inplace)
-                    {
+                    if d.handle.provider == Provider::ClaudeCode && resolved.auto_apply_inplace {
                         let blocked = CompactionPlan {
                             context_tokens_after: plan.context_tokens_before,
                             ..plan.clone()
@@ -5172,13 +4837,9 @@ fn cmd_watch(
                             started.elapsed().as_millis() as u64,
                             Some("custody_unavailable"),
                         );
-                        if d.handle.provider == Provider::Devin && resolved.auto_apply_store {
-                            eprintln!("auto_apply_store disabled: lifetime custody unavailable");
-                        } else {
-                            eprintln!(
-                                "direct provider mutation disabled: lifetime custody unavailable"
-                            );
-                        }
+                        eprintln!(
+                            "direct provider mutation disabled: lifetime custody unavailable"
+                        );
                         if let Some(fp) = &fp {
                             settled.insert(session_key.clone(), fp.clone());
                         }
@@ -5355,7 +5016,6 @@ fn policy_decision(
     let provider_id = match provider {
         "codex" => "codex",
         "claude" | "claude_code" => "claude_code",
-        "devin" => "devin",
         other => bail!("unknown provider '{other}'"),
     };
     let mut resolved = cfg.resolve_provider(provider_id, "", preset, None)?;
@@ -5366,7 +5026,7 @@ fn policy_decision(
     let over = context_tokens >= effective_trigger;
     let action = if !over {
         "none"
-    } else if session_active || provider_id == "devin" {
+    } else if session_active {
         "provider_compact"
     } else {
         "transcript_compact"
@@ -5374,7 +5034,6 @@ fn policy_decision(
     let control = match (over, session_active, provider_id) {
         (true, true, "codex") => Some("thread/compact/start"),
         (true, true, "claude_code") => Some("/compact or relaunch --autocompact"),
-        (true, _, "devin") => Some("/compact"),
         _ => None,
     };
     Ok(serde_json::json!({
@@ -5404,36 +5063,10 @@ fn cmd_policy_check(
     preset: Option<&str>,
     json: bool,
 ) -> Result<()> {
-    // `--session` reads the provider's own store so hook scripts and
-    // wrappers don't have to measure context themselves.
+    // `--session` reads a discovered session's recorded usage so hook
+    // scripts and wrappers don't have to measure context themselves.
     let (usage, session_active) = if let Some(session_id) = session {
         match provider {
-            "devin" => {
-                let root = roots(cli).devin_home;
-                // "current" resolves the caller's own session: the
-                // provider-locked session bound to this working directory.
-                let session_id = if session_id == "current" {
-                    let cwd = std::env::current_dir()?;
-                    devin::current_session(&root, &cwd).ok_or_else(|| {
-                        anyhow::anyhow!("no single active devin session bound to {}", cwd.display())
-                    })?
-                } else {
-                    // Accept a session-id prefix or title substring, same
-                    // as `find`: prefer an exact id, else the most
-                    // recently active match.
-                    let matches = devin::find(&root, session_id);
-                    matches
-                        .iter()
-                        .find(|d| d.handle.session_id == session_id)
-                        .or_else(|| matches.first())
-                        .map(|d| d.handle.session_id.clone())
-                        .unwrap_or_else(|| session_id.to_string())
-                };
-                let Some((usage, locked)) = devin::session_observation(&root, &session_id) else {
-                    bail!("no devin session '{session_id}' in {}", root.display());
-                };
-                (usage, locked)
-            }
             "claude" | "claude_code" => {
                 let Some(d) = detect::find(&roots(cli), session_id)
                     .into_iter()
@@ -5500,15 +5133,7 @@ fn cmd_policy_check(
 fn cmd_export(cli: &Cli, cfg: &config::Config, session: &str) -> Result<()> {
     let d = find_session(cli, cfg, session)?;
     use std::io::Write;
-    let bytes = match d.handle.provider {
-        Provider::Devin if gobstopper_adapters::devin::is_store_path(&d.handle.path) => {
-            gobstopper_adapters::devin::export_bytes(&d.handle.path, &d.handle.session_id)
-                .map_err(|e| anyhow::anyhow!(e))?
-        }
-        // Codex/Claude transcripts are already canonical files; a detached
-        // Devin export round-trips unchanged.
-        _ => transaction_read(&d.handle.path)?,
-    };
+    let bytes = transaction_read(&d.handle.path)?;
     std::io::stdout().write_all(&bytes)?;
     Ok(())
 }
@@ -5933,11 +5558,11 @@ mod tests {
             "\"a,b\r\n\"\"quoted\"\"\""
         );
         let row = super::bench_failure_row(
-            gobstopper_core::Provider::Devin,
+            gobstopper_core::Provider::Codex,
             "a,b",
             "session_evaluation_failed",
         );
-        assert!(row.starts_with("devin,\"a,b\","));
+        assert!(row.starts_with("codex,\"a,b\","));
         assert!(row.ends_with(",session_evaluation_failed\n"));
     }
 
@@ -5995,7 +5620,7 @@ mod tests {
             let path = dir.join(name);
             fs::write(&path, b"synthetic source").unwrap();
             SessionHandle {
-                provider: Provider::Codex,
+                provider: gobstopper_core::Provider::Codex,
                 session_id: "same-session".into(),
                 path: fs::canonicalize(path).unwrap(),
                 cwd: None,
@@ -6181,7 +5806,7 @@ mod tests {
             sha256: sha,
             path: PathBuf::from("/synthetic/source"),
             session_id: "synthetic".into(),
-            provider: Provider::Codex,
+            provider: "codex".into(),
             bytes: 0,
             strategy: None,
             record_count: 0,
@@ -6466,10 +6091,8 @@ mod tests {
             command: Some(command.to_string()),
             trusted_legacy_command: true,
             plugin: None,
-            auto_apply_store: false,
             auto_apply_inplace: false,
             auto_compact_closed: false,
-            acp_timeout_secs: 1800,
         }
     }
 

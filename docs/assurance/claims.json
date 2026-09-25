@@ -33,7 +33,7 @@
       "id": "CLAIM-COPY",
       "owner": "integration owner",
       "status": "source_reviewed",
-      "assertion": "Codex/Claude copy operations retain exact source and candidate recovery bytes and publish a fresh no-clobber identity. Direct provider-file/Devin store writes are disabled.",
+      "assertion": "Codex/Claude copy operations retain exact source and candidate recovery bytes and publish a fresh no-clobber identity. Direct provider-file writes are disabled.",
       "bounds": "Version 2 operation receipts and strict roots cover compact/fork/restore wrappers; failed durability is distinct from no publication.",
       "public_sources": [
         {

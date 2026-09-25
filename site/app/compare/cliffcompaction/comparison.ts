@@ -14,12 +14,12 @@ export const comparisonRows: readonly ComparisonRow[] = [
   {
     aspect: "Where it runs",
     cliff: "A local HTTP proxy between the agent and the Anthropic or OpenAI API",
-    gobstopper: "A local HTTP proxy for Claude Code and Codex, plus a CLI over the session files Claude Code, Codex, and Devin write",
+    gobstopper: "A local HTTP proxy for Claude Code and Codex, plus a CLI over the session files Claude Code and Codex write",
   },
   {
     aspect: "Clients",
     cliff: "Any client of the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses API",
-    gobstopper: "Claude Code (Anthropic Messages) and Codex (OpenAI Responses); Devin cannot be proxied",
+    gobstopper: "Claude Code (Anthropic Messages) and Codex (OpenAI Responses)",
   },
   {
     aspect: "What it changes",
@@ -73,10 +73,5 @@ export const comparisonQuestions = [
     question: "Why does auto not pick cliff?",
     answer:
       "The default strategy for saved sessions compares file strategies by projected savings and preserved prefix against a floor. Cliff has no floor: its yield is whatever the size rule removes. Choose it with `--strategy cliff` or a preset so the trade is explicit. For running sessions, use `gobstopper proxy`.",
-  },
-  {
-    question: "Can Devin use the proxy?",
-    answer:
-      "No. Devin CLI sends its requests through Cognition's service and has no setting for a model address. Gobstopper can suggest `/compact` at your threshold through a Devin hook and archive each Devin compaction so exact records stay searchable.",
   },
 ] as const;
