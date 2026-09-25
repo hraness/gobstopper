@@ -230,7 +230,12 @@ pub fn discover(roots: &Roots, max_age_secs: u64) -> Vec<Discovered> {
 /// pass. Without identity fields (no metadata, or a non-Unix host) the
 /// entry expires after [`DiscoveryCache::SAMPLE_TTL_SECS`] seconds.
 #[derive(Default)]
-pub struct DiscoveryCache(std::collections::HashMap<(Provider, PathBuf), CachedSession>);
+pub struct DiscoveryCache {
+    files: std::collections::HashMap<(Provider, PathBuf), CachedSession>,
+    /// Devin sessions live in rows of a shared store; their advisory cache
+    /// is keyed by session id on (activity, chain head), not by file path.
+    pub devin: crate::devin::DevinContextCache,
+}
 struct CachedSession {
     fingerprint: (u64, Option<SystemTime>, u64, u64, i64, i64),
     /// True when the fingerprint carries device, inode and ctime, so an
@@ -240,12 +245,131 @@ struct CachedSession {
     meta: (Option<String>, Option<PathBuf>),
     usage: UsageSample,
 }
+/// Serializable form of one [`CachedSession`]. Path and usage are the same
+/// information class the provider's own directory listing already exposes.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct DiscoveryCacheRow {
+    pub path: PathBuf,
+    pub len: u64,
+    pub mtime: Option<(i64, u32)>,
+    pub dev: u64,
+    pub ino: u64,
+    pub ctime: i64,
+    pub ctime_nanos: i64,
+    pub identified: bool,
+    pub sampled_unix: i64,
+    pub meta_id: Option<String>,
+    pub meta_path: Option<PathBuf>,
+    pub usage: UsageSample,
+}
+
+/// On-disk snapshot written by watcher lanes beside their watch state; a
+/// cold one-shot read consumes it to skip content rescans of unchanged
+/// files. `schema` changes evict the whole snapshot rather than merge.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct DiscoveryCacheFile {
+    pub schema: String,
+    pub provider: String,
+    pub written_unix: u64,
+    #[serde(default)]
+    pub entries: Vec<DiscoveryCacheRow>,
+    /// Devin context rows live in the same snapshot: the shared store has
+    /// no per-file fingerprint, so rows carry (activity, chain head).
+    #[serde(default)]
+    pub devin_entries: Vec<crate::devin::DevinContextRow>,
+}
+
+impl DiscoveryCacheFile {
+    pub const SCHEMA: &'static str = "gobstopper.discovery-cache.v1";
+}
+
 impl DiscoveryCache {
     /// Validity bound for entries whose fingerprint lacks identity fields.
     const SAMPLE_TTL_SECS: u64 = 60;
     /// Entries kept before the cache is dropped and rebuilt; a corpus
     /// larger than this bound rescans once per pass.
     const MAX_ENTRIES: usize = 4096;
+
+    /// Rows for `provider` in a form that survives a process restart.
+    /// Persisted discovery is advisory only: a stale or corrupt snapshot
+    /// simply costs a rescan, exactly like a cold start.
+    pub fn persist_rows(&self, provider: Provider) -> Vec<DiscoveryCacheRow> {
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        self.files
+            .iter()
+            .filter(|((p, _), _)| *p == provider)
+            .map(|((_, path), e)| DiscoveryCacheRow {
+                path: path.clone(),
+                len: e.fingerprint.0,
+                mtime: e
+                    .fingerprint
+                    .1
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| (d.as_secs() as i64, d.subsec_nanos())),
+                dev: e.fingerprint.2,
+                ino: e.fingerprint.3,
+                ctime: e.fingerprint.4,
+                ctime_nanos: e.fingerprint.5,
+                identified: e.identified,
+                sampled_unix: epoch - e.sampled.elapsed().as_secs() as i64,
+                meta_id: e.meta.0.clone(),
+                meta_path: e.meta.1.clone(),
+                usage: e.usage,
+            })
+            .collect()
+    }
+
+    /// Persisted Devin context rows owned by this cache.
+    pub fn devin_rows(&self) -> Vec<crate::devin::DevinContextRow> {
+        self.devin.0.values().cloned().collect()
+    }
+
+    /// Merge persisted Devin context rows. Fingerprint staleness is
+    /// re-checked against the live (activity, chain head) pair at use
+    /// time, so a stale row can only cost a lookup, never a decision.
+    pub fn merge_devin_rows(&mut self, rows: Vec<crate::devin::DevinContextRow>) {
+        for row in rows {
+            if self.devin.0.len() >= crate::devin::DevinContextCache::MAX_ENTRIES {
+                break;
+            }
+            self.devin.0.insert(row.session_id.clone(), row);
+        }
+    }
+
+    /// Merge rows from a persisted snapshot. Non-identified rows expire
+    /// against [`DiscoveryCache::SAMPLE_TTL_SECS`] measured from the
+    /// recorded wall-clock sample, never from load time.
+    pub fn merge_persisted(&mut self, provider: Provider, rows: Vec<DiscoveryCacheRow>) {
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        for row in rows {
+            if self.files.len() >= Self::MAX_ENTRIES {
+                break;
+            }
+            let mtime = row
+                .mtime
+                .map(|(s, n)| std::time::UNIX_EPOCH + std::time::Duration::new(s as u64, n));
+            let age = (epoch - row.sampled_unix).max(0) as u64;
+            let sampled = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(age))
+                .unwrap_or_else(std::time::Instant::now);
+            self.files.insert(
+                (provider, row.path),
+                CachedSession {
+                    fingerprint: (row.len, mtime, row.dev, row.ino, row.ctime, row.ctime_nanos),
+                    identified: row.identified,
+                    sampled,
+                    meta: (row.meta_id, row.meta_path),
+                    usage: row.usage,
+                },
+            );
+        }
+    }
 
     fn inspect(
         &mut self,
@@ -283,7 +407,7 @@ impl DiscoveryCache {
             }
         }
         let key = (provider, path.to_path_buf());
-        if let Some(entry) = self.0.get(&key) {
+        if let Some(entry) = self.files.get(&key) {
             let fresh = entry.identified
                 || now.saturating_duration_since(entry.sampled).as_secs() < Self::SAMPLE_TTL_SECS;
             if entry.fingerprint == fingerprint && fresh {
@@ -294,10 +418,10 @@ impl DiscoveryCache {
             Provider::Codex => (codex::scan_meta(path), codex::scan_usage(path)),
             Provider::ClaudeCode => (claude::scan_meta(path), claude::scan_usage(path)),
         };
-        if self.0.len() >= Self::MAX_ENTRIES {
-            self.0.clear();
+        if self.files.len() >= Self::MAX_ENTRIES {
+            self.files.clear();
         }
-        self.0.insert(
+        self.files.insert(
             key,
             CachedSession {
                 fingerprint,
@@ -628,8 +752,11 @@ mod tests {
         assert_eq!(result.providers[0].selected, 1);
         // Only selected live files enter the usage cache; the old nonlive
         // file's pre-filter read is bounded session metadata only.
-        assert_eq!(cache.0.len(), 1);
-        assert!(cache.0.keys().all(|(_, path)| path.ends_with("live.jsonl")));
+        assert_eq!(cache.files.len(), 1);
+        assert!(cache
+            .files
+            .keys()
+            .all(|(_, path)| path.ends_with("live.jsonl")));
     }
 
     #[cfg(unix)]
@@ -657,7 +784,7 @@ mod tests {
         assert_eq!(meta.0.as_deref(), Some("sess-1"));
         assert_eq!(usage.reported_context(), Some(105));
         let key = (Provider::Codex, path.clone());
-        let entry = cache.0.get_mut(&key).unwrap();
+        let entry = cache.files.get_mut(&key).unwrap();
         assert!(entry.identified);
         entry.meta.0 = Some("cached-marker".into());
         // Hours past the sample interval an unchanged file is served from
@@ -676,7 +803,7 @@ mod tests {
         let (meta, rescanned) = cache.inspect_at(Provider::Codex, &path, later);
         assert_eq!(meta.0.as_deref(), Some("sess-1"));
         assert_eq!(rescanned, usage);
-        assert_eq!(cache.0.len(), 1);
+        assert_eq!(cache.files.len(), 1);
     }
 
     #[test]
@@ -688,7 +815,7 @@ mod tests {
         let (meta, _) = cache.inspect_at(Provider::Codex, &missing, now);
         assert_eq!(meta, (None, None));
         let key = (Provider::Codex, missing.clone());
-        let entry = cache.0.get_mut(&key).unwrap();
+        let entry = cache.files.get_mut(&key).unwrap();
         assert!(!entry.identified);
         entry.meta.0 = Some("cached-marker".into());
         let within = now + std::time::Duration::from_secs(DiscoveryCache::SAMPLE_TTL_SECS - 1);

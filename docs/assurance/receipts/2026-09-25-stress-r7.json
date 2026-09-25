@@ -1,7 +1,7 @@
 {
   "schema": "gobstopper.assurance-receipt.v1",
-  "raw_receipt_sha256": "f2495c4b2ab5937c5c234d286ea18e297d58791d0f18989cdc1a2473fdea2ebb",
-  "observed_at": "2026-09-25T06:23:30.053036+00:00",
+  "raw_receipt_sha256": "6d373870be6d1308f214548078c954a0bedca18134613af62fad084409bb2f9a",
+  "observed_at": "2026-09-25T07:37:28.668868+00:00",
   "scope": "Bounded synthetic operation, process and fault suites.",
   "bounds": "See retained exact suite inventory and receipt bounds; fixed sequence seed and finite capacities.",
   "exclusions": [
@@ -19,7 +19,7 @@
     "crates/gobstopper-adapters/src/codex.rs": "c32a693ac0fcee559ba858515c30e0a5a951ad715f8987fc6cf72357898dfa3b",
     "crates/gobstopper-adapters/src/codex_compact.rs": "b1c5c9717eb4bbf0e8ed0b7a1930b4b794b6378a429591594f1d17917a483233",
     "crates/gobstopper-adapters/src/copy.rs": "a7d02302400ea612951f9ae3d2e7a71f929d56ec989a994dff3f5185a96e7ed6",
-    "crates/gobstopper-adapters/src/detect.rs": "ea73c417186bdffaea84e7b1586148caac0d878b733c114645a89757e0aca2fd",
+    "crates/gobstopper-adapters/src/detect.rs": "cf003f014e58d18283c8e62a17bda91885577d43de61c1683780cd3f8398a651",
     "crates/gobstopper-adapters/src/devin.rs": "50e57a914ab2b7cf65886ad302c997b0c8008267ad78ed9e2447f78d39674e12",
     "crates/gobstopper-adapters/src/eval.rs": "af62b60ac968642d8f8234cc3774e6559b1fb187c076288d9b27037e94faa861",
     "crates/gobstopper-adapters/src/fork.rs": "e9f7ac308a4fa9a64f389aa6791355d67fee4c91121faa8ac6a05b0e540ee7e9",
@@ -62,7 +62,7 @@
     "crates/gobstopper-cli/src/hooks.rs": "53e37275a3b4fb62f6b900d061889c1fac2f957c3abe8147a9a8d6920e1dcfc6",
     "crates/gobstopper-cli/src/jev.rs": "b99ecb1863d1c8e4c6cacf2e6484a69ee11ec18f7c0246ed2071ff3b00179a49",
     "crates/gobstopper-cli/src/llm_scorer.rs": "fe62f99e95c4be92111e033babcc552802d2b91117f198c40bf6fb4cfbd3298d",
-    "crates/gobstopper-cli/src/main.rs": "93ab285fa0e1bffd30936114a17467b6c5911b2fe3054f7dc62fe9bcd7c8f0a3",
+    "crates/gobstopper-cli/src/main.rs": "ae77468c74a5a680eebc219736a1e4ac4260c331a41a9fd839d7edb7893f1951",
     "crates/gobstopper-cli/src/mcp.rs": "2ff9a4ac6e1422dd41716f27f2a93d60df6c6b0fead525789c62aa6c29b63a78",
     "crates/gobstopper-cli/src/native_operations.rs": "d40688c86159df1123ba2f391406765f0ed3294dcded0d5be5c0ad7269129861",
     "crates/gobstopper-cli/src/proxy.rs": "10c63f4dc54b96193e4f9802f00a1a0fde09eee1fb846f42760ff14ce1f7ed77",
@@ -81,7 +81,7 @@
     "crates/gobstopper-cli/tests/report.rs": "90a291782136eb0f4e41f8b263ebf1bac1c0702bb354746816b8d783f438250f",
     "crates/gobstopper-cli/tests/session_display.rs": "986d418bbdcb9e564e95de8311cb2f59b5ebc01eb693753bac1c06c5f10f4a2f",
     "crates/gobstopper-cli/tests/vault_accounting.rs": "4746d281eeec5c82076a216b16a02ced641d3446c1c3ba433740d43842e37d63",
-    "crates/gobstopper-cli/tests/watch.rs": "39fec38da502b1251f237401d366f26e50c3a3944430deea86c9301e7f651024",
+    "crates/gobstopper-cli/tests/watch.rs": "c09af840b308c94ffb0fcfe169014932451c18fa1577ede3d27bb828b57a5726",
     "crates/gobstopper-core/Cargo.toml": "1de61bed40e65fac756fd1529635cda09892ea0482ebdeba6b1e038965116e50",
     "crates/gobstopper-core/src/admission.rs": "d886b85141879328b3282f22765a96da5986e62b4eeaf2cfe9a16f06b17daa1d",
     "crates/gobstopper-core/src/estimate.rs": "86c999f925e69ac76b304dd1a1805607e662d91d354fe02afad22939be161672",
@@ -109,9 +109,9 @@
     "scripts/monitor.py": "767c23bccae1d5d07a2c92272f73b0243ee2579975d90e23663853280cbb5414",
     "scripts/test_monitor.py": "40cf9f163a0066e9be74ebe20018f437244cbf71721e2401413b4d7116525c7d",
     "verify/stress/README.md": "b02da2d452bf4cf59462e19c30e606232444880cd483d636a1515e92ddb301b3",
-    "verify/stress/check.py": "e7741aba89bf70ff191708b72eeacd11b4a8cb133f010c6ab8dda76d56fc7841",
-    "verify/stress/suites.json": "ab622eca5f477006f6568a0a14b1febe1b0f633cceacbf2cec8cada15219e7c6",
-    "verify/stress/test_check.py": "44770597af48eb8e22356ecdb883930824537b02481cdcb649ac99337d6ae0fa",
+    "verify/stress/check.py": "d56ee26c6ff8b819e6b6d66a72820a87150de9018bb96961829100b4f299f97d",
+    "verify/stress/suites.json": "b77ccfff64e7d922bd95ed2c04a56ed9b2acf05d449631b194cadd55432bfa90",
+    "verify/stress/test_check.py": "67e5cbda7ab8eed1f890ad0ac13ea146d4fb2ca855145c96b17630b7e2ec3d49",
     "verify/watch/check.py": "97ce34ea1926af465cfd242074ad80d9941311c9f412ee163923a90b7bfaebad"
   },
   "tool_sha256": {
@@ -133,15 +133,15 @@
         "corruption_recoveries": 16,
         "peak_files": 402,
         "peak_bytes": 333861,
-        "elapsed_ms": 7987
+        "elapsed_ms": 12403
       },
       "case": "sequence",
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "e02f85746f717d83e60bc5f8c416a8560848a5e25613122d8d7ef0ae37069553",
-      "elapsed_seconds": 13.047563307000004,
-      "largest_reaped_child_rss_bytes": 572071936
+      "log_sha256": "03d01bf87edaa37b39927ab7490881a8e448a66152115791ae85b75bb6c052b6",
+      "elapsed_seconds": 17.577544816000028,
+      "largest_reaped_child_rss_bytes": 580976640
     },
     {
       "passed": true,
@@ -168,9 +168,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "3a781645652891b14ba0b340ad532a6a4eb6cb7e6e3a2c7bd94378bb90cb480e",
-      "elapsed_seconds": 5.359506497999988,
-      "largest_reaped_child_rss_bytes": 648069120
+      "log_sha256": "c2a5590f630c005e95fcfcd2b1d3cd2069ad11069c62fa677f31851348d9900e",
+      "elapsed_seconds": 6.630423639000014,
+      "largest_reaped_child_rss_bytes": 654524416
     },
     {
       "passed": true,
@@ -194,9 +194,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "5de9945f3fa675c6ad0f3b506cefb2f240922625da0185f9c138d00dfdce2fc5",
-      "elapsed_seconds": 0.05181301700000063,
-      "largest_reaped_child_rss_bytes": 648069120
+      "log_sha256": "3c4fe38d4b98dbf9a7c21a33552143a85242b336b4572fc2e73e77404ba0d39a",
+      "elapsed_seconds": 0.06213825300000053,
+      "largest_reaped_child_rss_bytes": 654524416
     },
     {
       "passed": true,
@@ -209,9 +209,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "6e309f4d50916eaeb20ca1be4b04a364193dea08eae146c77f4c9517a9211635",
-      "elapsed_seconds": 0.06960079599998892,
-      "largest_reaped_child_rss_bytes": 648069120
+      "log_sha256": "367e5486360572ec4e8f7ec17c58b2396a38a93a29b37e69286e52fb394db7ab",
+      "elapsed_seconds": 0.08645066299999371,
+      "largest_reaped_child_rss_bytes": 654524416
     },
     {
       "passed": true,
@@ -232,9 +232,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "a3bc5fb309a97ac2b9ed48f0d870f976903024ed2e68df0c9ba664129e40ed88",
-      "elapsed_seconds": 0.11610861399999806,
-      "largest_reaped_child_rss_bytes": 648069120
+      "log_sha256": "cb1cb9d4ea949f6fc478fc16fcf92f0cfcb4ee1044daf8e8da18d24f35688b34",
+      "elapsed_seconds": 0.10789684400003807,
+      "largest_reaped_child_rss_bytes": 654524416
     },
     {
       "passed": true,
@@ -242,6 +242,7 @@
         "active_auto_unknown_devin_delegates_without_export_or_snapshot",
         "claude_native_dispatch_precedes_planning_and_persists_clean_first_pass",
         "codex_native_compact_runs_before_plan_evaluation",
+        "discovery_cache_persists_across_processes_and_never_gates_correctness",
         "dry_run_once_does_not_write_events_or_forks",
         "eval_budget_flag_completes_a_pass_and_deferred_line_is_not_a_plan_line",
         "failed_watch_state_write_aborts_before_native_dispatch",
@@ -274,9 +275,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "e4dd57e04dc652167ef0068b05b8d73c1aee9bb4a58dd4d56b624cef41466f58",
-      "elapsed_seconds": 109.75042738299999,
-      "largest_reaped_child_rss_bytes": 648069120
+      "log_sha256": "063736ff3b33b2705939529c9dc0819e1a75183f2148f8529a257d8201e0f204",
+      "elapsed_seconds": 192.010094943,
+      "largest_reaped_child_rss_bytes": 654524416
     },
     {
       "passed": true,
@@ -289,9 +290,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "5e76e45063f1613b6e7d94991b65f7544b01ad55765325c64726b1188ef569f4",
-      "elapsed_seconds": 5.03445498100001,
-      "largest_reaped_child_rss_bytes": 648069120
+      "log_sha256": "1ac13556519db36b18dc4543e38382fbc00790cb67a4f0ebc937a05364869fd2",
+      "elapsed_seconds": 5.03396513499996,
+      "largest_reaped_child_rss_bytes": 654524416
     },
     {
       "passed": true,
@@ -313,8 +314,8 @@
       "timeout": false,
       "log_limit": false,
       "log_sha256": "156f860349f2231ffe1a26b9850e269e3b8563f781ced7480ccf1716272e96cd",
-      "elapsed_seconds": 2.512980180999989,
-      "largest_reaped_child_rss_bytes": 648069120
+      "elapsed_seconds": 2.514036578999992,
+      "largest_reaped_child_rss_bytes": 654524416
     },
     {
       "passed": true,
@@ -336,9 +337,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "8b96402a2a2e5eb376d6267668e90722019ea1909d7eaf5eb23784bb24da9bf6",
-      "elapsed_seconds": 1.9825195759999872,
-      "largest_reaped_child_rss_bytes": 648069120
+      "log_sha256": "f08f907e1c13b4d7ed6c3262956be59ecb858a5617c08e273a82f9155f159e2d",
+      "elapsed_seconds": 1.9755700480000087,
+      "largest_reaped_child_rss_bytes": 654524416
     },
     {
       "passed": true,
@@ -360,9 +361,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "fdc8ff9796422d4e7fb689ebad997d0b12f69561363a4b4b14f7678299350f6a",
-      "elapsed_seconds": 3.0377938850000135,
-      "largest_reaped_child_rss_bytes": 648069120
+      "log_sha256": "6b524b9fc22bff7d119a9f712a6928e49d3a60a96ed1ea25a03814bb422b3c87",
+      "elapsed_seconds": 2.9668252699999584,
+      "largest_reaped_child_rss_bytes": 654524416
     },
     {
       "passed": true,
@@ -388,9 +389,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "51c1d0a7bbb66f9fd8322ef4e3036d5c88608c013d9cbbfc805292252b89c074",
-      "elapsed_seconds": 2.502686850999993,
-      "largest_reaped_child_rss_bytes": 648069120
+      "log_sha256": "8459e2d4810212a9aa92d78eeeca18d2c2cf3a44e99ad62379c44e6629403c40",
+      "elapsed_seconds": 2.432095767000021,
+      "largest_reaped_child_rss_bytes": 654524416
     },
     {
       "passed": true,
@@ -441,9 +442,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "6817bd6770617bd4732dc7c8d21df4aa7b80e12848d32ff9317e603febb6b9a6",
-      "elapsed_seconds": 11.741911049999999,
-      "largest_reaped_child_rss_bytes": 648069120
+      "log_sha256": "86338b937a727fb437ed90c08cdc8b1e4d8a77f323319d26fa66ab52434c886f",
+      "elapsed_seconds": 11.633303257000023,
+      "largest_reaped_child_rss_bytes": 654524416
     }
   ],
   "platform": "linux",
@@ -452,7 +453,7 @@
     "cargo-version.log": "1aedaa9cce116919d39b1eb303a58865771582bc24fc259aa8e26cb212e0f59e",
     "rust-version.log": "b2bdf493bcf6d1dc55181a0efc2774b6d9cf7bf5c8dcc5bed592c994b2ad38c4"
   },
-  "elapsed_seconds": 155.364850278,
+  "elapsed_seconds": 243.165983656,
   "raw_bounds": {
     "total_seconds": 900,
     "max_log_bytes_per_command": 8388608,

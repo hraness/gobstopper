@@ -2743,6 +2743,20 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/detect.rs",
+      "symbol": "persist_rows",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/detect.rs",
+      "symbol": "merge_persisted",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/detect.rs",
       "symbol": "default_max_age_secs",
       "effects": [
         "pure"
@@ -2803,6 +2817,20 @@
       "symbol": "sniff_provider",
       "effects": [
         "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/detect.rs",
+      "symbol": "devin_rows",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/detect.rs",
+      "symbol": "merge_devin_rows",
+      "effects": [
+        "pure"
       ]
     },
     {
@@ -4428,6 +4456,13 @@
     {
       "path": "crates/gobstopper-core/src/model.rs",
       "symbol": "complete_total",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/model.rs",
+      "symbol": "context_hint",
       "effects": [
         "pure"
       ]

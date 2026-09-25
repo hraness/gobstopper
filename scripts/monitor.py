@@ -837,8 +837,13 @@ def observe(binary, output_dir, sessions, providers=()):
                 except (ValueError, UnicodeError, RecursionError):
                     report = {}
                     report_status["error"] = "invalid_report"
+            # --eval-budget bounds transcript load/evaluate inside the
+            # command itself: under host load a full provider dry-run can
+            # exceed the wrapper budget even when healthy, so the pass
+            # defers its remaining sessions instead of hitting TIMEOUT.
             watch_status, _, stderr = run_command(
-                [str(executable), "watch", "--dry-run", "--active-only", "--once"],
+                [str(executable), "watch", "--dry-run", "--active-only", "--once",
+                 "--eval-budget", str(TIMEOUT_SECONDS - 7)],
                 environment, time.monotonic() + TIMEOUT_SECONDS)
         # watch reports per-session failures on stderr but can still exit 0.
         # Classify only its known diagnostic shapes; never retain their text.

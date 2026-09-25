@@ -422,6 +422,10 @@ enum Cmd {
         /// Run one discovery pass and exit, useful for supervised monitoring.
         #[arg(long)]
         once: bool,
+        /// Bound transcript loading and plan evaluation to this many seconds
+        /// per pass; remaining sessions defer to the next pass. 0 = unbounded.
+        #[arg(long, default_value = "0")]
+        eval_budget: u64,
         /// Retired compatibility flag; in-place staged swaps are disabled.
         #[arg(long)]
         double_buffer: bool,
@@ -2531,10 +2535,17 @@ fn cmd_report(cli: &Cli, strict: bool, active_only: bool, context_only: bool) ->
     } else {
         0
     };
+    // The report is read-only; it may still borrow the watcher lanes'
+    // advisory discovery snapshot so a warm run costs fingerprints, not
+    // file and store reparses.
+    let mut cache = detect::DiscoveryCache::default();
+    if let Some(dir) = watch_state_path(None).parent() {
+        load_persisted_discovery(&mut cache, dir, None);
+    }
     let discovery = detect::discover_cached_with_status(
         &roots(cli),
         max_age_secs,
-        &mut detect::DiscoveryCache::default(),
+        &mut cache,
         None,
         context_only,
     );
@@ -3671,6 +3682,11 @@ struct WatchDecisions {
     legacy_unresolved: u64,
     native_unresolved: u64,
     settled: u64,
+    /// Sessions that reached the pass loop but skipped transcript work
+    /// because `--eval-budget` was exhausted. Not a terminal decision —
+    /// deferred sessions are reconsidered next pass in the same order.
+    #[serde(default)]
+    eval_deferred: u64,
     cooldown: u64,
     below_trigger: u64,
     native_unqualified: u64,
@@ -3843,6 +3859,100 @@ fn save_watch_state(path: &Path, state: &WatchState) -> Result<()> {
     result.context("persist watch state")
 }
 
+/// Persisted discovery cache: same directory and same write discipline as
+/// watch state, but advisory — a corrupt or missing snapshot only costs a
+/// rescan, so every reader treats parse or schema drift as a cold start.
+const MAX_DISCOVERY_CACHE_BYTES: u64 = 8 * 1024 * 1024;
+
+fn discovery_cache_path(dir: &Path, provider: Provider) -> PathBuf {
+    dir.join(format!("discovery-cache-{}.json", provider.as_str()))
+}
+
+fn persisted_providers(provider: Option<Provider>) -> impl Iterator<Item = Provider> {
+    [Provider::Codex, Provider::ClaudeCode, Provider::Devin]
+        .into_iter()
+        .filter(move |p| provider.is_none_or(|q| q == *p))
+}
+
+fn load_persisted_discovery(
+    cache: &mut detect::DiscoveryCache,
+    dir: &Path,
+    provider: Option<Provider>,
+) {
+    for p in persisted_providers(provider) {
+        let path = discovery_cache_path(dir, p);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(file) = serde_json::from_str::<detect::DiscoveryCacheFile>(&text) else {
+            continue;
+        };
+        if file.schema != detect::DiscoveryCacheFile::SCHEMA || file.provider != p.as_str() {
+            continue;
+        }
+        if p == Provider::Devin {
+            cache.merge_devin_rows(file.devin_entries);
+        } else {
+            cache.merge_persisted(p, file.entries);
+        }
+    }
+}
+
+fn save_persisted_discovery(
+    cache: &detect::DiscoveryCache,
+    dir: &Path,
+    provider: Option<Provider>,
+) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_WRITE: AtomicU64 = AtomicU64::new(0);
+    for p in persisted_providers(provider) {
+        let path = discovery_cache_path(dir, p);
+        let (entries, devin_entries) = if p == Provider::Devin {
+            (Vec::new(), cache.devin_rows())
+        } else {
+            (cache.persist_rows(p), Vec::new())
+        };
+        if entries.is_empty() && devin_entries.is_empty() {
+            continue;
+        }
+        let file = detect::DiscoveryCacheFile {
+            schema: detect::DiscoveryCacheFile::SCHEMA.to_owned(),
+            provider: p.as_str().to_owned(),
+            written_unix: now_secs(),
+            entries,
+            devin_entries,
+        };
+        let tmp = dir.join(format!(
+            ".discovery-cache-{}-{}.tmp",
+            std::process::id(),
+            NEXT_WRITE.fetch_add(1, Ordering::Relaxed),
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let result = (|| -> Result<()> {
+            let mut writer = options.open(&tmp)?;
+            serde_json::to_writer(&mut writer, &file)?;
+            if writer.metadata()?.len() > MAX_DISCOVERY_CACHE_BYTES {
+                bail!("discovery cache exceeds byte bound; snapshot not persisted");
+            }
+            writer.sync_all()?;
+            std::fs::rename(&tmp, &path)?;
+            #[cfg(unix)]
+            std::fs::File::open(dir)?.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            eprintln!("discovery cache persist failed (non-fatal): {path:?}");
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_watch(
     cli: &Cli,
@@ -3853,6 +3963,7 @@ fn cmd_watch(
     active_only: bool,
     provider: Option<String>,
     once: bool,
+    eval_budget: u64,
 ) -> Result<()> {
     if interval == 0 {
         bail!("watch interval must be positive");
@@ -3935,6 +4046,12 @@ fn cmd_watch(
     // provider_compact/skipped events are not re-logged every pass.
     let mut delegated_ctx = persisted.delegated_ctx;
     let mut discovery_cache = detect::DiscoveryCache::default();
+    // A cold start (one-shot monitor probe, watcher restart) borrows the
+    // snapshot the previous pass left on disk so unchanged session files
+    // are not reparsed. Advisory only: any drift means a cold rescan.
+    if let Some(dir) = state_path.parent() {
+        load_persisted_discovery(&mut discovery_cache, dir, provider);
+    }
     let mut pass_started_at_ms;
     let mut pass_completed_at_ms;
     let mut decisions;
@@ -4037,6 +4154,12 @@ fn cmd_watch(
         // Cheapest sessions first: a multi-minute apply on one giant
         // session would otherwise delay every session behind it.
         found.sort_by_key(session_cost_hint);
+        // --eval-budget bounds only the transcript work (context fallback
+        // load, transcript load, plan evaluation). Discovery and the cheap
+        // fingerprint/suppression gates above always run, so a deferred
+        // session is counted, never mistaken for a clean decision.
+        let eval_deadline = (eval_budget > 0)
+            .then(|| std::time::Instant::now() + std::time::Duration::from_secs(eval_budget));
         decisions.discovered = found.len() as u64;
         for d in found {
             if provider.is_some_and(|p| p != d.handle.provider) {
@@ -4250,12 +4373,24 @@ fn cmd_watch(
                 }
                 continue;
             }
-            let ctx = if let Some(context) = d.usage.reported_context() {
-                context
-            } else {
-                detect::load(&d)
-                    .map(|t| t.estimated_context_tokens())
-                    .unwrap_or(0)
+            // A session with no usable provider usage sample still needs a
+            // context estimate for the trigger gate — but only then. A Devin
+            // export or a full transcript parse just to answer "below
+            // trigger?" is the expensive part of a pass; any measured hint
+            // (reported context, preceding-token total, or a partial
+            // component subtotal) answers it without loading. Bounded by
+            // --eval-budget like every other transcript load below.
+            let ctx = match d.usage.context_hint() {
+                Some(context) => context,
+                None => {
+                    if eval_deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                        decisions.eval_deferred += 1;
+                        continue;
+                    }
+                    detect::load(&d)
+                        .map(|t| t.estimated_context_tokens())
+                        .unwrap_or(0)
+                }
             };
             if ctx < trigger {
                 decisions.below_trigger += 1;
@@ -4624,6 +4759,10 @@ fn cmd_watch(
                 last_fire.insert(session_key.clone(), std::time::Instant::now());
                 continue;
             }
+            if eval_deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                decisions.eval_deferred += 1;
+                continue;
+            }
             let (transcript, source_sha256) = match copy::load_bound(d.handle.clone()) {
                 Ok(t) => t,
                 Err(_) => {
@@ -4776,6 +4915,18 @@ fn cmd_watch(
             native_operations::artifact_sha256()?;
             pass_completed_at_ms = Some(now_millis());
             persist_watch_state!()?;
+            // Next cold process skips reparsing fingerprint-unchanged
+            // session files. Advisory snapshot; failure never fails a pass.
+            if let Some(dir) = state_path.parent() {
+                save_persisted_discovery(&discovery_cache, dir, provider);
+            }
+        } else if once && decisions.eval_deferred > 0 {
+            // Shape differs from "[dry-run] provider session: plan" on
+            // purpose: a deferred count is pass coverage, not a plan line.
+            eprintln!(
+                "[dry-run] eval budget: {} session(s) deferred unevaluated",
+                decisions.eval_deferred
+            );
         }
         if once {
             return Ok(());
@@ -5355,6 +5506,7 @@ fn main() -> Result<()> {
             active_only,
             provider,
             once,
+            eval_budget,
         } => cmd_watch(
             &cli,
             &cfg,
@@ -5364,6 +5516,7 @@ fn main() -> Result<()> {
             *active_only,
             provider.clone(),
             *once,
+            *eval_budget,
         ),
         Cmd::PolicyCheck {
             provider,

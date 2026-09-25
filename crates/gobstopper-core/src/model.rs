@@ -290,6 +290,19 @@ impl UsageSample {
             && self.context_components.is_none())
         .then_some(self.context_tokens)
     }
+
+    /// Best available context signal for ordering and gating watch work:
+    /// provider-reported context, then a recorded preceding-token total,
+    /// then a partial measured component subtotal. A hint is a bounded
+    /// decision aid, not complete occupancy or a provider accounting claim.
+    pub fn context_hint(&self) -> Option<u64> {
+        self.reported_context()
+            .or_else(|| {
+                (self.context_state == ContextState::Unknown && self.context_tokens > 0)
+                    .then_some(self.context_tokens)
+            })
+            .or_else(|| self.measured_component_subtotal())
+    }
 }
 
 /// A parsed session transcript ready for strategy evaluation.
@@ -447,6 +460,37 @@ mod accounting_tests {
         assert_eq!(usage.reported_context(), Some(0));
         assert_eq!(usage.context_components, None);
         assert_eq!(usage.context_reason, None);
+    }
+
+    #[test]
+    fn context_hint_prefers_reported_then_preceding_then_component_subtotal() {
+        let mut usage = UsageSample::default();
+        assert_eq!(usage.context_hint(), None);
+        // Partial components give a measured subtotal hint.
+        usage.observe_context_components(
+            ContextComponents {
+                input_tokens: Some(100),
+                cache_read_tokens: Some(900),
+                cache_creation_tokens: None,
+                output_tokens: Some(5),
+            },
+            Some(ContextReason::NullComponent),
+        );
+        assert_eq!(usage.context_hint(), Some(1005));
+        // A recorded preceding-token total beats a partial subtotal.
+        usage.context_tokens = 42_000;
+        assert_eq!(usage.context_hint(), Some(42_000));
+        // Reported context always wins.
+        usage.observe_cumulative_report(Some(170_000), None, None, None);
+        assert_eq!(usage.context_hint(), Some(170_000));
+        // An invalidated sample has no hint at all.
+        usage.invalidate_context();
+        assert_eq!(usage.context_hint(), None);
+        // A reset session reports a real zero, which is a real hint.
+        usage.reset_context();
+        assert_eq!(usage.context_hint(), None);
+        usage.observe_cumulative_report(Some(0), None, None, None);
+        assert_eq!(usage.context_hint(), Some(0));
     }
 
     #[test]
