@@ -9,6 +9,68 @@ observed idleness and a SQLite transaction do not establish lifetime provider
 custody. See the [activation matrix](assurance/qualification.json) and
 [recovery runbook](assurance/operations.md).
 
+## Compaction ahead of Devin's own
+
+Claude Code and Codex can run behind [`gobstopper proxy`](proxy.md), which
+compacts each request before the provider sees it. Devin CLI cannot: it
+sends requests through Cognition's service, its configuration has no model
+address to point elsewhere, and its `proxy` setting routes encrypted HTTPS
+traffic to that service rather than model requests Gobstopper could read.
+Model endpoints are configurable only in air-gapped Devin builds, which
+include a `devin airgap` command. A running Devin session also keeps its
+history in its own store, which Gobstopper does not write.
+
+Devin exposes these controls instead, and Gobstopper uses the first three:
+
+- A `UserPromptSubmit` hook runs before each turn. Gobstopper's handler
+  suggests `/compact` once the session passes your Gobstopper threshold, so
+  you can compact at a natural break instead of mid-task.
+- A `PostCompaction` hook runs after each Devin compaction. Gobstopper's
+  handler archives the session in the vault, so exact records from before
+  the compaction stay searchable.
+- The Gobstopper MCP server lets the agent check policy and look up archived
+  state. With `--allow-transcript-content`, it can also search and read
+  archived records, which then become visible to the agent and its model
+  provider.
+- `agent.compaction_threshold_tokens` in `~/.config/devin/config.json` makes
+  Devin compact earlier than its context-window default. Devin still writes
+  the summary.
+
+### Set up
+
+1. Register the MCP server and confirm it:
+
+   ```sh
+   devin mcp add -s user gobstopper -- gobstopper mcp
+   devin mcp get gobstopper
+   ```
+
+2. Export the hook candidates and review the Devin entry:
+
+   ```sh
+   gobstopper install-hooks --output ./hook-candidates.json
+   ```
+
+3. Add the two handlers from the candidate to `~/.config/devin/config.json`:
+
+   ```json
+   "hooks": {
+     "UserPromptSubmit": [
+       {"matcher": "", "hooks": [{"type": "command", "command": "gobstopper hook prompt-policy:devin", "timeout": 10}]}
+     ],
+     "PostCompaction": [
+       {"matcher": "", "hooks": [{"type": "command", "command": "gobstopper hook postcompact", "timeout": 60}]}
+     ]
+   }
+   ```
+
+4. Set the threshold the advice uses in `~/.config/gobstopper/config.toml`:
+
+   ```toml
+   [provider.devin]
+   trigger_tokens = 128_000
+   ```
+
 ## Session discovery
 
 Devin stores sessions in a SQLite database:

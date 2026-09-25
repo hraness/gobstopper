@@ -14,7 +14,7 @@ import {
 const title = "Compared with CliffCompaction";
 const socialTitle = "Gobstopper compared with CliffCompaction";
 const description =
-  "CliffCompaction compacts API requests through a local proxy. Gobstopper prepares compacted copies of session files. This page compares what each keeps, drops, and measures.";
+  "CliffCompaction and gobstopper proxy compact live API requests with the same rule. Gobstopper also prepares compacted copies of saved sessions. This page compares what each keeps, drops, and measures.";
 
 export const metadata: Metadata = {
   title,
@@ -64,12 +64,12 @@ export default function CompareCliffCompaction() {
           <p>
             Both tools shrink a coding agent&apos;s context without asking a
             model to summarize it, and both keep the newest turns untouched.
-            CliffCompaction does it to each API request through a proxy while
-            the session runs. Gobstopper does it to a copy of the session file
-            that you inspect and then resume. The <code>cliff</code> strategy
-            in the current source build applies CliffCompaction&apos;s drop rule
-            to that copy. Install from source to use it; the latest tagged
-            release predates it.
+            CliffCompaction compacts each API request through a local proxy
+            while the session runs. <code>gobstopper proxy</code> ports the same
+            rule for Claude Code and Codex, and Gobstopper&apos;s file commands
+            prepare compacted copies of saved sessions that you inspect and then
+            resume. Both are in the current source build; install from source to
+            use them, because the latest tagged release predates them.
           </p>
 
           <h2>What CliffCompaction does</h2>
@@ -104,14 +104,25 @@ export default function CompareCliffCompaction() {
             strategy, preview the plan, and compare strategies on the same
             frozen bytes. Before it writes a Claude Code or Codex copy, it
             archives the source and candidate bytes in a local vault, so an
-            exact archived record can be searched and read later. It does not
-            sit between the agent and the API, and the source build does not
-            ask a provider to compact a running session.
+            exact archived record can be searched and read later.
           </p>
+          <p>
+            For a running session, <code>gobstopper proxy</code> listens on
+            127.0.0.1 between Claude Code or Codex and the provider. Past the
+            threshold (128,000 estimated tokens by default) it sends the head,
+            one mechanical summary, and the newest three turns, so the provider
+            reports a smaller context and the client&apos;s own auto-compaction
+            does not reach its trigger. The session files stay unchanged. Devin
+            CLI cannot use the proxy because it sends requests through
+            Cognition&apos;s service and has no setting for a model address.
+          </p>
+          <pre tabIndex={0}><code>{`gobstopper proxy run -- claude       # one session through a temporary proxy
+gobstopper proxy serve               # background proxy on http://127.0.0.1:8260
+gobstopper proxy replay <session>    # what the proxy would have sent; calls no provider`}</code></pre>
 
           <h2>How they compare</h2>
           <table>
-            <caption>Read from each tool&apos;s documentation and source on September 24, 2026</caption>
+            <caption>Read from each tool&apos;s documentation and source on September 25, 2026</caption>
             <thead>
               <tr>
                 <th scope="col">Aspect</th>
@@ -164,13 +175,13 @@ result_max_bytes = 500`}</code></pre>
 
           <h2>Which one fits</h2>
           <p>
-            Use CliffCompaction when you want request-time compaction of a
-            live session for any client that speaks the Anthropic Messages,
-            OpenAI Chat Completions, or OpenAI Responses API, with no change to
-            the agent. Use Gobstopper when you want to see what a compaction
-            would remove before it happens, compare strategies on frozen input,
-            keep the exact source, and resume a smaller copy of a Claude Code
-            or Codex session. The two tools have not been tested together.
+            Use CliffCompaction for request-time compaction in any client that
+            speaks the Anthropic Messages, OpenAI Chat Completions, or OpenAI
+            Responses API. Use <code>gobstopper proxy</code> for Claude Code or
+            Codex when you also want to replay a recorded session and see what
+            the proxy would have sent. Use Gobstopper&apos;s file commands to
+            compare strategies on frozen input, keep the exact source, and
+            resume a smaller copy. Run one proxy per client.
           </p>
 
           <h2>Questions</h2>
