@@ -1,0 +1,313 @@
+{
+  "schema": "gobstopper.assurance-receipt.v1",
+  "observed_at": "2026-09-25T21:01:23.589860+00:00",
+  "scope": "Unbounded Lean structural list laws plus finite actual Rust dialect correspondence.",
+  "results": [
+    {
+      "case": "rust-sysroot",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "847d7ac7f933b46e8c43448239a79c704197305fbbac1a630bef9f038e5fb835",
+      "passed": true
+    },
+    {
+      "case": "lean-version",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "ef292bc08ba85881f3b660d4f1ab1143de776aae5d1c392cff9d8c3221407c2b",
+      "passed": true
+    },
+    {
+      "case": "lake-version",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "242bb637d740597febf655395478ffc9020e35e53e3040d8a7055bf3de6f0541",
+      "passed": true
+    },
+    {
+      "case": "rust-version",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "eaf195daced7a434718b67881bed97c02440b2b6196dad18db476478c66b1c36",
+      "passed": true
+    },
+    {
+      "case": "cargo-version",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "22cf38b38044f7e66c130e80d546028773672b549ec7bb81bf1e7652ede0c8ac",
+      "passed": true
+    },
+    {
+      "case": "lean-build",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "5e16f4fef31ad0f4fe828a558f9fbb73810e9c81e24aea769ba76c7f55a682d5",
+      "passed": true
+    },
+    {
+      "case": "axioms",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "dda3328b0c0312ee5f810fc619efbefca013e907cc5220b638a3a1c56caa2dcc",
+      "passed": true
+    },
+    {
+      "case": "kernel-replay",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "passed": true
+    },
+    {
+      "case": "vectors",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "eb565cf59e176f458f078973bad0cede2fa49041f43148443524f66194ba1b60",
+      "passed": true
+    },
+    {
+      "case": "rust-correspondence",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "bbff7355da0331fe2cd845ac55407d1238d2a080ec1a36b84e82063ea380b1d7",
+      "passed": true
+    },
+    {
+      "case": "oracle-mutant-build",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "89fc382da8294379a068394b581915f22748b672e584eaf5a46b41bceec292a8",
+      "passed": true
+    },
+    {
+      "case": "oracle-mutant-vectors",
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "836381383afee063723b6446c0b1c4b96bc56d659fbbb4707248336b256c0582",
+      "passed": true
+    },
+    {
+      "case": "oracle-mutant-correspondence",
+      "exit_code": 101,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "72e898930b1fbac6846732d2697349c47735ed773ae6249915e09c347fd337c6",
+      "passed": true
+    },
+    {
+      "case": "rust-mutant-correspondence",
+      "exit_code": 101,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "90236b6ac6994e05ffe7939cb7074f63aa12b7ce776cc561e9c89ae7c44ebf71",
+      "passed": true
+    }
+  ],
+  "passed": true,
+  "mutations": {
+    "oracle": {
+      "old": "(\"content\", toJson r.content)",
+      "new": "(\"content\", toJson (if r.content == 0 then (1 : Nat) else r.content))",
+      "source_sha256": "296bd803002e7692a71069278672d1576d27b2c7c392a9bf9169aaa80087216f"
+    },
+    "rust": {
+      "old": "raw = apply_elide(&raw, &targets, stub_template, per_item_stubs).0;",
+      "new": "raw = apply_elide(&raw, &std::collections::HashSet::new(), stub_template, per_item_stubs).0;",
+      "uncompiled_cli_metadata_target": true,
+      "source_sha256": "f155cd91fa296bed0237e3257cb0710957f3c4c25d07290d5f93eaaed9faf884"
+    }
+  },
+  "axioms": {
+    "maskOne_key": [],
+    "maskOne_live": [],
+    "maskOne_protected": [],
+    "maskOne_event": [],
+    "protected_identity": [
+      "propext",
+      "Quot.sound"
+    ],
+    "inactive_identity": [
+      "propext",
+      "Quot.sound"
+    ],
+    "selected_is_masked": [],
+    "unselected_identity": [],
+    "maskOne_empty": [
+      "propext",
+      "Quot.sound"
+    ],
+    "mask_empty": [
+      "propext",
+      "Quot.sound"
+    ],
+    "length_preserved": [
+      "propext"
+    ],
+    "order_and_identity_preserved": [
+      "propext",
+      "Quot.sound"
+    ],
+    "links_preserved": [
+      "propext",
+      "Quot.sound"
+    ],
+    "effective_commutes": [
+      "propext",
+      "Quot.sound"
+    ],
+    "protected_projection_preserved": [
+      "propext",
+      "Quot.sound"
+    ],
+    "maskOne_compose": [
+      "propext",
+      "Quot.sound"
+    ],
+    "composition": [
+      "propext",
+      "Quot.sound"
+    ],
+    "idempotence": [
+      "propext",
+      "Quot.sound"
+    ],
+    "admitted_targets_known_safe": [
+      "propext",
+      "Quot.sound"
+    ],
+    "rejection_identity": [
+      "propext"
+    ],
+    "admitted_execution": [
+      "propext"
+    ],
+    "tool_wellformedness_preserved": [
+      "propext",
+      "Quot.sound"
+    ],
+    "digest_keeps_prior_order": [
+      "propext"
+    ],
+    "digest_keeps_prior_records": [
+      "propext"
+    ],
+    "digest_fresh_identity": [
+      "propext",
+      "Quot.sound"
+    ],
+    "quiet_append": [
+      "propext",
+      "Quot.sound"
+    ],
+    "digest_preserves_tool_links": [
+      "propext",
+      "Quot.sound"
+    ]
+  },
+  "vectors": {
+    "cases": 20,
+    "steps_per_provider": 23,
+    "accepted_per_provider": 12,
+    "refused_per_provider": 11,
+    "digests_per_provider": 3
+  },
+  "inputs_unchanged": true,
+  "bounds": "27 theorems, 20 synthetic cases, 23 steps per provider; kernel replay and both exact intended mutants.",
+  "exclusions": [
+    "No universal Rust refinement",
+    "No branching/unknown-wire dialect theorem",
+    "No semantic equivalence of lossy output"
+  ],
+  "raw_receipt_sha256": "7a082978401b5e7f51698eaec2dbfe55cb5a35010d106090a8de22cb0f1196c2",
+  "source_sha256": {
+    "Cargo.lock": "f2c387d5f51c2bf3115d76895b7b6a514cc03bb7523e7ad1a872a8824e19aeec",
+    "Cargo.toml": "2ad0e5d9d5de7edbb94fbd7d65569fd3fc214a74de501f77266234188ed74482",
+    "crates/gobstopper-adapters/Cargo.toml": "ea32026e1093f2a142ca66ac1a63652ca9aeab44c462e732b735c5986d3f5c34",
+    "crates/gobstopper-adapters/src/claude.rs": "d0fe42b50bd536c987cdfff5311fee7d939e4c0dbee08ef9ccea23c2fa6efbfe",
+    "crates/gobstopper-adapters/src/codex.rs": "c32a693ac0fcee559ba858515c30e0a5a951ad715f8987fc6cf72357898dfa3b",
+    "crates/gobstopper-adapters/src/codex_compact.rs": "b1c5c9717eb4bbf0e8ed0b7a1930b4b794b6378a429591594f1d17917a483233",
+    "crates/gobstopper-adapters/src/copy.rs": "dbef5ae6bca3865c0fed11a4dbd53a6e4c3738e4963f689917be672016e4d6d1",
+    "crates/gobstopper-adapters/src/detect.rs": "9231fac464657634942f9cefa0f3e4ecbaf5f25f434bc289618b43f09ea7efe2",
+    "crates/gobstopper-adapters/src/eval.rs": "6724042647ac016a0641df8b89aa7fcacc41e2ba39d84c929b3ece65acc76a5e",
+    "crates/gobstopper-adapters/src/fork.rs": "506109014db54ecc1d1481d8890d82eddedcd7fad4826eb7815955c36178ef91",
+    "crates/gobstopper-adapters/src/lib.rs": "16b5d42382539146115dc48f53595e7787b5ea52691360c908c9e215bb65b2f5",
+    "crates/gobstopper-adapters/src/payload.rs": "bdf9b225f303580f8cf72de68d34dce48e03689935055e3bc332743c16c4acf1",
+    "crates/gobstopper-adapters/src/plugins.rs": "1ff94072f9a60c7224872e0672c256a711070a49d4deaccee3caacf93280dff5",
+    "crates/gobstopper-adapters/src/recovery.rs": "7b778325eaff80aff7397cbd8928cd8247f4da89941c70b8595103bc0b596a3c",
+    "crates/gobstopper-adapters/src/request/anthropic.rs": "2de48b756c827eb5fe3a8bb08b085467c9f6dd05995472ce1d1b65fec20559b9",
+    "crates/gobstopper-adapters/src/request/chat.rs": "051ac754689d12a631fe0c931e89a7165cbbc0ef40fabe35810c70691a069cde",
+    "crates/gobstopper-adapters/src/request/engine.rs": "e4c5f072ead1cb0ca841b5f43225f666692fb48bf423d604710ad51e3e1276a2",
+    "crates/gobstopper-adapters/src/request/images.rs": "554b5c77ed93386fad86ff9b43156190cd892a16a89b252a458dcd0aa7b7cd2f",
+    "crates/gobstopper-adapters/src/request/mod.rs": "71b495a808251c201745fa4fb32df791e99249200fea61c092d4b3aa058f56ed",
+    "crates/gobstopper-adapters/src/request/replay.rs": "c9d1dd327db076a58ef56bfe99d590436411fb8cf0e6b32e5d90ab8364fb2510",
+    "crates/gobstopper-adapters/src/request/responses.rs": "2e5aa02338b1ea156c12e05871a120e3d546b6a247d52278b30cc80831f05210",
+    "crates/gobstopper-adapters/src/request/store.rs": "dfc3ba6f04292c46424fe1b320e279aa198cb28e9e0c0849e085f538ffc099a7",
+    "crates/gobstopper-adapters/src/storage_tests.rs": "5e36e0f579c011e25aa7cdd799770d5d34075eab79dd2187f1d9e0ae42bfe0ce",
+    "crates/gobstopper-adapters/src/study.rs": "aa7271712e9b73935bb888bb225cd97c40c2bee8842e3a5b39f7627995b1a40b",
+    "crates/gobstopper-adapters/src/transaction.rs": "23908f2045f22c5bffa6121b292182d896b41f482926536a9bdb1d517e89ec17",
+    "crates/gobstopper-adapters/src/vault/accounting.rs": "9e5e95818ac04b24f242c3de95d515b6e0fe5de2da9496eabb7eb7080eaea767",
+    "crates/gobstopper-adapters/src/vault.rs": "41b8dc10028e295736d08a1b0053715300962a313b29f2a1b430f11e0f58e8e3",
+    "crates/gobstopper-adapters/src/verify.rs": "c3210d6b98944c6c1066d277bb8d5900a6a3572fafe95d24897d907245dd50c2",
+    "crates/gobstopper-adapters/tests/lean_correspondence.rs": "c16340e1262fcc2c5e10face8d4dbc249c73c6bd013d3492769266c1c9a06f1b",
+    "crates/gobstopper-cli/Cargo.toml": "2bf8d3dae95d21c71cf4e67c96fbe560b700465b0bbe176aab695def5c84e401",
+    "crates/gobstopper-core/Cargo.toml": "1de61bed40e65fac756fd1529635cda09892ea0482ebdeba6b1e038965116e50",
+    "crates/gobstopper-core/src/admission.rs": "d886b85141879328b3282f22765a96da5986e62b4eeaf2cfe9a16f06b17daa1d",
+    "crates/gobstopper-core/src/estimate.rs": "86c999f925e69ac76b304dd1a1805607e662d91d354fe02afad22939be161672",
+    "crates/gobstopper-core/src/events.rs": "fc5e8b47219c9af825e6863b46c402a54f5751efcf0b019eeddbf262ba9a0ab2",
+    "crates/gobstopper-core/src/lib.rs": "7a2ed76f6874d539b2ec82bf8912701247ee82a7d45674db0c8971d506572d7a",
+    "crates/gobstopper-core/src/model.rs": "17aa0b7d9428a3e1f1d06228adc72f777a860a55478cb63b574f2164d0ec4d65",
+    "crates/gobstopper-core/src/plan.rs": "fcafb6a44a955bd1880b12194560d29371dde40d0a47f6456b9d4f96cb6c67bd",
+    "crates/gobstopper-core/src/policy.rs": "77fa1d849c9d34e0829e8ed009f88ecd508a0d0c22883931f1d2ae492060fd68",
+    "crates/gobstopper-core/src/probe.rs": "77b3814fcec225f6dfcd95e917305cbbaf799424498f08a3c8b7c4e15cad3175",
+    "crates/gobstopper-core/src/strategy/agentic.rs": "2cdce75031567462a8fcc6df5d0c7551235e1dfb14cd9480138ba38a9af7d9a0",
+    "crates/gobstopper-core/src/strategy/auto.rs": "54f9c0334abedeed6c66d70cd4eeb2cbe612a6c090d06aa5e474c749886cb8c2",
+    "crates/gobstopper-core/src/strategy/cache_aware.rs": "72a9dfdffca54a21b13c2ffa786c148a179fd47e144b4dc095c0e047baab3392",
+    "crates/gobstopper-core/src/strategy/cache_edits.rs": "03ec09f5ad36acdbfdb5ef54583243d2721edc092bc3d7b9709afe2dd664acf6",
+    "crates/gobstopper-core/src/strategy/cliff.rs": "0722c8927071ca35134b937d6613e891a9674a75307ceb405e0cb9db6736be61",
+    "crates/gobstopper-core/src/strategy/compacted.rs": "fa57607a7367e8e6ef492ea2ee4cb88178ea069012ba079d12bbb02a2decfb6d",
+    "crates/gobstopper-core/src/strategy/dedupe.rs": "51fbe4f6a381e8bc5657f1a24b1570d0a5d5f51a1c5acd2beeabf61fa2bcca7f",
+    "crates/gobstopper-core/src/strategy/elide.rs": "a008b66213f7d6f239db83e5ce3bf6965b5b85b00cd6862ec43ec1d036cf9b79",
+    "crates/gobstopper-core/src/strategy/micro.rs": "026e582a11b08fb5e779134a4ee8ca7d3065f9cd06c00f19b48bda94a636393e",
+    "crates/gobstopper-core/src/strategy/middle.rs": "e03bd8d80ea87d521425f1c8f6af575d545a1ea908a0c2c8635f39070e0aa31d",
+    "crates/gobstopper-core/src/strategy/mod.rs": "7cfe8517c0a1144259f21a1abf94336b8f467410cb4e6e950b9bcf3c06a376b9",
+    "crates/gobstopper-core/src/strategy/sawtooth.rs": "89bbe87f9f454ca5ae468fab07cc94bbde599bfd57198a637a15d7f2213f45ff",
+    "crates/gobstopper-core/src/strategy/scored.rs": "ba3c13121045ed669bceb7e590668afde0c888ebdb4425e7d8c7dbf6b5c178de",
+    "crates/gobstopper-core/src/strategy/structured.rs": "032114f60b92f9bf41646b8d1459c2717bf7becd032e89bd87bcc0660ce98157",
+    "crates/gobstopper-core/src/validation.rs": "f7735d12c5af9d86a2964ce9ab6502159a5dfe97ff74f2ef5bee07f42698219e",
+    "verify/tools.lock.json": "face7de8e2a9aa8394973b9d335a0414d334642294dceccaddb3f6fe7575ebf7",
+    "verify/transcript/Audit.lean": "7537b5f8eed4e4915a4a074ddefc039f0da36de426d9787e88c872418bcf7b8d",
+    "verify/transcript/README.md": "ab4e3378f9adcc69a53655b1ac64d11bbeba276c3c23255e8c79645233d9b77a",
+    "verify/transcript/Transcript.lean": "f633aa55525e6be28dc49ceb19b95d6392c56809603d65783d7315d22f0aeaf5",
+    "verify/transcript/Vectors.lean": "db68fd28e4773416835088c4b67beeb4127427cd7031833c9c5a2bf32b88ca76",
+    "verify/transcript/check.py": "47aaf9bae71891fd586b7df94187b27a38667dac20a7986be532cc2bd4c2ed64",
+    "verify/transcript/lake-manifest.json": "0f449acec768995dc308c9e487f3957fb85198ebdfa5e1ed4315ece926403200",
+    "verify/transcript/lakefile.toml": "1f2918976ef68b681199c6286d5595cd87d501ae6bd8d57174273b2a18db431a",
+    "verify/transcript/lean-toolchain": "8733782dc070a99b312039cda424f601b80f3be6f6f512627da5ba25adc27632",
+    "verify/transcript/test_check.py": "e552335469d08058211e203c4ec12f22f4e75f744959df683c4491884ddaba48",
+    "verify/transcript/vectors.json": "eb565cf59e176f458f078973bad0cede2fa49041f43148443524f66194ba1b60",
+    "verify/watch/check.py": "97ce34ea1926af465cfd242074ad80d9941311c9f412ee163923a90b7bfaebad"
+  },
+  "tool_sha256": {
+    "lake": "c8c24f1398162ab4004e2a869952d8469f54293651151feaad4526f2b8474c6e",
+    "lean": "1b370cfcbf44e80d1b004ab1b1ab9a4c73951f9f7c242140bcff9bc577576554",
+    "leanchecker": "cfde41cb11dde58c84e9c60c551fd104bb2fc1104ad44dca932a923120272a35",
+    "cargo-dispatcher": "b7a341737d8777ef0e21a71f0af90723ccf692914255110c12bbcfed79d75a53",
+    "rustc-dispatcher": "d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd",
+    "python": "b502cb4c5b46b8d4192ec6bcb600ce8922f1afc396fcf646e8765c6eba74a0bf",
+    "cargo": "b7a341737d8777ef0e21a71f0af90723ccf692914255110c12bbcfed79d75a53",
+    "rustc": "d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd"
+  }
+}
