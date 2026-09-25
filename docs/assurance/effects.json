@@ -2871,6 +2871,20 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/detect.rs",
+      "symbol": "devin_rows",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/detect.rs",
+      "symbol": "merge_devin_rows",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/detect.rs",
       "symbol": "source_identity",
       "effects": [
         "inspect"
@@ -3012,6 +3026,13 @@
     {
       "path": "crates/gobstopper-adapters/src/devin.rs",
       "symbol": "session_active",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/devin.rs",
+      "symbol": "discover_with_status_in",
       "effects": [
         "inspect"
       ]

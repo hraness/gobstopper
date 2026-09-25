@@ -2594,10 +2594,17 @@ fn cmd_report(cli: &Cli, strict: bool, active_only: bool, context_only: bool) ->
     } else {
         0
     };
+    // The report is read-only; it may still borrow the watcher lanes'
+    // advisory discovery snapshot so a warm run costs fingerprints, not
+    // file and store reparses.
+    let mut cache = detect::DiscoveryCache::default();
+    if let Some(dir) = watch_state_path(None).parent() {
+        load_persisted_discovery(&mut cache, dir, None);
+    }
     let discovery = detect::discover_cached_with_status(
         &roots(cli),
         max_age_secs,
-        &mut detect::DiscoveryCache::default(),
+        &mut cache,
         None,
         context_only,
     );
@@ -3972,8 +3979,8 @@ fn discovery_cache_path(dir: &Path, provider: Provider) -> PathBuf {
     dir.join(format!("discovery-cache-{}.json", provider.as_str()))
 }
 
-fn file_providers(provider: Option<Provider>) -> impl Iterator<Item = Provider> {
-    [Provider::Codex, Provider::ClaudeCode]
+fn persisted_providers(provider: Option<Provider>) -> impl Iterator<Item = Provider> {
+    [Provider::Codex, Provider::ClaudeCode, Provider::Devin]
         .into_iter()
         .filter(move |p| provider.is_none_or(|q| q == *p))
 }
@@ -3983,7 +3990,7 @@ fn load_persisted_discovery(
     dir: &Path,
     provider: Option<Provider>,
 ) {
-    for p in file_providers(provider) {
+    for p in persisted_providers(provider) {
         let path = discovery_cache_path(dir, p);
         let Ok(text) = std::fs::read_to_string(&path) else {
             continue;
@@ -3994,7 +4001,11 @@ fn load_persisted_discovery(
         if file.schema != detect::DiscoveryCacheFile::SCHEMA || file.provider != p.as_str() {
             continue;
         }
-        cache.merge_persisted(p, file.entries);
+        if p == Provider::Devin {
+            cache.merge_devin_rows(file.devin_entries);
+        } else {
+            cache.merge_persisted(p, file.entries);
+        }
     }
 }
 
@@ -4005,17 +4016,22 @@ fn save_persisted_discovery(
 ) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static NEXT_WRITE: AtomicU64 = AtomicU64::new(0);
-    for p in file_providers(provider) {
+    for p in persisted_providers(provider) {
         let path = discovery_cache_path(dir, p);
-        let rows = cache.persist_rows(p);
-        if rows.is_empty() {
+        let (entries, devin_entries) = if p == Provider::Devin {
+            (Vec::new(), cache.devin_rows())
+        } else {
+            (cache.persist_rows(p), Vec::new())
+        };
+        if entries.is_empty() && devin_entries.is_empty() {
             continue;
         }
         let file = detect::DiscoveryCacheFile {
             schema: detect::DiscoveryCacheFile::SCHEMA.to_owned(),
             provider: p.as_str().to_owned(),
             written_unix: now_secs(),
-            entries: rows,
+            entries,
+            devin_entries,
         };
         let tmp = dir.join(format!(
             ".discovery-cache-{}-{}.tmp",

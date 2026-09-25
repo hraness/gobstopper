@@ -156,11 +156,54 @@ pub fn discover(root: &Path, max_age_secs: u64, context_only: bool) -> Vec<Disco
     discover_with_status(root, max_age_secs, context_only).0
 }
 
+/// Persisted advisory cache for `scan_context` results, keyed by session.
+/// The fingerprint is (`last_activity_at`, `main_chain_id`): appending a
+/// node moves the chain head and bumps activity, so an unchanged pair means
+/// the live ancestry and context measurement cannot have changed under
+/// Devin's append-mostly store discipline. In-place payload rewrites that
+/// keep both fields are the same timestamp-granularity caveat the file
+/// discovery cache already accepts.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct DevinContextRow {
+    pub session_id: String,
+    pub last_activity_at: Option<i64>,
+    pub main_chain_id: Option<i64>,
+    pub usage: UsageSample,
+    pub sampled_unix: i64,
+}
+
+#[derive(Default)]
+pub struct DevinContextCache(pub std::collections::HashMap<String, DevinContextRow>);
+
+impl DevinContextCache {
+    pub(crate) const MAX_ENTRIES: usize = 2048;
+}
+
+fn chain_head(conn: &Connection, session_id: &str) -> Option<i64> {
+    conn.query_row(
+        "SELECT main_chain_id FROM sessions WHERE id = ?1",
+        [session_id],
+        |r| r.get(0),
+    )
+    .ok()
+    .flatten()
+}
+
 pub fn discover_with_status(
     root: &Path,
     max_age_secs: u64,
     context_only: bool,
 ) -> (Vec<Discovered>, crate::detect::ProviderDiscovery) {
+    discover_with_status_in(root, max_age_secs, context_only, None)
+}
+
+pub fn discover_with_status_in(
+    root: &Path,
+    max_age_secs: u64,
+    context_only: bool,
+    devin_cache: Option<&mut DevinContextCache>,
+) -> (Vec<Discovered>, crate::detect::ProviderDiscovery) {
+    let mut devin_cache = devin_cache;
     let mut status = crate::detect::ProviderDiscovery::new(Provider::Devin);
     let db = db_path(root);
     match std::fs::symlink_metadata(&db) {
@@ -261,7 +304,44 @@ pub fn discover_with_status(
             continue;
         }
         let usage = if context_only {
-            scan_context(&conn, &session_id)
+            // The chain head is one indexed row read; (activity, head) is
+            // the fingerprint under which a stored context result replays
+            // without touching message_nodes pages at all.
+            let head = if devin_cache.is_some() {
+                chain_head(&conn, &session_id)
+            } else {
+                None
+            };
+            let hit = devin_cache.as_ref().and_then(|cache| {
+                cache
+                    .0
+                    .get(&session_id)
+                    .filter(|row| {
+                        row.last_activity_at == last_activity && row.main_chain_id == head
+                    })
+                    .map(|row| row.usage)
+            });
+            match hit {
+                Some(usage) => usage,
+                None => {
+                    let usage = scan_context(&conn, &session_id);
+                    if let Some(cache) = devin_cache.as_deref_mut() {
+                        if cache.0.len() < DevinContextCache::MAX_ENTRIES {
+                            cache.0.insert(
+                                session_id.clone(),
+                                DevinContextRow {
+                                    session_id: session_id.clone(),
+                                    last_activity_at: last_activity,
+                                    main_chain_id: head,
+                                    usage,
+                                    sampled_unix: now as i64,
+                                },
+                            );
+                        }
+                    }
+                    usage
+                }
+            }
         } else {
             scan_usage(&conn, &session_id)
         };
@@ -2021,6 +2101,50 @@ mod tests {
         assert!(found.is_empty());
         assert_eq!(status.source_state, "unavailable");
         assert_eq!(status.io_errors, 1);
+    }
+
+    #[test]
+    fn context_cache_replays_only_while_activity_and_chain_head_hold() {
+        let fx = Fixture::new("context-cache");
+        fx.add_session("sess-a", "demo", 2, 1_790_000_000);
+        fx.add_node(
+            "sess-a",
+            1,
+            None,
+            serde_json::json!({"role":"user","content":"hi"}),
+            None,
+        );
+        fx.add_node(
+            "sess-a",
+            2,
+            Some(1),
+            serde_json::json!({"role":"assistant","content":"hi"}),
+            Some(r#"{"num_tokens_preceding":400}"#),
+        );
+        let mut cache = DevinContextCache::default();
+        let (first, _) = discover_with_status_in(&fx.root, 0, true, Some(&mut cache));
+        assert_eq!(cache.0.len(), 1);
+        assert_eq!(first[0].usage.context_hint(), Some(400));
+        // Delete every node: a live rescan now finds an empty chain, but
+        // the (activity, head) fingerprint is unchanged so the stored
+        // context must replay. The assertion is only possible on a hit.
+        Connection::open(db_path(&fx.root))
+            .unwrap()
+            .execute_batch("DELETE FROM message_nodes")
+            .unwrap();
+        let (second, _) = discover_with_status_in(&fx.root, 0, true, Some(&mut cache));
+        assert_eq!(second[0].usage.context_hint(), Some(400));
+        // Bumping activity is the append signal: the same cache must miss,
+        // rescan the emptied store, and report the honest new measurement.
+        Connection::open(db_path(&fx.root))
+            .unwrap()
+            .execute(
+                "UPDATE sessions SET last_activity_at = last_activity_at + 1",
+                [],
+            )
+            .unwrap();
+        let (third, _) = discover_with_status_in(&fx.root, 0, true, Some(&mut cache));
+        assert_ne!(third[0].usage.context_hint(), Some(400));
     }
 
     #[test]

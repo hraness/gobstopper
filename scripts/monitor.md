@@ -43,7 +43,9 @@ remaining sessions unevaluated instead of hitting TIMEOUT, prints a
 zero with a possibly smaller plan count. Both commands also reuse the
 advisory discovery fingerprint snapshot each watcher lane leaves in
 `discovery-cache-<provider>.json` beside watch state, so an unchanged
-session file is restated rather than reparsed; a missing or corrupt
+session file is restated rather than reparsed and an unchanged Devin
+session (same activity stamp and chain head) replays its stored context
+measurement instead of re-walking the store; a missing or corrupt
 snapshot simply costs a cold rescan. Both commands use a 180-second file-recency window for JSONL
 discovery. Claude also includes older files whose bounded metadata scan finds
 a live process; Devin also includes sessions with an observed held provider

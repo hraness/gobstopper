@@ -716,7 +716,11 @@ fn discovery_cache_persists_across_processes_and_never_gates_correctness() {
     f.idle(&f.0.join("codex/sessions/rollout-fixture.jsonl"));
     let pass = || {
         let output = f.command(&["watch", "--once"]).output().unwrap();
-        assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
     };
     pass();
     let cache_path = f.0.join("data/gobstopper/discovery-cache-codex.json");
@@ -738,7 +742,9 @@ fn discovery_cache_persists_across_processes_and_never_gates_correctness() {
     // Rows stay in their own provider's lane file.
     let claude = f.0.join("data/gobstopper/discovery-cache-claude_code.json");
     if claude.exists() {
-        assert!(!fs::read_to_string(&claude).unwrap().contains("rollout-fixture"));
+        assert!(!fs::read_to_string(&claude)
+            .unwrap()
+            .contains("rollout-fixture"));
     }
 }
 
