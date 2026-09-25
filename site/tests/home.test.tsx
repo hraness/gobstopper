@@ -5,11 +5,10 @@ import Home from "../app/page";
 import Docs from "../app/docs/page";
 import BlogIndex from "../app/blog/page";
 import { publishedRelease } from "../app/publication";
-import { readmeLead } from "../app/readme.generated";
 import RootLayout from "../app/layout";
 
 const SUPPORT_URL = "https://account.hraness.com/support?product=gobstopper&amp;source=web#support";
-const SUPPORT_LABEL = "Support ongoing development of Gobstopper, earlier context compaction for coding agents.";
+const SUPPORT_LABEL = "Support ongoing development of Gobstopper, context compaction you can undo.";
 
 function countOccurrences(haystack: string, needle: string): number {
   let count = 0;
@@ -35,7 +34,7 @@ test("every public route has one optional support footer without product signup"
 test("the homepage shares the README identity and installs the guarded source build", () => {
   const html = renderToStaticMarkup(<Home />);
   expect(html.match(/<h1\b/gu)).toHaveLength(1);
-  expect(html).toContain(renderToStaticMarkup(<>{readmeLead}</>));
+  expect(html).toContain("Preview the cut, write a smaller session, and keep every original byte in a local vault you can search and restore from.");
   expect(html).toContain("cargo install --git https://github.com/hraness/gobstopper gobstopper --locked");
   expect(html).not.toContain("--tag v");
   if (publishedRelease === null) {

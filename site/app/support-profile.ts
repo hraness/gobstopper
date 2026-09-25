@@ -2,6 +2,6 @@
 export const supportProfile = {
   id: "gobstopper",
   name: "Gobstopper",
-  valueProposition: "Support ongoing development of Gobstopper, earlier context compaction for coding agents.",
+  valueProposition: "Support ongoing development of Gobstopper, context compaction you can undo.",
   updates: false,
 } as const;

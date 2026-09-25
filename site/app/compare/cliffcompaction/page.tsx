@@ -99,12 +99,12 @@ export default function CompareCliffCompaction() {
 
           <h2>What Gobstopper does</h2>
           <p>
-            Gobstopper inspects Claude Code, Codex, and Devin sessions and
-            prepares compacted transcript copies. You choose a threshold and a
-            strategy, preview the plan, and compare strategies on the same
-            frozen bytes. Before it writes a Claude Code or Codex copy, it
-            archives the source and candidate bytes in a local vault, so an
-            exact archived record can be searched and read later.
+            Gobstopper makes long Claude Code and Codex sessions smaller. You
+            choose a threshold and a strategy, preview the cut, and compare
+            strategies on the same frozen bytes. Before it writes a Claude
+            Code or Codex copy, it archives the source and candidate bytes in
+            a local vault, so an exact archived record can be searched and
+            read later.
           </p>
           <p>
             For a running session, <code>gobstopper proxy</code> listens on

@@ -1,7 +1,9 @@
 export const SITE_ORIGIN = "https://gobstopper.sh";
 export const SITE_NAME = "Gobstopper";
+export const SITE_TAGLINE = "Context compaction you can undo.";
+export const SITE_TITLE = `${SITE_NAME}: context compaction you can undo`;
 export const SITE_DESCRIPTION =
-  "Gobstopper inspects Claude Code, Codex, and Devin sessions and prepares compacted transcript copies. Source files stay unchanged.";
+  "Gobstopper makes long Claude Code and Codex sessions smaller. Preview each cut, write a compacted copy, and keep every original byte in a local vault.";
 export const GITHUB_URL = "https://github.com/hraness/gobstopper";
 export const ARCHITECTURE_URL = "https://github.com/hraness/gobstopper/blob/main/docs/design.md";
 

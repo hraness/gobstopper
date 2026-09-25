@@ -10,6 +10,7 @@ import {
   SITE_DESCRIPTION,
   SITE_NAME,
   SITE_ORIGIN,
+  SITE_TITLE,
   absoluteUrl,
   serializeJsonLd,
 } from "./_lib/site";
@@ -18,7 +19,7 @@ import "./globals.css";
 
 const initialPalette = getDesignPaletteTheme("tokyo-night", "light");
 
-const title = `${SITE_NAME}: earlier context compaction for coding agents`;
+const title = SITE_TITLE;
 const description = SITE_DESCRIPTION;
 const websiteId = `${absoluteUrl("/")}#website`;
 const applicationId = `${absoluteUrl("/")}#application`;
@@ -113,11 +114,11 @@ const structuredData = {
       operatingSystem: "macOS, Linux",
       sameAs: GITHUB_URL,
       featureList: [
-        "Codex, Claude Code, and Devin session detection",
-        "Policy-driven context compaction",
-        "Vault snapshots and undo",
-        "Provider-native and file-fork strategies",
-        "Pluggable bounded strategy plugins",
+        "Claude Code, Codex, and Devin session detection",
+        "Compaction previews at a trigger and floor you choose",
+        "Compacted Claude Code and Codex copies",
+        "Local snapshot vault with search and undo",
+        "Plugins for your own strategies",
       ],
       isPartOf: { "@id": websiteId },
     },
@@ -128,7 +129,10 @@ const structuredData = {
       codeRepository: GITHUB_URL,
       programmingLanguage: "Rust",
       runtimePlatform: "Cargo",
-      license: "https://opensource.org/license/mit",
+      license: [
+        "https://opensource.org/license/mit",
+        "https://opensource.org/license/apache-2-0",
+      ],
       targetProduct: { "@id": applicationId },
     },
   ],

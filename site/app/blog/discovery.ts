@@ -13,7 +13,7 @@ import {
 } from "@hraness/web-discovery";
 import { isArticleIndexable, renderArticleProvenanceHtml } from "@hraness/design-kit";
 
-import { SITE_DESCRIPTION, SITE_NAME, SITE_ORIGIN } from "../_lib/site";
+import { SITE_DESCRIPTION, SITE_NAME, SITE_ORIGIN, SITE_TITLE } from "../_lib/site";
 import {
   BLOG_DESCRIPTION,
   BLOG_FEED_PATH,
@@ -31,7 +31,7 @@ export const searchSite = {
   description: SITE_DESCRIPTION,
   name: SITE_NAME,
   origin: SITE_ORIGIN as `https://${string}`,
-  title: `${SITE_NAME}: earlier context compaction for coding agents`,
+  title: SITE_TITLE,
 } as const satisfies SearchSite;
 
 export const hraness: ArticleParty = { kind: "Organization", name: "Hraness" };

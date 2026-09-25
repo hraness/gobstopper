@@ -17,7 +17,6 @@ import { SiteHeader, SiteFooter } from "./_components/site-chrome";
 import { HeroField } from "./hero-field";
 import { HeroGraphic } from "./hero-graphic";
 import { publishedRelease } from "./publication";
-import { readmeLead } from "./readme.generated";
 
 
 function TopicIcon({ slug }: Readonly<{ slug: string }>) {
@@ -29,8 +28,9 @@ function TopicIcon({ slug }: Readonly<{ slug: string }>) {
 const releaseVersion = publishedRelease?.version;
 const repository = "https://github.com/hraness/gobstopper";
 
-const heading = "Prepare smaller coding-agent sessions, with a way back.";
-const summary = readmeLead;
+const heading = "Context compaction you can undo.";
+const summary =
+  "Preview the cut, write a smaller session, and keep every original byte in a local vault you can search and restore from.";
 // This published release predates both Devin support and the source-build guards.
 const releasePredatesPage = releaseVersion === "0.2.1";
 const footnote =
@@ -109,10 +109,6 @@ const questions = [
     question: "Can I run my own compaction logic?",
     answer: "Yes. A trusted `preset.command` or plugin bundle receives normalized transcript data and proposes edits. Gobstopper checks which records may change, protected output, edit combinations, size estimates, digest limits, and supported structures. Your program runs as ordinary local code. Read-only MCP inspection refuses executable strategies.",
   },
-  {
-    question: "Who made it?",
-    answer: "Ben Guo, a musician and builder, formerly a founder and engineering leader at companies including Venmo and Stripe, now building from Puerto Rico. Hraness publishes Gobstopper under your choice of the MIT or Apache-2.0 license.",
-  },
 ] as const;
 
 function withCode(text: string) {
@@ -146,17 +142,17 @@ export default function Home() {
               align="start"
               actions={[
                 { href: "#install", label: "Install Gobstopper" },
-                { href: "/docs", label: "Read the docs" },
+                { href: "/benchmarks", label: "See the benchmarks" },
               ]}
               boundary={footnote}
               className="gobstopper-marketing-hero"
-              eyebrow=""
+              eyebrow="Session compaction tool"
               frame={(
                 <MarketingProofFrame
                   className="hraness-material-pane"
                   caption="On a 333k-token Claude Code session, Claude's own autocompact cut the resume context by 82% and then said unfinished renames were done. Gobstopper's elide and compacted strategies cut about 30% and recalled the task correctly. One session, recorded on an earlier build; not a general benchmark."
                   credit="Recorded September 17, 2026 · chart is illustrative"
-                  title="Earlier compaction is a tradeoff."
+                  title="The smallest context forgot the task."
                 >
                   <HeroGraphic />
                   <pre className="transcript" tabIndex={0}><code>{`# input tokens on resume · recalled?
@@ -302,7 +298,7 @@ gobstopper watch --dry-run --once`}</code></pre>
           />
 
           <MarketingMaker
-            heading="Built by Ben Guo"
+            heading="Built by Hraness."
             headingId="maker-title"
             id="maker"
             label=""
@@ -313,9 +309,10 @@ gobstopper watch --dry-run --once`}</code></pre>
             ]}
           >
             <p>
-              Gobstopper is built by Ben Guo, a musician and builder, formerly a founder and
-              engineering leader at companies including Venmo and Stripe, now building from
-              Puerto Rico. Hraness publishes it under your choice of the MIT or Apache-2.0 license.
+              Hraness is a software studio in Puerto Rico. We build tools that give AI
+              agents memory, context, web access, and a record of their work, and we
+              make apps and sourced archives for people. Hraness publishes Gobstopper
+              under your choice of the MIT or Apache-2.0 license.
             </p>
           </MarketingMaker>
 
@@ -329,20 +326,20 @@ gobstopper watch --dry-run --once`}</code></pre>
                   {
                     name: "Ghostget",
                     href: "https://ghostget.com",
-                    role: "A fast web gateway for agents",
-                    relationship: "Ghostget shrinks each web read before it reaches the context. One measured article came to about 3,800 tokens, against 36,000 for the raw page.",
+                    role: "Named web actions for AI agents: read pages, save media, use connected accounts",
+                    relationship: "Ghostget gives the agent you already use a fixed list of reviewed web actions: read a page, save one media item, or act in a connected account. Your agent never sees your credentials and never steers a browser.",
                   },
                   {
                     name: "xcb",
                     href: "https://xcb.sh",
-                    role: "One router for your Claude, Codex, and Devin subscriptions",
-                    relationship: "xcb runs the subscriptions behind your sessions from one terminal workspace and shows the token spend on each account.",
+                    role: "Routes coding tasks across the Claude, Codex, and Devin plans you have",
+                    relationship: "xcb uses Gobstopper's elision policy to drop stale tool output from Claude Code and Codex prompts once context passes a threshold, and keeps the original output in local history. It is on by default.",
                   },
                   {
-                    name: "Aicharts",
+                    name: "AI Charts",
                     href: "https://aicharts.io",
-                    role: "AI model benchmarks and usage inspection",
-                    relationship: "Aicharts benchmarks the models your agent uses and shows what each local session cost.",
+                    role: "Model benchmark scores plotted against cost and tokens per task",
+                    relationship: "AI Charts plots published AI benchmark scores against cost and tokens per task, marking the best score at every budget. A local collector measures your own agents' token use.",
                   },
                 ],
               },
@@ -353,26 +350,26 @@ gobstopper watch --dry-run --once`}</code></pre>
                   {
                     name: "PeopleBlade",
                     href: "https://peopleblade.com",
-                    role: "A private contact book for you and your agent",
-                    relationship: "PeopleBlade gives your agent a whole contact book to work through; Gobstopper keeps that long session compact.",
+                    role: "Local personal CRM for everyone you know, built for your agent",
+                    relationship: "PeopleBlade brings your contacts from Apple Contacts, iMessage, Google Contacts, WhatsApp, LinkedIn, and more into one private book on your computer. Keep notes beside each person, and let your agent search the book from the command line.",
                   },
                   {
                     name: "Soulscrape",
                     href: "https://soulscrape.com",
-                    role: "A dated, cited dossier on a person",
-                    relationship: "Deep dossier research runs long; Gobstopper can compare smaller context candidates while retaining source bytes for inspection.",
+                    role: "Free agent skill that writes dated dossiers on people, sources cited",
+                    relationship: "Soulscrape is a free agent skill that writes a dated dossier on how a person decides, writes, argues, and changes their mind, with every claim tied to its sources. Keep it private, or publish it.",
                   },
                   {
                     name: "Textbutler",
                     href: "https://textbutler.app",
-                    role: "A personal message butler for Mac",
-                    relationship: "Textbutler studies whole conversation histories; Gobstopper can measure candidate context reduction separately from cost.",
+                    role: "AI butler for the iMessage, WhatsApp, and Beeper chats you choose",
+                    relationship: "Textbutler is an AI butler for the iMessage, WhatsApp, and Beeper chats you choose on your Mac. Turn it on for one person, and it replies as a clearly marked assistant that knows your history with them.",
                   },
                   {
                     name: "Wordcell",
                     href: "https://wordcell.io",
-                    role: "A Markdown knowledge base for agents",
-                    relationship: "Wordcell gives an agent a whole vault to traverse; Gobstopper compacts the traversal context.",
+                    role: "Markdown knowledge base that gives agents the decisions behind code",
+                    relationship: "Wordcell keeps decisions, plans, and sources as Markdown files beside your code. Coding agents find them by exact words, by meaning with an optional local model, or from the file they are about to change.",
                   },
                 ],
               },
@@ -386,12 +383,12 @@ gobstopper watch --dry-run --once`}</code></pre>
           <MarketingCallToAction
             actions={[
               { href: "#install", label: "Install Gobstopper" },
-              { href: "/docs", label: "Read the docs" },
+              { href: "/benchmarks", label: "See the benchmarks" },
             ]}
             footnote={footnote}
-            heading="Inspect the tradeoff before you resume."
+            heading="Make your next long session smaller."
             headingId="cta-title"
-            summary="Set a trigger, compare a strategy, and retain the exact source behind every prepared copy."
+            summary="Set a trigger, compare a strategy, and keep the exact source behind every prepared copy."
           />
         </MarketingPage>
       </main>

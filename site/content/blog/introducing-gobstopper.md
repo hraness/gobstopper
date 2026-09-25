@@ -1,6 +1,6 @@
-Gobstopper inspects Claude Code, Codex, and Devin sessions and prepares compacted transcript copies. It removes stale tool output by a rule you choose, and before it changes anything it stores the original transcript in a local archive. If a compaction drops something you needed, you can search the archive for it or restore the whole session.
+Gobstopper is a free, open-source command-line tool that makes long Claude Code and Codex sessions smaller. It removes stale tool output by a rule you choose, and before it changes anything it stores the original transcript in a local archive. If a compaction drops something you needed, you can search the archive for it or restore the whole session.
 
-**Status:** Latest release: {{release.version}}. That tag predates the safeguards this post describes, so install from the current source on the main branch.
+**Status:** Latest release: {{release.version}}. The proxy described on the homepage is not in a tagged release yet, so install from the current source on the main branch for the full behavior.
 
 ## The problem it solves
 
@@ -35,7 +35,7 @@ gobstopper plan <session> --trigger 100000 --floor 30000
 
 The trigger is the context size at which Gobstopper starts to act, and the floor is the size it aims for. `plan` writes nothing. When it decides not to act, `plan --json` returns a reason code such as `below_trigger` or `minimum_savings_not_met`. One code, `strategy_returned_no_plan`, means the strategy declined for a reason Gobstopper does not know.
 
-The simplest rule, `elide`, replaces stale tool outputs with a short stub, oldest first, until the estimate reaches the floor. The most recent outputs are protected; by default that is the last two. A replaced record reads like this:
+The simplest rule, `elide`, replaces stale tool outputs with a short stub, oldest first, until the estimate reaches the floor. The most recent outputs are protected; by default that is the last eight. A replaced record reads like this:
 
 ```text
 [output elided by gobstopper: 512 bytes]

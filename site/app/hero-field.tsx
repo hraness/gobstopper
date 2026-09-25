@@ -13,17 +13,17 @@ type FieldNote = {
 };
 
 const notes: FieldNote[] = [
-  { id: "claude", type: "session", title: "claude session 034…", body: "Live, provider-served. ~333k context — native compaction left it alone.", x: 12, y: 24, rotate: 1.4, width: 184 },
+  { id: "claude", type: "session", title: "claude session 034…", body: "Live, provider-served. ~333k context; native compaction left it alone.", x: 12, y: 24, rotate: 1.4, width: 184 },
   { id: "codex", type: "session", title: "codex session", body: "Idle. Its own JSONL dialect, parsed into the same record model.", x: 47, y: 10, rotate: -1.2, width: 178 },
   { id: "trigger", type: "threshold", title: "trigger 250k", body: "A plan stages below the line; a validated copy publishes on the cross.", x: 80, y: 13, rotate: 1.7, width: 182 },
   { id: "snapshot", type: "snapshot", title: "vault snap_7d3e", body: "Content-addressed. Taken before a single byte is rewritten.", x: 9, y: 56, rotate: -1.6, width: 186 },
-  { id: "elide", type: "elision", title: "elide ×43", body: "Stale tool outputs masked in place — no record deleted, linkage intact.", x: 33, y: 40, rotate: -0.8, width: 196 },
+  { id: "elide", type: "elision", title: "elide ×43", body: "Stale tool outputs stubbed in the copy; no record deleted, linkage intact.", x: 33, y: 40, rotate: -0.8, width: 196 },
   { id: "digest", type: "digest", title: "digest injected", body: "A compact state card carries the conversation forward.", x: 61, y: 49, rotate: 0.9, width: 180 },
   { id: "verify", type: "verify", title: "verify clean", body: "Parent chains, ordinals, and structure checked after every rewrite.", x: 87, y: 60, rotate: -1.1, width: 190 },
-  { id: "provider", type: "provider", title: "provider /compact", body: "Native compaction delegates session changes to the provider through its own controls.", x: 91, y: 34, rotate: 0.6, width: 188 },
+  { id: "provider", type: "provider", title: "provider /compact", body: "Provider compaction stays the provider's own control; released builds leave it off.", x: 91, y: 34, rotate: 0.6, width: 188 },
   { id: "undo", type: "undo", title: "$ gobstopper undo", body: "prepares archived content\nunder a fresh session identity", x: 17, y: 80, rotate: -2, width: 198 },
   { id: "event", type: "event", title: "compaction-events-v1", body: "Best-effort events: snapshot refs and available measurements.", x: 48, y: 84, rotate: 1.5, width: 196 },
-  { id: "strategy", type: "strategy", title: "strategy auto", body: "Picks by transcript shape — elide, structured, scored, or provider delegation.", x: 75, y: 87, rotate: -2.2, width: 196 },
+  { id: "strategy", type: "strategy", title: "strategy auto", body: "Picks by transcript shape: elide, structured, scored, or provider delegation.", x: 75, y: 87, rotate: -2.2, width: 196 },
 ];
 
 const edges = [
@@ -88,7 +88,7 @@ export function HeroField() {
           } as CSSProperties}
         >
           <span className="gob-field-note-type">{note.type}</span>
-          <h3 className="gob-field-note-title">{note.title}</h3>
+          <p className="gob-field-note-title">{note.title}</p>
           <p className="gob-field-note-body">{note.body}</p>
           {note.tags !== undefined && <div className="gob-field-note-tags">{note.tags.map((tag) => <span key={tag}>#{tag}</span>)}</div>}
         </article>

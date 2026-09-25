@@ -1,4 +1,5 @@
 export const siteDomain = "gobstopper.sh";
-export const siteTitle = "Gobstopper: earlier context compaction for coding agents";
+export const siteName = "Gobstopper";
+export const siteTitle = "Context compaction you can undo.";
 export const siteDescription =
-  "Gobstopper inspects Claude Code, Codex, and Devin sessions and prepares compacted transcript copies. Source files stay unchanged.";
+  "Gobstopper makes long Claude Code and Codex sessions smaller. Preview each cut, write a compacted copy, and keep every original byte in a local vault.";
