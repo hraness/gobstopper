@@ -70,9 +70,8 @@ export default function CompareCliffCompaction() {
             Completions dialects, covering Claude Code, Codex, opencode, Crush,
             Aider, Goose, and other agents with a configurable provider address.
             Gobstopper&apos;s file commands prepare compacted copies of saved
-            sessions that you inspect and then resume. The proxy is in the
-            current source build and not in a tagged release yet; install from
-            source to use it.
+            sessions that you inspect and then resume. The proxy ships in
+            tagged releases; the Chat Completions dialect lands in 0.4.0.
           </p>
 
           <h2>What CliffCompaction does</h2>

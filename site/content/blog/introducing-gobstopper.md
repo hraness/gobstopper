@@ -1,6 +1,6 @@
 Gobstopper is a free, open-source command-line tool that makes long Claude Code and Codex sessions smaller. It removes stale tool output by a rule you choose, and before it changes anything it stores the original transcript in a local archive. If a compaction drops something you needed, you can search the archive for it or restore the whole session.
 
-**Status:** Latest release: {{release.version}}. The proxy described on the homepage is not in a tagged release yet, so install from the current source on the main branch for the full behavior.
+**Status:** Latest release: {{release.version}}. The release includes the request proxy described on the homepage; the OpenAI Chat Completions dialect for opencode, Crush, Aider, and Goose lands in 0.4.0.
 
 ## The problem it solves
 
