@@ -1,6 +1,5 @@
-use gobstopper_adapters::{devin, vault};
+use gobstopper_adapters::vault;
 use gobstopper_core::Provider;
-use rusqlite::{params, Connection};
 use serde_json::{json, Value};
 use std::fs;
 use std::io::Write;
@@ -28,36 +27,29 @@ impl Fixture {
                 .as_nanos(),
             NEXT.fetch_add(1, Ordering::Relaxed)
         ));
-        fs::create_dir_all(root.join("devin")).unwrap();
-        let db = root.join("devin/sessions.db");
-        let conn = Connection::open(&db).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, working_directory TEXT,
-             created_at INTEGER, last_activity_at INTEGER, main_chain_id INTEGER);
-             CREATE TABLE message_nodes (session_id TEXT, node_id INTEGER, parent_node_id INTEGER,
-             chat_message TEXT, created_at INTEGER, metadata TEXT);",
-        )
-        .unwrap();
+        let sessions = root.join("claude/projects/synthetic");
+        fs::create_dir_all(&sessions).unwrap();
         for session in [SELECTED, OTHER] {
-            conn.execute(
-                "INSERT INTO sessions VALUES (?1, ?1, '/synthetic', 1, 1, 1)",
-                [session],
-            )
-            .unwrap();
-            conn.execute(
-                "INSERT INTO message_nodes VALUES (?1, 1, NULL, ?2, 1, NULL)",
-                params![
-                    session,
-                    json!({"role":"user", "content":"synthetic"}).to_string()
-                ],
+            fs::write(
+                sessions.join(format!("{session}.jsonl")),
+                format!(
+                    "{}\n",
+                    json!({"type":"user","sessionId":session,"uuid":"u1",
+                        "message":{"role":"user","content":"synthetic"}})
+                ),
             )
             .unwrap();
         }
-        drop(conn);
         Self {
-            original: fs::read(&db).unwrap(),
+            original: fs::read(sessions.join(format!("{SELECTED}.jsonl"))).unwrap(),
             root,
         }
+    }
+
+    fn selected(&self) -> PathBuf {
+        self.root
+            .join("claude/projects/synthetic")
+            .join(format!("{SELECTED}.jsonl"))
     }
 
     fn command(&self) -> Command {
@@ -71,8 +63,6 @@ impl Fixture {
             .arg(self.root.join("codex"))
             .arg("--claude-home")
             .arg(self.root.join("claude"))
-            .arg("--devin-home")
-            .arg(self.root.join("devin"))
             .env("HOME", self.root.join("home"))
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_DATA_HOME", self.root.join("data"));
@@ -104,10 +94,7 @@ impl Fixture {
     }
 
     fn assert_unchanged(&self) {
-        assert_eq!(
-            fs::read(self.root.join("devin/sessions.db")).unwrap(),
-            self.original
-        );
+        assert_eq!(fs::read(self.selected()).unwrap(), self.original);
         assert!(!self.root.join("data/gobstopper/events.jsonl").exists());
     }
 }
@@ -141,22 +128,40 @@ fn content(response: &Value) -> Value {
 fn show_and_recall_bind_provider_session_and_store_after_prefix_resolution() {
     let fixture = Fixture::new();
     let root = fixture.root.join("data/gobstopper/vault");
-    let db = devin::db_path(&fixture.root.join("devin"))
-        .canonicalize()
-        .unwrap();
-    let foreign = fixture.root.join("foreign/sessions.db");
+    let selected_path = fixture.selected().canonicalize().unwrap();
+    let foreign = fixture.root.join("foreign/transcript.jsonl");
     let mut selected = String::new();
     for (provider, session, path, summary) in [
-        (Provider::Devin, SELECTED, &db, "SELECTED_SUMMARY"),
         (
-            Provider::Devin,
+            Provider::ClaudeCode,
+            SELECTED,
+            &selected_path,
+            "SELECTED_SUMMARY",
+        ),
+        (
+            Provider::ClaudeCode,
             "selected-session-archived",
-            &db,
+            &selected_path,
             "ARCHIVED_SECRET_SENTINEL",
         ),
-        (Provider::Codex, SELECTED, &db, "PROVIDER_SECRET_SENTINEL"),
-        (Provider::Devin, SELECTED, &foreign, "STORE_SECRET_SENTINEL"),
-        (Provider::Devin, OTHER, &db, "UNRELATED_SECRET_SENTINEL"),
+        (
+            Provider::Codex,
+            SELECTED,
+            &selected_path,
+            "PROVIDER_SECRET_SENTINEL",
+        ),
+        (
+            Provider::ClaudeCode,
+            SELECTED,
+            &foreign,
+            "STORE_SECRET_SENTINEL",
+        ),
+        (
+            Provider::ClaudeCode,
+            OTHER,
+            &selected_path,
+            "UNRELATED_SECRET_SENTINEL",
+        ),
     ] {
         let bytes = format!(
             "{}\n",
@@ -269,7 +274,7 @@ impl Drop for Fixture {
 }
 
 #[test]
-fn mcp_verifies_the_selected_devin_export_without_writing_state() {
+fn mcp_verifies_the_selected_transcript_without_writing_state() {
     let fixture = Fixture::new();
     let response = fixture.mcp("verify");
     assert_eq!(response["session_id"], SELECTED);
@@ -277,22 +282,18 @@ fn mcp_verifies_the_selected_devin_export_without_writing_state() {
     assert_eq!(response["findings"], json!([]));
     fixture.assert_unchanged();
     assert!(!fixture.root.join("data").exists());
-    assert!(!fixture.root.join("devin/session_locks").exists());
 }
 
 #[test]
-fn history_and_vault_keep_devin_sessions_in_the_same_database_separate() {
+fn history_and_vault_keep_same_provider_sessions_separate() {
     let fixture = Fixture::new();
     let root = fixture.root.join("data/gobstopper/vault");
     for session in [SELECTED, OTHER] {
-        vault::snapshot(
-            &devin::db_path(&fixture.root.join("devin")),
-            Provider::Devin,
-            session,
-            Some("fixture"),
-            &root,
-        )
-        .unwrap();
+        let path = fixture
+            .root
+            .join("claude/projects/synthetic")
+            .join(format!("{session}.jsonl"));
+        vault::snapshot(&path, Provider::ClaudeCode, session, Some("fixture"), &root).unwrap();
     }
     let history = fixture.mcp("history");
     assert_eq!(history["snapshots"].as_array().unwrap().len(), 1);

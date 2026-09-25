@@ -135,9 +135,6 @@ pub fn history_from_file(
     match provider {
         gobstopper_core::Provider::ClaudeCode => Ok((Dialect::Anthropic, claude_history(&raw))),
         gobstopper_core::Provider::Codex => Ok((Dialect::Responses, codex_history(&raw))),
-        gobstopper_core::Provider::Devin => anyhow::bail!(
-            "Devin sends its requests through its own service, so there is no request stream to replay or proxy"
-        ),
     }
 }
 
@@ -174,6 +171,10 @@ pub fn replay(
         let fixed_key = match dialect {
             Dialect::Anthropic => "system",
             Dialect::Responses => "instructions",
+            // Chat Completions has no top-level system field; the filler
+            // stands in for tool definitions and framing bytes a replay
+            // cannot see.
+            Dialect::ChatCompletions => "tools",
         };
         body.insert(fixed_key.into(), json!(filler));
         body.insert(
@@ -301,6 +302,49 @@ pub fn pairing_intact(messages: &[Value], dialect: Dialect) -> bool {
                         .is_none_or(|id| answered.contains(id))
             })
         }
+        Dialect::ChatCompletions => {
+            // A `tool` message must directly follow the assistant message
+            // whose `tool_calls` it answers; every call except those in the
+            // final model turn must be answered by the tool run after it.
+            let mut pending: HashSet<&str> = HashSet::new();
+            for message in messages {
+                let role = message.get("role").and_then(Value::as_str).unwrap_or("");
+                match role {
+                    "assistant" => {
+                        if !pending.is_empty() {
+                            return false;
+                        }
+                        pending = message
+                            .get("tool_calls")
+                            .and_then(Value::as_array)
+                            .map(|calls| {
+                                calls
+                                    .iter()
+                                    .filter_map(|call| call.get("id").and_then(Value::as_str))
+                                    .collect()
+                            })
+                            .unwrap_or_default();
+                    }
+                    "tool" => {
+                        let Some(id) = message.get("tool_call_id").and_then(Value::as_str) else {
+                            return false;
+                        };
+                        if pending.is_empty() || !pending.remove(id) {
+                            return false;
+                        }
+                    }
+                    _ => {
+                        if !pending.is_empty() {
+                            return false;
+                        }
+                    }
+                }
+            }
+            // Reaching the end means every tool message answered its call
+            // and no earlier assistant left calls open; calls still pending
+            // at the end are the live edge of a recording.
+            true
+        }
     }
 }
 
@@ -368,5 +412,54 @@ mod tests {
             json!({"type": "message", "role": "user", "content": "next"}),
         ];
         assert!(!pairing_intact(&responses, Dialect::Responses));
+        // Chat Completions: the tool run must answer its own call ids.
+        let call = json!({"id": "call_1", "type": "function",
+            "function": {"name": "bash", "arguments": "{}"}});
+        let paired = vec![
+            json!({"role": "user", "content": "task"}),
+            json!({"role": "assistant", "content": null, "tool_calls": [call]}),
+            json!({"role": "tool", "tool_call_id": "call_1", "content": "ok"}),
+        ];
+        assert!(pairing_intact(&paired, Dialect::ChatCompletions));
+        let mut orphan = paired.clone();
+        orphan[2]["tool_call_id"] = json!("other");
+        assert!(!pairing_intact(&orphan, Dialect::ChatCompletions));
+        let unanswered = vec![
+            json!({"role": "user", "content": "task"}),
+            json!({"role": "assistant", "content": null, "tool_calls": [call]}),
+            json!({"role": "user", "content": "next"}),
+        ];
+        assert!(!pairing_intact(&unanswered, Dialect::ChatCompletions));
+        // A trailing assistant call is the live edge, not a violation.
+        let live = vec![
+            json!({"role": "user", "content": "task"}),
+            json!({"role": "assistant", "content": null, "tool_calls": [call]}),
+        ];
+        assert!(pairing_intact(&live, Dialect::ChatCompletions));
+    }
+
+    #[test]
+    fn chat_replay_keeps_tool_calls_paired() {
+        let mut history = vec![
+            json!({"role": "system", "content": "you are an agent"}),
+            json!({"role": "user", "content": "fix the bug"}),
+        ];
+        for i in 0..20 {
+            history.push(json!({"role": "assistant", "content": format!("step {i}"),
+                "tool_calls": [{"id": format!("call_{i}"), "type": "function",
+                    "function": {"name": "bash", "arguments": format!("{{\"cmd\":\"s{i}\"}}")}}]}));
+            history.push(json!({"role": "tool", "tool_call_id": format!("call_{i}"),
+                "content": "R".repeat(3000)}));
+        }
+        let cfg = CliffConfig {
+            threshold_tokens: 3_000,
+            keep_recent: 1,
+            ..CliffConfig::default()
+        };
+        let report = replay(&history, Dialect::ChatCompletions, cfg, 200);
+        assert!(report.compacted >= 2);
+        assert_eq!(report.pairing_violations, 0);
+        assert_eq!(report.source_pairing_violations, 0);
+        assert!(report.total_est_tokens_out < report.total_est_tokens_in);
     }
 }

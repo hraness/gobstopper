@@ -53,15 +53,10 @@ pub struct PolicyPatch {
     /// Legacy compatibility flag. Direct transcript replacement remains
     /// unavailable until compatible lifetime provider custody is qualified.
     pub auto_apply_inplace: Option<bool>,
-    /// Let watch ask a supported Codex, Claude or Devin provider to compact
+    /// Let watch ask a supported Codex or Claude provider to compact
     /// a closed session natively. Default off. No native outcome falls back
     /// to direct surgery; ownership still requires provider qualification.
     pub auto_compact_closed: Option<bool>,
-    /// Devin only: deadline in seconds for one `devin acp` compact
-    /// (initialize + session/load replay + /compact + async status).
-    /// `session/load` streams the whole node history — ~25k nodes can
-    /// exceed 10 minutes — so the default is generous. Default 1800.
-    pub acp_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -138,9 +133,9 @@ pub struct Config {
     pub sessions: BTreeMap<String, PolicyPatch>,
     pub discovery: DiscoveryConfig,
     /// Rollout gates for the prompt-policy advisory, keyed by provider id
-    /// (`codex`, `claude_code`, `devin`) with a 0-100 percentage. Sessions
-    /// are bucketed deterministically by id: `devin = 50` shows the
-    /// compaction advisory to a stable half of Devin sessions; the other
+    /// (`codex`, `claude_code`) with a 0-100 percentage. Sessions
+    /// are bucketed deterministically by id: `codex = 50` shows the
+    /// compaction advisory to a stable half of sessions; the other
     /// half is the control cohort. Absent or 100 = always advise.
     pub rollout: BTreeMap<String, u8>,
 }
@@ -186,10 +181,13 @@ pub fn parse(text: &str) -> anyhow::Result<Config> {
     let config: Config = toml::from_str(text)
         .map_err(|_| anyhow::anyhow!("invalid configuration syntax, field or type"))?;
     for key in config.provider.keys().chain(config.rollout.keys()) {
-        if !matches!(key.as_str(), "codex" | "claude_code" | "devin") {
+        if key == "devin" {
             anyhow::bail!(
-                "unknown provider configuration key; expected codex, claude_code, or devin"
+                "Devin support was removed; delete the [provider.devin] or rollout entry"
             );
+        }
+        if !matches!(key.as_str(), "codex" | "claude_code") {
+            anyhow::bail!("unknown provider configuration key; expected codex or claude_code");
         }
     }
     if config.rollout.values().any(|pct| *pct > 100) {
@@ -205,14 +203,10 @@ pub struct Resolved {
     pub command: Option<String>,
     pub trusted_legacy_command: bool,
     pub plugin: Option<PluginSelection>,
-    /// See `PolicyPatch::auto_apply_store`.
-    pub auto_apply_store: bool,
     /// See `PolicyPatch::auto_apply_inplace`.
     pub auto_apply_inplace: bool,
     /// See `PolicyPatch::auto_compact_closed`.
     pub auto_compact_closed: bool,
-    /// See `PolicyPatch::acp_timeout_secs`.
-    pub acp_timeout_secs: u64,
 }
 
 impl Resolved {
@@ -245,7 +239,7 @@ impl Config {
         preset: Option<&str>,
         strategy_flag: Option<&str>,
     ) -> Result<Resolved, anyhow::Error> {
-        if !matches!(provider_id, "codex" | "claude_code" | "devin") {
+        if !matches!(provider_id, "codex" | "claude_code") {
             anyhow::bail!("unknown provider");
         }
         let mut policy = PolicyConfig::default();
@@ -253,10 +247,8 @@ impl Config {
         let mut command = None;
         let mut plugin = None;
         let mut trusted_legacy_command = false;
-        let mut auto_apply_store = false;
         let mut auto_apply_inplace = false;
         let mut auto_compact_closed = false;
-        let mut acp_timeout_secs = 1800_u64;
         let preset_patch = preset
             .map(|name| {
                 self.presets
@@ -292,17 +284,12 @@ impl Config {
             if let Some(value) = patch.trusted_legacy_command {
                 trusted_legacy_command = value;
             }
-            if let Some(value) = patch.auto_apply_store {
-                auto_apply_store = value;
-            }
+            let _ = patch.auto_apply_store;
             if let Some(value) = patch.auto_apply_inplace {
                 auto_apply_inplace = value;
             }
             if let Some(value) = patch.auto_compact_closed {
                 auto_compact_closed = value;
-            }
-            if let Some(value) = patch.acp_timeout_secs {
-                acp_timeout_secs = value.clamp(60, 7200);
             }
         }
         if let Some(flag) = strategy_flag {
@@ -336,10 +323,8 @@ impl Config {
             command,
             trusted_legacy_command,
             plugin,
-            auto_apply_store,
             auto_apply_inplace,
             auto_compact_closed,
-            acp_timeout_secs,
         })
     }
 }
@@ -386,10 +371,10 @@ mod tests {
 
     #[test]
     fn rollout_percentages_are_validated() {
-        let cfg = parse("[rollout]\ndevin = 50\nclaude_code = 0").unwrap();
-        assert_eq!(cfg.rollout["devin"], 50);
+        let cfg = parse("[rollout]\ncodex = 50\nclaude_code = 0").unwrap();
+        assert_eq!(cfg.rollout["codex"], 50);
         assert_eq!(cfg.rollout["claude_code"], 0);
-        assert!(parse("[rollout]\ndevin = 101").is_err());
+        assert!(parse("[rollout]\ncodex = 101").is_err());
         assert!(parse("[rollout]\nunknown = 50").is_err());
     }
 
@@ -406,9 +391,9 @@ mod tests {
         assert!(cfg
             .resolve(Provider::Codex, "s", Some("unknown"), None)
             .is_err());
-        let cfg = parse("[provider.devin]\ntrigger_tokens = 90000").unwrap();
+        let cfg = parse("[provider.claude_code]\ntrigger_tokens = 90000").unwrap();
         assert_eq!(
-            cfg.resolve_provider("devin", "", None, None)
+            cfg.resolve_provider("claude_code", "", None, None)
                 .unwrap()
                 .policy
                 .trigger_tokens,
@@ -510,7 +495,7 @@ mod tests {
         assert!(resolved.auto_compact_closed);
         // Other providers don't inherit the claude_code section.
         assert!(
-            !cfg.resolve(Provider::Devin, "s", None, None)
+            !cfg.resolve(Provider::Codex, "s", None, None)
                 .unwrap()
                 .auto_compact_closed
         );

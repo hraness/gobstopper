@@ -32,7 +32,7 @@ Production Rust [Kani harnesses](../../verify/core/README.md) check selected sca
 admission, arithmetic and usage kernels over their declared numeric domains, plus
 explicitly bounded index/edit sequences. [Lean laws](../../verify/transcript/README.md)
 prove structural list properties for arbitrary finite lists; independent emitted
-vectors test finite correspondence with the actual three Rust dialect adapters.
+vectors test finite correspondence with the actual two Rust dialect adapters.
 Neither is a theorem about all Rust parsing or all future task answers.
 
 The [vault/publication](../../verify/vault/README.md) and

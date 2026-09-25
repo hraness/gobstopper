@@ -120,8 +120,9 @@ pub struct VaultEntry {
     pub path: PathBuf,
     /// Provider session/thread id.
     pub session_id: String,
-    /// Provider that owns the transcript.
-    pub provider: Provider,
+    /// Provider label recorded at snapshot time. Legacy rows may name
+    /// providers no longer supported; resolve via `Provider`.
+    pub provider: String,
     /// Byte length of the snapshotted content.
     pub bytes: u64,
     /// Strategy that produced the post-snapshot edit, if known.
@@ -366,22 +367,11 @@ pub fn snapshot(
     root: &Path,
 ) -> anyhow::Result<VaultEntry> {
     let path = path.canonicalize()?;
-    // Devin's unit of record is the session, not the shared WAL store: a
-    // raw store copy tears mid-checkpoint and doesn't scale (the store is
-    // shared and unbounded), while `restore_store` expects the canonical
-    // export. Snapshot the session's export, exported under one read
-    // transaction so the image is consistent.
-    if provider == Provider::Devin && crate::devin::is_store_path(&path) {
-        let data = crate::devin::export_bytes(&path, session_id)?;
-        return snapshot_data(&data, &path, provider, session_id, strategy, root);
-    }
     let data = crate::transaction::read(&path)?;
     snapshot_data(&data, &path, provider, session_id, strategy, root)
 }
 
-/// Snapshot caller-supplied bytes under `path`'s identity — for providers
-/// whose unit of record is not the file on disk (Devin's session export
-/// rather than the shared `sessions.db`).
+/// Snapshot caller-supplied bytes under `path`'s identity.
 pub fn snapshot_data(
     data: &[u8],
     path: &Path,
@@ -416,7 +406,7 @@ pub fn snapshot_data(
         sha256: manifest_sha,
         path,
         session_id: session_id.to_string(),
-        provider,
+        provider: provider.as_str().to_string(),
         bytes: data.len() as u64,
         record_count: record_count as u64,
         source_sha256,
@@ -874,7 +864,7 @@ pub fn prune(root: &Path, keep: usize, dry_run: bool) -> anyhow::Result<PruneRep
     for (i, entry) in entries.iter().enumerate() {
         groups
             .entry((
-                entry.provider.as_str().into(),
+                entry.provider.clone(),
                 entry.path.clone(),
                 entry.session_id.clone(),
             ))
@@ -1201,7 +1191,7 @@ pub struct DiffSummary {
 pub struct RecallDigest {
     pub snapshot_sha: String,
     pub ts: u64,
-    pub provider: Provider,
+    pub provider: String,
     pub session_id: String,
     pub record_index: usize,
     /// Query-relevance score: higher means more keyword matches.
@@ -1287,7 +1277,7 @@ fn recall_entries_locked(
             out.push(RecallDigest {
                 snapshot_sha: entry.sha256.clone(),
                 ts: entry.ts,
-                provider: entry.provider,
+                provider: entry.provider.clone(),
                 session_id: entry.session_id.clone(),
                 record_index: idx,
                 score,
@@ -1497,6 +1487,31 @@ mod tests {
         assert_eq!(fs::read_dir(chunks_dir(&root)).unwrap().count(), 1);
         assert_eq!(fs::read_dir(manifests_dir(&root)).unwrap().count(), 1);
         assert_eq!(list(&root).unwrap().len(), 2);
+    }
+
+    #[test]
+    fn legacy_provider_labels_in_index_stay_readable() {
+        let dir = TestDir::new();
+        let root = dir.0.join("vault");
+        let src = dir.0.join("s.jsonl");
+        fs::write(&src, b"legacy bytes").unwrap();
+        snapshot(&src, Provider::Codex, "s", None, &root).unwrap();
+
+        // An index row written when a now-removed provider was supported must
+        // not make the vault unreadable: the label is provenance, not a
+        // capability. Rewrite the row's provider field to a retired name.
+        let index = index_path(&root);
+        let line = fs::read_to_string(&index).unwrap();
+        let legacy = line.replace("\"provider\":\"codex\"", "\"provider\":\"devin\"");
+        assert_ne!(legacy, line);
+        fs::write(&index, &legacy).unwrap();
+
+        let entries = list(&root).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].provider, "devin");
+        // Recovery bytes remain reachable through the object store.
+        let bytes = read_object(&entries[0].sha256, &root).unwrap();
+        assert_eq!(bytes, b"legacy bytes");
     }
 
     #[test]

@@ -52,7 +52,7 @@ def check_corpus():
                 key = component.replace("~1", "/").replace("~0", "~")
                 value = value[int(key)] if isinstance(value, list) else value[key]
             require(isinstance(value, str) and isinstance(change["value"], str))
-    require(providers == {"codex", "claude-code", "devin"})
+    require(providers == {"codex", "claude-code"})
     require(seen == {path.name for path in CORPUS.glob("*.jsonl")})
     print(f"frozen corpus PASS fixtures={len(seen)} provider_qualification=none", flush=True)
 

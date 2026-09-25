@@ -9,11 +9,6 @@ pub enum Provider {
     Codex,
     /// Anthropic Claude Code (`~/.claude/projects/*/*.jsonl`).
     ClaudeCode,
-    /// Cognition Devin (`$DEVIN_DATA_DIR/sessions.db`, default
-    /// `~/.local/share/devin/cli/sessions.db`). The store is SQLite;
-    /// `SessionHandle::path` carries the database path and `session_id`
-    /// selects the row set.
-    Devin,
 }
 
 impl Provider {
@@ -21,7 +16,6 @@ impl Provider {
         match self {
             Provider::Codex => "codex",
             Provider::ClaudeCode => "claude_code",
-            Provider::Devin => "devin",
         }
     }
 }

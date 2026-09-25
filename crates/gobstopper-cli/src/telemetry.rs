@@ -54,7 +54,7 @@ mod tests {
 
     fn event() -> CompactionEvent {
         CompactionEvent::new(
-            Provider::Devin,
+            Provider::Codex,
             "session",
             "watch-apply",
             "provider_compact",
@@ -71,14 +71,14 @@ mod tests {
     #[test]
     fn provenance_records_actual_gate_and_frozen_configuration() {
         let handle = SessionHandle {
-            provider: Provider::Devin,
+            provider: Provider::Codex,
             session_id: "session".into(),
             path: std::env::current_exe().unwrap(),
             cwd: None,
             age_secs: 0,
         };
         let mut config = Config::default();
-        config.rollout.insert("devin".into(), 0);
+        config.rollout.insert("codex".into(), 0);
         let mut control = event();
         EventContext::new(&config, true).annotate(&mut control, &handle);
         assert_eq!(control.decision_cohort, Some(Cohort::Control));
@@ -93,7 +93,7 @@ mod tests {
         assert_eq!(manual.decision_cohort, Some(Cohort::Ungated));
         assert_eq!(manual.rollout_percent, None);
         assert_eq!(manual.config_sha256, control.config_sha256);
-        config.rollout.insert("devin".into(), 100);
+        config.rollout.insert("codex".into(), 100);
         let mut treatment = event();
         EventContext::new(&config, true).annotate(&mut treatment, &handle);
         assert_eq!(treatment.decision_cohort, Some(Cohort::Treatment));

@@ -12,22 +12,10 @@
       "boundary": "Direct replacement disabled; frozen input, exact candidate and fresh no-clobber identity are separate objects."
     },
     {
-      "id": "provider_store",
-      "meaning": "Devin SQLite rows, active graph and provider metadata",
-      "owner": "provider; Gobstopper read-only export",
-      "boundary": "Direct Devin apply/restore disabled; SQL transaction alone does not exclude provider memory."
-    },
-    {
       "id": "effective_context",
       "meaning": "Active provider projection of source records",
       "owner": "provider dialect adapter",
       "boundary": "Derived view; archival bytes and reported context occupancy are different quantities."
-    },
-    {
-      "id": "export",
-      "meaning": "Canonical per-session detached JSONL export",
-      "owner": "adapters::devin",
-      "boundary": "Export is not a database backup and does not imply provider admission."
     },
     {
       "id": "provider_memory",
@@ -385,8 +373,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-25-core-r12.json",
-        "sha256": "9574e69948d67eb95205c52404e59bdfb2dcefcdc007612bdedabe3d28231708"
+        "path": "docs/assurance/receipts/2026-09-25-core-r17.json",
+        "sha256": "6267057ad32438f63fe5983f4c51846cc4e1d352f2966ebd069f63b3d335ad1c"
       }
     },
     {
@@ -406,8 +394,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-24-watch.json",
-        "sha256": "263e54a8e4305494f40c33160be933f25b5370b06c2e5fb1e52957be2253248f"
+        "path": "docs/assurance/receipts/2026-09-25-watch-r17.json",
+        "sha256": "11da14174664ffc6d8ef8802b73edbca1e6b04e245177e454c3599ca72ce948f"
       }
     },
     {
@@ -427,8 +415,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-24-vault.json",
-        "sha256": "4a49b6d2bdd2792ef897ebbea53526f584f4e3ecefbed100dd4dbdce1ad73e02"
+        "path": "docs/assurance/receipts/2026-09-25-vault-r17.json",
+        "sha256": "fe026742351cb046c7d57600e3bfeadf54e5aac487b306dedda42c244401cdbb"
       }
     },
     {
@@ -448,8 +436,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-25-transcript-r12.json",
-        "sha256": "08f89ed270647e30f5e58548fff304247a81cc8f5cc3f79e1e58c8167bdf3398"
+        "path": "docs/assurance/receipts/2026-09-25-transcript-r17.json",
+        "sha256": "443c65c26a45aa265b3309dcb9af619407ce411bbf1c67ed2cf36fc7f036cb2c"
       }
     },
     {
@@ -469,8 +457,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-25-stress-r12.json",
-        "sha256": "3e391a9b816d3bb41f88e261e44d70e24e6066c736ebd8d507a2c9d2d2407a61"
+        "path": "docs/assurance/receipts/2026-09-25-stress-r17.json",
+        "sha256": "7ada5dd2a12cdf50e287b7f650c158d1140a3a52219773880752cc9936359e17"
       }
     }
   ],
@@ -978,9 +966,6 @@
         },
         {
           "path": "crates/gobstopper-adapters/src/claude.rs"
-        },
-        {
-          "path": "crates/gobstopper-adapters/src/devin.rs"
         }
       ],
       "status": "source_reviewed",
@@ -1098,35 +1083,6 @@
       "next_gate": "C15"
     },
     {
-      "name": "Devin SQLite mutation/restore",
-      "owner": "adapters",
-      "invariants": [
-        "OWN-1",
-        "ID-1",
-        "REC-2"
-      ],
-      "source": [
-        {
-          "path": "crates/gobstopper-adapters/src/devin.rs"
-        }
-      ],
-      "status": "source_reviewed",
-      "evidence": [
-        "E-FOUNDATION-SOURCE",
-        "E-TEST-DEFINITIONS"
-      ],
-      "assumptions": [
-        "A-OS",
-        "A-RECEIPT",
-        "A-PROVIDER"
-      ],
-      "bounds": "Direct store writes and restore refuse before effects; canonical export and pure byte transformation remain available.",
-      "exclusions": [
-        "No qualified direct mutation custody exists; disabled is not a proof of hypothetical store mutation."
-      ],
-      "next_gate": "C15"
-    },
-    {
       "name": "Native compaction and watch state",
       "owner": "CLI/native adapters",
       "invariants": [
@@ -1139,9 +1095,6 @@
       "source": [
         {
           "path": "crates/gobstopper-cli/src/main.rs"
-        },
-        {
-          "path": "crates/gobstopper-adapters/src/devin.rs"
         },
         {
           "path": "crates/gobstopper-adapters/src/claude.rs"
@@ -1442,7 +1395,7 @@
           "anchor": "fn reconstruct_manifest"
         }
       ],
-      "read_write_behavior": "Version 3 chunk reconstruction checks hashes/size/source hash; unsupported numbered manifest versions refuse. Index optional fields default for old records. Raw Devin SQLite objects remain archived but replay refuses them; replay requires a canonical single-session export and does not materialize a raw store.",
+      "read_write_behavior": "Version 3 chunk reconstruction checks hashes/size/source hash; unsupported numbered manifest versions refuse. Index optional fields default for old records. Non-transcript archive objects remain readable as bytes but are refused as replay inputs and are never materialized into shared temporary filenames.",
       "upgrade_downgrade": "Manifest digest differs from reconstructed source digest. Older binaries may not read v3; preserve old artifact/state, never down-convert by overwriting originals.",
       "next_gate": "C15"
     },

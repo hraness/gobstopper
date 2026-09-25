@@ -14,7 +14,7 @@ Gobstopper treats compaction as an edit you can inspect and undo. A rule decides
 
 Gobstopper is for developers who run long Claude Code or Codex sessions and want a smaller context without silently losing the details the next turn needs. It also suits people who want to measure that tradeoff on their own sessions before trusting any compaction method.
 
-Use something else if you want a running session's context shrunk in place. A live session's context belongs to the provider process that loaded it, and Gobstopper does not reach into it. For that, use the provider's own `/compact`; Gobstopper can tell you when a session has crossed your threshold. Devin sessions are supported for inspection and evaluation of an exported copy, not for writing.
+Use something else if you want a running session's context shrunk in place. A live session's context belongs to the provider process that loaded it, and Gobstopper does not reach into it. For that, use the provider's own `/compact`; Gobstopper can tell you when a session has crossed your threshold.
 
 If you use xcb, it already applies Gobstopper's elision policy to drop stale tool output from Claude Code and Codex prompts once context passes a threshold, and it keeps the original output in local history. That plugin is on by default, and you can turn it off.
 

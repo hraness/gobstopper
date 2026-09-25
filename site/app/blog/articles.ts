@@ -102,7 +102,7 @@ const proofs: BlogPost = {
     href: "/blog/proofs-for-the-admission-math",
     lifecycle: "indexable",
     readerJob: "Find out which parts of Gobstopper's compaction logic are proved, with which tools, and what the proofs leave out.",
-    nonObviousAnswer: "The proofs cover edit-plan limits, token-estimate arithmetic and structural masking laws, not the context budget or recovery of the original transcript; a Rust test replays the Lean cases through the shipped Codex, Claude Code and Devin code paths, and planted bugs show each check can fail.",
+    nonObviousAnswer: "The proofs cover edit-plan limits, token-estimate arithmetic and structural masking laws, not the context budget or recovery of the original transcript; a Rust test replays the Lean cases through the shipped Codex and Claude Code code paths, and planted bugs show each check can fail.",
     originalContribution: "Shows the real Kani harness and Lean theorem statements from the repository, lists the laws in plain words, and states the fixed sizes, trusted components, and correspondence coverage the proofs leave out.",
     hostFit: "A product-specific technique post about Gobstopper's own proofs, on Gobstopper's host.",
     nearestUrls: [
@@ -115,7 +115,7 @@ const proofs: BlogPost = {
       source("Kani scope, production callers, planted boundary bug and tool versions", repo("verify/core/README.md")),
       source("Lean transcript model and its 27 theorems", repo("verify/transcript/Transcript.lean")),
       source("Lean scope, Rust correspondence cases and planted bugs", repo("verify/transcript/README.md")),
-      source("Rust test that replays the Lean cases on synthetic Codex, Claude Code and Devin transcripts", repo("crates/gobstopper-adapters/tests/lean_correspondence.rs")),
+      source("Rust test that replays the Lean cases on synthetic Codex and Claude Code transcripts", repo("crates/gobstopper-adapters/tests/lean_correspondence.rs")),
       source("Assurance ledger: scope, limits and exclusions for the core and transcript checks", repo("docs/assurance/ledger.json")),
       source("Claims register: status bounded_check for CLAIM-CORE and CLAIM-TRANSCRIPT", repo("docs/assurance/claims.json")),
       source("Passing Kani run record, 2026-09-24", repo("docs/assurance/receipts/2026-09-24-core.json")),

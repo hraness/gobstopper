@@ -353,19 +353,14 @@ pub(crate) fn read_excerpts(
     if wanted.is_empty() || item_bytes == 0 || total_bytes == 0 {
         return Ok(Vec::new());
     }
-    use gobstopper_adapters::{claude, codex, devin, transaction};
+    use gobstopper_adapters::{claude, codex, transaction};
     use gobstopper_core::Provider;
     let handle = transcript.session.clone();
-    let bytes = match handle.provider {
-        Provider::Devin => devin::export_bytes(&handle.path, &handle.session_id)
-            .map_err(|_| anyhow::anyhow!("excerpt_source_unavailable"))?,
-        _ => transaction::read(&handle.path)
-            .map_err(|_| anyhow::anyhow!("excerpt_source_unavailable"))?,
-    };
+    let bytes = transaction::read(&handle.path)
+        .map_err(|_| anyhow::anyhow!("excerpt_source_unavailable"))?;
     let current = match handle.provider {
         Provider::Codex => codex::load_bytes(handle, &bytes),
         Provider::ClaudeCode => claude::load_bytes(handle, &bytes),
-        Provider::Devin => devin::load_bytes(handle, &bytes),
     }
     .map_err(|_| anyhow::anyhow!("excerpt_source_invalid"))?;
     anyhow::ensure!(

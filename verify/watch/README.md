@@ -77,7 +77,7 @@ nonzero exit is **not** an accepted counterexample.
 | Target and immutable event binding | `Target`, `Record`, `read_records`: canonical provider/home/source/session, unique operation digest, binary/source/snapshot/policy digests and protocol contract |
 | `RetainPin`, `PersistPrepared` | `Operation::prepare` calls `vault::retain_operation_snapshot` before durable intent publication |
 | `PersistDispatched`, then `Send` | `Operation::dispatch` must succeed before a native adapter is called; failed intent/dispatch persistence admits no call |
-| `Terminal`, `Ack` | Protocol-specific bounded adapters in `main.rs`, `claude.rs`, `devin.rs`; actual session/turn/item checks or explicitly documented weaker correlation assumptions |
+| `Terminal`, `Ack` | Protocol-specific bounded adapters in `main.rs`, `claude.rs`; actual session/turn/item checks or explicitly documented weaker correlation assumptions |
 | `ObserveTerminal`, `UnobservedPostState`, `Uncertain` | Exact-target post-state observation and `Operation::finish`; unknown cannot be labelled applied or credited as measured savings |
 | `ExplicitReconcile` | `can_reconcile`, `reconcile`, `read_records`: only retained matching Codex session/turn/item evidence can append `reconciled` |
 | `FreshAllowed`, `NoUnresolvedReplay` | Both pending-work admission and journal validation must block unresolved work independently of watch cooldown/generation |

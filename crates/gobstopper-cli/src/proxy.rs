@@ -137,7 +137,7 @@ pub struct ProxyOpts {
     /// Upstream for Anthropic requests (Claude Code).
     #[arg(long, default_value = "https://api.anthropic.com")]
     anthropic_upstream: String,
-    /// Upstream for OpenAI API requests (`/v1/...`).
+    /// Upstream for OpenAI API requests (`/v1/...`, `.../chat/completions`).
     #[arg(long, default_value = "https://api.openai.com")]
     openai_upstream: String,
     /// Upstream for ChatGPT-authenticated Codex requests (`/backend-api/...`).
@@ -516,15 +516,17 @@ impl Proxy {
     }
 
     /// Anthropic clients always send `anthropic-version`; ChatGPT-backed
-    /// Codex uses `/backend-api/`; other `/v1/` paths are OpenAI's; anything
-    /// else defaults to Anthropic, the client most likely to send it.
+    /// Codex uses `/backend-api/`; `/v1/` paths and Chat Completions calls
+    /// are OpenAI-compatible traffic; anything else defaults to Anthropic,
+    /// the client most likely to send it. The `/chat/completions` arm is
+    /// needed because LiteLLM-style clients may post to the bare path.
     fn upstream_for(&self, request: &Request) -> &str {
         let path = request.path();
         if request.header("anthropic-version").is_some() {
             &self.anthropic
         } else if path.starts_with("/backend-api/") {
             &self.chatgpt
-        } else if path.starts_with("/v1/") {
+        } else if path.starts_with("/v1/") || path.ends_with("/chat/completions") {
             &self.openai
         } else {
             &self.anthropic

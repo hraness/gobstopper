@@ -261,7 +261,7 @@ def main():
         'sample_selection': 'single_operator_selected_synthetic_seed',
         'checks': ['native_boundary_persisted', *FACT_CHECKS]
                   + (['constraint_rules_recalled'] if args.seed_style in RULE_MARKERS else []),
-        'limitations': ['One synthetic compaction and recall probe, not a coding task benchmark.', 'Provider-reported cost is not an invoice or measured savings.', 'Does not validate Devin compaction or changes to any live session.'],
+        'limitations': ['One synthetic compaction and recall probe, not a coding task benchmark.', 'Provider-reported cost is not an invoice or measured savings.', 'Does not change any live session.'],
     }
     RUNNER.save(root / 'registration.json', registration)
     result = {'status': 'not_started', 'scoring_version': 2,

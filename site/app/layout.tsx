@@ -114,7 +114,8 @@ const structuredData = {
       operatingSystem: "macOS, Linux",
       sameAs: GITHUB_URL,
       featureList: [
-        "Claude Code, Codex, and Devin session detection",
+        "Local proxy compacting live requests in Claude Code, Codex, opencode, Crush, Aider, Goose, and other OpenAI-compatible agents",
+        "Claude Code and Codex session detection",
         "Compaction previews at a trigger and floor you choose",
         "Compacted Claude Code and Codex copies",
         "Local snapshot vault with search and undo",

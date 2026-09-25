@@ -86,7 +86,7 @@ def run(binary, output, corpus=CORPUS):
     (output / "config/gobstopper").mkdir(parents=True, mode=0o700)
     (output / "config/gobstopper/config.toml").write_text(
         "[policy]\nadaptive=false\nkeep_recent_tool_outputs=1\nmin_savings_tokens=0\n")
-    for home in ("codex", "claude", "devin", "data"):
+    for home in ("codex", "claude", "data"):
         (output / home).mkdir(mode=0o700)
     environment = {key: value for key, value in os.environ.items() if not key.startswith(
         ("GOBSTOPPER_", "TYPESAFE_", "AI_GATEWAY_", "OPENAI_", "ANTHROPIC_", "VERCEL_", "DEVIN_"))}
@@ -99,7 +99,7 @@ def run(binary, output, corpus=CORPUS):
     RUNNER.DEADLINE = time.monotonic() + 180
     results = []
     base = [str(pinned), "--codex-home", str(output / "codex"), "--claude-home", str(output / "claude"),
-            "--devin-home", str(output / "devin")]
+]
     for case in registration["cases"]:
         for control in (False, True):
             label = case["id"] + ("-literal-control" if control else "-replay")

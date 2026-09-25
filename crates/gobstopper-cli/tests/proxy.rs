@@ -188,7 +188,13 @@ fn start_proxy_inner(
     env: &[(&str, &str)],
 ) -> ProxyProcess {
     let mut command = Command::new(env!("CARGO_BIN_EXE_gobstopper"));
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GOBSTOPPER_") {
+            command.env_remove(key);
+        }
+    }
     command
+        .env("XDG_CONFIG_HOME", std::env::temp_dir())
         .args(["proxy", "serve", "--port", "0"])
         .args(["--anthropic-upstream", anthropic])
         .args(["--openai-upstream", openai])
@@ -546,6 +552,59 @@ fn codex_requests_route_to_the_chatgpt_upstream_and_compact() {
     assert_eq!(seen["instructions"], "be brief");
     assert_eq!(
         chatgpt.seen()[0].header("authorization"),
+        Some("Bearer synthetic")
+    );
+}
+
+#[test]
+fn chat_completions_route_to_openai_and_compact() {
+    let anthropic = Fake::start(|_| Reply::Json(200, json!({"from": "anthropic"})));
+    let openai = Fake::start(|_| Reply::Json(200, json!({"from": "openai"})));
+    let proxy = start_proxy_inner(
+        &anthropic.url(),
+        &openai.url(),
+        &anthropic.url(),
+        &["--threshold", "2000", "--keep-recent", "1"],
+        &[],
+    );
+    let mut messages = vec![
+        json!({"role": "system", "content": "you are an agent"}),
+        json!({"role": "user", "content": "Fix the bug."}),
+    ];
+    for n in 0..10 {
+        messages.push(json!({"role": "assistant", "content": format!("step {n}"),
+            "tool_calls": [{"id": format!("call_{n}"), "type": "function",
+                "function": {"name": "bash", "arguments": format!("{{\"cmd\":\"s{n}\"}}")}}]}));
+        messages.push(json!({"role": "tool", "tool_call_id": format!("call_{n}"),
+            "content": "R".repeat(3000)}));
+    }
+    let sent =
+        serde_json::to_vec(&json!({"model": "gpt-test", "messages": messages, "stream": true}))
+            .unwrap();
+    let headers = [
+        ("content-type", "application/json"),
+        ("authorization", "Bearer synthetic"),
+    ];
+    for target in ["/v1/chat/completions", "/chat/completions"] {
+        let response = request(proxy.port, "POST", target, &headers, &sent);
+        assert_eq!(response.json(), json!({"from": "openai"}), "{target}");
+    }
+    assert!(anthropic.seen().is_empty());
+    let seen = openai.seen()[0].json();
+    let sent_messages = seen["messages"].as_array().unwrap();
+    assert!(sent_messages.len() < messages.len());
+    assert_eq!(
+        seen["messages"][0], messages[0],
+        "the head is kept verbatim"
+    );
+    assert!(seen["messages"][2]["content"]
+        .as_str()
+        .unwrap()
+        .starts_with(SUMMARY_HEADER));
+    // The kept tail is whole turns: assistant calls stay with their tools.
+    assert_eq!(sent_messages.last().unwrap()["role"], "tool");
+    assert_eq!(
+        openai.seen()[0].header("authorization"),
         Some("Bearer synthetic")
     );
 }

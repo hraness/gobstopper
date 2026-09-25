@@ -63,7 +63,6 @@ fn apply(
     let transformed = match provider {
         Provider::Codex => codex::transform(&original, edits),
         Provider::ClaudeCode => claude::transform(&original, edits),
-        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     }?;
     let reclaimed = original.len().saturating_sub(transformed.len()) as u64;
     fs::write(path, transformed).map_err(|source| gobstopper_adapters::AdapterError::Io {
@@ -90,7 +89,6 @@ fn assert_unicode_state_card_plan(provider: Provider) {
             json!({"type":"assistant","uuid":"a1","parentUuid":"u1","sessionId":"audit","message":{"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"read_file","input":{}}]}}),
             json!({"type":"user","uuid":"u2","parentUuid":"a1","sessionId":"audit","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"x".repeat(20_000)}]}}),
         ],
-        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     };
     let original = records
         .iter()
@@ -100,7 +98,6 @@ fn assert_unicode_state_card_plan(provider: Provider) {
     let transcript = match provider {
         Provider::Codex => codex::load(handle(provider, &path)),
         Provider::ClaudeCode => claude::load(handle(provider, &path)),
-        Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
     }
     .unwrap();
     let policy = PolicyConfig {
@@ -148,7 +145,6 @@ fn digest_starts_a_new_record_without_trailing_newline() {
             Provider::ClaudeCode => {
                 json!({"type":"user","uuid":"u1","sessionId":"audit","message":{"role":"user","content":"goal"}})
             }
-            Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
         };
         fs::write(&path, record.to_string()).unwrap();
         apply(provider, &path, &[digest()]).unwrap();
@@ -157,7 +153,6 @@ fn digest_starts_a_new_record_without_trailing_newline() {
             Provider::Codex => 2,
             // Claude now appends a synthetic user, a fresh last-prompt, and a mode record.
             Provider::ClaudeCode => 4,
-            Provider::Devin => unreachable!("devin coverage lives in devin.rs fixture tests"),
         };
         assert_eq!(raw.lines().count(), expected_lines);
         assert!(raw
@@ -713,12 +708,12 @@ fn dedupe_uses_exact_payload_digests() {
 
 #[test]
 fn public_provider_rewrites_refuse_before_io_and_preserve_open_appends() {
-    use gobstopper_adapters::{codex_compact, devin, AdapterError};
+    use gobstopper_adapters::{codex_compact, AdapterError};
     use std::io::Write;
     type Rewrite = fn(&Path, &[Edit]) -> Result<u64, AdapterError>;
     let dir = Scratch::new();
     let missing = dir.0.join("missing").join("source.jsonl");
-    let writers: [Rewrite; 3] = [codex::apply, claude::apply, devin::apply];
+    let writers: [Rewrite; 2] = [codex::apply, claude::apply];
     for (index, writer) in writers.into_iter().enumerate() {
         assert!(matches!(
             writer(&missing, &[digest()]),
@@ -756,7 +751,7 @@ fn public_provider_rewrites_refuse_before_io_and_preserve_open_appends() {
     }
     assert_eq!(
         fs::read_dir(&dir.0).unwrap().count(),
-        3,
+        2,
         "refusal created a temporary file or directory"
     );
 }

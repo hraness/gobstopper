@@ -1,14 +1,19 @@
 <!-- hraness:gobstopper-landing:start -->
 # Gobstopper
 
-Gobstopper is a free, open-source command-line tool that makes long Claude
-Code and Codex sessions smaller. Preview a compaction, write a smaller copy,
-and keep the original byte for byte in a local vault.
+Gobstopper is a free, open-source command-line tool that makes long coding
+sessions smaller. Preview a compaction, write a smaller copy, and keep the
+original byte for byte in a local vault. It reads Claude Code and Codex
+session files.
 
-To keep a running Claude Code or Codex session small, run `gobstopper proxy`
-and point the client at it. The proxy compacts each outgoing request that
-passes a token threshold, so the client's own auto-compaction does not reach
-its trigger; see [Compact live Claude Code and Codex requests](#compact-live-claude-code-and-codex-requests).
+To keep a running session small, run `gobstopper proxy` and point the client
+at it. The proxy compacts each outgoing request that passes a token
+threshold, so the client's own auto-compaction does not reach its trigger.
+It speaks the three dialects coding agents use: Anthropic Messages (Claude
+Code, opencode, Crush), OpenAI Responses (Codex), and OpenAI Chat
+Completions (opencode, Crush, Aider, Goose, and other OpenAI-compatible
+clients); see
+[Compact live coding-agent requests](#compact-live-coding-agent-requests).
 
 Preview compaction at a context size you choose, then prepare a separate Codex
 or Claude Code copy. Gobstopper archives the exact source and candidate bytes
@@ -44,18 +49,65 @@ A smaller context is not the same as a successful continuation or a lower bill.
 The [published studies](https://gobstopper.sh/benchmarks) report context reduction,
 retention, no-op cases, and limitations separately.
 
+Why pick it:
+
+- **It deletes instead of paraphrasing.** Summarizers rewrite history through
+  a model, drift on each pass, and cost a large input call. Gobstopper's rule
+  keeps the recent turns byte-for-byte and mechanically summarizes the rest;
+  every later compaction rebuilds from the original history, so a summary is
+  never summarized again. This is the approach the strongest published result
+  for the problem converged on: CliffCompaction's authors report up to 50%
+  lower cost at a bounded context with maintained or improved Terminal-Bench
+  2.0 results on the models they tested; their figures, measured on their
+  proxy, not Gobstopper's.
+- **It covers the agent, not just the provider.** One proxy handles all three
+  wire dialects coding agents use, so the same tool follows you across
+  clients. One CLI also works on saved Claude Code and Codex transcripts:
+  preview a compaction, prepare a copy, diff it, undo it.
+- **It keeps the evidence.** Before any write, the exact source lands in a
+  content-addressed vault. Compacted-away detail is searchable and readable
+  again, and every operation emits a receipt. Compaction becomes an
+  inspectable edit, not a silent loss.
+- **It is cheap to run.** A mechanical rule needs no model: one local binary,
+  one JSON rewrite per request, hash-chained prefix reuse so the provider's
+  prompt cache keeps matching, and fail-open forwarding when anything goes
+  wrong: an error in Gobstopper never breaks the agent.
+- **It is honest about evidence.** Replays, retention probes, and dated live
+  trials are published with their scope; the [activation
+  matrix](docs/assurance/qualification.json) records exactly which cells are
+  qualified. What isn't measured stays labeled unmeasured.
+
 Gobstopper keeps the exact source in a local vault before any compaction changes it, so a compaction is a recorded edit you can recover from rather than a silent loss: the design every Hraness project shares. [The thread through hraness](https://hraness.com/writing/the-thread-through-hraness) follows that design across the projects, and the [ALGAL vision](https://algal.computer/docs/vision/) states the bet behind it.
 
-## Compact live Claude Code and Codex requests
+## Compact live coding-agent requests
 
-`gobstopper proxy` is a local HTTP proxy for Claude Code and Codex, in the
-current `main` source build. Each time the client resends its history, the
-proxy estimates the request size. Past the threshold (128,000 tokens by
-default), it sends the system prompt and the first task verbatim, one
-mechanical summary of the older turns, and the newest three turns verbatim.
-The provider then reports the compacted size back to the client, so the
-client's own auto-compaction does not reach its trigger. The rule is
-CliffCompaction's; see [How Gobstopper compares with CliffCompaction](#how-gobstopper-compares-with-cliffcompaction).
+`gobstopper proxy` is a local HTTP proxy that sits between a coding agent
+and its model provider, in the current `main` source build. Each time the
+client resends its history, the proxy estimates the request size. Past the
+threshold (128,000 tokens by default), it sends the system prompt and the
+first task verbatim, one mechanical summary of the older turns, and the
+newest three turns verbatim. The provider then reports the compacted size
+back to the client, so the client's own auto-compaction does not reach its
+trigger. The rule is CliffCompaction's; see
+[How Gobstopper compares with CliffCompaction](#how-gobstopper-compares-with-cliffcompaction).
+
+It speaks the three dialects coding agents use:
+
+| Agent | Dialect | How to point it at the proxy |
+|---|---|---|
+| Claude Code | Anthropic Messages | `export ANTHROPIC_BASE_URL=http://127.0.0.1:8260` |
+| Codex | OpenAI Responses | `model_providers` block in `~/.codex/config.toml` |
+| opencode | Anthropic Messages or Chat Completions | `provider.<id>.options.baseURL` → `http://127.0.0.1:8260/v1` |
+| Crush | Anthropic Messages or Chat Completions | `providers.<id>.base_url` → `http://127.0.0.1:8260/v1` |
+| Aider | Chat Completions | `aider --openai-api-base http://127.0.0.1:8260/v1` |
+| Goose | Chat Completions | `OPENAI_HOST=http://127.0.0.1:8260` |
+
+The setup for each agent is in [docs/proxy.md](docs/proxy.md). Any other
+OpenAI-compatible client that posts to `{base}/chat/completions` works the
+same way. Claude Code and Codex routing is live-checked; the Chat
+Completions dialect is contract-tested against synthetic histories and has
+not yet been qualified against a live opencode, Crush, Aider, or Goose
+session.
 
 The summary keeps human and assistant text, keeps tool results of at most 500
 characters, and reduces each tool call to a one-line signature; longer tool
@@ -72,11 +124,11 @@ gobstopper proxy replay <session>         # what the proxy would have sent; call
 gobstopper proxy status                   # counters and estimated-token totals, this run and all time
 ```
 
-Codex routes through a provider block in `~/.codex/config.toml`; see
-[docs/proxy.md](docs/proxy.md) for Codex, a macOS LaunchAgent, and every
-setting. Flags: `--threshold` (keep it below the client's auto-compaction
-point), `--keep-recent`, `--result-max-chars`, `--drop-thinking`, `--shadow`
-(log what would change and forward everything unchanged), and `--strict`.
+See [docs/proxy.md](docs/proxy.md) for per-agent setup (Claude Code, Codex,
+opencode, Crush, Aider, Goose), a macOS LaunchAgent, and every setting.
+Flags: `--threshold` (keep it below the client's auto-compaction point),
+`--keep-recent`, `--result-max-chars`, `--drop-thinking`, `--shadow` (log
+what would change and forward everything unchanged), and `--strict`.
 
 - The proxy listens on 127.0.0.1 and refuses requests addressed to other
   host names. It forwards through the system `curl` (8.3 or later) and hands
@@ -87,11 +139,9 @@ point), `--keep-recent`, `--result-max-chars`, `--drop-thinking`, `--shadow`
   compressed body, an internal error, or a provider that rejects the
   rewritten request for a reason other than length. When the provider rejects
   a request for length, the proxy compacts further and retries.
-- Transcript files are not changed. Claude Code and Codex keep the full
-  history, so resume and the file commands below work as before.
-- Devin CLI sends its requests through Cognition's service and has no
-  setting for a model address, so it cannot use the proxy; see
-  [docs/devin.md](docs/devin.md) for what Gobstopper does with Devin.
+- Transcript files are not changed. The client keeps its full history, so
+  resume works as before, and Claude Code and Codex histories still feed the
+  file commands below.
 - Sizes are estimates at four characters per token, with images priced by
   their dimensions. A history the client already compacted itself can start
   with a long head that the proxy keeps verbatim; the threshold then rises to
@@ -112,8 +162,7 @@ source and candidate bytes in a content-addressed vault
 (`~/.local/share/gobstopper/vault/`). Snapshots use deduplicated 1 MiB chunks,
 so appended versions reuse
 unchanged prefix storage without creating one filesystem object per JSONL
-record. Devin snapshots instead contain a canonical per-session export, not
-the shared database or every provider-owned artifact.
+record.
 
 `gobstopper recall --query <q>` searches the state cards in every archived
 snapshot, ranks matches by relevance to the query, and returns the high-level
@@ -178,15 +227,7 @@ run code you trust with your user permissions, without an OS sandbox:
 ```sh
 claude mcp add gobstopper -- gobstopper mcp
 # ~/.codex/config.toml: [mcp_servers.gobstopper] command = "gobstopper", args = ["mcp"]
-devin mcp add -s user gobstopper -- gobstopper mcp
 ```
-
-For Devin, `policy_check` accepts `provider = "devin"` and returns `/compact`
-when the configured threshold is crossed. While a Devin session is running,
-Devin owns its store. Direct-store `apply` and `undo` are disabled; use the
-provider's `/compact` or inspect a canonical export instead. See
-[docs/devin.md](docs/devin.md). `devin --export out.json` can be inspected
-through a trusted provider-reader plugin when offline analysis is needed.
 
 Provider-generated summaries can cost a large input call and lose detail, so
 the strategy and where it cuts matter as much as the timing.
@@ -199,7 +240,7 @@ the strategy and where it cuts matter as much as the timing.
 | `sawtooth` | provider | proposes provider-native compaction to the session owner; released CLI dispatch is blocked pending qualification |
 | `cache_edits` | provider | emits bounded Claude `tool_use_id` values for API-layer context editing; never rewrites a transcript |
 | `elide` | transcript | stubs stale tool outputs oldest-first until the floor |
-| `cliff` | transcript | keeps the head, the newest three assistant steps, and the newest `keep_recent_tool_outputs` tool results (default 8) byte-for-byte and drops older eligible tool results over 500 bytes; no floor seeking and no state card (see [CliffCompaction](#how-gobstopper-compares-with-cliffcompaction); for running sessions, use [`gobstopper proxy`](#compact-live-claude-code-and-codex-requests)) |
+| `cliff` | transcript | keeps the head, the newest three assistant steps, and the newest `keep_recent_tool_outputs` tool results (default 8) byte-for-byte and drops older eligible tool results over 500 bytes; no floor seeking and no state card (see [CliffCompaction](#how-gobstopper-compares-with-cliffcompaction); for running sessions, use [`gobstopper proxy`](#compact-live-coding-agent-requests)) |
 | `cache_aware` | transcript | elides a tailward stale-output window and injects a bounded state card while preserving the longest practical prefix |
 | `compacted` | transcript | elides stale outputs and injects the state card; synthetic Codex `compacted` records require `--experimental-compacted` |
 | `scored` | transcript | ranks candidates with deterministic recency, error, reference, TF-IDF, duplicate, and tool-type signals before elision |
@@ -251,7 +292,7 @@ gobstopper mcp                     # deterministic inspection; executable strate
 gobstopper proxy serve             # compact live Claude Code and Codex requests on 127.0.0.1:8260
 ```
 
-### Set up Gobstopper for Claude Code, Codex, and Devin
+### Set up Gobstopper for Claude Code and Codex
 
 1. Install the binary from `main` and check it:
 
@@ -265,22 +306,14 @@ gobstopper proxy serve             # compact live Claude Code and Codex requests
    ```sh
    claude mcp add -s user gobstopper -- gobstopper mcp
    codex mcp add gobstopper -- gobstopper mcp
-   devin mcp add -s user gobstopper -- gobstopper mcp
    ```
 
-   Confirm with `claude mcp list`, `codex mcp list`, or `devin mcp get gobstopper`.
+   Confirm with `claude mcp list` or `codex mcp list`.
    Add `--allow-transcript-content` after `mcp` only if the agent should be
    able to search and read archived transcript text.
 
-3. For Claude Code and Codex, start the proxy and point each client at it as
-   described in [docs/proxy.md](docs/proxy.md).
-
-4. For Devin, export the hook candidates with
-   `gobstopper install-hooks --output ./hook-candidates.json`, review the
-   Devin entry, and add its `UserPromptSubmit` and `PostCompaction` handlers
-   to `~/.config/devin/config.json`. The first suggests `/compact` at your
-   Gobstopper threshold; the second archives the session after each Devin
-   compaction so exact records stay searchable.
+3. Start the proxy and point each client at it as described in
+   [docs/proxy.md](docs/proxy.md).
 
 Hook installation and removal export candidates without changing provider settings.
 The bundle includes the exact original settings and hashes, so keep it private.
@@ -333,8 +366,7 @@ Telemetry is best effort:
 successful event writes use the `gobstopper/compaction-events-v1` schema.
 
 `eval` and `bench` freeze each session's source before comparing strategies.
-For Devin, that source is the canonical per-session export, never the SQLite
-database file. `bench` selects sessions updated within seven days by default;
+`bench` selects sessions updated within seven days by default;
 `--all` removes that age filter but retains discovery and input limits. Its
 24-column CSV includes source/result hashes, `execution_state`, `token_basis`,
 retention availability and a closed `failure` category. Discovered sessions
@@ -395,23 +427,19 @@ protected recent tool-output tail.
 `--against AFTER` switches to a score-only realized audit: the manifest binds
 to the session's before-state and retention is scored against independent
 after-bytes, with no replay and no mutation. Either spec may be a `vault:<sha256>`
-snapshot reference (Devin store snapshots are exported to the transcript
-dialect first). `scripts/retention-audit.py` scans the vault for consecutive
+snapshot reference. `scripts/retention-audit.py` scans the vault for consecutive
 snapshots whose provider compaction-marker count increased (Claude
 `compact_boundary`, Codex `"type":"compacted"`; hook bracket labels alone can
 miss the actual write), pairs surgery-labeled snapshots with the next
 snapshot, and runs the audit over each pair. The result is realized, per-kind
 retention of compactions that already happened, including provider-native
-ones. Devin's marker is `metadata.summarized_from`: its `/compact` appends a
-summary node rather than rewriting history, so expect flat context deltas and
-nonzero source-bound retention.
+ones.
 
 Without new work, replay is explicitly `static_stress`; unchanged passes do not
 count as applied compactions. For Codex/Claude fixtures, optional `growth`
 entries (`after_round`, `records`) append complete provider records between
 rounds and are verified before use. Checks still refer to the initial source;
 this is not a test of revised tasks, independent tasks, or agent reasoning.
-Devin growth is rejected until provider-authored chain progression is supported.
 Provider-native compaction, semantic summarization, continuation success, cost,
 and retrieval are not measured, and the report does not score them as
 successful or free. The built-in `structured` strategy is not used as a
@@ -475,9 +503,6 @@ adaptive = true              # derive trigger/floor per session; see `gobstopper
 [provider.codex]             # per-provider overrides
 trigger_tokens = 200_000
 
-[provider.devin]             # policy can advise /compact; see docs/devin.md
-trigger_tokens = 200_000
-
 [sessions."01a08d7c-…"]      # per-session overrides
 strategy = "structured"
 trigger_tokens = 120_000
@@ -502,7 +527,7 @@ max_age_secs = 604800        # rolling window for `watch` and `report`;
 ```
 
 For sessions stored outside the default directories, such as in a sandboxed
-home, pass `--codex-home`, `--claude-home`, or `--devin-home`.
+home, pass `--codex-home` or `--claude-home`.
 
 ### Monitoring an existing Codex desktop session
 
@@ -749,8 +774,8 @@ session files:
 
 | | CliffCompaction | Gobstopper |
 |---|---|---|
-| Where it runs | A local HTTP proxy between the agent and the Anthropic or OpenAI API | A local HTTP proxy for Claude Code and Codex, plus a CLI over the session files Claude Code, Codex, and Devin write |
-| Clients | Any client of the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses API | Claude Code (Anthropic Messages) and Codex (OpenAI Responses); Devin cannot be proxied |
+| Where it runs | A local HTTP proxy between the agent and the Anthropic or OpenAI API | A local HTTP proxy between the agent and its model provider, plus a CLI over the session files Claude Code and Codex write |
+| Clients | Any client of the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses API | Any client of the same three dialects that accepts a custom provider address: Claude Code, Codex, opencode, Crush, Aider, Goose, and more |
 | What it changes | Each outgoing request, transparently, while the session runs | The proxy rewrites outgoing requests over the threshold; file commands publish a separate compacted copy and leave the source unchanged |
 | How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy applies the same rule; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
 | Recompaction | Rebuilt from the original history; the prior summary is discarded | The proxy rebuilds from the original history; `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy |
@@ -861,8 +886,8 @@ The compatibility settings `auto_apply_inplace`, `auto_apply_store`, and
   the `Strategy` trait, all built-in strategies, and the telemetry schema.
   Its only file I/O is the telemetry event log.
 - `crates/gobstopper-adapters`: session discovery, Codex and Claude Code JSONL
-  parsing and copy preparation, read-only Devin exports, no-clobber
-  publication, verification, plugin hosting, and the snapshot vault.
+  parsing and copy preparation, no-clobber publication, verification, plugin
+  hosting, and the snapshot vault.
 - `crates/gobstopper-cli`: the `gobstopper` binary (run `gobstopper --help`
   for every subcommand), layered configuration, hooks, and the read-only MCP
   server.
@@ -973,17 +998,14 @@ behavior, proprietary provider acceptance, or preservation of every task fact.
 
 Direct provider controls still belong to the live session owner. Synthetic
 Codex `compacted` records, external model scoring, and semantic editor plugins
-remain explicitly experimental or trusted extension paths. Devin support covers
-detection, numeric policy/MCP handoff, frozen export evaluation and per-session
-vault exports. Released
-native dispatch remains guarded for all three providers. Direct-store and
+remain explicitly experimental or trusted extension paths. Released
+native dispatch remains guarded for both providers. In-place and
 arbitrary-path rewrite APIs refuse mutation. Deterministic MCP inspection rejects
 executable strategies; explicitly invoked extensions remain trusted code rather
 than an OS sandbox. The [activation matrix](docs/assurance/qualification.json)
 and [recovery runbook](docs/assurance/operations.md) define the supported modes.
-See [docs/design.md](docs/design.md), [docs/roadmap.md](docs/roadmap.md),
-[docs/plugin-protocol.md](docs/plugin-protocol.md), and
-[docs/devin.md](docs/devin.md) for details.
+See [docs/design.md](docs/design.md), [docs/roadmap.md](docs/roadmap.md), and
+[docs/plugin-protocol.md](docs/plugin-protocol.md) for details.
 
 ## License
 

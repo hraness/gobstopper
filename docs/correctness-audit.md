@@ -60,12 +60,11 @@ for deeper verification; the [plan](correctness-plan.md) gives acceptance gates.
 | Normalized context and token arithmetic | core `model.rs`, `estimate.rs` | core examples; adapter fixtures | Saturating arithmetic, ambiguous zero/reset usage, byte/token estimation |
 | Plan IR and admission | core `plan.rs`, `validation.rs`; CLI `evaluate_detailed` | adversarial edit tests | One authoritative contract at every adapter entry; arbitrary inputs |
 | Strategy selection, protected tail, ranking | core `strategy/*` | unit tests; Hegel surgery suite | All-strategy generated validity, convergence, estimation correspondence |
-| Provider discovery and active context | adapters `detect.rs`, `codex.rs`, `claude.rs`, `devin.rs` | fixtures; export and active-branch tests | Provider schema drift, missing data, liveness heuristic versus custody |
+| Provider discovery and active context | adapters `detect.rs`, `codex.rs`, `claude.rs` | fixtures; export and active-branch tests | Provider schema drift, missing data, liveness heuristic versus custody |
 | Structural verification | adapters `verify.rs` | malformed/pairing/window regressions | Explicit soundness relative to parser; unsupported shapes fail closed |
 | Copy/fork transaction and retry receipts | adapters `transaction.rs`, `copy.rs`, `fork.rs` | source-binding/no-clobber tests | Syscall crash windows, receipt reconciliation, path races |
 | Vault, recovery, pruning | adapters `vault.rs`, `recovery.rs` | hash/bounds/permissions/recovery tests | Crash durability, torn index recovery, receipt lifecycle and cross-process custody |
-| Devin SQLite mutation/restore | adapters `devin.rs` | transactional fixture tests | Retained provider lock ownership and post-commit uncertainty |
-| Native compaction and watch state | CLI `main.rs`; adapters Devin ACP | watch subprocess fixtures | All-order protocol state machines; durable dispatch/reconciliation; live pinning |
+| Native compaction and watch state | CLI `main.rs`; adapters `codex_compact.rs`, `claude.rs` | watch subprocess fixtures | All-order protocol state machines; durable dispatch/reconciliation; live pinning |
 | Hooks and settings | CLI `hooks.rs` | installer/advisory/postcompact tests | Concurrent settings writes, backup identity, exact pre/post operation correlation |
 | Configuration and plugins | CLI `config.rs`; adapters `plugins.rs` | strict schema; bounded plugin contract tests | Trusted code is unsandboxed; aggregate projection/resource bounds |
 | Model scorers/digests | CLI `apple*`, `jev.rs`, `llm_scorer.rs`, `secrets.rs` | cache/input/output/fallback tests | Cross-process cache integrity, privacy opt-ins, model drift and semantic fidelity |

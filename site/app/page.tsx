@@ -30,8 +30,8 @@ const repository = "https://github.com/hraness/gobstopper";
 
 const heading = "Context compaction you can undo.";
 const summary =
-  "Preview the cut, write a smaller session, and keep every original byte in a local vault you can search and restore from.";
-// This published release predates both Devin support and the source-build guards.
+  "A local proxy that compacts live requests in Claude Code, Codex, opencode, Crush, Aider, Goose, and other agents, plus file commands that preview the cut and write a smaller copy. Every original byte stays in a local vault you can search and restore from.";
+// This published release predates the proxy and the source-build guards.
 const releasePredatesPage = releaseVersion === "0.2.1";
 const footnote =
   "Source preview. Install from source for the behavior described here. Free and open source (MIT or Apache-2.0). Needs Rust 1.85 or newer. Local inspection needs no account.";
@@ -40,7 +40,7 @@ const primitives = [
   {
     icon: "session-detection",
     label: "Session detection",
-    summary: "Finds sessions in the Codex, Claude Code, and Devin stores. Reports measured context separately from estimates and missing usage. Recent file activity cannot tell you whether another process is using a session.",
+    summary: "Finds sessions in the Codex and Claude Code stores. Reports measured context separately from estimates and missing usage. Recent file activity cannot tell you whether another process is using a session.",
   },
   {
     icon: "edit-ir",
@@ -50,7 +50,7 @@ const primitives = [
   {
     icon: "strategies",
     label: "Strategies",
-    summary: "The default, auto, picks a strategy from the transcript. Sawtooth recommends provider compaction, elide replaces eligible stale tool output, cliff keeps the newest assistant steps and drops older tool results over 500 bytes, and structured writes a state card from metadata. For running Claude Code and Codex sessions, gobstopper proxy applies CliffCompaction's rule to each outgoing request. Scored ranks candidates; optional on-device models can score or draft cards. Agentic accepts edits proposed by a program you trust.",
+    summary: "The default, auto, picks a strategy from the transcript. Sawtooth recommends provider compaction, elide replaces eligible stale tool output, cliff keeps the newest assistant steps and drops older tool results over 500 bytes, and structured writes a state card from metadata. For running sessions in Claude Code, Codex, and OpenAI-compatible agents, gobstopper proxy applies CliffCompaction's rule to each outgoing request. Scored ranks candidates; optional on-device models can score or draft cards. Agentic accepts edits proposed by a program you trust.",
   },
   {
     icon: "presets-config",
@@ -76,7 +76,7 @@ const trust = [
   },
   {
     label: "Automatic provider compaction is disabled",
-    detail: "The source build refuses automatic provider compaction, including auto_compact_closed, and direct Devin-store or in-place edits. An idle check cannot establish that another process has finished using a session. Provider commands need separate testing before they can be enabled.",
+    detail: "The source build refuses automatic provider compaction, including auto_compact_closed, and direct in-place edits. An idle check cannot establish that another process has finished using a session. Provider commands need separate testing before they can be enabled.",
   },
   {
     label: "Unknown outcomes stay unknown",
@@ -91,7 +91,7 @@ const questions = [
   },
   {
     question: "Does it edit my live session?",
-    answer: "Session files, no. The source build prepares separate Claude Code and Codex copies and refuses direct Devin-store edits. If you point Claude Code or Codex at `gobstopper proxy`, it compacts the requests the client sends while the session runs and leaves the session files unchanged. Automatic provider compaction stays disabled, and Devin cannot be proxied.",
+    answer: "Session files, no. The source build prepares separate Claude Code and Codex copies and refuses in-place edits. If you point Claude Code or Codex at `gobstopper proxy`, it compacts the requests the client sends while the session runs and leaves the session files unchanged. Automatic provider compaction stays disabled.",
   },
   {
     question: "What if a compaction loses something important?",
@@ -99,11 +99,11 @@ const questions = [
   },
   {
     question: "Which agents does it support?",
-    answer: "Gobstopper inspects supported Codex, Claude Code, and Devin session formats and prepares separate Codex and Claude Code copies. Claude Code and Codex requests can also run through `gobstopper proxy`. Devin exports can be inspected but cannot replace its session store, and Devin requests cannot be proxied. New provider versions need format tests and separate resume tests.",
+    answer: "The proxy speaks all three dialects coding agents use: Anthropic Messages (Claude Code, opencode, Crush), OpenAI Responses (Codex), and OpenAI Chat Completions (opencode, Crush, Aider, Goose, and other OpenAI-compatible clients). Any agent that lets you set a custom provider address can point at it. File commands read Claude Code and Codex session formats and prepare separate copies. Agents without a configurable model address, such as service-bound CLIs, cannot be proxied. Claude Code and Codex routing is live-checked; Chat Completions coverage is contract-tested on synthetic histories. New provider versions need format tests and separate resume tests.",
   },
   {
     question: "How is this different from CliffCompaction?",
-    answer: "CliffCompaction is an API proxy: it rewrites each request over a token threshold while the session runs, keeps the head and the last three turns verbatim, drops tool results over 500 characters, and never paraphrases. `gobstopper proxy` ports that rule for Claude Code and Codex. Gobstopper's file commands prepare copies you inspect and resume, with the source archived in a vault, and the `cliff` strategy applies the drop rule to those copies. The comparison page lists the differences and the authors' benchmark figures.",
+    answer: "CliffCompaction is an API proxy: it rewrites each request over a token threshold while the session runs, keeps the head and the last three turns verbatim, drops tool results over 500 characters, and never paraphrases. `gobstopper proxy` ports that rule for the Anthropic Messages, OpenAI Responses, and Chat Completions dialects. Gobstopper's file commands prepare copies you inspect and resume, with the source archived in a vault, and the `cliff` strategy applies the drop rule to those copies. The comparison page lists the differences and the authors' benchmark figures.",
   },
   {
     question: "Can I run my own compaction logic?",
@@ -269,12 +269,12 @@ gobstopper watch --dry-run --once`}</code></pre>
                   <a href={publishedRelease.verificationRun}>See how this release was verified</a>.{" "}
                 </p>
                 {releasePredatesPage && (
-                  <p className="install-note">Version {releaseVersion} predates Devin support and the source build&apos;s safeguards. The source install above includes both.</p>
+                  <p className="install-note">Version {releaseVersion} predates the proxy and the source build&apos;s safeguards. The source install above includes both.</p>
                 )}
               </>
             )}
             <p className="install-note">
-              Needs Rust 1.85 or newer. Gobstopper reads Codex, Claude Code, and Devin session data on your
+              Needs Rust 1.85 or newer. Gobstopper reads Codex and Claude Code session data on your
               machine. Built-in inspection makes no model call. If you enable a remote scorer,
               it receives selected transcript text; trusted plugins run your code.{" "}
               <a href="/docs#install--use">Read the full reference</a>.

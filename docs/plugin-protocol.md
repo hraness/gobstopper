@@ -27,7 +27,7 @@ The JSON manifest is limited to 64 KiB and rejects unknown fields. Example shape
   },
   "args": [],
   "capabilities": ["provider_read", "read_content"],
-  "provider_ids": ["devin-atif"],
+  "provider_ids": ["example-atif"],
   "timeout_ms": 5000,
   "max_input_bytes": 2097152,
   "max_output_bytes": 1048576,
@@ -53,7 +53,7 @@ The plugin reads one JSON object from stdin:
 {
   "protocol_version": 1,
   "operation": "provider_read",
-  "provider_id": "devin-atif",
+  "provider_id": "example-atif",
   "source_sha256": "<64 hex characters>",
   "items": [],
   "usage": {
@@ -81,7 +81,7 @@ Return exactly one JSON object on stdout:
   "source_sha256": "<same digest as request>",
   "edits": [],
   "inspection": {
-    "provider_id": "devin-atif",
+    "provider_id": "example-atif",
     "session_id": "bounded-session-id",
     "items": [],
     "usage": {
@@ -108,7 +108,7 @@ Strategy proposals may use `elide` and `inject_digest`. External plugins cannot 
 - edits that do not reduce projected context by `min_savings_tokens`;
 - candidates that add structural verification findings.
 
-Applying a plugin's file plan works like any other file `apply`: Gobstopper retains the exact source and candidate bytes, then publishes a separate Claude Code or Codex fork without overwriting an existing file. Direct Devin store writes are disabled; Devin export bytes can be inspected and evaluated without changing its database (see [Devin integration](devin.md)). Host validation does not sandbox the trusted plugin process itself.
+Applying a plugin's file plan works like any other file `apply`: Gobstopper retains the exact source and candidate bytes, then publishes a separate Claude Code or Codex fork without overwriting an existing file. Host validation does not sandbox the trusted plugin process itself.
 
 ## Resource and failure contract
 

@@ -44,7 +44,6 @@ An owner-side integration needs these obligations before activation:
 | Receipt | Persist intent and recovery evidence before dispatch; persist dispatch before calling the provider. |
 | Codex | Qualify `thread/compact/start` on the owner's app-server connection and correlate session/turn/compaction item terminal IDs. |
 | Claude | Qualify the selected owned-session `/compact` protocol; historical stream-json trials are not current qualification. |
-| Devin | Qualify serialized ACP load/prompt and matching compaction events; a prompt acknowledgement is not completion. |
 | Uncertainty | A lost acknowledgement, timeout or uncorrelated result stays unknown; do not replay automatically. |
 | Measurement | Capture source-bound before/after usage separately from protocol completion and task continuation. |
 

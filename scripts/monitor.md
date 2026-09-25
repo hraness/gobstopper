@@ -11,11 +11,11 @@ python3 scripts/monitor.py \
 ```
 
 Repeat `--session` for more exact native session IDs; prefixes do not match
-report rows. `--provider codex`, `--provider claude_code` or `--provider devin`
-also includes reported active sessions of that provider in `context_samples`,
-up to 256 samples total — provider opt-in is the self-maintaining way to
-observe new sessions without editing a session list. At least one `--session`
-or `--provider` is required. Provider opt-in broadens the retained identifier
+report rows. `--provider codex` or `--provider claude_code` also includes
+reported active sessions of that provider in `context_samples`, up to 256
+samples total — provider opt-in is the self-maintaining way to observe new
+sessions without editing a session list. At least one `--session` or
+`--provider` is required. Provider opt-in broadens the retained identifier
 scope; it does not enable compaction.
 Use Python 3.9 or later on macOS/Linux. This
 script does not install a service. A supervisor can invoke it periodically;
@@ -45,23 +45,14 @@ remaining sessions unevaluated instead of hitting TIMEOUT, prints a
 zero with a possibly smaller plan count. Both commands also reuse the
 advisory discovery fingerprint snapshot each watcher lane leaves in
 `discovery-cache-<provider>.json` beside watch state, so an unchanged
-session file is restated rather than reparsed and an unchanged Devin
-session (same activity stamp and chain head) replays its stored context
-measurement instead of re-walking the store; a missing or corrupt
+session file is restated rather than reparsed; a missing or corrupt
 snapshot simply costs a cold rescan. Both commands use a 180-second file-recency window for JSONL
 discovery. Claude also includes older files whose bounded metadata scan finds
-a live process; Devin also includes sessions with an observed held provider
-lock. These observations do not establish mutation custody. The report is
-capped at 2,000 sessions. `sessions` contains
+a live process. These observations do not establish mutation custody. The report
+is capped at 2,000 sessions. `sessions` contains
 only exact allowlisted Codex rows; `context_samples` also includes explicitly
 selected IDs or provider opt-ins from other providers. A missing or idle row is
-unavailable, never a zero-valued measurement. Context-only reporting omits Devin
-lifetime totals: it validates node identities and the complete selected ancestry,
-then reads at most 32 live-chain payloads. Discarded branch payloads do not need
-to be exported for an observation of current context. The regular `report`
-command still requests complete Devin usage accounting. This distinction keeps
-the monitor's requested measurements explicit; the separate dry-run
-evaluation is unchanged.
+unavailable, never a zero-valued measurement.
 
 The additive `coverage` summary reports selected Codex overlap, unavailable
 selected IDs, eligible versus exported samples, measurement states/reasons,
