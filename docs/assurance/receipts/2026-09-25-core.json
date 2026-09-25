@@ -1,0 +1,121 @@
+{
+  "schema": "gobstopper.assurance-receipt.v1",
+  "raw_receipt_sha256": "1a526ecc8a7c78e78129ff9b09ccb1787307a9d3863aa0ad3772d7505711ba6b",
+  "observed_at": "2026-09-25T01:56:20.939321+00:00",
+  "scope": "Selected production Rust admission, arithmetic, usage and evidence-agreement kernels under Kani.",
+  "bounds": "Full scalar numeric domains; index lengths 0/1/2/4 and four-edit sequence; production limits unchanged.",
+  "exclusions": [
+    "No parsing/OS/allocation theorem",
+    "No whole-core or whole-system proof",
+    "Unsupported paths must be shown unreachable"
+  ],
+  "passed": true,
+  "inputs_unchanged": true,
+  "source_sha256": {
+    "Cargo.toml": "22825555bd0f11035fe4f2ba01c6351d7af5e14ee26f04d1ed143ba0db701cf8",
+    "Cargo.lock": "100bbe7e8fe347a390d64f4d556737dcf8b7c243a7a1a6587fb5d51d81135e0d",
+    "verify/watch/check.py": "97ce34ea1926af465cfd242074ad80d9941311c9f412ee163923a90b7bfaebad",
+    "crates/gobstopper-core/Cargo.toml": "1de61bed40e65fac756fd1529635cda09892ea0482ebdeba6b1e038965116e50",
+    "crates/gobstopper-core/src/admission.rs": "d886b85141879328b3282f22765a96da5986e62b4eeaf2cfe9a16f06b17daa1d",
+    "crates/gobstopper-core/src/estimate.rs": "86c999f925e69ac76b304dd1a1805607e662d91d354fe02afad22939be161672",
+    "crates/gobstopper-core/src/events.rs": "6a222f6738531cb82726d55d8963af5b66b11f644c10585759fe84c54d5cac5d",
+    "crates/gobstopper-core/src/lib.rs": "7a2ed76f6874d539b2ec82bf8912701247ee82a7d45674db0c8971d506572d7a",
+    "crates/gobstopper-core/src/model.rs": "1687347980be057af253946555985b85e567d4bdddc8716f5ab27583eceae212",
+    "crates/gobstopper-core/src/plan.rs": "fcafb6a44a955bd1880b12194560d29371dde40d0a47f6456b9d4f96cb6c67bd",
+    "crates/gobstopper-core/src/policy.rs": "77fa1d849c9d34e0829e8ed009f88ecd508a0d0c22883931f1d2ae492060fd68",
+    "crates/gobstopper-core/src/probe.rs": "77b3814fcec225f6dfcd95e917305cbbaf799424498f08a3c8b7c4e15cad3175",
+    "crates/gobstopper-core/src/strategy/agentic.rs": "2cdce75031567462a8fcc6df5d0c7551235e1dfb14cd9480138ba38a9af7d9a0",
+    "crates/gobstopper-core/src/strategy/auto.rs": "54f9c0334abedeed6c66d70cd4eeb2cbe612a6c090d06aa5e474c749886cb8c2",
+    "crates/gobstopper-core/src/strategy/cache_aware.rs": "72a9dfdffca54a21b13c2ffa786c148a179fd47e144b4dc095c0e047baab3392",
+    "crates/gobstopper-core/src/strategy/cache_edits.rs": "03ec09f5ad36acdbfdb5ef54583243d2721edc092bc3d7b9709afe2dd664acf6",
+    "crates/gobstopper-core/src/strategy/cliff.rs": "0722c8927071ca35134b937d6613e891a9674a75307ceb405e0cb9db6736be61",
+    "crates/gobstopper-core/src/strategy/compacted.rs": "fa57607a7367e8e6ef492ea2ee4cb88178ea069012ba079d12bbb02a2decfb6d",
+    "crates/gobstopper-core/src/strategy/dedupe.rs": "51fbe4f6a381e8bc5657f1a24b1570d0a5d5f51a1c5acd2beeabf61fa2bcca7f",
+    "crates/gobstopper-core/src/strategy/elide.rs": "a008b66213f7d6f239db83e5ce3bf6965b5b85b00cd6862ec43ec1d036cf9b79",
+    "crates/gobstopper-core/src/strategy/micro.rs": "026e582a11b08fb5e779134a4ee8ca7d3065f9cd06c00f19b48bda94a636393e",
+    "crates/gobstopper-core/src/strategy/middle.rs": "e03bd8d80ea87d521425f1c8f6af575d545a1ea908a0c2c8635f39070e0aa31d",
+    "crates/gobstopper-core/src/strategy/mod.rs": "7cfe8517c0a1144259f21a1abf94336b8f467410cb4e6e950b9bcf3c06a376b9",
+    "crates/gobstopper-core/src/strategy/sawtooth.rs": "57da8d11980c57294cfd6c499bfe85f83d205975c09c3d993a7507f31923d063",
+    "crates/gobstopper-core/src/strategy/scored.rs": "ba3c13121045ed669bceb7e590668afde0c888ebdb4425e7d8c7dbf6b5c178de",
+    "crates/gobstopper-core/src/strategy/structured.rs": "032114f60b92f9bf41646b8d1459c2717bf7becd032e89bd87bcc0660ce98157",
+    "crates/gobstopper-core/src/validation.rs": "f7735d12c5af9d86a2964ce9ab6502159a5dfe97ff74f2ef5bee07f42698219e",
+    "verify/core/check.py": "54887e59d8f4e4ccb0aacae3a705636d9fb1fb86602c83abc5a87fe37111e3ca",
+    "verify/core/test_check.py": "918079a7de20188d35f28838f25b2754e0df974c317fb078291e94cde8dc66b3",
+    "verify/core/README.md": "2df0f1d4e5cbf0bab696e887283568412e031084163e90acd4e21c930e299500",
+    "crates/gobstopper-cli/src/config.rs": "52d364fcece3284aa8e27a67a7d34c996d31c3ec3f73bee324234524bcaab2bb",
+    "crates/gobstopper-adapters/src/codex.rs": "c32a693ac0fcee559ba858515c30e0a5a951ad715f8987fc6cf72357898dfa3b",
+    "crates/gobstopper-adapters/src/payload.rs": "46b2ab521ded311618a6b1883afd0d06c445693c1507396821ee5ec30ce767a1",
+    "crates/gobstopper-adapters/src/claude.rs": "d0fe42b50bd536c987cdfff5311fee7d939e4c0dbee08ef9ccea23c2fa6efbfe",
+    "crates/gobstopper-adapters/src/devin.rs": "50e57a914ab2b7cf65886ad302c997b0c8008267ad78ed9e2447f78d39674e12",
+    "crates/gobstopper-adapters/src/eval.rs": "af62b60ac968642d8f8234cc3774e6559b1fb187c076288d9b27037e94faa861",
+    "crates/gobstopper-cli/src/main.rs": "b7687dcd3d5981192ab779f42495717c348cc8c10a712212d55f10dd9636ff6e",
+    "crates/gobstopper-cli/src/hooks.rs": "53e37275a3b4fb62f6b900d061889c1fac2f957c3abe8147a9a8d6920e1dcfc6",
+    "crates/gobstopper-cli/src/report.rs": "6f6a77edd707bd2b878efbcaad2496c5a882512ff59777ced5e3661534652c05",
+    "crates/gobstopper-cli/src/telemetry.rs": "ebbfda4e2ff749070c7970ec25816a3323b99a38690a2396cb1cf38dd4e9efca"
+  },
+  "tool_sha256": {
+    "cargo-kani": "92d72e10302a0f58017661e45168c7093a04ca93f063d3f5c9a95a2a1888e7d2",
+    "kani-driver": "14192396d9e4b5c0d7f9197130692a44bbcb3d2509283ee2bb8e0befad9e12d2",
+    "kani-compiler": "88c115b843454b7b16b53955b31c6bc81c0168e7bfc6fbf97d9b688e53c67154",
+    "cbmc": "db1a99dc5187df6f67be351555aa7951d10f37700eccc7ea726d441594675e77",
+    "goto-instrument": "c8695f345b942275cdbc292e559f474f954141a6d335fe2c3471c700f41af09b",
+    "goto-cc": "d9c3dc78ebde6dbaf69e1955b472d73853c6e96fe7a9719a5a57c2a64d3657b8",
+    "rustc-version": "b700111259f7c03ab98b99a385e21da72557570d71349645a4b5ae445da8dc55",
+    "rust-toolchain-version": "a7007b9a5952d4695bfe0b9f4af9c88f377d0bec62efc7d3a0de37c1a9aa963a"
+  },
+  "results": [
+    {
+      "case": "production",
+      "passed": true,
+      "counts": {
+        "assertions": 178,
+        "covers": 54,
+        "unwind_checks": 3,
+        "unreachable_safety_checks": 30,
+        "unsupported_paths_excluded": 11
+      },
+      "failed_labels": [],
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "acfede7dd177c6b8c1ee0b8e9108095637f472180a1a095312089074a92846b2",
+      "report_sha256": "d90a4e504547b21f3611c30f8204cb97911aa1bbe523902a5e7598f15c6fc752"
+    },
+    {
+      "case": "boundary-mutant",
+      "passed": true,
+      "counts": {
+        "assertions": 2,
+        "covers": 3,
+        "unwind_checks": 0,
+        "unreachable_safety_checks": 0,
+        "unsupported_paths_excluded": 0
+      },
+      "failed_labels": [
+        "exact production plan bounds"
+      ],
+      "exit_code": 1,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "14f9145b6e6784972470a0488a728c56b6ed0470299b3e5e97c17cf95f2fc847",
+      "report_sha256": "ff83c18bd6e93385b90f7fc32b985c34dce1fe3b7ac99f62a5f3a7da152d6d0e"
+    }
+  ],
+  "versions": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustc": "rustc 1.100.0-nightly (8925ea358 2026-08-20)"
+  },
+  "unwind_bounds": {
+    "edit_sequences_four": 5,
+    "indexes_empty": 2,
+    "indexes_one": 3,
+    "indexes_two": 4,
+    "indexes_four": 6
+  },
+  "mutation": {
+    "old": "edits <= MAX_EDITS && items <= MAX_ITEMS",
+    "new": "edits < MAX_EDITS && items <= MAX_ITEMS",
+    "source_sha256": "29a64d7e717e5bb7a62ffa6904a4941cc6795cdd7e21a646cb324bb4b966b470"
+  }
+}

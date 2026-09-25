@@ -343,3 +343,10 @@ monitor passes establish a short observation window, not sustained reliability.
   reports 54 covers (two new policy-bound covers) and the checker's reviewed
   count moved with it; the boundary mutant is still killed by exactly one
   assertion.
+- 2026-09-25: `gobstopper proxy` (request-time compaction for Claude Code and
+  Codex) added adapter and CLI sources, so the core, transcript and stress
+  receipts were refreshed on the same Mac against the new sources
+  (`2026-09-25-core`, `-transcript`, `-stress`). Kani still reports 178
+  assertions and 54 covers with the boundary mutant killed; the effects
+  inventory gained the `Proxy` command, a `request-proxy` profile and 47
+  public callables.
