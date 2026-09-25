@@ -27,7 +27,7 @@ class AdmissionTests(unittest.TestCase):
         suites = check.admitted_inventory(document())
         self.assertEqual(sum(len(s["tests"]) for s in suites), 161)
         self.assertEqual(check.TOTAL_SECONDS, 900)
-        self.assertEqual(next(s for s in suites if s["name"] == "watch")["seconds"], 240)
+        self.assertEqual(next(s for s in suites if s["name"] == "watch")["seconds"], 360)
         for mutate in (lambda d:d["suites"].pop(),
                        lambda d:d["suites"][0]["argv"].append("--ignored"),
                        lambda d:d["suites"][0].update(seconds=999999),
