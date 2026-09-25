@@ -1,0 +1,153 @@
+{
+  "schema": "gobstopper.assurance-receipt.v1",
+  "observed_at": "2026-09-25T22:00:15.141578+00:00",
+  "scope": "production scalar kernels over full numeric domains; index lengths 0/1/2/4 and four-edit sequence",
+  "passed": true,
+  "inputs_unchanged": true,
+  "versions": {
+    "kani": "0.68.0",
+    "cbmc": "6.11.0",
+    "rustc": "rustc 1.100.0-nightly (8925ea358 2026-08-20)"
+  },
+  "unwind_bounds": {
+    "edit_sequences_four": 5,
+    "indexes_empty": 2,
+    "indexes_one": 3,
+    "indexes_two": 4,
+    "indexes_four": 6
+  },
+  "mutation": {
+    "old": "edits <= MAX_EDITS && items <= MAX_ITEMS",
+    "new": "edits < MAX_EDITS && items <= MAX_ITEMS",
+    "source_sha256": "29a64d7e717e5bb7a62ffa6904a4941cc6795cdd7e21a646cb324bb4b966b470"
+  },
+  "results": [
+    {
+      "case": "production",
+      "passed": true,
+      "counts": {
+        "assertions": 178,
+        "covers": 54,
+        "unwind_checks": 3,
+        "unreachable_safety_checks": 30,
+        "unsupported_paths_excluded": 11
+      },
+      "failed_labels": [],
+      "argv": [
+        "/home/runner/.cargo/bin/cargo-kani",
+        "-p",
+        "gobstopper-core",
+        "--output-format",
+        "terse",
+        "-Z",
+        "unstable-options",
+        "--export-json",
+        "/home/runner/work/_temp/core-evidence/production.json",
+        "--harness-timeout",
+        "60s",
+        "--target-dir",
+        "/home/runner/work/_temp/core-evidence/production-target"
+      ],
+      "exit_code": 0,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "0c2be78d7caeb9c4d6d85f83d536861f4961fa96f33784fb98e9284a54788c8e",
+      "report_sha256": "a095223334a3bd18585688f378ac7971a1d48bb3cbdea9ac8f79b34e5b1a29f8"
+    },
+    {
+      "case": "boundary-mutant",
+      "passed": true,
+      "counts": {
+        "assertions": 2,
+        "covers": 3,
+        "unwind_checks": 0,
+        "unreachable_safety_checks": 0,
+        "unsupported_paths_excluded": 0
+      },
+      "failed_labels": [
+        "exact production plan bounds"
+      ],
+      "argv": [
+        "/home/runner/.cargo/bin/cargo-kani",
+        "-p",
+        "gobstopper-core",
+        "--output-format",
+        "terse",
+        "-Z",
+        "unstable-options",
+        "--export-json",
+        "/home/runner/work/_temp/core-evidence/boundary-mutant.json",
+        "--harness-timeout",
+        "60s",
+        "--target-dir",
+        "/home/runner/work/_temp/core-evidence/boundary-mutant-target",
+        "--harness",
+        "admission::proofs::production_plan_bounds",
+        "--exact"
+      ],
+      "exit_code": 1,
+      "timeout": false,
+      "log_limit": false,
+      "log_sha256": "edbc42c06b56046e6cd423966779287bad468db316b94d52ce6b0fbf8a5f651f",
+      "report_sha256": "3300468b4ae218903cbdb947c1625de52b77d54daa1b864aa4e0392ed2af19eb"
+    }
+  ],
+  "bounds": "Full scalar numeric domains; index lengths 0/1/2/4 and four-edit sequence; production limits unchanged.",
+  "exclusions": [
+    "No parsing/OS/allocation theorem",
+    "No whole-core or whole-system proof",
+    "Unsupported paths must be shown unreachable"
+  ],
+  "raw_receipt_sha256": "abc5262b2a9cd99efed4c5676fbff4e45ffedcbc542b05a39e224212296ad51d",
+  "source_sha256": {
+    "Cargo.lock": "7f56e6bb5f5f13cacb5dea8f5c64bd1c5d3167cf46ca58421515003f98f6e864",
+    "Cargo.toml": "7eddd31196b881e7888a3f80b9f0d037f4e53b22e8d3f125590ed7eec1135bef",
+    "crates/gobstopper-adapters/src/claude.rs": "d0fe42b50bd536c987cdfff5311fee7d939e4c0dbee08ef9ccea23c2fa6efbfe",
+    "crates/gobstopper-adapters/src/codex.rs": "c32a693ac0fcee559ba858515c30e0a5a951ad715f8987fc6cf72357898dfa3b",
+    "crates/gobstopper-adapters/src/eval.rs": "6724042647ac016a0641df8b89aa7fcacc41e2ba39d84c929b3ece65acc76a5e",
+    "crates/gobstopper-adapters/src/payload.rs": "bdf9b225f303580f8cf72de68d34dce48e03689935055e3bc332743c16c4acf1",
+    "crates/gobstopper-cli/src/config.rs": "16313fc910ada2fe9576aa37c3f5eccf559f042f0d7bab92940ad5d6b0d77f72",
+    "crates/gobstopper-cli/src/hooks.rs": "8d3876dfd5f9354be2760c46dce86a8fd2f604cfaff4d4d963d8eeda438866f0",
+    "crates/gobstopper-cli/src/main.rs": "7aa0077f1861f9a230a9074f0563da17c571222bd1681f7c2fa67e4e557a9daf",
+    "crates/gobstopper-cli/src/report.rs": "ee4e09f62069f64ee9e06199c7476f9ec59471b5323658e19f25f5c035e34b59",
+    "crates/gobstopper-cli/src/telemetry.rs": "f637d3f2baed2b0857285c7505a444f2efeaafce749c9ddda3181b4b65de143c",
+    "crates/gobstopper-core/Cargo.toml": "1de61bed40e65fac756fd1529635cda09892ea0482ebdeba6b1e038965116e50",
+    "crates/gobstopper-core/src/admission.rs": "d886b85141879328b3282f22765a96da5986e62b4eeaf2cfe9a16f06b17daa1d",
+    "crates/gobstopper-core/src/estimate.rs": "86c999f925e69ac76b304dd1a1805607e662d91d354fe02afad22939be161672",
+    "crates/gobstopper-core/src/events.rs": "fc5e8b47219c9af825e6863b46c402a54f5751efcf0b019eeddbf262ba9a0ab2",
+    "crates/gobstopper-core/src/lib.rs": "7a2ed76f6874d539b2ec82bf8912701247ee82a7d45674db0c8971d506572d7a",
+    "crates/gobstopper-core/src/model.rs": "17aa0b7d9428a3e1f1d06228adc72f777a860a55478cb63b574f2164d0ec4d65",
+    "crates/gobstopper-core/src/plan.rs": "fcafb6a44a955bd1880b12194560d29371dde40d0a47f6456b9d4f96cb6c67bd",
+    "crates/gobstopper-core/src/policy.rs": "77fa1d849c9d34e0829e8ed009f88ecd508a0d0c22883931f1d2ae492060fd68",
+    "crates/gobstopper-core/src/probe.rs": "77b3814fcec225f6dfcd95e917305cbbaf799424498f08a3c8b7c4e15cad3175",
+    "crates/gobstopper-core/src/strategy/agentic.rs": "2cdce75031567462a8fcc6df5d0c7551235e1dfb14cd9480138ba38a9af7d9a0",
+    "crates/gobstopper-core/src/strategy/auto.rs": "54f9c0334abedeed6c66d70cd4eeb2cbe612a6c090d06aa5e474c749886cb8c2",
+    "crates/gobstopper-core/src/strategy/cache_aware.rs": "72a9dfdffca54a21b13c2ffa786c148a179fd47e144b4dc095c0e047baab3392",
+    "crates/gobstopper-core/src/strategy/cache_edits.rs": "03ec09f5ad36acdbfdb5ef54583243d2721edc092bc3d7b9709afe2dd664acf6",
+    "crates/gobstopper-core/src/strategy/cliff.rs": "0722c8927071ca35134b937d6613e891a9674a75307ceb405e0cb9db6736be61",
+    "crates/gobstopper-core/src/strategy/compacted.rs": "fa57607a7367e8e6ef492ea2ee4cb88178ea069012ba079d12bbb02a2decfb6d",
+    "crates/gobstopper-core/src/strategy/dedupe.rs": "51fbe4f6a381e8bc5657f1a24b1570d0a5d5f51a1c5acd2beeabf61fa2bcca7f",
+    "crates/gobstopper-core/src/strategy/elide.rs": "a008b66213f7d6f239db83e5ce3bf6965b5b85b00cd6862ec43ec1d036cf9b79",
+    "crates/gobstopper-core/src/strategy/micro.rs": "026e582a11b08fb5e779134a4ee8ca7d3065f9cd06c00f19b48bda94a636393e",
+    "crates/gobstopper-core/src/strategy/middle.rs": "e03bd8d80ea87d521425f1c8f6af575d545a1ea908a0c2c8635f39070e0aa31d",
+    "crates/gobstopper-core/src/strategy/mod.rs": "7cfe8517c0a1144259f21a1abf94336b8f467410cb4e6e950b9bcf3c06a376b9",
+    "crates/gobstopper-core/src/strategy/sawtooth.rs": "89bbe87f9f454ca5ae468fab07cc94bbde599bfd57198a637a15d7f2213f45ff",
+    "crates/gobstopper-core/src/strategy/scored.rs": "ba3c13121045ed669bceb7e590668afde0c888ebdb4425e7d8c7dbf6b5c178de",
+    "crates/gobstopper-core/src/strategy/structured.rs": "032114f60b92f9bf41646b8d1459c2717bf7becd032e89bd87bcc0660ce98157",
+    "crates/gobstopper-core/src/validation.rs": "f7735d12c5af9d86a2964ce9ab6502159a5dfe97ff74f2ef5bee07f42698219e",
+    "verify/core/README.md": "b4258b685368375a2aa2827ffec5319e539cc739e5b17ed5e02cc749ddd7fbc4",
+    "verify/core/check.py": "60e4eee9d45483c4856618b19679e8907026df0bf8b890b505a8ab82b9d4e2ed",
+    "verify/core/test_check.py": "918079a7de20188d35f28838f25b2754e0df974c317fb078291e94cde8dc66b3",
+    "verify/watch/check.py": "97ce34ea1926af465cfd242074ad80d9941311c9f412ee163923a90b7bfaebad"
+  },
+  "tool_sha256": {
+    "cargo-kani": "370ff2072582d7342f1353dc7e9f7c993a7e9c4b2e367fe014abbe8d503b3945",
+    "kani-driver": "a0f84272664e45a6b9f1ad7671c2e20aa4523676fb57f5310c18b0a359278a6d",
+    "kani-compiler": "d627c15f3e46f2ffd95a08a2e16e0c1d7dbbe1cb7ee9c05d69a8bd14a4336b71",
+    "cbmc": "01ae2ae74a9dc5673631e42256f780393081650f4a22d6f4220566c0deb1643a",
+    "goto-instrument": "3b4ac9c5d41f72db7c455d45f9f7de5dc7240d3b020a1c68a6b210ad435d4c0c",
+    "goto-cc": "8e58405a2a1c7ec56db52d955cdd0f54a5cca1be09dfdd4f754ea72d111b8215",
+    "rustc-version": "b700111259f7c03ab98b99a385e21da72557570d71349645a4b5ae445da8dc55",
+    "rust-toolchain-version": "a5bac1f291b25c5c48cbc99b2ee4720fb2ef8f2bbcba3b13d6ed652cf07f9ec8"
+  }
+}
