@@ -426,6 +426,10 @@ enum Cmd {
         /// Run one discovery pass and exit, useful for supervised monitoring.
         #[arg(long)]
         once: bool,
+        /// Bound transcript loading and plan evaluation to this many seconds
+        /// per pass; remaining sessions defer to the next pass. 0 = unbounded.
+        #[arg(long, default_value = "0")]
+        eval_budget: u64,
         /// Retired compatibility flag; in-place staged swaps are disabled.
         #[arg(long)]
         double_buffer: bool,
@@ -3752,6 +3756,11 @@ struct WatchDecisions {
     legacy_unresolved: u64,
     native_unresolved: u64,
     settled: u64,
+    /// Sessions that reached the pass loop but skipped transcript work
+    /// because `--eval-budget` was exhausted. Not a terminal decision —
+    /// deferred sessions are reconsidered next pass in the same order.
+    #[serde(default)]
+    eval_deferred: u64,
     cooldown: u64,
     below_trigger: u64,
     native_unqualified: u64,
@@ -3964,6 +3973,7 @@ fn cmd_watch(
     active_only: bool,
     provider: Option<String>,
     once: bool,
+    eval_budget: u64,
 ) -> Result<()> {
     if interval == 0 {
         bail!("watch interval must be positive");
@@ -4152,6 +4162,12 @@ fn cmd_watch(
         // Cheapest sessions first: a multi-minute apply on one giant
         // session would otherwise delay every session behind it.
         found.sort_by_key(session_cost_hint);
+        // --eval-budget bounds only the transcript work (context fallback
+        // load, transcript load, plan evaluation). Discovery and the cheap
+        // fingerprint/suppression gates above always run, so a deferred
+        // session is counted, never mistaken for a clean decision.
+        let eval_deadline = (eval_budget > 0)
+            .then(|| std::time::Instant::now() + std::time::Duration::from_secs(eval_budget));
         decisions.discovered = found.len() as u64;
         for d in found {
             if provider.is_some_and(|p| p != d.handle.provider) {
@@ -4370,12 +4386,24 @@ fn cmd_watch(
                 }
                 continue;
             }
-            let ctx = if let Some(context) = d.usage.reported_context() {
-                context
-            } else {
-                detect::load(&d)
-                    .map(|t| t.estimated_context_tokens())
-                    .unwrap_or(0)
+            // A session with no usable provider usage sample still needs a
+            // context estimate for the trigger gate — but only then. A Devin
+            // export or a full transcript parse just to answer "below
+            // trigger?" is the expensive part of a pass; any measured hint
+            // (reported context, preceding-token total, or a partial
+            // component subtotal) answers it without loading. Bounded by
+            // --eval-budget like every other transcript load below.
+            let ctx = match d.usage.context_hint() {
+                Some(context) => context,
+                None => {
+                    if eval_deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                        decisions.eval_deferred += 1;
+                        continue;
+                    }
+                    detect::load(&d)
+                        .map(|t| t.estimated_context_tokens())
+                        .unwrap_or(0)
+                }
             };
             if ctx < trigger {
                 decisions.below_trigger += 1;
@@ -4947,6 +4975,10 @@ fn cmd_watch(
                 last_fire.insert(session_key.clone(), std::time::Instant::now());
                 continue;
             }
+            if eval_deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                decisions.eval_deferred += 1;
+                continue;
+            }
             let (transcript, source_sha256) = match copy::load_bound(d.handle.clone()) {
                 Ok(t) => t,
                 Err(_) => {
@@ -5106,6 +5138,13 @@ fn cmd_watch(
             native_operations::artifact_sha256()?;
             pass_completed_at_ms = Some(now_millis());
             persist_watch_state!()?;
+        } else if once && decisions.eval_deferred > 0 {
+            // Shape differs from "[dry-run] provider session: plan" on
+            // purpose: a deferred count is pass coverage, not a plan line.
+            eprintln!(
+                "[dry-run] eval budget: {} session(s) deferred unevaluated",
+                decisions.eval_deferred
+            );
         }
         if once {
             return Ok(());
@@ -5721,6 +5760,7 @@ fn main() -> Result<()> {
             active_only,
             provider,
             once,
+            eval_budget,
         } => cmd_watch(
             &cli,
             &cfg,
@@ -5730,6 +5770,7 @@ fn main() -> Result<()> {
             *active_only,
             provider.clone(),
             *once,
+            *eval_budget,
         ),
         Cmd::PolicyCheck {
             provider,

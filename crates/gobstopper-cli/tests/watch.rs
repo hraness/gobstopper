@@ -686,6 +686,31 @@ fn dry_run_once_does_not_write_events_or_forks() {
 }
 
 #[test]
+fn eval_budget_flag_completes_a_pass_and_deferred_line_is_not_a_plan_line() {
+    let f = Fixture::new();
+    f.idle(&f.0.join("codex/sessions/rollout-fixture.jsonl"));
+    // Both the unbounded default and an explicit budget complete a pass.
+    for budget in ["0", "60"] {
+        let output = f
+            .command(&["watch", "--once", "--dry-run", "--eval-budget", budget])
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+    // The deferred coverage line exists only when a session was actually
+    // deferred; a budgeted pass that fits emits no line at all.
+    let output = f
+        .command(&["watch", "--once", "--dry-run", "--eval-budget", "60"])
+        .output()
+        .unwrap();
+    assert!(!String::from_utf8_lossy(&output.stderr).contains("eval budget:"));
+}
+
+#[test]
 fn native_noop_has_snapshot_evidence_and_retries_after_cooldown_expiry() {
     let f = Fixture::new();
     f.idle(&f.0.join("codex/sessions/rollout-fixture.jsonl"));

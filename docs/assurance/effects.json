@@ -4645,6 +4645,13 @@
     },
     {
       "path": "crates/gobstopper-core/src/model.rs",
+      "symbol": "context_hint",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/model.rs",
       "symbol": "context_tokens",
       "effects": [
         "pure"
