@@ -1084,7 +1084,7 @@ mod tests {
     #[test]
     fn evidence_fields_are_additive_and_backward_compatible() {
         let mut event = CompactionEvent::new(
-            Provider::Devin,
+            Provider::Codex,
             "sess-9",
             "auto",
             "provider_compact",

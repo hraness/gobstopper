@@ -1,4 +1,3 @@
-use rusqlite::{params, Connection};
 use serde_json::json;
 use std::fs;
 use std::path::PathBuf;
@@ -21,7 +20,7 @@ impl Fixture {
             NEXT.fetch_add(1, Ordering::Relaxed),
         ));
         fs::create_dir(&root).unwrap();
-        for path in ["config/gobstopper", "devin", "claude/projects/synthetic"] {
+        for path in ["config/gobstopper", "claude/projects/synthetic"] {
             fs::create_dir_all(root.join(path)).unwrap();
         }
         Self(root)
@@ -37,9 +36,7 @@ impl Fixture {
             .arg("--codex-home")
             .arg(self.0.join("codex"))
             .arg("--claude-home")
-            .arg(self.0.join("claude"))
-            .arg("--devin-home")
-            .arg(self.0.join("devin"));
+            .arg(self.0.join("claude"));
         command
     }
 
@@ -256,70 +253,6 @@ fn configuration_special_files_refuse_without_blocking_or_disclosing_contents() 
         fs::read_to_string(target).unwrap(),
         "private-config-sentinel"
     );
-}
-
-#[test]
-fn devin_apply_and_undo_refuse_before_snapshot_or_confirmation() {
-    let fixture = Fixture::new();
-    let db = fixture.0.join("devin/sessions.db");
-    let conn = Connection::open(&db).unwrap();
-    conn.execute_batch(
-        "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, working_directory TEXT,
-         created_at INTEGER, last_activity_at INTEGER, main_chain_id INTEGER);
-         CREATE TABLE message_nodes (session_id TEXT, node_id INTEGER, parent_node_id INTEGER,
-         chat_message TEXT, created_at INTEGER, metadata TEXT);",
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO sessions VALUES ('synthetic', 'synthetic', '/synthetic', 1, 1, 1)",
-        [],
-    )
-    .unwrap();
-    conn.execute(
-        "INSERT INTO message_nodes VALUES ('synthetic', 1, NULL, ?1, 1, NULL)",
-        params![json!({"role":"user","content":"preserve this source"}).to_string()],
-    )
-    .unwrap();
-    drop(conn);
-    let original = fs::read(&db).unwrap();
-    // Evaluation must export this database session into one frozen, read-only
-    // snapshot; feeding SQLite bytes into the JSONL evaluator used to drop it.
-    let output = fixture.run(&["eval", "synthetic", "--json"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let rows: Vec<serde_json::Value> = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(!rows.is_empty());
-    assert!(rows.iter().all(|row| row["source_sha256"]
-        .as_str()
-        .is_some_and(|hash| hash.len() == 64)));
-    let output = fixture.run(&["bench", "--all"]);
-    assert!(
-        output.status.success(),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let csv = String::from_utf8(output.stdout).unwrap();
-    assert_eq!(csv.lines().skip(1).count(), rows.len());
-    assert!(csv
-        .lines()
-        .skip(1)
-        .all(|line| line.starts_with("devin,synthetic,")));
-    assert_eq!(fs::read(&db).unwrap(), original);
-    assert_eq!(fs::read_dir(fixture.0.join("devin")).unwrap().count(), 1);
-    assert!(!fixture.0.join("data").exists());
-    for operation in ["apply", "undo"] {
-        let output = fixture.run(&[operation, "synthetic", "--yes"]);
-        assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr)
-            .contains("lifetime provider custody is unavailable"));
-        assert!(output.stdout.is_empty());
-        assert_eq!(fs::read(&db).unwrap(), original);
-        assert_eq!(fs::read_dir(fixture.0.join("devin")).unwrap().count(), 1);
-        assert!(!fixture.0.join("data").exists());
-    }
 }
 
 #[test]

@@ -23,7 +23,7 @@ the complete application is verified.
 | `estimate::add_tokens` | Model totals, auto preserved-prefix totals, structured strategy savings, digest overhead | All two-`u64` inputs; independent wide saturating-sum oracle |
 | `estimate::elision_savings` | `TranscriptItem::estimated_elision_savings` | Full `u64`, optional bytes and `u32` part count; no overflow/truncation, live payload required, saving no larger than item estimate |
 | `UsageSample::observe_cumulative_report` | Codex cumulative usage ingestion | Arbitrary old/new scalar state and all provenance enums; preserve absent reports, distinguish reported zero from explicit reset/unavailable context, cumulative input establishes full accounting, cached <= known input, positive window updates, idempotent repeated report |
-| `UsageSample::observe_context_components` | Devin metrics and Claude usage projection | Optional full-width components with an absent or explicit null reason; partial numbers never establish complete context, overflow remains unavailable, complete zero is measured |
+| `UsageSample::observe_context_components` | Claude usage projection | Optional full-width components with an absent or explicit null reason; partial numbers never establish complete context, overflow remains unavailable, complete zero is measured |
 | `EvidenceAgreement::join` | Shared event-pair qualification for reports and adaptive history | Arbitrary states and full-width scalar evidence; commutative, associative, idempotent, absorbing conflicts; JSON parsing, collection/key construction and evidence equality on records remain regression-tested |
 | `policy::validate_policy` | CLI `config::validate_policy` | Full integer and optional `f64` domain, including NaN/infinity; exact policy admission boundaries |
 

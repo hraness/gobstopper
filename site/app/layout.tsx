@@ -114,7 +114,7 @@ const structuredData = {
       operatingSystem: "macOS, Linux",
       sameAs: GITHUB_URL,
       featureList: [
-        "Claude Code, Codex, and Devin session detection",
+        "Claude Code and Codex session detection",
         "Compaction previews at a trigger and floor you choose",
         "Compacted Claude Code and Codex copies",
         "Local snapshot vault with search and undo",

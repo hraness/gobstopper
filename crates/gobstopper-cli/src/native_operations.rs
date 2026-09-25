@@ -168,7 +168,7 @@ impl Target {
         Ok(sha(&serde_json::to_vec(self)?))
     }
     fn valid(&self) -> bool {
-        matches!(self.provider.as_str(), "codex" | "claude_code" | "devin")
+        matches!(self.provider.as_str(), "codex" | "claude_code")
             && !self.session_id.is_empty()
             && self.session_id.len() <= 256
             && !self.session_id.chars().any(char::is_control)
@@ -180,7 +180,6 @@ impl Target {
         match self.provider.as_str() {
             "codex" => "private-app-server-matching-compaction-item-and-turn-v1",
             "claude_code" => "private-resume-exit-status-assumption-v1",
-            "devin" => "private-acp-session-terminal-no-overlapping-operation-assumption-v1",
             _ => "unsupported",
         }
     }
@@ -753,7 +752,7 @@ impl Operation {
             source: handle.path.canonicalize()?,
             provider_home: provider_home.canonicalize()?,
         };
-        if before.provider != handle.provider
+        if before.provider != handle.provider.as_str()
             || before.session_id != handle.session_id
             || before.path.canonicalize()? != target.source
             || !valid_sha(policy_sha256)

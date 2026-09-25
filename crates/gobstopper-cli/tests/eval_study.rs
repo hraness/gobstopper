@@ -105,56 +105,6 @@ impl Drop for Fixture {
 
 #[cfg(unix)]
 #[test]
-fn raw_devin_vault_image_refuses_without_materializing_a_shared_temp_file() {
-    let fixture = Fixture::new();
-    let vault = fixture.root.join("data/gobstopper/vault");
-    let raw = b"SQLite format 3\0synthetic raw image";
-    let entry = gobstopper_adapters::vault::snapshot_data(
-        raw,
-        &fixture.source,
-        gobstopper_core::Provider::Devin,
-        "synthetic",
-        None,
-        &vault,
-    )
-    .unwrap();
-    let target = fixture.root.join("private-sentinel");
-    fs::write(&target, "private-sentinel").unwrap();
-    let temp = fixture
-        .root
-        .join(format!("gobstopper-audit-{}.db", entry.sha256));
-    std::os::unix::fs::symlink(&target, &temp).unwrap();
-    let output = Command::new(env!("CARGO_BIN_EXE_gobstopper"))
-        .env_clear()
-        .env("PATH", "")
-        .env("XDG_CONFIG_HOME", fixture.root.join("config"))
-        .env("XDG_DATA_HOME", fixture.root.join("data"))
-        .env("TMPDIR", &fixture.root)
-        .args([
-            "eval-study",
-            &format!("vault:{}", entry.sha256),
-            "--json",
-            "--manifest",
-        ])
-        .arg(fixture.root.join("unread-manifest.json"))
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stderr)
-            .contains("raw Devin store images are unavailable for replay"),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert_eq!(fs::read_to_string(target).unwrap(), "private-sentinel");
-    assert!(temp.symlink_metadata().unwrap().file_type().is_symlink());
-    assert_eq!(
-        gobstopper_adapters::vault::read_object(&entry.sha256, &vault).unwrap(),
-        raw
-    );
-}
-
-#[test]
 fn typed_replay_preserves_bound_evidence_without_claiming_live_quality() {
     let fixture = Fixture::new();
     let output = fixture.run(&fixture.manifest, "10");

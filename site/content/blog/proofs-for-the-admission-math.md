@@ -84,7 +84,7 @@ The checker rebuilds the proofs from scratch, replays them in a fresh Lean kerne
 
 ## Tying the Lean model to the shipped Rust
 
-A proof about a model helps only if the model matches the program, and Gobstopper checks that match with tests. A Lean program runs the proved operations on 20 synthetic cases and writes the expected results to a file. A Rust test then builds synthetic transcript files in the Codex, Claude Code, and Devin formats, runs the same 23 steps through Gobstopper's actual validation and transform code for each provider, and compares the output record by record: 12 accepted steps, including 3 that add a summary, and 11 refused.
+A proof about a model helps only if the model matches the program, and Gobstopper checks that match with tests. A Lean program runs the proved operations on 20 synthetic cases and writes the expected results to a file. A Rust test then builds synthetic transcript files in the Codex and Claude Code formats, runs the same 23 steps through Gobstopper's actual validation and transform code for each provider, and compares the output record by record: 12 accepted steps, including 3 that add a summary, and 11 refused.
 
 Two planted bugs check that the comparison can fail from either side. One changes the Lean side to write a masked record's value as 1 instead of 0. The other changes the Codex writer in Rust so it replaces nothing. Each must make the comparison fail on the expected record. CI runs the Lean proofs, the correspondence test, and both planted bugs on every pull request and push to main.
 

@@ -80,7 +80,7 @@ below are relative to the repository root.
 | --- | --- |
 | `Start`, `Holding`, `CanShare`, `CanPrune` | `vault.rs::Custody` locks the stable vault directory inode on Unix. Snapshot publication and copy operations acquire shared custody; `prune` takes exclusive custody. |
 | `PublishChunks`, `PublishManifest`, `VerifySnapshot`, `AppendIndex` | `vault.rs::snapshot_data` publishes immutable content-addressed objects, checks reconstruction, then durably appends the index. |
-| `PublishReceipt`, `pins` | `copy.rs::{compact, compact_via_compacted, publish_prepared}` retains shared custody across snapshot/receipt publication. `prune` treats prepared and complete operation references, plus explicit native recovery pins, as roots. Direct Devin store mutation is disabled. |
+| `PublishReceipt`, `pins` | `copy.rs::{compact, compact_via_compacted, publish_prepared}` retains shared custody across snapshot/receipt publication. `prune` treats prepared and complete operation references, plus explicit native recovery pins, as roots. |
 | `Mark` | `vault.rs::prune` selects retained entries, resolves operation roots, validates retained manifests, and computes unreachable objects while holding exclusive custody. |
 | `ReplaceIndex`, `DeleteManifests`, `DeleteChunks` | `prune` replaces the index before unlinking its selected unreachable objects. |
 | `StartRead`, `FinishRead` | `vault.rs::Reader` holds shared custody across selection and complete reconstruction. `read_object`, `diff` and `read_record` also take shared custody. The independent Python reader uses the same directory flock; the internal locked helper avoids recursive exclusive acquisition inside prune. |

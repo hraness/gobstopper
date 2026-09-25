@@ -6,12 +6,11 @@
 //! Passing these checks is not provider resume qualification or a proof that a
 //! summary preserves the conversation's meaning.
 //!
-//! Claude and Devin graph parents must precede children; duplicate identities,
+//! Claude graph parents must precede children; duplicate identities,
 //! missing heads and cycles make context unavailable. Tool pairing considers
 //! the selected live branch. Codex pairing considers only the newest compacted
 //! replacement history and subsequent response items, including subrecord order.
 //! Codex supports call_id, tool_call_id, then id identity aliases in that order;
-//! Devin accepts exact IDs or one unambiguous trailing-# nonce namespace.
 //!
 //! Invalid nonblank JSON is an error except a sole torn final line, which is a
 //! partial_tail warning. Duplicate object keys remain errors even at EOF. Depth,
@@ -145,7 +144,6 @@ pub fn verify(provider: Provider, bytes: &[u8]) -> Vec<VerifyFinding> {
     match provider {
         Provider::ClaudeCode => verify_claude(&records, &mut findings),
         Provider::Codex => verify_codex(&records, &mut findings),
-        Provider::Devin => verify_devin(&records, &mut findings),
     }
 
     findings.sort_by_key(|f| f.line_index.unwrap_or(usize::MAX));
@@ -343,211 +341,6 @@ fn verify_claude(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
                 Some(line),
                 "orphaned_tool_result",
                 "tool_result block has no matching tool_use in an earlier record",
-            ));
-        }
-    }
-}
-
-/// Devin dialect checks against the canonical export form (see
-/// `devin::export_bytes`): line 0 is a `session_meta` record naming
-/// `main_chain_id`; every later line is a `message_node` with a unique
-/// `node_id`, a `parent_node_id` that resolves to an earlier node, and a
-/// `chat_message` object. Assistant `tool_calls[].id` values must be
-/// answered by a later `role == "tool"` node's `tool_call_id`, and every
-/// tool node's `tool_call_id` must match an earlier assistant call.
-fn verify_devin(records: &[Option<Value>], findings: &mut Vec<VerifyFinding>) {
-    let mut seen_nodes: HashSet<i64> = HashSet::new();
-    let mut saw_meta = false;
-    let mut head = None;
-    let mut parents = HashMap::new();
-    let mut node_lines = HashMap::new();
-    // (call id, line_index) for assistant calls; tool nodes likewise.
-    let mut calls: Vec<(&str, usize)> = Vec::new();
-    let mut results: Vec<(&str, usize)> = Vec::new();
-
-    for (i, record) in records.iter().enumerate() {
-        let Some(record) = record else { continue };
-        match record.get("type").and_then(Value::as_str) {
-            Some("session_meta") => {
-                if saw_meta {
-                    findings.push(error(
-                        Some(i),
-                        "duplicate_session_meta",
-                        "export repeats session metadata",
-                    ));
-                }
-                saw_meta = true;
-                head = record.get("main_chain_id").and_then(Value::as_i64);
-                if record
-                    .get("main_chain_id")
-                    .is_some_and(|v| !v.is_null() && v.as_i64().is_none_or(|id| id < 0))
-                {
-                    findings.push(error(
-                        Some(i),
-                        "invalid_chain_head",
-                        "main_chain_id must be null or a nonnegative integer",
-                    ));
-                }
-                if i != 0 {
-                    findings.push(warning(
-                        Some(i),
-                        "misplaced_session_meta",
-                        "session_meta record is not the first line",
-                    ));
-                }
-                if record.get("main_chain_id").is_none() {
-                    findings.push(error(
-                        Some(i),
-                        "missing_main_chain",
-                        "session_meta record lacks main_chain_id",
-                    ));
-                }
-            }
-            Some("message_node") => {
-                let Some(node_id) = record.get("node_id").and_then(Value::as_i64) else {
-                    findings.push(error(
-                        Some(i),
-                        "missing_node_id",
-                        "message_node record lacks an integer node_id",
-                    ));
-                    continue;
-                };
-                if node_id < 0 {
-                    findings.push(error(
-                        Some(i),
-                        "invalid_node_id",
-                        "node_id must be nonnegative",
-                    ));
-                }
-                if let Some(parent) = record.get("parent_node_id").and_then(Value::as_i64) {
-                    if !seen_nodes.contains(&parent) {
-                        findings.push(error(
-                            Some(i),
-                            "broken_parent_chain",
-                            "parent_node_id does not match any earlier node_id",
-                        ));
-                    }
-                } else if !record.get("parent_node_id").is_some_and(Value::is_null) {
-                    findings.push(error(
-                        Some(i),
-                        "invalid_parent_id",
-                        "parent_node_id must be null or an integer",
-                    ));
-                }
-                if !seen_nodes.insert(node_id) {
-                    findings.push(error(
-                        Some(i),
-                        "duplicate_node_id",
-                        "node_id already appears on an earlier record",
-                    ));
-                }
-                parents.insert(
-                    node_id,
-                    record.get("parent_node_id").and_then(Value::as_i64),
-                );
-                node_lines.insert(node_id, i);
-                match record.get("chat_message") {
-                    Some(msg) if msg.is_object() => match msg.get("role").and_then(Value::as_str) {
-                        Some("assistant") => {
-                            if let Some(tcs) = msg.get("tool_calls").and_then(Value::as_array) {
-                                for call in tcs {
-                                    if let Some(id) = call.get("id").and_then(Value::as_str) {
-                                        calls.push((id, i));
-                                    }
-                                }
-                            }
-                        }
-                        Some("tool") => {
-                            if let Some(id) = msg.get("tool_call_id").and_then(Value::as_str) {
-                                results.push((id, i));
-                            }
-                        }
-                        _ => {}
-                    },
-                    _ => findings.push(error(
-                        Some(i),
-                        "invalid_chat_message",
-                        "chat_message is missing or not an object",
-                    )),
-                }
-            }
-            _ => {}
-        }
-    }
-    if !saw_meta {
-        findings.push(error(
-            None,
-            "missing_session_meta",
-            "export has no session_meta record",
-        ));
-    }
-
-    if head.is_some_and(|id| !seen_nodes.contains(&id)) {
-        findings.push(error(
-            Some(0),
-            "missing_chain_head",
-            "main_chain_id names an absent node",
-        ));
-    }
-    let mut live = HashSet::new();
-    let mut cursor = head;
-    let mut resolved = true;
-    while let Some(id) = cursor {
-        let Some(parent) = parents.get(&id) else {
-            resolved = false;
-            break;
-        };
-        if !live.insert(node_lines[&id]) {
-            resolved = false;
-            break;
-        }
-        cursor = *parent;
-    }
-    if resolved && !live.is_empty() {
-        calls.retain(|(_, line)| live.contains(line));
-        results.retain(|(_, line)| live.contains(line));
-    }
-    let mut by_id: HashMap<String, Vec<usize>> = HashMap::new();
-    for &(id, line) in &calls {
-        if !crate::devin::valid_tool_id(id) {
-            findings.push(error(
-                Some(line),
-                "invalid_tool_id",
-                "tool call has an invalid identifier",
-            ));
-            continue;
-        }
-        let entries = by_id.entry(id.to_string()).or_default();
-        if !entries.is_empty() {
-            findings.push(error(
-                Some(line),
-                "duplicate_tool_call_id",
-                "tool call ID is duplicated in effective context",
-            ));
-        }
-        entries.push(line);
-    }
-    let mut answered = HashSet::new();
-    for &(id, line) in &results {
-        let resolved = crate::devin::matching_tool_call(&by_id, id)
-            .and_then(|key| by_id.get(key).map(|lines| (key, lines)))
-            .filter(|(_, lines)| lines.len() == 1 && lines[0] < line);
-        if let Some((key, _)) = resolved {
-            answered.insert(key);
-        } else {
-            findings.push(warning(
-                Some(line),
-                "orphaned_tool_result",
-                "tool node does not resolve uniquely to an earlier assistant call",
-            ));
-        }
-    }
-    for &(id, line) in &calls {
-        if !answered.contains(id) {
-            findings.push(error(
-                Some(line),
-                "orphaned_tool_call",
-                "tool_calls entry has no uniquely matching tool node in a later record",
             ));
         }
     }

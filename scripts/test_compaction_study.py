@@ -153,16 +153,16 @@ class StudyRunnerTests(unittest.TestCase):
         rows = [
             {'provider': 'codex', 'status': 'ok', 'retention': dict(rt)},
             {'provider': 'codex', 'status': 'ok', 'retention': dict(rt)},
-            {'provider': 'devin', 'status': 'ok', 'retention': dict(rt)},
+            {'provider': 'claude_code', 'status': 'ok', 'retention': dict(rt)},
             {'provider': 'codex', 'status': 'failed'},
             {'provider': 'codex', 'status': 'skipped:store_unreadable'},
         ]
         out = AUDIT.rollup(rows)
-        self.assertEqual(set(out), {'codex', 'devin'})
+        self.assertEqual(set(out), {'codex', 'claude_code'})
         self.assertEqual(out['codex'], {'pairs': 2, 'checks': 20, 'retained': 10,
                                         'lexical_retained': 14, 'same_origin_retained': 10,
                                         'source_bound_retained': 4})
-        self.assertEqual(out['devin']['pairs'], 1)
+        self.assertEqual(out['claude_code']['pairs'], 1)
 
     def test_seed_styles_carry_identical_facts(self):
         for style, seed in PROBE.SEEDS.items():

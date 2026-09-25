@@ -46,7 +46,7 @@ and regression suites cover parsing and adversarial graph shapes.
 consulting Rust. The checker regenerates it in a fresh private build and requires
 byte-for-byte equality with the reviewed fixture. The Rust integration test
 `crates/gobstopper-adapters/tests/lean_correspondence.rs` independently constructs
-real synthetic Codex, Claude and Devin JSONL, resolves physical positions,
+real synthetic Codex and Claude JSONL, resolves physical positions,
 projects with the real adapters, invokes `validation::validate_edits`, and invokes
 the real pure `transform` only when admitted. Wire observations are decoded
 separately from the production content projection to reduce common-mode errors.
@@ -62,7 +62,7 @@ suffix does not move in this fixture family.
 
 The test compares payload observations, stable semantic identities/order,
 every original semantic record envelope and tool endpoints, effective projection,
-and provider verifier findings. Claude/Devin new digest identity and parent
+and provider verifier findings. Claude new digest identity and parent
 binding are checked. Codex appends a semantic item without a provider UUID; its
 fresh algebra identity represents the new position, **not** an invented guarantee
 that the wire format allocated a globally unique provider identity.

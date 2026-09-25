@@ -763,7 +763,7 @@ mod tests {
     #[test]
     fn native_control_decisions_are_counted_as_suppressed_watch_work() {
         let mut blocked = event(
-            Provider::Devin,
+            Provider::Codex,
             UUID_A,
             100,
             "skipped",
@@ -774,7 +774,7 @@ mod tests {
         blocked.rollout_percent = Some(0);
         let result = cohort_summary(&crate::config::Config::default(), &[blocked]);
         assert_eq!(
-            result["providers"]["devin"]["cohorts"]["control"]["watch_suppressed"],
+            result["providers"]["codex"]["cohorts"]["control"]["watch_suppressed"],
             1
         );
     }

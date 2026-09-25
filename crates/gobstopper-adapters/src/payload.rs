@@ -181,7 +181,6 @@ pub(crate) fn elision_targets(
     let transcript = match provider {
         gobstopper_core::Provider::Codex => crate::codex::load_bytes(handle, raw.as_bytes()),
         gobstopper_core::Provider::ClaudeCode => crate::claude::load_bytes(handle, raw.as_bytes()),
-        gobstopper_core::Provider::Devin => crate::devin::load_bytes(handle, raw.as_bytes()),
     }?;
     let eligible: std::collections::HashSet<_> = transcript
         .items

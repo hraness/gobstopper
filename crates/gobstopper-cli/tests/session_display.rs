@@ -79,8 +79,6 @@ impl Fixture {
             .arg(self.root.join("codex"))
             .arg("--claude-home")
             .arg(self.root.join("claude"))
-            .arg("--devin-home")
-            .arg(self.root.join("devin"))
             .args(args)
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_DATA_HOME", self.root.join("data"))

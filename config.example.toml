@@ -25,13 +25,6 @@ min_savings_tokens = 4_096     # reject plans that reclaim less
                                # decision:block at/above this context size
                                # (treatment cohort only; 0 disables)
 
-[provider.devin]
-# Policy can advise the session owner to use `/compact`.
-# Direct-store apply/restore and released CLI native dispatch are disabled.
-# trigger_tokens = 200_000
-# auto_compact_closed = false   # compatibility setting; true cannot enable dispatch
-# auto_apply_store = false      # compatibility setting; true cannot enable store writes
-
 # Per-session overrides, keyed by session id
 # [sessions."01a08d7c-77fd-7690-9413-e8219b379151"]
 # strategy = "structured"

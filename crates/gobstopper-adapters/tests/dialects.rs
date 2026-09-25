@@ -1,5 +1,5 @@
 //! Synthetic dialect contracts, not live-provider compatibility evidence.
-use gobstopper_adapters::{claude, codex, codex_compact, devin, verify, AdapterError};
+use gobstopper_adapters::{claude, codex, codex_compact, verify, AdapterError};
 use gobstopper_core::{Edit, Provider, SessionHandle, Transcript};
 use serde_json::{json, Value};
 
@@ -16,7 +16,6 @@ fn load(provider: Provider, bytes: &[u8]) -> Result<Transcript, AdapterError> {
     match provider {
         Provider::Codex => codex::load_bytes(handle(provider), bytes),
         Provider::ClaudeCode => claude::load_bytes(handle(provider), bytes),
-        Provider::Devin => devin::load_bytes(handle(provider), bytes),
     }
 }
 fn transform(
@@ -32,7 +31,6 @@ fn transform(
     match provider {
         Provider::Codex => codex::transform(bytes, &edits),
         Provider::ClaudeCode => claude::transform(bytes, &edits),
-        Provider::Devin => devin::transform(bytes, &edits),
     }
 }
 fn lines(records: &[Value]) -> Vec<u8> {
@@ -50,29 +48,6 @@ fn codes(provider: Provider, raw: &[u8]) -> Vec<&'static str> {
 }
 
 #[test]
-fn devin_projection_retains_physical_indexes_across_skipped_records() {
-    let raw = format!(
-        "{}\n{}\n{}\n{}\n\n{}\n",
-        json!({"type":"session_meta","session_id":"fixture","main_chain_id":2}),
-        json!({"type":"future_bookkeeping"}),
-        json!({"type":"message_node","node_id":0,"parent_node_id":null,"chat_message":{"role":"user","content":"goal"}}),
-        json!({"type":"message_node","node_id":1,"parent_node_id":0,"chat_message":{"role":"assistant","tool_calls":[{"id":"c","name":"read"}]}}),
-        json!({"type":"message_node","node_id":2,"parent_node_id":1,"chat_message":{"role":"tool","tool_call_id":"c","content":"x".repeat(300)}})
-    );
-    let t = load(Provider::Devin, raw.as_bytes()).unwrap();
-    assert_eq!(
-        t.items.iter().map(|i| i.line_index).collect::<Vec<_>>(),
-        vec![2, 3, 5]
-    );
-    let after = transform(Provider::Devin, raw.as_bytes(), vec![5]).unwrap();
-    assert!(after.len() < raw.len());
-    assert_eq!(
-        std::str::from_utf8(&after).unwrap().lines().nth(2),
-        raw.lines().nth(2)
-    );
-}
-
-#[test]
 fn protected_and_unknown_envelopes_never_become_rewrite_targets() {
     let cases = [
         (
@@ -85,13 +60,6 @@ fn protected_and_unknown_envelopes_never_become_rewrite_targets() {
             Provider::ClaudeCode,
             lines(&[
                 json!({"type":"system","uuid":"u","message":{"role":"system","content":[{"type":"tool_result","tool_use_id":"c","content":"x".repeat(300)}]}}),
-            ]),
-        ),
-        (
-            Provider::Devin,
-            lines(&[
-                json!({"type":"session_meta","session_id":"fixture","main_chain_id":0}),
-                json!({"type":"message_node","node_id":0,"parent_node_id":null,"chat_message":{"role":"system","content":"x".repeat(300)}}),
             ]),
         ),
     ];
@@ -107,36 +75,6 @@ fn protected_and_unknown_envelopes_never_become_rewrite_targets() {
             "{provider:?}"
         );
     }
-}
-
-#[test]
-fn invalid_devin_graphs_are_unavailable_and_reported() {
-    for (head, parent, code) in [
-        (0, json!(0), "broken_parent_chain"),
-        (9, Value::Null, "missing_chain_head"),
-    ] {
-        let raw = lines(&[
-            json!({"type":"session_meta","session_id":"fixture","main_chain_id":head}),
-            json!({"type":"message_node","node_id":0,"parent_node_id":parent,"chat_message":{"role":"tool","tool_call_id":"c","content":"x".repeat(300)}}),
-        ]);
-        assert!(codes(Provider::Devin, &raw).contains(&code));
-        assert!(load(Provider::Devin, &raw)
-            .unwrap()
-            .items
-            .iter()
-            .all(|i| i.elidable_bytes.is_none() && i.est_tokens == 0));
-        assert_eq!(transform(Provider::Devin, &raw, vec![1]).unwrap(), raw);
-    }
-}
-
-#[test]
-fn overlapping_devin_ids_do_not_cross_pair() {
-    let raw = lines(&[
-        json!({"type":"session_meta","session_id":"fixture","main_chain_id":1}),
-        json!({"type":"message_node","node_id":0,"parent_node_id":null,"chat_message":{"role":"assistant","tool_calls":[{"id":"call","name":"first"},{"id":"call-long","name":"second"}]}}),
-        json!({"type":"message_node","node_id":1,"parent_node_id":0,"chat_message":{"role":"tool","tool_call_id":"call-long","content":"x".repeat(300)}}),
-    ]);
-    assert!(codes(Provider::Devin, &raw).contains(&"orphaned_tool_call"));
 }
 
 #[test]
@@ -198,7 +136,6 @@ fn fixture_provider(case: &Value) -> Provider {
     match case["provider"].as_str().unwrap() {
         "codex" => Provider::Codex,
         "claude-code" => Provider::ClaudeCode,
-        "devin" => Provider::Devin,
         _ => panic!("unknown corpus provider"),
     }
 }
@@ -360,81 +297,12 @@ fn duplicate_id_cycles_and_missing_heads_do_not_select_a_branch() {
             .iter()
             .all(|item| item.est_tokens == 0 && item.elidable_bytes.is_none()));
     }
-    for (head, nodes) in [
-        (
-            json!(-1),
-            vec![
-                json!({"type":"message_node","node_id":0,"parent_node_id":null,"chat_message":{"role":"user","content":"q"}}),
-            ],
-        ),
-        (
-            json!(18446744073709551615u64),
-            vec![
-                json!({"type":"message_node","node_id":0,"parent_node_id":null,"chat_message":{"role":"user","content":"q"}}),
-            ],
-        ),
-        (
-            json!(0),
-            vec![
-                json!({"type":"message_node","node_id":0,"parent_node_id":null,"chat_message":{"role":"user","content":"q"}}),
-                json!({"type":"message_node","node_id":0,"parent_node_id":null,"chat_message":{"role":"user","content":"r"}}),
-            ],
-        ),
-    ] {
-        let mut records =
-            vec![json!({"type":"session_meta","session_id":"fixture","main_chain_id":head})];
-        records.extend(nodes);
-        let raw = lines(&records);
-        assert!(verify::verify(Provider::Devin, &raw)
-            .iter()
-            .any(|f| f.severity == verify::Severity::Error));
-        assert!(load(Provider::Devin, &raw)
-            .unwrap()
-            .items
-            .iter()
-            .all(|item| item.est_tokens == 0));
-    }
-}
-
-#[test]
-fn overlapping_nonce_namespaces_are_ambiguous_and_exact_ids_take_precedence() {
-    let mut records = vec![
-        json!({"type":"session_meta","main_chain_id":1}),
-        json!({"type":"message_node","node_id":0,"parent_node_id":null,"chat_message":{"role":"assistant","content":"call","tool_calls":[{"id":"c#","name":"first"},{"id":"c#a#","name":"second"}]}}),
-        json!({"type":"message_node","node_id":1,"parent_node_id":0,"chat_message":{"role":"tool","tool_call_id":"c#a#nonce","content":"x".repeat(300)}}),
-    ];
-    let raw = lines(&records);
-    assert_eq!(
-        codes(Provider::Devin, &raw)
-            .iter()
-            .filter(|code| **code == "orphaned_tool_call")
-            .count(),
-        2
-    );
-    assert!(codes(Provider::Devin, &raw).contains(&"orphaned_tool_result"));
-    assert_eq!(
-        load(Provider::Devin, &raw).unwrap().items[1].label,
-        "tool_result:?"
-    );
-    records[2]["chat_message"]["tool_call_id"] = json!("c#a#");
-    let raw = lines(&records);
-    assert_eq!(
-        codes(Provider::Devin, &raw)
-            .iter()
-            .filter(|code| **code == "orphaned_tool_call")
-            .count(),
-        1
-    );
-    assert_eq!(
-        load(Provider::Devin, &raw).unwrap().items[1].label,
-        "tool_result:second"
-    );
 }
 
 #[test]
 fn resource_bounds_reject_deep_json_invalid_utf8_and_huge_edit_lists() {
     let deep = format!("{}0{}\n", "[".repeat(160), "]".repeat(160));
-    for provider in [Provider::Codex, Provider::ClaudeCode, Provider::Devin] {
+    for provider in [Provider::Codex, Provider::ClaudeCode] {
         assert!(!codes(provider, deep.as_bytes()).is_empty());
         assert!(codes(provider, b"\xff\n").contains(&"invalid_utf8"));
         assert!(transform(provider, b"\xff\n", vec![usize::MAX]).is_err());
@@ -515,7 +383,7 @@ fn bounded_adversarial_replay() {
             ),
         }
     }
-    eprintln!("dialect replay seed={seed} cases={cases} max_record_depth=128 corpus=3 live_provider_qualification=none");
+    eprintln!("dialect replay seed={seed} cases={cases} max_record_depth=128 corpus=2 live_provider_qualification=none");
 }
 
 #[test]
@@ -545,10 +413,6 @@ fn tail_reader_refuses_nonregular_and_symlink_inputs_without_blocking() {
         );
         assert_eq!(codex::scan_meta(std::path::Path::new(&path)), (None, None));
         assert_eq!(claude::scan_meta(std::path::Path::new(&path)), (None, None));
-        assert_eq!(
-            devin::scan_meta_export(std::path::Path::new(&path)),
-            (None, None)
-        );
         assert_eq!(
             gobstopper_adapters::detect::sniff_provider(std::path::Path::new(&path)),
             None
@@ -674,12 +538,8 @@ fn forward_parent_links_are_unavailable_even_if_the_graph_eventually_connects() 
         json!({"type":"user","uuid":"parent","parentUuid":null,"message":{"role":"user","content":"root"}}),
         json!({"type":"last-prompt","leafUuid":"child"}),
     ]);
-    let devin = lines(&[
-        json!({"type":"session_meta","main_chain_id":0}),
-        json!({"type":"message_node","node_id":0,"parent_node_id":1,"chat_message":{"role":"tool","tool_call_id":"c","content":"x".repeat(300)}}),
-        json!({"type":"message_node","node_id":1,"parent_node_id":null,"chat_message":{"role":"user","content":"root"}}),
-    ]);
-    for (provider, raw) in [(Provider::ClaudeCode, claude), (Provider::Devin, devin)] {
+    {
+        let (provider, raw) = (Provider::ClaudeCode, claude);
         assert!(codes(provider, &raw).contains(&"broken_parent_chain"));
         assert!(load(provider, &raw)
             .unwrap()
@@ -709,12 +569,8 @@ fn ambiguous_tool_identities_are_unavailable_in_every_projection() {
         json!({"type":"assistant","uuid":"a","parentUuid":null,"message":{"role":"assistant","content":[{"type":"tool_use","id":"t","name":"First","input":{}},{"type":"tool_use","id":"t","name":"Second","input":{}}]}}),
         json!({"type":"user","uuid":"b","parentUuid":"a","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"x".repeat(300)}]}}),
     ]);
-    let devin = lines(&[
-        json!({"type":"session_meta","main_chain_id":1}),
-        json!({"type":"message_node","node_id":0,"parent_node_id":null,"chat_message":{"role":"assistant","content":"call","tool_calls":[{"id":"t","name":"First"},{"id":"t","name":"Second"}]}}),
-        json!({"type":"message_node","node_id":1,"parent_node_id":0,"chat_message":{"role":"tool","tool_call_id":"t","content":"x".repeat(300)}}),
-    ]);
-    for (provider, raw) in [(Provider::ClaudeCode, claude), (Provider::Devin, devin)] {
+    {
+        let (provider, raw) = (Provider::ClaudeCode, claude);
         assert!(codes(provider, &raw).contains(&"duplicate_tool_call_id"));
         assert!(load(provider, &raw)
             .unwrap()
@@ -722,12 +578,5 @@ fn ambiguous_tool_identities_are_unavailable_in_every_projection() {
             .iter()
             .all(|item| item.elidable_bytes.is_none()));
         assert_eq!(transform(provider, &raw, vec![0, 1, 2]).unwrap(), raw);
-    }
-    for id in [Value::Null, json!(""), json!("has\ncontrol")] {
-        let raw = lines(&[
-            json!({"type":"session_meta","main_chain_id":0}),
-            json!({"type":"message_node","node_id":0,"parent_node_id":null,"chat_message":{"role":"tool","tool_call_id":id,"content":"x".repeat(300)}}),
-        ]);
-        assert_eq!(transform(Provider::Devin, &raw, vec![1]).unwrap(), raw);
     }
 }

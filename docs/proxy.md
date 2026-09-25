@@ -173,8 +173,8 @@ so `--fixed-tokens` (20,000 by default) stands in for them.
 - A summary drops the details of long tool results. The agent can read the
   file or rerun the command, but nothing makes it notice that a detail is
   missing.
-- Devin CLI cannot use the proxy: it sends requests through Cognition's service
-  and has no setting for a model address. See [devin.md](devin.md).
+- Agents that send requests through a vendor service with no configurable
+  model address cannot use the proxy.
 - Live use through the proxy has been checked for routing with Claude Code
   2.1.282 and Codex 0.156.1. Task quality and cost under the proxy have not
   been measured.

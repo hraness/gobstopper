@@ -40,8 +40,6 @@
       "owner": "CLI/adapters",
       "reads": [
         "source_file",
-        "provider_store",
-        "export",
         "effective_context",
         "archive",
         "vault_index",
@@ -171,7 +169,6 @@
       "owner": "CLI evaluation",
       "reads": [
         "source_file",
-        "export",
         "effective_context",
         "config",
         "credential_store"
@@ -378,9 +375,7 @@
       "id": "snapshot",
       "owner": "adapters/vault",
       "reads": [
-        "source_file",
-        "provider_store",
-        "export"
+        "source_file"
       ],
       "writes": [
         {
@@ -580,11 +575,11 @@
     },
     {
       "id": "store-write",
-      "owner": "adapters/devin",
+      "owner": "adapters/transaction",
       "reads": [],
       "writes": [],
       "outbound": [],
-      "authority": "Disabled direct provider-file and Devin store mutation entry points refuse before reads, snapshots, prompts or writes.",
+      "authority": "Disabled direct provider-file mutation entry points refuse before reads, snapshots, prompts or writes.",
       "invariants": [
         "OWN-1",
         "ID-1",
@@ -596,20 +591,20 @@
       ],
       "source": [
         {
-          "path": "crates/gobstopper-adapters/src/devin.rs",
-          "anchor": "pub fn apply_store"
+          "path": "crates/gobstopper-adapters/src/claude.rs",
+          "anchor": "pub fn apply("
         },
         {
-          "path": "crates/gobstopper-adapters/src/devin.rs",
-          "anchor": "pub fn restore_store"
+          "path": "crates/gobstopper-adapters/src/codex.rs",
+          "anchor": "pub fn apply("
         },
         {
-          "path": "crates/gobstopper-adapters/src/copy.rs",
-          "anchor": "pub fn compact_devin_store"
+          "path": "crates/gobstopper-adapters/src/transaction.rs",
+          "anchor": "pub(crate) fn replace("
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Immediate DirectMutationDisabled compatibility boundary; pure byte transformations remain separate.",
+      "bounds": "DirectMutationDisabled boundary on provider transcripts; crate-internal guarded replace preserves verified-byte conditions.",
       "exclusions": [
         "No direct mutation qualification",
         "No inference that idle age grants custody"
@@ -624,7 +619,6 @@
       "owner": "CLI/native adapters",
       "reads": [
         "config",
-        "provider_store",
         "source_file"
       ],
       "writes": [
@@ -632,11 +626,6 @@
           "state": "provider_memory",
           "mode": "native",
           "condition": "Provider-native compaction/control mutates provider effective state."
-        },
-        {
-          "state": "provider_store",
-          "mode": "native",
-          "condition": "Provider may persist resulting rows/metadata asynchronously."
         },
         {
           "state": "source_file",
@@ -671,16 +660,12 @@
           "anchor": "fn codex_compact("
         },
         {
-          "path": "crates/gobstopper-adapters/src/devin.rs",
-          "anchor": "pub fn acp_compact_in_home"
-        },
-        {
           "path": "crates/gobstopper-adapters/src/claude.rs",
           "anchor": "pub fn headless_compact_in_home"
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Bounded streams/deadlines and owned Unix process groups; Codex turn/item correlation, ACP session-only correlation; all live cells remain disabled in CLI.",
+      "bounds": "Bounded streams/deadlines and owned Unix process groups; Codex turn/item correlation; all live cells remain disabled in CLI.",
       "exclusions": [
         "No live provider attestation",
         "No exclusivity from idle age",
@@ -828,7 +813,6 @@
       "owner": "CLI hooks",
       "reads": [
         "source_file",
-        "provider_store",
         "config",
         "archive",
         "vault_index"
@@ -1129,7 +1113,6 @@
       "owner": "adapters/eval/study",
       "reads": [
         "source_file",
-        "export",
         "config"
       ],
       "writes": [
@@ -1178,7 +1161,7 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Frozen file bytes or a read-only session-bound Devin store export; source-bound labels, literal scores and judge estimates are separate evidence types. Bench records evaluation failures as unavailable rows.",
+      "bounds": "Frozen file bytes; source-bound labels, literal scores and judge estimates are separate evidence types. Bench records evaluation failures as unavailable rows.",
       "exclusions": [
         "No live task success claim",
         "No universal savings claim"
@@ -1243,7 +1226,6 @@
       "owner": "scripts owner",
       "reads": [
         "source_file",
-        "export",
         "archive",
         "vault_index",
         "config"
@@ -1309,11 +1291,6 @@
           "state": "experiment_output",
           "mode": "create",
           "condition": "Fresh registered synthetic sessions/prompts/responses/evidence."
-        },
-        {
-          "state": "provider_store",
-          "mode": "native",
-          "condition": "Provider persists synthetic test sessions in isolated home."
         },
         {
           "state": "process_state",
@@ -1805,7 +1782,7 @@
         "telemetry",
         "output"
       ],
-      "contract": "Codex/Claude detached copy after admission; Devin direct mutation and released native dispatch refuse before effects.",
+      "contract": "Codex/Claude detached copy after admission; released native dispatch refuses before effects.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -1817,7 +1794,7 @@
         "inspect",
         "output"
       ],
-      "contract": "Structural findings over selected source or canonical Devin export.",
+      "contract": "Structural findings over the selected source.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -1831,7 +1808,7 @@
         "store-write",
         "output"
       ],
-      "contract": "Fresh Codex/Claude identity from retained bytes; Devin store restore disabled.",
+      "contract": "Fresh Codex/Claude identity from retained bytes.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2401,26 +2378,6 @@
         "path": "crates/gobstopper-cli/src/hooks.rs",
         "anchor": "enum HookTarget"
       }
-    },
-    {
-      "name": "DevinUserPromptSubmit",
-      "effects": [
-        "hook-execution"
-      ],
-      "source": {
-        "path": "crates/gobstopper-cli/src/hooks.rs",
-        "anchor": "enum HookTarget"
-      }
-    },
-    {
-      "name": "DevinPostCompaction",
-      "effects": [
-        "hook-execution"
-      ],
-      "source": {
-        "path": "crates/gobstopper-cli/src/hooks.rs",
-        "anchor": "enum HookTarget"
-      }
     }
   ],
   "scripts": [
@@ -2744,13 +2701,6 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/copy.rs",
-      "symbol": "compact_devin_store",
-      "effects": [
-        "store-write"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/copy.rs",
       "symbol": "compact_via_compacted",
       "effects": [
         "copy"
@@ -2860,167 +2810,6 @@
       "symbol": "source_identity",
       "effects": [
         "inspect"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "acp_compact",
-      "effects": [
-        "native"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "acp_compact_in_home",
-      "effects": [
-        "native"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "apply",
-      "effects": [
-        "store-write"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "apply_store",
-      "effects": [
-        "store-write"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "chain_fingerprint",
-      "effects": [
-        "inspect"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "current_session",
-      "effects": [
-        "inspect"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "db_path",
-      "effects": [
-        "inspect"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "discover",
-      "effects": [
-        "inspect"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "discover_with_status",
-      "effects": [
-        "inspect"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "export_bytes",
-      "effects": [
-        "inspect"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "find",
-      "effects": [
-        "inspect"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "is_store_path",
-      "effects": [
-        "inspect"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "load",
-      "effects": [
-        "inspect"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "load_bytes",
-      "effects": [
-        "inspect"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "matching_tool_call",
-      "effects": [
-        "pure"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "restore_store",
-      "effects": [
-        "store-write"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "scan_meta_export",
-      "effects": [
-        "inspect"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "scan_usage",
-      "effects": [
-        "inspect"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "scan_usage_export",
-      "effects": [
-        "inspect"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "session_active",
-      "effects": [
-        "inspect"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "session_observation",
-      "effects": [
-        "inspect"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "transform",
-      "effects": [
-        "pure"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/devin.rs",
-      "symbol": "valid_tool_id",
-      "effects": [
-        "pure"
       ]
     },
     {

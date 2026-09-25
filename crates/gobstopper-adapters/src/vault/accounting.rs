@@ -669,7 +669,7 @@ mod unix {
             *counts.origins.entry(origin).or_default() += 1;
             roots.insert(entry.sha256.clone());
             if !bindings.insert((
-                entry.provider.as_str(),
+                entry.provider.clone(),
                 entry.path,
                 entry.session_id,
                 entry.sha256,
@@ -838,7 +838,6 @@ mod unix {
 mod tests {
     use super::*;
     use crate::vault::VaultEntry;
-    use gobstopper_core::Provider;
     use std::ffi::CString;
     use std::fs::{self, File};
     use std::io::Write;
@@ -886,7 +885,7 @@ mod tests {
             sha256: format!("{digest:064x}"),
             path: PathBuf::from("/private/source-sentinel-do-not-print.jsonl"),
             session_id: session.into(),
-            provider: Provider::Codex,
+            provider: "codex".into(),
             bytes: 100,
             strategy: strategy.map(str::to_owned),
             record_count: 1,
@@ -987,7 +986,7 @@ mod tests {
         let fixture = TestRoot::new();
         let root = fixture.vault();
         let mut another_provider = entry("session-private", 1, Some("post-compact"));
-        another_provider.provider = Provider::ClaudeCode;
+        another_provider.provider = "claude_code".to_string();
         let bytes = index(
             &root,
             &[
