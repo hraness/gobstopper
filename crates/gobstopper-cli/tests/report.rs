@@ -218,6 +218,53 @@ fn context_only_does_not_read_unreachable_devin_payloads() {
 }
 
 #[test]
+fn report_discovery_window_filters_stale_sessions_and_all_overrides() {
+    let fixture = Fixture::new();
+    let conn = Connection::open(fixture.0.join("devin/sessions.db")).unwrap();
+    let nine_days_ago = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64
+        - 9 * 86400;
+    conn.execute(
+        "UPDATE sessions SET last_activity_at = ?1 WHERE id = 'devin-synthetic'",
+        [nine_days_ago],
+    )
+    .unwrap();
+    drop(conn);
+    // The default 7-day rolling window skips it entirely.
+    let bounded = fixture.report(&["report", "--context-only"]);
+    assert!(bounded["sessions"].as_array().unwrap().iter().all(|row| {
+        row["provider"] != "devin" || row["gobstopper"]["sessionIdNative"] != "devin-synthetic"
+    }));
+    // A tighter explicit bound rejects it too; --all and a zero bound keep it.
+    assert!(
+        fixture.report(&["report", "--context-only", "--max-age", "3600"])["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|row| row["provider"] != "devin"
+                || row["gobstopper"]["sessionIdNative"] != "devin-synthetic")
+    );
+    for args in [
+        &["report", "--context-only", "--all"][..],
+        &["report", "--context-only", "--max-age", "0"][..],
+    ] {
+        let report = fixture.report(args);
+        assert!(session(&report, "devin")["gobstopper"]["sessionIdNative"] == "devin-synthetic");
+    }
+    // The config window alone admits an otherwise-stale session.
+    fs::create_dir_all(fixture.0.join("config/gobstopper")).unwrap();
+    fs::write(
+        fixture.0.join("config/gobstopper/config.toml"),
+        "[discovery]\nmax_age_secs = 0\n",
+    )
+    .unwrap();
+    let report = fixture.report(&["report", "--context-only"]);
+    assert!(session(&report, "devin")["gobstopper"]["sessionIdNative"] == "devin-synthetic");
+}
+
+#[test]
 fn detect_and_session_policy_preserve_complete_partial_and_zero_usage() {
     let fixture = Fixture::new();
     for (usage, context, reason, subtotal) in [

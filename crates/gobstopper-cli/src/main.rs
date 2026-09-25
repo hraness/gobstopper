@@ -241,6 +241,15 @@ enum Cmd {
         /// Report only files updated in the last 180 seconds.
         #[arg(long)]
         active_only: bool,
+        /// Include sessions of any age (default: the configured discovery
+        /// window, 7 days when unset).
+        #[arg(long, conflicts_with_all = ["active_only", "max_age"])]
+        all: bool,
+        /// Discovery window in seconds; sessions idle longer are skipped.
+        /// 0 reports every session regardless of age. Default comes from
+        /// `[discovery] max_age_secs` in the config (7 days when unset).
+        #[arg(long, conflicts_with = "active_only", value_name = "SECS")]
+        max_age: Option<u64>,
         /// Sample current context without scanning full provider histories.
         /// Lifetime usage may be unavailable.
         #[arg(long)]
@@ -423,6 +432,11 @@ enum Cmd {
         /// Restrict watch to one provider (e.g. `devin`); default watches all.
         #[arg(long)]
         provider: Option<String>,
+        /// Discovery window in seconds; sessions idle longer are skipped.
+        /// 0 watches every session regardless of age. Default comes from
+        /// `[discovery] max_age_secs` in the config (7 days when unset).
+        #[arg(long, conflicts_with = "active_only", value_name = "SECS")]
+        max_age: Option<u64>,
         /// Run one discovery pass and exit, useful for supervised monitoring.
         #[arg(long)]
         once: bool,
@@ -2588,11 +2602,21 @@ fn cmd_hook(cli: &Cli, cfg: &config::Config, event: &str) -> Result<()> {
     Ok(())
 }
 
-fn cmd_report(cli: &Cli, strict: bool, active_only: bool, context_only: bool) -> Result<()> {
-    let max_age_secs = if active_only {
+fn cmd_report(
+    cli: &Cli,
+    cfg: &config::Config,
+    strict: bool,
+    active_only: bool,
+    all: bool,
+    max_age: Option<u64>,
+    context_only: bool,
+) -> Result<()> {
+    let max_age_secs = if all {
+        0
+    } else if active_only {
         gobstopper_core::SessionHandle::HOT_SECS
     } else {
-        0
+        max_age.unwrap_or_else(|| cfg.discovery.max_age_secs_or_default())
     };
     // The report is read-only; it may still borrow the watcher lanes'
     // advisory discovery snapshot so a warm run costs fingerprints, not
@@ -4073,6 +4097,7 @@ fn cmd_watch(
     double_buffer: bool,
     active_only: bool,
     provider: Option<String>,
+    max_age: Option<u64>,
     once: bool,
     eval_budget: u64,
 ) -> Result<()> {
@@ -4260,7 +4285,7 @@ fn cmd_watch(
             if active_only {
                 gobstopper_core::SessionHandle::HOT_SECS
             } else {
-                detect::default_max_age_secs()
+                max_age.unwrap_or_else(|| cfg.discovery.max_age_secs_or_default())
             },
             &mut discovery_cache,
             provider,
@@ -5759,8 +5784,18 @@ fn main() -> Result<()> {
         Cmd::Report {
             strict,
             active_only,
+            all,
+            max_age,
             context_only,
-        } => cmd_report(&cli, *strict, *active_only, *context_only),
+        } => cmd_report(
+            &cli,
+            &cfg,
+            *strict,
+            *active_only,
+            *all,
+            *max_age,
+            *context_only,
+        ),
         Cmd::Events {
             session,
             tail,
@@ -5871,6 +5906,7 @@ fn main() -> Result<()> {
             double_buffer,
             active_only,
             provider,
+            max_age,
             once,
             eval_budget,
         } => cmd_watch(
@@ -5881,6 +5917,7 @@ fn main() -> Result<()> {
             *double_buffer,
             *active_only,
             provider.clone(),
+            *max_age,
             *once,
             *eval_budget,
         ),
