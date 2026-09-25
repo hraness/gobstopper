@@ -30,7 +30,7 @@ const repository = "https://github.com/hraness/gobstopper";
 
 const heading = "Context compaction you can undo.";
 const summary =
-  "Preview the cut, write a smaller session, and keep every original byte in a local vault you can search and restore from.";
+  "A local proxy that compacts live requests in Claude Code, Codex, opencode, Crush, Aider, Goose, and other agents, plus file commands that preview the cut and write a smaller copy. Every original byte stays in a local vault you can search and restore from.";
 // This published release predates the proxy and the source-build guards.
 const releasePredatesPage = releaseVersion === "0.2.1";
 const footnote =
@@ -50,7 +50,7 @@ const primitives = [
   {
     icon: "strategies",
     label: "Strategies",
-    summary: "The default, auto, picks a strategy from the transcript. Sawtooth recommends provider compaction, elide replaces eligible stale tool output, cliff keeps the newest assistant steps and drops older tool results over 500 bytes, and structured writes a state card from metadata. For running Claude Code and Codex sessions, gobstopper proxy applies CliffCompaction's rule to each outgoing request. Scored ranks candidates; optional on-device models can score or draft cards. Agentic accepts edits proposed by a program you trust.",
+    summary: "The default, auto, picks a strategy from the transcript. Sawtooth recommends provider compaction, elide replaces eligible stale tool output, cliff keeps the newest assistant steps and drops older tool results over 500 bytes, and structured writes a state card from metadata. For running sessions in Claude Code, Codex, and OpenAI-compatible agents, gobstopper proxy applies CliffCompaction's rule to each outgoing request. Scored ranks candidates; optional on-device models can score or draft cards. Agentic accepts edits proposed by a program you trust.",
   },
   {
     icon: "presets-config",
@@ -99,11 +99,11 @@ const questions = [
   },
   {
     question: "Which agents does it support?",
-    answer: "Gobstopper inspects supported Codex and Claude Code session formats and prepares separate copies. Claude Code and Codex requests can also run through `gobstopper proxy`. Agents without a configurable model address, such as service-bound CLIs, cannot be proxied. New provider versions need format tests and separate resume tests.",
+    answer: "The proxy speaks all three dialects coding agents use: Anthropic Messages (Claude Code, opencode, Crush), OpenAI Responses (Codex), and OpenAI Chat Completions (opencode, Crush, Aider, Goose, and other OpenAI-compatible clients). Any agent that lets you set a custom provider address can point at it. File commands read Claude Code and Codex session formats and prepare separate copies. Agents without a configurable model address, such as service-bound CLIs, cannot be proxied. Claude Code and Codex routing is live-checked; Chat Completions coverage is contract-tested on synthetic histories. New provider versions need format tests and separate resume tests.",
   },
   {
     question: "How is this different from CliffCompaction?",
-    answer: "CliffCompaction is an API proxy: it rewrites each request over a token threshold while the session runs, keeps the head and the last three turns verbatim, drops tool results over 500 characters, and never paraphrases. `gobstopper proxy` ports that rule for Claude Code and Codex. Gobstopper's file commands prepare copies you inspect and resume, with the source archived in a vault, and the `cliff` strategy applies the drop rule to those copies. The comparison page lists the differences and the authors' benchmark figures.",
+    answer: "CliffCompaction is an API proxy: it rewrites each request over a token threshold while the session runs, keeps the head and the last three turns verbatim, drops tool results over 500 characters, and never paraphrases. `gobstopper proxy` ports that rule for the Anthropic Messages, OpenAI Responses, and Chat Completions dialects. Gobstopper's file commands prepare copies you inspect and resume, with the source archived in a vault, and the `cliff` strategy applies the drop rule to those copies. The comparison page lists the differences and the authors' benchmark figures.",
   },
   {
     question: "Can I run my own compaction logic?",

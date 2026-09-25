@@ -41,7 +41,7 @@ test("extracts the landing block between the shared Hraness markers", async () =
   expect(source.indexOf(LANDING_END)).toBeGreaterThan(source.indexOf(LANDING_START));
   const landing = readmeLanding(source);
   expect(landing.title).toBe("Gobstopper");
-  expect(landing.lead).toContain("makes long Claude Code and Codex sessions smaller");
+  expect(landing.lead).toContain("makes long coding sessions smaller");
   expect(landing.markdown).toMatch(/cannot ask providers to compact,\s+even when `auto_compact_closed` is enabled/u);
 });
 

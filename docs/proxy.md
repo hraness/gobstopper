@@ -1,6 +1,6 @@
-# Compact live Claude Code and Codex requests
+# Compact live coding-agent requests
 
-`gobstopper proxy` sits on 127.0.0.1 between Claude Code or Codex and the
+`gobstopper proxy` sits on 127.0.0.1 between a coding agent and its model
 provider. When a request passes the threshold, it sends the head verbatim,
 one mechanical summary of the older turns, and the newest turns verbatim. The
 provider then reports the smaller size back to the client, so the client's
@@ -8,6 +8,15 @@ own auto-compaction does not reach its trigger. Session files are not
 changed. The rule is CliffCompaction's (Nguyen, Cho, Chen and Dettmers,
 [arXiv:2609.26779](https://arxiv.org/abs/2609.26779)); the port's MIT notice
 is in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+
+The proxy understands three API dialects. Any agent that lets you set a
+custom provider address can use it:
+
+| Dialect | Endpoint | Agents |
+|---|---|---|
+| Anthropic Messages | `.../messages` | Claude Code, opencode, Crush |
+| OpenAI Responses | `.../responses` | Codex |
+| OpenAI Chat Completions | `.../chat/completions` | opencode, Crush, Aider, Goose, other OpenAI-compatible clients |
 
 The proxy is in the current `main` source build. It needs the system `curl`,
 version 8.3 or later (`curl --version`).
@@ -92,6 +101,84 @@ With an OpenAI API key, use `base_url = "http://127.0.0.1:8260/v1"` and
 `env_key = "OPENAI_API_KEY"` instead of `requires_openai_auth`. To run one
 session without the proxy, use `codex -c model_provider=openai`.
 
+## opencode
+
+opencode providers take an `options.baseURL`. For an Anthropic-shaped
+provider, point it at the proxy root in `opencode.json`:
+
+```json
+{
+  "provider": {
+    "gobstopper-anthropic": {
+      "npm": "@ai-sdk/anthropic",
+      "options": { "baseURL": "http://127.0.0.1:8260/v1" },
+      "models": { "claude-sonnet-4-5": {} }
+    }
+  }
+}
+```
+
+For an OpenAI-compatible provider, use the Chat Completions dialect:
+
+```json
+{
+  "provider": {
+    "gobstopper-openai": {
+      "npm": "@ai-sdk/openai-compatible",
+      "options": { "baseURL": "http://127.0.0.1:8260/v1" },
+      "models": { "gpt-5": {} }
+    }
+  }
+}
+```
+
+API keys come from opencode's own provider credentials; the proxy forwards
+them unchanged.
+
+## Crush
+
+Crush providers accept a `base_url` and a `type`. In `crush.json`:
+
+```json
+{
+  "providers": {
+    "gobstopper": {
+      "type": "openai-compat",
+      "base_url": "http://127.0.0.1:8260/v1",
+      "models": [{ "id": "gpt-5", "name": "GPT-5" }]
+    }
+  }
+}
+```
+
+A `"type": "anthropic"` provider with `base_url` pointed at the proxy uses
+the Messages dialect instead.
+
+## Aider
+
+Aider routes OpenAI-shaped models through a configurable base URL:
+
+```sh
+aider --openai-api-base http://127.0.0.1:8260/v1 --model openai/<model>
+# or: OPENAI_API_BASE=http://127.0.0.1:8260/v1
+```
+
+## Goose
+
+Goose's OpenAI provider reads `OPENAI_HOST` (and `OPENAI_BASE_PATH`):
+
+```sh
+OPENAI_HOST=http://127.0.0.1:8260 goose
+```
+
+A declarative custom provider with `engine: openai` pointed at
+`http://127.0.0.1:8260/v1` works the same way.
+
+Any OpenAI-compatible client that posts to `{base}/chat/completions` works:
+give it a base URL of `http://127.0.0.1:8260/v1`. The bare path
+`/chat/completions` (no `/v1`) also routes to the OpenAI upstream, but most
+providers expect the `/v1` prefix, so configure the base URL with it.
+
 ## Preview on a recorded session
 
 ```sh
@@ -117,22 +204,29 @@ so `--fixed-tokens` (20,000 by default) stands in for them.
 | `--shadow` | off | Log what would change and forward every request unchanged. |
 | `--strict` | off | Refuse (HTTP 400) a request still over the threshold after every step, instead of sending it. |
 | `--anthropic-upstream` | `https://api.anthropic.com` | Where Anthropic requests go. |
-| `--openai-upstream` | `https://api.openai.com` | Where OpenAI API requests (`/v1/...`) go. |
+| `--openai-upstream` | `https://api.openai.com` | Where OpenAI API requests (`/v1/...`, `.../chat/completions`) go. Point it at any OpenAI-compatible provider. |
 | `--chatgpt-upstream` | `https://chatgpt.com` | Where ChatGPT-signed-in Codex requests (`/backend-api/...`) go. |
 
 ## How it works
 
-- The proxy compacts Anthropic Messages (`/v1/messages`) and OpenAI
-  Responses (`.../responses`) requests. Token counts, provider-side
-  compaction endpoints, and every other path pass through unchanged.
+- The proxy compacts Anthropic Messages (`.../messages`), OpenAI Responses
+  (`.../responses`), and OpenAI Chat Completions (`.../chat/completions`)
+  requests. Token counts, provider-side compaction endpoints, and every
+  other path pass through unchanged.
 - The head is everything before the first model turn: for Claude Code, the
   first user message; for Codex, the environment and instruction messages
-  and the first prompt. It is always sent verbatim, as are the system prompt,
-  tool definitions, and other request fields.
+  and the first prompt; for Chat Completions, the `system`, `developer`,
+  and `user` messages that precede the first assistant turn. It is always
+  sent verbatim, as are the system prompt, tool definitions, and other
+  request fields.
 - A turn starts at a model message and includes the tool results that answer
-  it. The summary keeps human and assistant text (and readable thinking),
-  keeps tool results of at most 500 characters, reduces each tool call to its
-  name and up to 150 characters of arguments, and drops images.
+  it: `tool_result` blocks for Anthropic, `function_call_output` items for
+  Responses, and the run of `tool` messages answering a `tool_calls` turn
+  for Chat Completions. The summary keeps human and assistant text (and
+  readable thinking), keeps tool results of at most 500 characters, reduces
+  each tool call to its name and up to 150 characters of arguments, and
+  drops images. Calls are never separated from their results: the kept tail
+  is whole turns, so a `tool` message can never outlive the call it answers.
 - Clients resend their original history on every request. The proxy keys each
   compaction by a hash of the original prefix and substitutes it into later
   requests, so the compacted prefix stays byte-stable until the next
@@ -176,5 +270,8 @@ so `--fixed-tokens` (20,000 by default) stands in for them.
 - Agents that send requests through a vendor service with no configurable
   model address cannot use the proxy.
 - Live use through the proxy has been checked for routing with Claude Code
-  2.1.282 and Codex 0.156.1. Task quality and cost under the proxy have not
-  been measured.
+  2.1.282 and Codex 0.156.1. Chat Completions coverage is tested against
+  synthetic histories and recorded contracts, not a live opencode, Crush,
+  Aider, or Goose session; provider acceptance of that dialect is
+  unqualified. Task quality and cost under the proxy have not been
+  measured.

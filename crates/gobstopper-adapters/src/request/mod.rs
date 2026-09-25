@@ -22,6 +22,7 @@ use sha2::{Digest, Sha256};
 use std::ops::Range;
 
 pub mod anthropic;
+pub mod chat;
 mod engine;
 mod images;
 pub mod replay;
@@ -89,6 +90,9 @@ pub enum Dialect {
     Anthropic,
     /// OpenAI Responses (`/responses`): Codex.
     Responses,
+    /// OpenAI Chat Completions (`/chat/completions`): OpenAI-compatible
+    /// clients such as opencode, Crush, Aider, and Goose.
+    ChatCompletions,
 }
 
 impl Dialect {
@@ -101,6 +105,8 @@ impl Dialect {
             Some(Self::Anthropic)
         } else if path.ends_with("/responses") {
             Some(Self::Responses)
+        } else if path.ends_with("/chat/completions") {
+            Some(Self::ChatCompletions)
         } else {
             None
         }
@@ -110,13 +116,14 @@ impl Dialect {
         match self {
             Self::Anthropic => "anthropic",
             Self::Responses => "openai-responses",
+            Self::ChatCompletions => "openai-chat",
         }
     }
 
     /// Request-body key holding the history.
     pub fn messages_key(self) -> &'static str {
         match self {
-            Self::Anthropic => "messages",
+            Self::Anthropic | Self::ChatCompletions => "messages",
             Self::Responses => "input",
         }
     }
@@ -126,6 +133,7 @@ impl Dialect {
         match self {
             Self::Anthropic => anthropic::digest_message(message),
             Self::Responses => responses::digest_message(message),
+            Self::ChatCompletions => chat::digest_message(message),
         }
     }
 
@@ -134,6 +142,7 @@ impl Dialect {
         match self {
             Self::Anthropic => anthropic::is_assistant(message),
             Self::Responses => responses::is_assistant(message),
+            Self::ChatCompletions => chat::is_assistant(message),
         }
     }
 
@@ -142,6 +151,7 @@ impl Dialect {
         match self {
             Self::Anthropic => anthropic::is_summary_message(message),
             Self::Responses => responses::is_summary_message(message),
+            Self::ChatCompletions => chat::is_summary_message(message),
         }
     }
 
@@ -149,6 +159,7 @@ impl Dialect {
         match self {
             Self::Anthropic => anthropic::summarize_message(message, cfg),
             Self::Responses => responses::summarize_message(message, cfg),
+            Self::ChatCompletions => chat::summarize_message(message, cfg),
         }
     }
 
@@ -156,6 +167,7 @@ impl Dialect {
         match self {
             Self::Anthropic => anthropic::user_message(text),
             Self::Responses => responses::user_message(text),
+            Self::ChatCompletions => chat::user_message(text),
         }
     }
 
@@ -164,16 +176,18 @@ impl Dialect {
     fn trim_from_head(self, message: &Value) -> bool {
         match self {
             Self::Anthropic => anthropic::trim_from_head(message),
-            Self::Responses => false,
+            Self::Responses | Self::ChatCompletions => false,
         }
     }
 
     /// Partition `body` into assistant-step turns, in order. Leading
     /// non-assistant messages (a prior summary) form their own group.
+    /// Responses and Chat Completions keep contiguous model-output runs
+    /// together: one model step may span several items.
     fn group_turns(self, body: &[Value]) -> Vec<Range<usize>> {
         match self {
             Self::Anthropic => group_by_starts(body, |i| self.is_assistant(&body[i])),
-            Self::Responses => group_by_starts(body, |i| {
+            Self::Responses | Self::ChatCompletions => group_by_starts(body, |i| {
                 self.is_assistant(&body[i]) && (i == 0 || !self.is_assistant(&body[i - 1]))
             }),
         }
@@ -430,6 +444,18 @@ mod tests {
         );
         assert_eq!(Dialect::detect("/v1/responses/"), Some(Dialect::Responses));
         assert_eq!(Dialect::detect("/v1/responses/compact"), None);
+        assert_eq!(
+            Dialect::detect("/chat/completions"),
+            Some(Dialect::ChatCompletions)
+        );
+        assert_eq!(
+            Dialect::detect("/v1/chat/completions?stream=true"),
+            Some(Dialect::ChatCompletions)
+        );
+        assert_eq!(
+            Dialect::detect("/openai/deployments/x/chat/completions/"),
+            Some(Dialect::ChatCompletions)
+        );
         assert_eq!(Dialect::detect("/v1/models"), None);
     }
 

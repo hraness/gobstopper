@@ -392,9 +392,10 @@ enum Cmd {
         #[arg(long)]
         allow_transcript_content: bool,
     },
-    /// Compact live Claude Code and Codex requests before the provider's own
-    /// compaction fires: a loopback proxy that applies the cliff rule to each
-    /// outgoing request and leaves transcript files alone.
+    /// Compact live agent requests before the provider's own compaction
+    /// fires: a loopback proxy that applies the cliff rule to Anthropic
+    /// Messages, OpenAI Responses, and Chat Completions requests and leaves
+    /// transcript files alone.
     Proxy {
         #[command(subcommand)]
         command: proxy::ProxyCmd,
