@@ -2821,20 +2821,6 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/detect.rs",
-      "symbol": "devin_rows",
-      "effects": [
-        "pure"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/detect.rs",
-      "symbol": "merge_devin_rows",
-      "effects": [
-        "pure"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/detect.rs",
       "symbol": "source_identity",
       "effects": [
         "inspect"

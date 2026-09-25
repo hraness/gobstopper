@@ -3869,7 +3869,7 @@ fn discovery_cache_path(dir: &Path, provider: Provider) -> PathBuf {
 }
 
 fn persisted_providers(provider: Option<Provider>) -> impl Iterator<Item = Provider> {
-    [Provider::Codex, Provider::ClaudeCode, Provider::Devin]
+    [Provider::Codex, Provider::ClaudeCode]
         .into_iter()
         .filter(move |p| provider.is_none_or(|q| q == *p))
 }
@@ -3890,11 +3890,7 @@ fn load_persisted_discovery(
         if file.schema != detect::DiscoveryCacheFile::SCHEMA || file.provider != p.as_str() {
             continue;
         }
-        if p == Provider::Devin {
-            cache.merge_devin_rows(file.devin_entries);
-        } else {
-            cache.merge_persisted(p, file.entries);
-        }
+        cache.merge_persisted(p, file.entries);
     }
 }
 
@@ -3907,12 +3903,8 @@ fn save_persisted_discovery(
     static NEXT_WRITE: AtomicU64 = AtomicU64::new(0);
     for p in persisted_providers(provider) {
         let path = discovery_cache_path(dir, p);
-        let (entries, devin_entries) = if p == Provider::Devin {
-            (Vec::new(), cache.devin_rows())
-        } else {
-            (cache.persist_rows(p), Vec::new())
-        };
-        if entries.is_empty() && devin_entries.is_empty() {
+        let entries = cache.persist_rows(p);
+        if entries.is_empty() {
             continue;
         }
         let file = detect::DiscoveryCacheFile {
@@ -3920,7 +3912,6 @@ fn save_persisted_discovery(
             provider: p.as_str().to_owned(),
             written_unix: now_secs(),
             entries,
-            devin_entries,
         };
         let tmp = dir.join(format!(
             ".discovery-cache-{}-{}.tmp",
@@ -4374,8 +4365,8 @@ fn cmd_watch(
                 continue;
             }
             // A session with no usable provider usage sample still needs a
-            // context estimate for the trigger gate — but only then. A Devin
-            // export or a full transcript parse just to answer "below
+            // context estimate for the trigger gate — but only then. A full
+            // transcript parse just to answer "below
             // trigger?" is the expensive part of a pass; any measured hint
             // (reported context, preceding-token total, or a partial
             // component subtotal) answers it without loading. Bounded by

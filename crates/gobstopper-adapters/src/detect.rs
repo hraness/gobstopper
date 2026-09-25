@@ -232,9 +232,6 @@ pub fn discover(roots: &Roots, max_age_secs: u64) -> Vec<Discovered> {
 #[derive(Default)]
 pub struct DiscoveryCache {
     files: std::collections::HashMap<(Provider, PathBuf), CachedSession>,
-    /// Devin sessions live in rows of a shared store; their advisory cache
-    /// is keyed by session id on (activity, chain head), not by file path.
-    pub devin: crate::devin::DevinContextCache,
 }
 struct CachedSession {
     fingerprint: (u64, Option<SystemTime>, u64, u64, i64, i64),
@@ -273,10 +270,6 @@ pub struct DiscoveryCacheFile {
     pub written_unix: u64,
     #[serde(default)]
     pub entries: Vec<DiscoveryCacheRow>,
-    /// Devin context rows live in the same snapshot: the shared store has
-    /// no per-file fingerprint, so rows carry (activity, chain head).
-    #[serde(default)]
-    pub devin_entries: Vec<crate::devin::DevinContextRow>,
 }
 
 impl DiscoveryCacheFile {
@@ -320,23 +313,6 @@ impl DiscoveryCache {
                 usage: e.usage,
             })
             .collect()
-    }
-
-    /// Persisted Devin context rows owned by this cache.
-    pub fn devin_rows(&self) -> Vec<crate::devin::DevinContextRow> {
-        self.devin.0.values().cloned().collect()
-    }
-
-    /// Merge persisted Devin context rows. Fingerprint staleness is
-    /// re-checked against the live (activity, chain head) pair at use
-    /// time, so a stale row can only cost a lookup, never a decision.
-    pub fn merge_devin_rows(&mut self, rows: Vec<crate::devin::DevinContextRow>) {
-        for row in rows {
-            if self.devin.0.len() >= crate::devin::DevinContextCache::MAX_ENTRIES {
-                break;
-            }
-            self.devin.0.insert(row.session_id.clone(), row);
-        }
     }
 
     /// Merge rows from a persisted snapshot. Non-identified rows expire
