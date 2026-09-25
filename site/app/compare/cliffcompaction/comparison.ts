@@ -24,12 +24,12 @@ export const comparisonRows: readonly ComparisonRow[] = [
   {
     aspect: "How it shrinks",
     cliff: "Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases",
-    gobstopper: "Strategies that drop or stub stale tool results by rule; `structured` and `compacted` add a metadata state card; no strategy paraphrases",
+    gobstopper: "Strategies that drop or stub stale tool results by rule; `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card",
   },
   {
     aspect: "Recompaction",
     cliff: "Rebuilt from the original history; the prior summary is discarded",
-    gobstopper: "`cliff` composes the same way; strategies that inject a state card carry it forward into the next copy",
+    gobstopper: "`cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy",
   },
   {
     aspect: "What holds the originals",
