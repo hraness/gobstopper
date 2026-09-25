@@ -262,7 +262,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "apple-foundation",
@@ -281,7 +281,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper-adapters"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "anyhow",
  "fs2",
@@ -297,7 +297,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper-core"
-version = "0.3.3"
+version = "0.3.4"
 dependencies = [
  "libc",
  "serde",
