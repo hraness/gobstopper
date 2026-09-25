@@ -1,7 +1,9 @@
 <!-- hraness:gobstopper-landing:start -->
-# gobstopper
+# Gobstopper
 
-Gobstopper inspects Claude Code, Codex, and Devin sessions and prepares compacted transcript copies.
+Gobstopper is a free, open-source command-line tool that makes long Claude
+Code and Codex sessions smaller. Preview a compaction, write a smaller copy,
+and keep the original byte for byte in a local vault.
 
 To keep a running Claude Code or Codex session small, run `gobstopper proxy`
 and point the client at it. The proxy compacts each outgoing request that
@@ -17,7 +19,7 @@ copy with a file strategy. Released CLI builds cannot ask providers to compact,
 even when `auto_compact_closed` is enabled. Direct provider-store and in-place
 rewrites are disabled. Copy preparation preserves the source; resuming a copy
 with a live provider requires separate compatibility testing. See the
-[activation matrix](docs/assurance/qualification.json) and
+[provider support status](docs/assurance/qualification.json) and
 [recovery runbook](docs/assurance/operations.md). Plugins can add strategies
 and providers when you explicitly trust them.
 

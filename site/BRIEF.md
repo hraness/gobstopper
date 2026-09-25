@@ -34,8 +34,8 @@ primary so the installed behavior matches the write safeguards on the page.
 
 ## FIRST VIEWPORT
 
-One header identity leads into the heading, the README lead, and the dated
-proof frame.
+One header identity leads into the heading, the canonical hero summary, and
+the dated proof frame.
 
 ## FORM
 
