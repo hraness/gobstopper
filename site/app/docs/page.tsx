@@ -1,7 +1,10 @@
 import type { Metadata } from "next";
+import { ProviderMarkChip } from "@hraness/design-kit/react/server";
 
 import { SiteHeader, SiteFooter } from "../_components/site-chrome";
 import { readmeHtml } from "../readme.generated";
+
+const agents = ["claudecode", "codex", "opencode", "crush", "aider", "goose"] as const;
 
 const title = "Documentation";
 const socialTitle = "Gobstopper documentation";
@@ -33,7 +36,14 @@ export default function Docs() {
     <>
       <SiteHeader path="/docs" />
       <main id="main" tabIndex={-1} className="document-page">
-        <article dangerouslySetInnerHTML={{ __html: readmeHtml }} />
+        <article>
+          <div className="gob-doc-marks" aria-label="Supported agents">
+            {agents.map((agent) => (
+              <ProviderMarkChip key={agent} mark={agent} size={26} />
+            ))}
+          </div>
+          <div dangerouslySetInnerHTML={{ __html: readmeHtml }} />
+        </article>
       </main>
       <SiteFooter path="/docs" />
     </>
