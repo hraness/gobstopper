@@ -1022,7 +1022,7 @@ mod tests {
             &EvalHooks::default(),
         )
         .unwrap();
-        assert_eq!(rows.len(), 12);
+        assert_eq!(rows.len(), builtin_strategies().len());
         for r in &rows {
             assert!(r.plan.is_none(), "{} should not fire", r.strategy);
             assert_eq!(r.est_reclaimed, 0);

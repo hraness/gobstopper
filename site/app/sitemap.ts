@@ -29,5 +29,11 @@ export default function sitemap(): MetadataRoute.Sitemap {
       changeFrequency: "weekly",
       priority: 0.7,
     },
+    {
+      url: absoluteUrl("/compare/cliffcompaction"),
+      lastModified: new Date("2026-09-24"),
+      changeFrequency: "monthly",
+      priority: 0.6,
+    },
   ];
 }

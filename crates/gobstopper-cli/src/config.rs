@@ -33,6 +33,11 @@ pub struct PolicyPatch {
     /// decision instead of an advisory. `0` (default) disables blocking.
     pub block_tokens: Option<u64>,
     pub min_savings_tokens: Option<u64>,
+    /// `cliff` only: newest assistant steps kept byte-for-byte. Default 3.
+    pub keep_recent_turns: Option<usize>,
+    /// `cliff` only: older tool results above this many bytes are dropped;
+    /// smaller ones stay verbatim. Default 500.
+    pub result_max_bytes: Option<u64>,
     /// Provider quota pressure: `low` compacts later, `high` earlier.
     pub quota_pressure: Option<QuotaPressure>,
     /// Derive trigger/floor per session from the provider window and
@@ -91,6 +96,12 @@ impl PolicyPatch {
         }
         if let Some(v) = self.min_savings_tokens {
             policy.min_savings_tokens = v;
+        }
+        if let Some(v) = self.keep_recent_turns {
+            policy.keep_recent_turns = v;
+        }
+        if let Some(v) = self.result_max_bytes {
+            policy.result_max_bytes = v;
         }
         if let Some(v) = self.quota_pressure {
             policy.quota_pressure = v;
@@ -436,6 +447,33 @@ mod tests {
             let cfg = parse(&format!("[policy]\nkeep_score_threshold = {value}")).unwrap();
             assert!(cfg.resolve(Provider::Codex, "s", None, None).is_err());
         }
+    }
+
+    #[test]
+    fn cliff_knobs_default_layer_and_reject_out_of_range_values() {
+        let resolved = Config::default()
+            .resolve(Provider::Codex, "s", None, Some("cliff"))
+            .unwrap();
+        assert_eq!(resolved.strategy, "cliff");
+        assert_eq!(resolved.policy.keep_recent_turns, 3);
+        assert_eq!(resolved.policy.result_max_bytes, 500);
+        let cfg = parse(
+            "[policy]\nkeep_recent_turns = 5\n[presets.cliff]\nstrategy = 'cliff'\nresult_max_bytes = 1000\n[sessions.s]\nkeep_recent_turns = 1",
+        )
+        .unwrap();
+        let resolved = cfg
+            .resolve(Provider::Codex, "s", Some("cliff"), None)
+            .unwrap();
+        assert_eq!(resolved.strategy, "cliff");
+        assert_eq!(resolved.policy.keep_recent_turns, 1);
+        assert_eq!(resolved.policy.result_max_bytes, 1000);
+        let other = cfg.resolve(Provider::Codex, "other", None, None).unwrap();
+        assert_eq!(other.policy.keep_recent_turns, 5);
+        assert_eq!(other.policy.result_max_bytes, 500);
+        let cfg = parse("[policy]\nkeep_recent_turns = 100001").unwrap();
+        assert!(cfg.resolve(Provider::Codex, "s", None, None).is_err());
+        let cfg = parse("[policy]\nresult_max_bytes = 10000001").unwrap();
+        assert!(cfg.resolve(Provider::Codex, "s", None, None).is_err());
     }
 
     #[test]

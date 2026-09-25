@@ -45,6 +45,19 @@ provider-qualification evidence for this implementation.
 - **Observation masking** (the SWE-agent and OpenHands condenser line of
   work): stale tool outputs are the cheapest thing to lose, because their
   conclusions live in the surrounding assistant text.
+- **CliffCompaction** (Nguyen, Cho, Chen and Dettmers,
+  [arXiv:2609.26779](https://arxiv.org/abs/2609.26779), 2026): an API proxy
+  that keeps the head and the last `K` turns verbatim, keeps tool results of
+  at most 500 characters, drops longer ones, reduces tool calls to
+  signatures, and rebuilds every compaction from the original history so a
+  compaction is never compacted again. The authors report up to 50% lower
+  cost at a bounded context with maintained or improved Terminal-Bench 2.0
+  results on the Kimi and GLM models they tested. `cliff` applies the drop
+  rule and the protected head and tail to a transcript copy; the vault, not
+  the copy, holds the originals. Compacting a `cliff` copy again selects the
+  records one compaction from the source would select, which a unit test
+  pins. Tool-call signatures and reasoning caps are outside the copy
+  transform, which replaces tool-result payloads only.
 
 ## Provider levers (historical version-specific observations)
 
@@ -109,7 +122,9 @@ idle transcript                  -> best validated file plan by
 ```
 
 Idle candidates include `cache_aware`, `scored`, `elide`, `compacted`,
-`dedupe`, `micro`, `middle`, and `structured`. Plans below
+`dedupe`, `micro`, `middle`, and `structured`. `cliff` is not an `auto`
+candidate: it has no floor and its yield depends only on the size rule, so
+it is chosen explicitly or through a preset. Plans below
 `min_savings_tokens` are rejected centrally. `agentic` uses the same host
 validation and protected-tail rules as built-ins; an empty proposal means
 defer.

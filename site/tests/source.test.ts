@@ -85,6 +85,7 @@ describe("Gobstopper site source contract", () => {
     expect(sitemap).toContain("<loc>https://gobstopper.sh/docs</loc>");
     expect(sitemap).toContain("<loc>https://gobstopper.sh/methodology</loc>");
     expect(sitemap).toContain("<loc>https://gobstopper.sh/benchmarks</loc>");
+    expect(sitemap).toContain("<loc>https://gobstopper.sh/compare/cliffcompaction</loc>");
     expect(robots).toContain("Sitemap: https://gobstopper.sh/sitemap.xml");
   });
 
@@ -108,6 +109,7 @@ describe("Gobstopper site source contract", () => {
     }
     expect(llms).toContain("https://gobstopper.sh/");
     expect(llms).toContain("https://gobstopper.sh/docs");
+    expect(llms).toContain("https://gobstopper.sh/compare/cliffcompaction");
     expect(llms).not.toContain("http://");
   });
 });

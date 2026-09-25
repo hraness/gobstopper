@@ -336,3 +336,10 @@ monitor passes establish a short observation window, not sustained reliability.
   timeout, at load averages of 33 to 44. The stale allowlist and the Devin
   write-ahead log remain owner items. Details and hashes are in the
   [delivery record](assurance/data-delivery-2026-09-24.md).
+- 2026-09-24: The `cliff` strategy and the CliffCompaction comparison
+  ([PR 99](https://github.com/hraness/gobstopper/pull/99)) changed core,
+  adapter and CLI sources, so the core, transcript and stress receipts were
+  refreshed on the same Mac against the new sources. The production Kani run
+  reports 54 covers (two new policy-bound covers) and the checker's reviewed
+  count moved with it; the boundary mutant is still killed by exactly one
+  assertion.

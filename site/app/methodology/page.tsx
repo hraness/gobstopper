@@ -59,6 +59,7 @@ export default function Methodology() {
             <li><strong>auto</strong>, the default, recommends the provider&apos;s own controls for a live session and compares eligible file strategies for an idle one.</li>
             <li><strong>sawtooth</strong> proposes provider compaction. The source build does not execute that proposal.</li>
             <li><strong>elide</strong> replaces eligible stale tool output with short stubs, oldest first, until the estimated context reaches the floor or no eligible output remains.</li>
+            <li><strong>cliff</strong> keeps the head and the newest three assistant steps byte-for-byte and drops every older tool result over 500 bytes. It has no floor and adds no state card; the <a href="/compare/cliffcompaction">comparison with CliffCompaction</a> explains where the rule comes from.</li>
             <li><strong>compacted</strong> does the same and adds a state card summarizing the hidden work. Codex-native <code>compacted</code> records are experimental and need <code>--experimental-compacted</code>.</li>
             <li><strong>structured</strong> writes a conservative state card from transcript metadata. It does not summarize meaning.</li>
             <li><strong>agentic</strong> accepts edits proposed by a command or plugin you trust, and Gobstopper still validates each one.</li>

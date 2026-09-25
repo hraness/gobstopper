@@ -2,6 +2,7 @@ mod agentic;
 mod auto;
 mod cache_aware;
 mod cache_edits;
+mod cliff;
 mod compacted;
 mod dedupe;
 mod elide;
@@ -15,6 +16,7 @@ pub use agentic::{AgenticStrategy, EditorCall, EditorDriver};
 pub use auto::{cache_preservation_score, AutoStrategy};
 pub use cache_aware::CacheAwareStrategy;
 pub use cache_edits::CacheEditsStrategy;
+pub use cliff::CliffStrategy;
 pub use compacted::CompactedStrategy;
 pub use dedupe::DedupeStrategy;
 pub use elide::ElideStrategy;
@@ -85,6 +87,24 @@ pub struct PolicyConfig {
     /// `trigger_tokens` so sessions always see an advisory first.
     #[serde(default)]
     pub block_tokens: u64,
+    /// `cliff`: newest assistant steps kept byte-for-byte, counted from the
+    /// tail. A step starts where the assistant side resumes after a user
+    /// prompt or a tool result and includes the tool results that answer it.
+    #[serde(default = "default_keep_recent_turns")]
+    pub keep_recent_turns: usize,
+    /// `cliff`: older tool results larger than this many bytes are dropped;
+    /// smaller ones stay verbatim. Mirrors CliffCompaction's 500-character
+    /// default.
+    #[serde(default = "default_result_max_bytes")]
+    pub result_max_bytes: u64,
+}
+
+const fn default_keep_recent_turns() -> usize {
+    3
+}
+
+const fn default_result_max_bytes() -> u64 {
+    500
 }
 
 const fn default_min_savings_tokens() -> u64 {
@@ -110,6 +130,8 @@ impl Default for PolicyConfig {
             quota_pressure: QuotaPressure::Normal,
             adaptive: false,
             block_tokens: 0,
+            keep_recent_turns: default_keep_recent_turns(),
+            result_max_bytes: default_result_max_bytes(),
         }
     }
 }
@@ -150,6 +172,7 @@ pub fn builtin_strategies() -> Vec<Box<dyn Strategy>> {
         Box::new(CacheAwareStrategy),
         Box::new(SawtoothStrategy),
         Box::new(ElideStrategy),
+        Box::new(CliffStrategy),
         Box::new(DedupeStrategy),
         Box::new(MicroStrategy),
         Box::new(MiddleStrategy),
@@ -526,5 +549,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(p.quota_pressure, QuotaPressure::Normal);
+        assert_eq!(p.keep_recent_turns, 3);
+        assert_eq!(p.result_max_bytes, 500);
     }
 }

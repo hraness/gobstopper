@@ -50,7 +50,7 @@ const primitives = [
   {
     icon: "strategies",
     label: "Strategies",
-    summary: "The default, auto, picks a strategy from the transcript. Sawtooth recommends provider compaction, elide replaces eligible stale tool output, and structured writes a state card from metadata. Scored ranks candidates; optional on-device models can score or draft cards. Agentic accepts edits proposed by a program you trust.",
+    summary: "The default, auto, picks a strategy from the transcript. Sawtooth recommends provider compaction, elide replaces eligible stale tool output, cliff keeps the newest assistant steps and drops older tool results over 500 bytes, and structured writes a state card from metadata. Scored ranks candidates; optional on-device models can score or draft cards. Agentic accepts edits proposed by a program you trust.",
   },
   {
     icon: "presets-config",
@@ -100,6 +100,10 @@ const questions = [
   {
     question: "Which agents does it support?",
     answer: "Gobstopper inspects supported Codex, Claude Code, and Devin session formats and prepares separate Codex and Claude Code copies. Devin exports can be inspected but cannot replace its session store. New provider versions need format tests and separate resume tests.",
+  },
+  {
+    question: "How is this different from CliffCompaction?",
+    answer: "CliffCompaction is an API proxy: it rewrites each request over a token threshold while the session runs, keeps the head and the last three turns verbatim, drops tool results over 500 characters, and never paraphrases. Gobstopper works on the session files instead and prepares a copy you inspect and resume, with the source archived in a vault. Its `cliff` strategy applies the same drop rule to that copy. The comparison page lists the differences and the authors' benchmark figures.",
   },
   {
     question: "Can I run my own compaction logic?",

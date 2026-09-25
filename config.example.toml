@@ -1,7 +1,7 @@
 # ~/.config/gobstopper/config.toml
 
 [policy]
-strategy = "auto"              # auto | sawtooth | cache_edits | elide | compacted | cache_aware | scored | dedupe | micro | middle | structured | agentic
+strategy = "auto"              # auto | sawtooth | cache_edits | elide | cliff | compacted | cache_aware | scored | dedupe | micro | middle | structured | agentic
 trigger_tokens = 250_000       # fire when context exceeds this
 floor_tokens = 40_000          # transcript-path post-compaction target
 keep_recent_tool_outputs = 8   # tail outputs never elided
@@ -46,6 +46,15 @@ floor_tokens = 20_000
 [presets.chatty]
 strategy = "structured"
 trigger_tokens = 180_000
+
+# Keep the first prompt and the newest assistant steps byte-for-byte and drop
+# older tool results above a size, the rule CliffCompaction applies at the
+# API layer (arXiv:2609.26779). No floor seeking and no state card.
+[presets.cliff]
+strategy = "cliff"
+trigger_tokens = 200_000
+keep_recent_turns = 3          # assistant steps kept verbatim at the tail
+result_max_bytes = 500         # older tool results above this are dropped
 
 # Elide stale outputs and inject a state card. A synthetic Codex `compacted`
 # record additionally needs `gobstopper apply --experimental-compacted`.

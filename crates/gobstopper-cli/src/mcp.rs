@@ -420,7 +420,7 @@ fn tools(cli: &Cli) -> Value {
                 "type": "object",
                 "properties": {
                     "session": {"type": "string", "description": "session id prefix or transcript path"},
-                    "strategy": {"type": "string", "description": "auto | sawtooth | elide | compacted | cache_aware | cache_edits | scored | structured | agentic | dedupe | micro | middle"},
+                    "strategy": {"type": "string", "description": "auto | sawtooth | elide | cliff | compacted | cache_aware | cache_edits | scored | structured | agentic | dedupe | micro | middle"},
                     "trigger": {"type": "integer", "minimum": 1, "maximum": 10000000, "description": "override trigger threshold (tokens)"},
                     "floor": {"type": "integer", "minimum": 0, "maximum": 9999999, "description": "override post-compaction floor (tokens)"},
                     "adaptive": {"type": "boolean", "description": "derive trigger/floor from the provider window, elidable share, and past compaction yields for this evaluation"}
