@@ -69,7 +69,7 @@ gobstopper proxy run -- claude            # one session through a temporary prox
 gobstopper proxy serve                    # background proxy on http://127.0.0.1:8260
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8260
 gobstopper proxy replay <session>         # what the proxy would have sent; calls no provider
-gobstopper proxy status                   # settings and counters of the running proxy
+gobstopper proxy status                   # counters and estimated-token totals, this run and all time
 ```
 
 Codex routes through a provider block in `~/.codex/config.toml`; see

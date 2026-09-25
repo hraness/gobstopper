@@ -1723,6 +1723,11 @@
           "state": "output",
           "mode": "emit",
           "condition": "Upstream responses relayed to the loopback client; stderr carries paths, sizes, counts and error summaries, never request or response text."
+        },
+        {
+          "state": "cache",
+          "mode": "create",
+          "condition": "Append-only proxy-stats.jsonl ledger of per-request token estimates under the gobstopper data dir (or GOBSTOPPER_STATS_FILE); contains sizes, paths and flags, never content. Write failure is non-fatal."
         }
       ],
       "outbound": [

@@ -23,7 +23,7 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_PORT: u16 = 8260;
@@ -271,6 +271,19 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
                     status["upstream_errors"],
                     status["uptime_secs"]
                 );
+                println!(
+                    "estimated tokens this run: {} -> {} ({}% less); all time: {} -> {} ({}% less){}",
+                    status["est_tokens_in"],
+                    status["est_tokens_out"],
+                    pct(status["est_tokens_in"].as_u64(), status["est_tokens_out"].as_u64()),
+                    status["all_time_est_tokens_in"],
+                    status["all_time_est_tokens_out"],
+                    pct(status["all_time_est_tokens_in"].as_u64(), status["all_time_est_tokens_out"].as_u64()),
+                    status["stats_file"]
+                        .as_str()
+                        .map(|p| format!(", ledger {p}"))
+                        .unwrap_or_default(),
+                );
             }
             Ok(())
         }
@@ -279,6 +292,16 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
 
 fn log(message: &str) {
     eprintln!("{} gobstopper proxy: {message}", rfc3339_now());
+}
+
+fn pct(input: Option<u64>, output: Option<u64>) -> u64 {
+    let (Some(input), Some(output)) = (input, output) else {
+        return 0;
+    };
+    if input == 0 {
+        return 0;
+    }
+    input.saturating_sub(output) * 100 / input
 }
 
 fn validate_upstream(url: &str) -> Result<String> {
@@ -300,6 +323,114 @@ struct Stats {
     reactive_retries: AtomicU64,
     upstream_errors: AtomicU64,
     fail_open: AtomicU64,
+    /// Estimated tokens the clients sent this process lifetime.
+    est_tokens_in: AtomicU64,
+    /// Estimated tokens forwarded upstream this process lifetime.
+    est_tokens_out: AtomicU64,
+}
+
+/// One JSONL record per compactable request, appended under the gobstopper
+/// data dir so totals survive restarts. Records carry sizes and flags only.
+struct StatsLog {
+    writer: Mutex<Option<std::io::BufWriter<std::fs::File>>>,
+    /// Totals recovered from the file at startup, before this process adds.
+    prior_in: u64,
+    prior_out: u64,
+    path: Option<std::path::PathBuf>,
+}
+
+impl StatsLog {
+    fn open() -> Self {
+        let path = match std::env::var_os("GOBSTOPPER_STATS_FILE") {
+            Some(value) if value == "off" => None,
+            Some(value) => Some(std::path::PathBuf::from(value)),
+            None => default_stats_path(),
+        };
+        let mut stats_log = StatsLog {
+            writer: Mutex::new(None),
+            prior_in: 0,
+            prior_out: 0,
+            path: None,
+        };
+        let Some(path) = path else { return stats_log };
+        if let Ok(file) = std::fs::File::open(&path) {
+            for line in std::io::BufRead::lines(std::io::BufReader::new(file)).map_while(Result::ok)
+            {
+                if let Ok(record) = serde_json::from_str::<Value>(&line) {
+                    stats_log.prior_in += record["est_tokens_in"].as_u64().unwrap_or(0);
+                    stats_log.prior_out += record["est_tokens_out"].as_u64().unwrap_or(0);
+                }
+            }
+        }
+        let opened = path
+            .parent()
+            .and_then(|dir| std::fs::create_dir_all(dir).ok())
+            .and_then(|_| {
+                std::fs::OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&path)
+                    .ok()
+            });
+        match opened {
+            Some(file) => {
+                stats_log.writer = Mutex::new(Some(std::io::BufWriter::new(file)));
+                stats_log.path = Some(path);
+            }
+            None => {
+                log(&format!(
+                    "stats file {} is not writable; continuing without it",
+                    path.display()
+                ));
+            }
+        }
+        stats_log
+    }
+
+    fn record(&self, ctx: &RequestCtx, request: &Request, shadow: bool) {
+        if self.path.is_none() {
+            return;
+        }
+        let est_tokens_out = if shadow {
+            ctx.est_tokens_in
+        } else {
+            ctx.est_tokens_out
+        };
+        let record = json!({
+            "ts": rfc3339_now(),
+            "dialect": ctx.dialect.name(),
+            "path": request.path(),
+            "est_tokens_in": ctx.est_tokens_in,
+            "est_tokens_out": est_tokens_out,
+            "compacted": ctx.compacted,
+            "reused_prefix": ctx.matched,
+            "over_budget": ctx.over_budget,
+            "rung": ctx.rung,
+            "shadow": shadow,
+        });
+        if let Ok(mut guard) = self.writer.lock() {
+            if let Some(writer) = guard.as_mut() {
+                use std::io::Write;
+                let _ = writeln!(writer, "{record}").and_then(|()| writer.flush());
+            }
+        }
+    }
+
+    fn totals(&self, stats: &Stats) -> (u64, u64) {
+        (
+            self.prior_in + stats.est_tokens_in.load(Ordering::Relaxed),
+            self.prior_out + stats.est_tokens_out.load(Ordering::Relaxed),
+        )
+    }
+}
+
+fn default_stats_path() -> Option<std::path::PathBuf> {
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/share"))
+        })?;
+    Some(data.join("gobstopper").join("proxy-stats.jsonl"))
 }
 
 struct Proxy {
@@ -312,6 +443,7 @@ struct Proxy {
     started: Instant,
     active: AtomicUsize,
     stats: Stats,
+    stats_log: StatsLog,
 }
 
 impl Proxy {
@@ -334,6 +466,7 @@ impl Proxy {
             started: Instant::now(),
             active: AtomicUsize::new(0),
             stats: Stats::default(),
+            stats_log: StatsLog::open(),
         })
     }
 
@@ -344,6 +477,7 @@ impl Proxy {
     fn status(&self) -> Value {
         let cfg = self.engine.config();
         let (entries, chars) = self.engine.store_stats();
+        let totals = self.stats_log.totals(&self.stats);
         json!({
             "name": "gobstopper-proxy",
             "version": env!("CARGO_PKG_VERSION"),
@@ -362,6 +496,11 @@ impl Proxy {
             "reactive_retries": self.count(&self.stats.reactive_retries),
             "upstream_errors": self.count(&self.stats.upstream_errors),
             "fail_open": self.count(&self.stats.fail_open),
+            "est_tokens_in": self.count(&self.stats.est_tokens_in),
+            "est_tokens_out": self.count(&self.stats.est_tokens_out),
+            "all_time_est_tokens_in": totals.0,
+            "all_time_est_tokens_out": totals.1,
+            "stats_file": self.stats_log.path.as_ref().map(|p| p.display().to_string()),
             "active_connections": self.active.load(Ordering::Relaxed),
             "uptime_secs": self.started.elapsed().as_secs(),
         })
@@ -435,6 +574,20 @@ impl Proxy {
     }
 
     fn report(&self, ctx: &RequestCtx, request: &Request) {
+        self.stats
+            .est_tokens_in
+            .fetch_add(ctx.est_tokens_in, Ordering::Relaxed);
+        // In shadow mode the original bytes are forwarded, so the counters
+        // record the size actually sent, not the hypothetical compacted size.
+        self.stats.est_tokens_out.fetch_add(
+            if self.shadow {
+                ctx.est_tokens_in
+            } else {
+                ctx.est_tokens_out
+            },
+            Ordering::Relaxed,
+        );
+        self.stats_log.record(ctx, request, self.shadow);
         let kind = ctx.dialect.name();
         let path = request.path();
         let shadow = if self.shadow {
