@@ -718,7 +718,7 @@
     "verify/stress/README.md": "b02da2d452bf4cf59462e19c30e606232444880cd483d636a1515e92ddb301b3",
     "verify/stress/check.py": "1eb4a42bb93c3f9f136b74ed56c3dd77a895314f05a61e88caa4ac38a10ab6b9",
     "verify/stress/suites.json": "f2483cdad3f441f4fe6ccb4ba763715a2b8c9e0ec1e7037c83903ff71b040d63",
-    "verify/stress/test_check.py": "71dba23096e85860e4dbb0cdddc434265d1bf83ab32b0c43193b22238010f841",
+    "verify/stress/test_check.py": "66b194207f7ccf0b64fb03954a290576ca544872c8a66b946cec68171b001767",
     "verify/watch/check.py": "97ce34ea1926af465cfd242074ad80d9941311c9f412ee163923a90b7bfaebad"
   },
   "tool_sha256": {
