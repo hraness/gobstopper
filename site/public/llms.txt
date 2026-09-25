@@ -8,6 +8,7 @@ When to use this site:
 - Use /methodology for the occupancy model behind the projections and what each strategy does.
 - Use /benchmarks for dated results, cohort sizes, limitations, and aggregate downloads.
 - Use /compare/cliffcompaction to see how Gobstopper and its proxy compare with CliffCompaction, the API-proxy compactor, and what the cliff strategy does.
+- Use /blog for longer posts on what Gobstopper does and how its archive and edit limits are checked.
 
 ## Pages
 
@@ -16,6 +17,13 @@ When to use this site:
 - [Gobstopper methodology](https://gobstopper.sh/methodology): the occupancy model, the strategies, and the limits of the published benchmarks.
 - [Gobstopper benchmarks](https://gobstopper.sh/benchmarks): offline replays of 729 archived sessions, a synthetic snapshot-recovery study, and historical single-session resume trials.
 - [Gobstopper compared with CliffCompaction](https://gobstopper.sh/compare/cliffcompaction): where each tool runs, what each keeps and drops, what evidence each publishes, gobstopper proxy, which ports CliffCompaction's rule for Claude Code and Codex, and the cliff strategy for transcript copies.
+
+## Blog
+
+- [Gobstopper blog](https://gobstopper.sh/blog): every post, newest first. Atom feed at https://gobstopper.sh/blog/feed.xml.
+- [Introducing Gobstopper](https://gobstopper.sh/blog/introducing-gobstopper): what Gobstopper does, who it is for, and how to try it.
+- [How Gobstopper proves its compaction arithmetic and transcript laws](https://gobstopper.sh/blog/proofs-for-the-admission-math): what the Kani and Lean proofs cover and leave out.
+- [How Gobstopper checks its archive against crashes at every step](https://gobstopper.sh/blog/vault-models-that-fail-on-purpose): the TLA+ models, their broken copies, and the Hegel tests.
 
 ## Optional
 
