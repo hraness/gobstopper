@@ -183,13 +183,17 @@ impl DevinContextCache {
 /// outside the fingerprint. The tail bound mirrors the payload cap there.
 const CONTEXT_FINGERPRINT_TAIL: usize = 32;
 
-/// Byte-sensitive fingerprint over exactly the rows `scan_context` reads.
-/// Two indexed aggregate queries cover appends, deletes, node-id and parent
-/// rewrites across the whole session; a bounded walk from the chain head
-/// covers the live tail's payload bytes. The residual blind spot is the
-/// advisory class every fingerprint here accepts: an above-tail parent
-/// rewrite that happens to preserve every summed column is indistinguishable
-/// at this cost — it can only stale an estimate, never gate a mutation.
+/// Byte-sensitive fingerprint over exactly the rows `scan_context` reads,
+/// priced for passes over a very large store. The aggregates stay entirely
+/// inside the provider's (session_id, node_id) index — count, distinct ids,
+/// rowid bound and id sum catch appends, deletes and id rewrites anywhere.
+/// The bounded walk hashes the live tail's payload bytes, so in-place metric
+/// backfill on the rows the measurement consumes still invalidates. The one
+/// uncovered class is an in-place parent rewrite strictly above the tail:
+/// it cannot change any tail byte, so it can only flip walk validity, and
+/// Devin's write pattern (append plus tail backfill) never reparents — the
+/// same residual a fingerprint cache accepts for an advisory estimate that
+/// can never gate a mutation.
 fn context_fingerprint(conn: &Connection, session_id: &str) -> Option<String> {
     with_read_snapshot(conn, || {
         use sha2::{Digest, Sha256};
@@ -200,16 +204,18 @@ fn context_fingerprint(conn: &Connection, session_id: &str) -> Option<String> {
                 |r| r.get(0),
             )
             .ok()?;
-        // Identity columns only: one range scan, no payload reads. A
-        // node-id or parent rewrite moves these sums; inserts and deletes
-        // move the count; duplicate node_ids move count vs distinct.
-        let shape: (i64, i64, i64, i64, i64, i64) = conn.query_row(
-            "SELECT COUNT(*), COUNT(DISTINCT node_id), COALESCE(MAX(row_id),0), \
-             COALESCE(SUM(node_id),0), COALESCE(SUM(parent_node_id),0), COALESCE(SUM(created_at),0) \
-             FROM message_nodes WHERE session_id = ?1",
-            [session_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
-        ).ok()?;
+        // Covering-index columns only: COUNT, DISTINCT ids and MAX(row_id)
+        // read index entries; SUM(node_id) reads the second index column.
+        // parent_node_id and created_at would force a table-row fetch per
+        // node — that per-session full read is the cost this exists to skip.
+        let shape: (i64, i64, i64, i64) = conn
+            .query_row(
+                "SELECT COUNT(*), COUNT(DISTINCT node_id), COALESCE(MAX(row_id),0), \
+                 COALESCE(SUM(node_id),0) FROM message_nodes WHERE session_id = ?1",
+                [session_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .ok()?;
         let mut hash = Sha256::new();
         hash.update(format!("{:?}|{:?}", head, shape).as_bytes());
         // Walk the live tail exactly like scan_context: the same LIMIT-2
