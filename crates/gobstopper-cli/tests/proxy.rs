@@ -172,17 +172,32 @@ fn start_proxy(upstream: &str, extra: &[&str]) -> ProxyProcess {
     start_proxy_with(upstream, upstream, extra)
 }
 
+fn start_proxy_env(upstream: &str, extra: &[&str], env: &[(&str, &str)]) -> ProxyProcess {
+    start_proxy_inner(upstream, upstream, upstream, extra, env)
+}
+
 fn start_proxy_with(anthropic: &str, chatgpt: &str, extra: &[&str]) -> ProxyProcess {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_gobstopper"))
+    start_proxy_inner(anthropic, anthropic, chatgpt, extra, &[])
+}
+
+fn start_proxy_inner(
+    anthropic: &str,
+    openai: &str,
+    chatgpt: &str,
+    extra: &[&str],
+    env: &[(&str, &str)],
+) -> ProxyProcess {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gobstopper"));
+    command
         .args(["proxy", "serve", "--port", "0"])
-        .args([
-            "--anthropic-upstream",
-            anthropic,
-            "--openai-upstream",
-            anthropic,
-        ])
+        .args(["--anthropic-upstream", anthropic])
+        .args(["--openai-upstream", openai])
         .args(["--chatgpt-upstream", chatgpt])
-        .args(extra)
+        .args(extra);
+    for (key, value) in env {
+        command.env(key, value);
+    }
+    let mut child = command
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -549,4 +564,51 @@ fn only_loopback_hosts_are_served_and_upstream_failures_are_reported() {
     let failed = request(proxy.port, "GET", "/v1/models", ANTHROPIC, b"");
     assert_eq!(failed.status, 502);
     assert_eq!(failed.json()["type"], "error");
+}
+
+#[test]
+fn the_stats_ledger_records_each_request_and_survives_a_restart() {
+    let dir = std::env::temp_dir().join(format!("gobstopper-stats-test-{}", std::process::id()));
+    let stats = dir.join("proxy-stats.jsonl");
+    let stats_str = stats.to_str().unwrap();
+    let fake = Fake::start(|_| Reply::Json(200, json!({"ok": true})));
+
+    let proxy = start_proxy_env(
+        &fake.url(),
+        &["--threshold", "2000", "--keep-recent", "1"],
+        &[("GOBSTOPPER_STATS_FILE", stats_str)],
+    );
+    request(
+        proxy.port,
+        "POST",
+        "/v1/messages",
+        ANTHROPIC,
+        &body(&session(12)),
+    );
+    let status = request(proxy.port, "GET", "/gobstopper/status", &[], b"").json();
+    assert_eq!(status["stats_file"], stats_str);
+    let first_in = status["est_tokens_in"].as_u64().unwrap();
+    let first_out = status["est_tokens_out"].as_u64().unwrap();
+    assert!(first_in > first_out && first_out > 0);
+    assert_eq!(status["all_time_est_tokens_in"], first_in);
+    drop(proxy);
+
+    let lines: Vec<Value> = std::fs::read_to_string(&stats)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 1);
+    assert_eq!(lines[0]["dialect"], "anthropic");
+    assert_eq!(lines[0]["est_tokens_in"], first_in);
+    assert_eq!(lines[0]["est_tokens_out"], first_out);
+    assert_eq!(lines[0]["compacted"], true);
+    assert!(lines[0]["ts"].as_str().unwrap().contains('T'));
+
+    // A restarted proxy keeps the all-time totals from the ledger.
+    let second = start_proxy_env(&fake.url(), &[], &[("GOBSTOPPER_STATS_FILE", stats_str)]);
+    let status = request(second.port, "GET", "/gobstopper/status", &[], b"").json();
+    assert_eq!(status["all_time_est_tokens_in"], first_in);
+    assert_eq!(status["all_time_est_tokens_out"], first_out);
+    std::fs::remove_dir_all(&dir).unwrap();
 }

@@ -158,6 +158,12 @@ so `--fixed-tokens` (20,000 by default) stands in for them.
   curl through curl's environment, not its command line.
 - Logs contain paths, sizes, counts, and error summaries, never request or
   response text.
+- Every compactable request also appends one JSONL record (timestamp,
+  dialect, path, estimated tokens in and out, and flags) to
+  `~/.local/share/gobstopper/proxy-stats.jsonl`, so `gobstopper proxy status`
+  reports estimated-token totals for this run and all time across restarts.
+  `GOBSTOPPER_STATS_FILE` overrides the path; set it to `off` to disable the
+  ledger.
 - Unparseable or compressed request bodies are forwarded unchanged.
 
 ## Limits
