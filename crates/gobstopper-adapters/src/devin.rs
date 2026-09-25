@@ -157,17 +157,16 @@ pub fn discover(root: &Path, max_age_secs: u64, context_only: bool) -> Vec<Disco
 }
 
 /// Persisted advisory cache for `scan_context` results, keyed by session.
-/// The fingerprint is (`last_activity_at`, `main_chain_id`): appending a
-/// node moves the chain head and bumps activity, so an unchanged pair means
-/// the live ancestry and context measurement cannot have changed under
-/// Devin's append-mostly store discipline. In-place payload rewrites that
-/// keep both fields are the same timestamp-granularity caveat the file
-/// discovery cache already accepts.
+/// The fingerprint hashes every input the measurement consumes: the chain
+/// head, session-shape aggregates that catch appends, deletes, id and
+/// parent rewrites anywhere, and the full payload bytes of the live tail.
+/// An unchanged fingerprint therefore means the measurement cannot have
+/// changed — including the in-place metric backfill Devin performs on
+/// existing rows, which leaves `last_activity_at` untouched.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct DevinContextRow {
     pub session_id: String,
-    pub last_activity_at: Option<i64>,
-    pub main_chain_id: Option<i64>,
+    pub fingerprint: String,
     pub usage: UsageSample,
     pub sampled_unix: i64,
 }
@@ -179,14 +178,80 @@ impl DevinContextCache {
     pub(crate) const MAX_ENTRIES: usize = 2048;
 }
 
-fn chain_head(conn: &Connection, session_id: &str) -> Option<i64> {
-    conn.query_row(
-        "SELECT main_chain_id FROM sessions WHERE id = ?1",
-        [session_id],
-        |r| r.get(0),
-    )
-    .ok()
-    .flatten()
+/// Rows an in-place rewrite can affect without moving the fingerprint:
+/// off-tail rows never feed `scan_context`, so their content is legitimately
+/// outside the fingerprint. The tail bound mirrors the payload cap there.
+const CONTEXT_FINGERPRINT_TAIL: usize = 32;
+
+/// Byte-sensitive fingerprint over exactly the rows `scan_context` reads.
+/// Two indexed aggregate queries cover appends, deletes, node-id and parent
+/// rewrites across the whole session; a bounded walk from the chain head
+/// covers the live tail's payload bytes. The residual blind spot is the
+/// advisory class every fingerprint here accepts: an above-tail parent
+/// rewrite that happens to preserve every summed column is indistinguishable
+/// at this cost — it can only stale an estimate, never gate a mutation.
+fn context_fingerprint(conn: &Connection, session_id: &str) -> Option<String> {
+    with_read_snapshot(conn, || {
+        use sha2::{Digest, Sha256};
+        let head: Option<i64> = conn
+            .query_row(
+                "SELECT main_chain_id FROM sessions WHERE id = ?1",
+                [session_id],
+                |r| r.get(0),
+            )
+            .ok()?;
+        // Identity columns only: one range scan, no payload reads. A
+        // node-id or parent rewrite moves these sums; inserts and deletes
+        // move the count; duplicate node_ids move count vs distinct.
+        let shape: (i64, i64, i64, i64, i64, i64) = conn.query_row(
+            "SELECT COUNT(*), COUNT(DISTINCT node_id), COALESCE(MAX(row_id),0), \
+             COALESCE(SUM(node_id),0), COALESCE(SUM(parent_node_id),0), COALESCE(SUM(created_at),0) \
+             FROM message_nodes WHERE session_id = ?1",
+            [session_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+        ).ok()?;
+        let mut hash = Sha256::new();
+        hash.update(format!("{:?}|{:?}", head, shape).as_bytes());
+        // Walk the live tail exactly like scan_context: the same LIMIT-2
+        // point query, so an ambiguous on-path row poisons the fingerprint
+        // the same way it poisons the measurement.
+        let mut parents = conn
+            .prepare(
+                "SELECT node_id, parent_node_id, created_at, chat_message, metadata \
+             FROM message_nodes WHERE session_id = ?1 AND node_id = ?2 LIMIT 2",
+            )
+            .ok()?;
+        let mut cursor = head;
+        let mut visited = 0usize;
+        while let Some(id) = cursor {
+            if visited >= CONTEXT_FINGERPRINT_TAIL {
+                break;
+            }
+            let mut rows = parents.query(rusqlite::params![session_id, id]).ok()?;
+            let row = match rows.next().ok()? {
+                Some(row) => row,
+                None => {
+                    hash.update(b"missing".as_slice());
+                    break;
+                }
+            };
+            let node: i64 = row.get(0).ok()?;
+            let parent: Option<i64> = row.get(1).ok()?;
+            let created: Option<i64> = row.get(2).ok()?;
+            let message: String = row.get(3).ok()?;
+            let meta: Option<String> = row.get(4).ok()?;
+            let dup = rows.next().ok()?.is_some();
+            hash.update(node.to_le_bytes());
+            hash.update(parent.unwrap_or(-1).to_le_bytes());
+            hash.update(created.unwrap_or(-1).to_le_bytes());
+            hash.update([dup as u8]);
+            hash.update(message.as_bytes());
+            hash.update(meta.as_deref().unwrap_or("").as_bytes());
+            cursor = if dup { None } else { parent };
+            visited += 1;
+        }
+        Some(format!("{:x}", hash.finalize()))
+    })
 }
 
 pub fn discover_with_status(
@@ -304,35 +369,35 @@ pub fn discover_with_status_in(
             continue;
         }
         let usage = if context_only {
-            // The chain head is one indexed row read; (activity, head) is
-            // the fingerprint under which a stored context result replays
-            // without touching message_nodes pages at all.
-            let head = if devin_cache.is_some() {
-                chain_head(&conn, &session_id)
-            } else {
-                None
-            };
-            let hit = devin_cache.as_ref().and_then(|cache| {
-                cache
-                    .0
-                    .get(&session_id)
-                    .filter(|row| {
-                        row.last_activity_at == last_activity && row.main_chain_id == head
-                    })
-                    .map(|row| row.usage)
+            // The fingerprint reads one head row, the session-shape
+            // aggregates and the live tail — far less than the measurement
+            // itself — and covers in-place rewrites that activity stamps
+            // and head ids alone cannot see.
+            let fingerprint = devin_cache
+                .as_ref()
+                .and_then(|_| context_fingerprint(&conn, &session_id));
+            let hit = fingerprint.as_ref().and_then(|fingerprint| {
+                devin_cache.as_ref().and_then(|cache| {
+                    cache
+                        .0
+                        .get(&session_id)
+                        .filter(|row| row.fingerprint == *fingerprint)
+                        .map(|row| row.usage)
+                })
             });
             match hit {
                 Some(usage) => usage,
                 None => {
                     let usage = scan_context(&conn, &session_id);
-                    if let Some(cache) = devin_cache.as_deref_mut() {
+                    if let (Some(cache), Some(fingerprint)) =
+                        (devin_cache.as_deref_mut(), fingerprint)
+                    {
                         if cache.0.len() < DevinContextCache::MAX_ENTRIES {
                             cache.0.insert(
                                 session_id.clone(),
                                 DevinContextRow {
                                     session_id: session_id.clone(),
-                                    last_activity_at: last_activity,
-                                    main_chain_id: head,
+                                    fingerprint,
                                     usage,
                                     sampled_unix: now as i64,
                                 },
@@ -2104,7 +2169,7 @@ mod tests {
     }
 
     #[test]
-    fn context_cache_replays_only_while_activity_and_chain_head_hold() {
+    fn context_cache_replays_only_while_every_measurement_input_holds() {
         let fx = Fixture::new("context-cache");
         fx.add_session("sess-a", "demo", 2, 1_790_000_000);
         fx.add_node(
@@ -2125,26 +2190,23 @@ mod tests {
         let (first, _) = discover_with_status_in(&fx.root, 0, true, Some(&mut cache));
         assert_eq!(cache.0.len(), 1);
         assert_eq!(first[0].usage.context_hint(), Some(400));
-        // Delete every node: a live rescan now finds an empty chain, but
-        // the (activity, head) fingerprint is unchanged so the stored
-        // context must replay. The assertion is only possible on a hit.
-        Connection::open(db_path(&fx.root))
-            .unwrap()
-            .execute_batch("DELETE FROM message_nodes")
-            .unwrap();
+        let fingerprint = cache.0["sess-a"].fingerprint.clone();
+        // An unchanged store replays under the same fingerprint.
         let (second, _) = discover_with_status_in(&fx.root, 0, true, Some(&mut cache));
         assert_eq!(second[0].usage.context_hint(), Some(400));
-        // Bumping activity is the append signal: the same cache must miss,
-        // rescan the emptied store, and report the honest new measurement.
+        assert_eq!(cache.0["sess-a"].fingerprint, fingerprint);
+        // In-place metric backfill — Devin's real write pattern — keeps
+        // count, head and activity but must still invalidate the row.
         Connection::open(db_path(&fx.root))
             .unwrap()
             .execute(
-                "UPDATE sessions SET last_activity_at = last_activity_at + 1",
-                [],
+                "UPDATE message_nodes SET metadata = ?1 WHERE session_id = 'sess-a' AND node_id = 2",
+                [r#"{"num_tokens_preceding":500}"#],
             )
             .unwrap();
         let (third, _) = discover_with_status_in(&fx.root, 0, true, Some(&mut cache));
-        assert_ne!(third[0].usage.context_hint(), Some(400));
+        assert_ne!(cache.0["sess-a"].fingerprint, fingerprint);
+        assert_eq!(third[0].usage.context_hint(), Some(500));
     }
 
     #[test]

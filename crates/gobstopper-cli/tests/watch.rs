@@ -351,7 +351,7 @@ fn poisoned_devin_source(f: &Fixture, active: bool) -> PathBuf {
     let conn = Connection::open(&path).unwrap();
     conn.execute_batch(
         "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, working_directory TEXT, created_at INTEGER, last_activity_at INTEGER, main_chain_id INTEGER);
-         CREATE TABLE message_nodes (session_id TEXT, node_id INTEGER, parent_node_id INTEGER, chat_message TEXT, created_at INTEGER, metadata TEXT);
+         CREATE TABLE message_nodes (row_id INTEGER PRIMARY KEY, session_id TEXT, node_id INTEGER, parent_node_id INTEGER, chat_message TEXT, created_at INTEGER, metadata TEXT);
          CREATE INDEX nodes_by_session ON message_nodes(session_id, node_id);"
     ).unwrap();
     let idle = std::time::SystemTime::now()
@@ -374,7 +374,8 @@ fn poisoned_devin_source(f: &Fixture, active: bool) -> PathBuf {
             serde_json::json!({"message_id":format!("m{node}"), "role":"assistant", "content":"synthetic", "metadata":{"metrics":null}}).to_string()
         };
         conn.execute(
-            "INSERT INTO message_nodes VALUES ('synthetic-devin', ?1, ?2, ?3, ?4, NULL)",
+            "INSERT INTO message_nodes (session_id, node_id, parent_node_id, chat_message, created_at, metadata) \
+             VALUES ('synthetic-devin', ?1, ?2, ?3, ?4, NULL)",
             params![
                 node,
                 if node == 0 { None } else { Some(node - 1) },
