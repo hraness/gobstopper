@@ -566,7 +566,7 @@ def coverage_summary(report, sessions, providers, samples):
     raw_discovery = extension.get("discovery") if isinstance(extension, dict) else None
     discovery = []
     discovery_seen = set()
-    if isinstance(raw_discovery, list) and len(raw_discovery) <= 3:
+    if isinstance(raw_discovery, list) and len(raw_discovery) <= 2:
         for row in raw_discovery:
             if (not isinstance(row, dict) or row.get("provider") not in ("codex", "claude_code")
                     or row.get("source_state") not in ("available", "missing", "unavailable")
@@ -593,7 +593,7 @@ def coverage_summary(report, sessions, providers, samples):
         issues.append("incomplete_context_measurements")
     if identifier_omissions:
         issues.append("unsupported_session_identifiers")
-    if len(discovery) != 3:
+    if len(discovery) != 2:
         issues.append("discovery_status_unavailable")
     if any(row["source_state"] != "available" or row["io_errors"] or row["invalid_records"] for row in discovery):
         issues.append("discovery_gaps")
@@ -607,7 +607,7 @@ def coverage_summary(report, sessions, providers, samples):
             "context_states": states, "context_reasons": reasons,
             "complete_context_samples": sum(s["context_tokens"] is not None for s in samples),
             "partial_component_samples": sum(s["measured_component_subtotal"] is not None for s in samples),
-            "discovery": discovery, "discovery_available": len(discovery) == 3,
+            "discovery": discovery, "discovery_available": len(discovery) == 2,
             "report_truncated": exported.get("truncated") if type(exported.get("truncated")) is bool else None,
             "issues": issues, "scope": "selected_codex_sessions_and_explicit_provider_opt_ins"}
 

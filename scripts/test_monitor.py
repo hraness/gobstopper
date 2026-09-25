@@ -110,8 +110,8 @@ class MonitorTests(unittest.TestCase):
     def test_coverage_distinguishes_empty_selection_unknown_usage_and_caps(self):
         value = report()
         value["gobstopper"] = {"coverage": {"truncated": True}, "discovery": [
-            {"provider": provider, "source_state": "available",
-             "scanned": 1, "selected": 1, "invalid_records": 0, "io_errors": 0,
+            {"provider": provider, "source_state": "unavailable" if provider == "claude_code" else "available",
+             "scanned": 1, "selected": 1, "invalid_records": 0, "io_errors": int(provider == "claude_code"),
              "omitted": 0, "truncated": False} for provider in ("codex", "claude_code")]}
         coverage = monitor.coverage_summary(value, [B], ["codex"], monitor.context_samples(value, [B], ["codex"]))
         self.assertEqual(coverage["selected_active_overlap"], 0)
@@ -122,11 +122,11 @@ class MonitorTests(unittest.TestCase):
         self.assertIn("selected_overlap_empty", coverage["issues"])
         self.assertIn("discovery_gaps", coverage["issues"])
         self.assertIn("coverage_truncated", coverage["issues"])
-        value["gobstopper"]["discovery"][2] = value["gobstopper"]["discovery"][0]
+        value["gobstopper"]["discovery"][1] = value["gobstopper"]["discovery"][0]
         duplicate = monitor.coverage_summary(value, [B], ["codex"], [])
         self.assertFalse(duplicate["discovery_available"])
-        value["gobstopper"]["discovery"][2] = {
-            "provider": "codex", "source_state": "available", "scanned": 0, "selected": 0,
+        value["gobstopper"]["discovery"][1] = {
+            "provider": "claude_code", "source_state": "available", "scanned": 0, "selected": 0,
             "invalid_records": 0, "io_errors": "private", "omitted": 0, "truncated": False}
         invalid = monitor.coverage_summary(value, [B], ["codex"], [])
         self.assertFalse(invalid["discovery_available"])
@@ -155,7 +155,7 @@ class MonitorTests(unittest.TestCase):
             path.chmod(0o600)
         write()
         rows = monitor.watcher_checkpoints(runtime, "a" * 64, 1500)
-        self.assertEqual([row["status"] for row in rows], ["fresh", "missing", "missing"])
+        self.assertEqual([row["status"] for row in rows], ["fresh", "missing"])
         self.assertNotIn("PRIVATE", json.dumps(rows))
         self.assertEqual(rows[0]["decisions"]["native_unqualified"], 2)
         checkpoint["settled"] = {"ignored": "x" * monitor.WATCH_STATE_BYTES}
