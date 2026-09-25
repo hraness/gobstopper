@@ -469,8 +469,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-25-stress-r4.json",
-        "sha256": "23378db0d5449b772bbb29f33dacf6a07d6be4180ca2ce735b094c67cbc45829"
+        "path": "docs/assurance/receipts/2026-09-25-stress-r5.json",
+        "sha256": "23720ccf52b5a1c5d5292ff7df9b436d9a27fc1100d77261a9c65d747a4544ca"
       }
     }
   ],
