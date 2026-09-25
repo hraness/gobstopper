@@ -228,7 +228,7 @@ if os.environ.get("STUB_SLEEP"):
     time.sleep(float(os.environ["STUB_SLEEP"]))
 if sys.argv[1:] == ["report", "--active-only", "--context-only"]:
     sys.stdout.write(Path(os.environ["STUB_REPORT"]).read_text())
-elif sys.argv[1:] == ["watch", "--dry-run", "--active-only", "--once"]:
+elif sys.argv[1:] == ["watch", "--dry-run", "--active-only", "--once", "--eval-budget", "38"]:
     if os.environ.get("STUB_WATCH_FAILURE"):
         print("load 01a00000-aaaa-7000-aaaa-aaaaaaaaaaaa failed: SECRET_ERROR_TEXT", file=sys.stderr)
         raise SystemExit(0)
@@ -375,7 +375,7 @@ else:
         self.assertTrue(all(call["gobstopper_env"] == {"GOBSTOPPER_SCORER": "heuristic"} for call in calls))
         self.assertEqual([call["arguments"] for call in calls], [
             ["report", "--active-only", "--context-only"],
-            ["watch", "--dry-run", "--active-only", "--once"],
+            ["watch", "--dry-run", "--active-only", "--once", "--eval-budget", "38"],
         ] * 3)
 
     def test_context_samples_respect_allowlist_and_provider_opt_in(self):

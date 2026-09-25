@@ -30,13 +30,17 @@ SIGTERM/SIGINT cancellation kills and reaps the owned child before exiting;
 interrupted passes do not replace the last complete observation.
 
 The script runs `gobstopper report --active-only --context-only` and
-`gobstopper watch --dry-run --active-only --once`. It writes an atomic
+`gobstopper watch --dry-run --active-only --once --eval-budget 38`. It writes an atomic
 `latest.json` and appends `observations.jsonl`, rotating at 10 MiB and retaining
 one previous log. Reports include the executable's SHA-256 and command duration,
 exit code, and closed error code. Freeform command output is discarded. The
 watch command's known per-session load/plan failure diagnostics are classified as
 `watch_evaluation_failed` even when that command exits zero; plan count is then
-unavailable. Both commands use a 180-second file-recency window for JSONL
+unavailable. `--eval-budget` keeps transcript loading and plan evaluation seven
+seconds inside the command's own timeout: a pass that exhausts it defers its
+remaining sessions unevaluated instead of hitting TIMEOUT, prints a
+`[dry-run] eval budget:` coverage line (not a failure shape), and still exits
+zero with a possibly smaller plan count. Both commands use a 180-second file-recency window for JSONL
 discovery. Claude also includes older files whose bounded metadata scan finds
 a live process; Devin also includes sessions with an observed held provider
 lock. These observations do not establish mutation custody. The report is
