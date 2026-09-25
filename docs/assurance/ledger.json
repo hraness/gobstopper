@@ -385,8 +385,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-25-core-r8.json",
-        "sha256": "fb51bd69f0925380a701bf957ef715dd8272a5739a2fa00faa126e061c2dd3b5"
+        "path": "docs/assurance/receipts/2026-09-25-core-r9.json",
+        "sha256": "f5de4d4f055c6691d3cfb0ddc2b18079fad4eafbc3d6343867a243f153d287f4"
       }
     },
     {
@@ -448,8 +448,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-25-transcript-r8.json",
-        "sha256": "038157462f4cd312580e29709c460c1c99fa81bfc563d1b15571c136fa976c31"
+        "path": "docs/assurance/receipts/2026-09-25-transcript-r9.json",
+        "sha256": "f7c750ba80d57aca6491349979f0cacb378f72c67d52b243699e041d41067956"
       }
     },
     {
@@ -469,8 +469,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-25-stress-r8.json",
-        "sha256": "e526c85e06e46e3b635a76d152721d96dabcbacc1670e8b9acdbf76e371f18ab"
+        "path": "docs/assurance/receipts/2026-09-25-stress-r9.json",
+        "sha256": "56ed3c6f16421b76a6205d824431a5586234b466b67b23dcf8b86d555b13c190"
       }
     }
   ],
