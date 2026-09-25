@@ -66,10 +66,13 @@ export default function CompareCliffCompaction() {
             model to summarize it, and both keep the newest turns untouched.
             CliffCompaction compacts each API request through a local proxy
             while the session runs. <code>gobstopper proxy</code> ports the same
-            rule for Claude Code and Codex, and Gobstopper&apos;s file commands
-            prepare compacted copies of saved sessions that you inspect and then
-            resume. The proxy is in the current source build and not in a tagged
-            release yet; install from source to use it.
+            rule for the Anthropic Messages, OpenAI Responses, and Chat
+            Completions dialects, covering Claude Code, Codex, opencode, Crush,
+            Aider, Goose, and other agents with a configurable provider address.
+            Gobstopper&apos;s file commands prepare compacted copies of saved
+            sessions that you inspect and then resume. The proxy is in the
+            current source build and not in a tagged release yet; install from
+            source to use it.
           </p>
 
           <h2>What CliffCompaction does</h2>
@@ -108,7 +111,7 @@ export default function CompareCliffCompaction() {
           </p>
           <p>
             For a running session, <code>gobstopper proxy</code> listens on
-            127.0.0.1 between Claude Code or Codex and the provider. Past the
+            127.0.0.1 between the agent and its provider. Past the
             threshold (128,000 estimated tokens by default) it sends the head,
             one mechanical summary, and the newest three turns, so the provider
             reports a smaller context and the client&apos;s own auto-compaction

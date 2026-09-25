@@ -34,7 +34,7 @@ test("every public route has one optional support footer without product signup"
 test("the homepage shares the README identity and installs the guarded source build", () => {
   const html = renderToStaticMarkup(<Home />);
   expect(html.match(/<h1\b/gu)).toHaveLength(1);
-  expect(html).toContain("Preview the cut, write a smaller session, and keep every original byte in a local vault you can search and restore from.");
+  expect(html).toContain("Every original byte stays in a local vault you can search and restore from.");
   expect(html).toContain("cargo install --git https://github.com/hraness/gobstopper gobstopper --locked");
   expect(html).not.toContain("--tag v");
   if (publishedRelease === null) {

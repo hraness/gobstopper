@@ -469,6 +469,7 @@ fn summary_text(message: &Value) -> String {
 #[cfg(test)]
 mod tests {
     use super::super::fixtures::*;
+    use super::super::replay;
     use super::*;
     use serde_json::json;
 
@@ -769,5 +770,39 @@ mod tests {
         let keys: Vec<&String> = body.as_object().unwrap().keys().collect();
         assert_eq!(keys, ["model", "max_tokens", "system", "messages"]);
         assert_eq!(body["system"], "You are a coding agent.");
+    }
+
+    #[test]
+    fn chat_completions_compact_and_keep_tool_pairing() {
+        let mut messages = vec![
+            json!({"role": "system", "content": "you are an agent"}),
+            json!({"role": "user", "content": "the task"}),
+        ];
+        for i in 0..10 {
+            messages.push(json!({"role": "assistant", "content": format!("step {i}"),
+                "tool_calls": [{"id": format!("call_{i}"), "type": "function",
+                    "function": {"name": "bash", "arguments": format!("{{\"cmd\":\"s{i}\"}}")}}]}));
+            messages.push(json!({"role": "tool", "tool_call_id": format!("call_{i}"),
+                "content": "R".repeat(3000)}));
+        }
+        let Value::Object(body) = json!({
+            "model": "gpt-x",
+            "stream": true,
+            "tools": [{"type": "function", "function": {"name": "bash"}}],
+            "messages": messages.clone(),
+        }) else {
+            unreachable!()
+        };
+        let engine = engine(2_000, 1);
+        let ctx = engine.prepare(body, Dialect::ChatCompletions).unwrap();
+        assert!(ctx.compacted);
+        assert!(replay::pairing_intact(
+            ctx.messages(),
+            Dialect::ChatCompletions
+        ));
+        let out = ctx.outgoing_body();
+        assert_eq!(out["stream"], true);
+        assert!(out["tools"].is_array());
+        assert!(out["messages"].as_array().unwrap().len() < messages.len());
     }
 }

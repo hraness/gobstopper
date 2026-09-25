@@ -14,12 +14,12 @@ export const comparisonRows: readonly ComparisonRow[] = [
   {
     aspect: "Where it runs",
     cliff: "A local HTTP proxy between the agent and the Anthropic or OpenAI API",
-    gobstopper: "A local HTTP proxy for Claude Code and Codex, plus a CLI over the session files Claude Code and Codex write",
+    gobstopper: "A local HTTP proxy between the agent and its model provider, plus a CLI over the session files Claude Code and Codex write",
   },
   {
     aspect: "Clients",
     cliff: "Any client of the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses API",
-    gobstopper: "Claude Code (Anthropic Messages) and Codex (OpenAI Responses)",
+    gobstopper: "Any client of the same three dialects that accepts a custom provider address: Claude Code, Codex, opencode, Crush, Aider, Goose, and more",
   },
   {
     aspect: "What it changes",

@@ -64,8 +64,9 @@ provider-qualification evidence for this implementation.
 File compaction cannot get ahead of a running client's own compaction: the
 client resends the history it holds in memory, so a rewritten file changes
 nothing until a resume. CliffCompaction's answer is to sit in the request
-path. Claude Code accepts `ANTHROPIC_BASE_URL`, and Codex accepts a
-`model_providers` entry, so a loopback proxy sees every request before the
+path. Claude Code accepts `ANTHROPIC_BASE_URL`, Codex accepts a
+`model_providers` entry, and opencode, Crush, Aider, and Goose each accept a
+custom provider address, so a loopback proxy sees every request before the
 provider does. Once the proxy compacts, the provider reports the compacted
 size and the client's auto-compaction does not reach its trigger.
 
@@ -76,6 +77,11 @@ size and the client's auto-compaction does not reach its trigger.
   escalation steps, and image pricing by dimensions. It is a port of the
   reference implementation, which is MIT-licensed (notice in
   `THIRD_PARTY_NOTICES.md`).
+- Three dialects share that engine. Anthropic Messages and Chat Completions
+  both carry history under `messages`; Responses carries it under `input`.
+  Each dialect owns its message digest, summary shape, and turn grouping, so
+  a kept tail is always a whole number of model steps: an assistant
+  `tool_calls` turn and the `tool` messages answering it are never split.
 - Two behaviors differ from the reference. A rewritten request the provider
   rejects for a reason other than length is resent in its original form.
   When the verbatim floor (fixed request fields plus the head) approaches

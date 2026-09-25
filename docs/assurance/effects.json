@@ -3096,6 +3096,41 @@
       ]
     },
     {
+      "path": "crates/gobstopper-adapters/src/request/chat.rs",
+      "symbol": "digest_message",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/chat.rs",
+      "symbol": "is_assistant",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/chat.rs",
+      "symbol": "is_summary_message",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/chat.rs",
+      "symbol": "summarize_message",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/chat.rs",
+      "symbol": "user_message",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
       "path": "crates/gobstopper-adapters/src/request/engine.rs",
       "symbol": "config",
       "effects": [

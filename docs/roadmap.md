@@ -86,10 +86,13 @@ tool results dropped, nothing paraphrased, every compaction rebuilt from
 the original history) is the closest published design to gobstopper's
 elision strategies; the `cliff` strategy carries it onto the file layer
 and the README's comparison section records the differences. Since
-September 25, 2026, `gobstopper proxy` also runs that rule on the wire for
-Claude Code and Codex, because only the request path can compact a running
-session before the client's own compaction fires. Open: measure task quality
-and cost of proxied sessions against unproxied ones.
+September 25, 2026, `gobstopper proxy` also runs that rule on the wire
+across the three dialects coding agents use (Anthropic Messages, OpenAI
+Responses, and OpenAI Chat Completions), because only the request path can
+compact a running session before the client's own compaction fires. Open:
+measure task quality and cost of proxied sessions against unproxied ones,
+and qualify the Chat Completions dialect against live opencode, Crush,
+Aider, and Goose sessions (coverage is contract-tested so far).
 File-layer tools (cc-session, coldxx, claude-journal, compactdiff,
 claude-streaming-compactor) are manual or single-provider/single-
 strategy. Nobody composes: watch → policy → transcript surgery →

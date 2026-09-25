@@ -1,14 +1,19 @@
 <!-- hraness:gobstopper-landing:start -->
 # Gobstopper
 
-Gobstopper is a free, open-source command-line tool that makes long Claude
-Code and Codex sessions smaller. Preview a compaction, write a smaller copy,
-and keep the original byte for byte in a local vault.
+Gobstopper is a free, open-source command-line tool that makes long coding
+sessions smaller. Preview a compaction, write a smaller copy, and keep the
+original byte for byte in a local vault. It reads Claude Code and Codex
+session files.
 
-To keep a running Claude Code or Codex session small, run `gobstopper proxy`
-and point the client at it. The proxy compacts each outgoing request that
-passes a token threshold, so the client's own auto-compaction does not reach
-its trigger; see [Compact live Claude Code and Codex requests](#compact-live-claude-code-and-codex-requests).
+To keep a running session small, run `gobstopper proxy` and point the client
+at it. The proxy compacts each outgoing request that passes a token
+threshold, so the client's own auto-compaction does not reach its trigger.
+It speaks the three dialects coding agents use: Anthropic Messages (Claude
+Code, opencode, Crush), OpenAI Responses (Codex), and OpenAI Chat
+Completions (opencode, Crush, Aider, Goose, and other OpenAI-compatible
+clients); see
+[Compact live coding-agent requests](#compact-live-coding-agent-requests).
 
 Preview compaction at a context size you choose, then prepare a separate Codex
 or Claude Code copy. Gobstopper archives the exact source and candidate bytes
@@ -44,18 +49,65 @@ A smaller context is not the same as a successful continuation or a lower bill.
 The [published studies](https://gobstopper.sh/benchmarks) report context reduction,
 retention, no-op cases, and limitations separately.
 
+Why pick it:
+
+- **It deletes instead of paraphrasing.** Summarizers rewrite history through
+  a model, drift on each pass, and cost a large input call. Gobstopper's rule
+  keeps the recent turns byte-for-byte and mechanically summarizes the rest;
+  every later compaction rebuilds from the original history, so a summary is
+  never summarized again. This is the approach the strongest published result
+  for the problem converged on: CliffCompaction's authors report up to 50%
+  lower cost at a bounded context with maintained or improved Terminal-Bench
+  2.0 results on the models they tested; their figures, measured on their
+  proxy, not Gobstopper's.
+- **It covers the agent, not just the provider.** One proxy handles all three
+  wire dialects coding agents use, so the same tool follows you across
+  clients. One CLI also works on saved Claude Code and Codex transcripts:
+  preview a compaction, prepare a copy, diff it, undo it.
+- **It keeps the evidence.** Before any write, the exact source lands in a
+  content-addressed vault. Compacted-away detail is searchable and readable
+  again, and every operation emits a receipt. Compaction becomes an
+  inspectable edit, not a silent loss.
+- **It is cheap to run.** A mechanical rule needs no model: one local binary,
+  one JSON rewrite per request, hash-chained prefix reuse so the provider's
+  prompt cache keeps matching, and fail-open forwarding when anything goes
+  wrong: an error in Gobstopper never breaks the agent.
+- **It is honest about evidence.** Replays, retention probes, and dated live
+  trials are published with their scope; the [activation
+  matrix](docs/assurance/qualification.json) records exactly which cells are
+  qualified. What isn't measured stays labeled unmeasured.
+
 Gobstopper keeps the exact source in a local vault before any compaction changes it, so a compaction is a recorded edit you can recover from rather than a silent loss: the design every Hraness project shares. [The thread through hraness](https://hraness.com/writing/the-thread-through-hraness) follows that design across the projects, and the [ALGAL vision](https://algal.computer/docs/vision/) states the bet behind it.
 
-## Compact live Claude Code and Codex requests
+## Compact live coding-agent requests
 
-`gobstopper proxy` is a local HTTP proxy for Claude Code and Codex, in the
-current `main` source build. Each time the client resends its history, the
-proxy estimates the request size. Past the threshold (128,000 tokens by
-default), it sends the system prompt and the first task verbatim, one
-mechanical summary of the older turns, and the newest three turns verbatim.
-The provider then reports the compacted size back to the client, so the
-client's own auto-compaction does not reach its trigger. The rule is
-CliffCompaction's; see [How Gobstopper compares with CliffCompaction](#how-gobstopper-compares-with-cliffcompaction).
+`gobstopper proxy` is a local HTTP proxy that sits between a coding agent
+and its model provider, in the current `main` source build. Each time the
+client resends its history, the proxy estimates the request size. Past the
+threshold (128,000 tokens by default), it sends the system prompt and the
+first task verbatim, one mechanical summary of the older turns, and the
+newest three turns verbatim. The provider then reports the compacted size
+back to the client, so the client's own auto-compaction does not reach its
+trigger. The rule is CliffCompaction's; see
+[How Gobstopper compares with CliffCompaction](#how-gobstopper-compares-with-cliffcompaction).
+
+It speaks the three dialects coding agents use:
+
+| Agent | Dialect | How to point it at the proxy |
+|---|---|---|
+| Claude Code | Anthropic Messages | `export ANTHROPIC_BASE_URL=http://127.0.0.1:8260` |
+| Codex | OpenAI Responses | `model_providers` block in `~/.codex/config.toml` |
+| opencode | Anthropic Messages or Chat Completions | `provider.<id>.options.baseURL` → `http://127.0.0.1:8260/v1` |
+| Crush | Anthropic Messages or Chat Completions | `providers.<id>.base_url` → `http://127.0.0.1:8260/v1` |
+| Aider | Chat Completions | `aider --openai-api-base http://127.0.0.1:8260/v1` |
+| Goose | Chat Completions | `OPENAI_HOST=http://127.0.0.1:8260` |
+
+The setup for each agent is in [docs/proxy.md](docs/proxy.md). Any other
+OpenAI-compatible client that posts to `{base}/chat/completions` works the
+same way. Claude Code and Codex routing is live-checked; the Chat
+Completions dialect is contract-tested against synthetic histories and has
+not yet been qualified against a live opencode, Crush, Aider, or Goose
+session.
 
 The summary keeps human and assistant text, keeps tool results of at most 500
 characters, and reduces each tool call to a one-line signature; longer tool
@@ -72,11 +124,11 @@ gobstopper proxy replay <session>         # what the proxy would have sent; call
 gobstopper proxy status                   # counters and estimated-token totals, this run and all time
 ```
 
-Codex routes through a provider block in `~/.codex/config.toml`; see
-[docs/proxy.md](docs/proxy.md) for Codex, a macOS LaunchAgent, and every
-setting. Flags: `--threshold` (keep it below the client's auto-compaction
-point), `--keep-recent`, `--result-max-chars`, `--drop-thinking`, `--shadow`
-(log what would change and forward everything unchanged), and `--strict`.
+See [docs/proxy.md](docs/proxy.md) for per-agent setup (Claude Code, Codex,
+opencode, Crush, Aider, Goose), a macOS LaunchAgent, and every setting.
+Flags: `--threshold` (keep it below the client's auto-compaction point),
+`--keep-recent`, `--result-max-chars`, `--drop-thinking`, `--shadow` (log
+what would change and forward everything unchanged), and `--strict`.
 
 - The proxy listens on 127.0.0.1 and refuses requests addressed to other
   host names. It forwards through the system `curl` (8.3 or later) and hands
@@ -87,8 +139,9 @@ point), `--keep-recent`, `--result-max-chars`, `--drop-thinking`, `--shadow`
   compressed body, an internal error, or a provider that rejects the
   rewritten request for a reason other than length. When the provider rejects
   a request for length, the proxy compacts further and retries.
-- Transcript files are not changed. Claude Code and Codex keep the full
-  history, so resume and the file commands below work as before.
+- Transcript files are not changed. The client keeps its full history, so
+  resume works as before, and Claude Code and Codex histories still feed the
+  file commands below.
 - Sizes are estimates at four characters per token, with images priced by
   their dimensions. A history the client already compacted itself can start
   with a long head that the proxy keeps verbatim; the threshold then rises to
@@ -187,7 +240,7 @@ the strategy and where it cuts matter as much as the timing.
 | `sawtooth` | provider | proposes provider-native compaction to the session owner; released CLI dispatch is blocked pending qualification |
 | `cache_edits` | provider | emits bounded Claude `tool_use_id` values for API-layer context editing; never rewrites a transcript |
 | `elide` | transcript | stubs stale tool outputs oldest-first until the floor |
-| `cliff` | transcript | keeps the head, the newest three assistant steps, and the newest `keep_recent_tool_outputs` tool results (default 8) byte-for-byte and drops older eligible tool results over 500 bytes; no floor seeking and no state card (see [CliffCompaction](#how-gobstopper-compares-with-cliffcompaction); for running sessions, use [`gobstopper proxy`](#compact-live-claude-code-and-codex-requests)) |
+| `cliff` | transcript | keeps the head, the newest three assistant steps, and the newest `keep_recent_tool_outputs` tool results (default 8) byte-for-byte and drops older eligible tool results over 500 bytes; no floor seeking and no state card (see [CliffCompaction](#how-gobstopper-compares-with-cliffcompaction); for running sessions, use [`gobstopper proxy`](#compact-live-coding-agent-requests)) |
 | `cache_aware` | transcript | elides a tailward stale-output window and injects a bounded state card while preserving the longest practical prefix |
 | `compacted` | transcript | elides stale outputs and injects the state card; synthetic Codex `compacted` records require `--experimental-compacted` |
 | `scored` | transcript | ranks candidates with deterministic recency, error, reference, TF-IDF, duplicate, and tool-type signals before elision |
@@ -714,8 +767,8 @@ session files:
 
 | | CliffCompaction | Gobstopper |
 |---|---|---|
-| Where it runs | A local HTTP proxy between the agent and the Anthropic or OpenAI API | A local HTTP proxy for Claude Code and Codex, plus a CLI over the session files Claude Code and Codex write |
-| Clients | Any client of the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses API | Claude Code (Anthropic Messages) and Codex (OpenAI Responses) |
+| Where it runs | A local HTTP proxy between the agent and the Anthropic or OpenAI API | A local HTTP proxy between the agent and its model provider, plus a CLI over the session files Claude Code and Codex write |
+| Clients | Any client of the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses API | Any client of the same three dialects that accepts a custom provider address: Claude Code, Codex, opencode, Crush, Aider, Goose, and more |
 | What it changes | Each outgoing request, transparently, while the session runs | The proxy rewrites outgoing requests over the threshold; file commands publish a separate compacted copy and leave the source unchanged |
 | How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy applies the same rule; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
 | Recompaction | Rebuilt from the original history; the prior summary is discarded | The proxy rebuilds from the original history; `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy |
