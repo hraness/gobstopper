@@ -286,7 +286,7 @@ gobstopper watch --dry-run --once`}</code></pre>
             <p className="install-note">
               <a href={`${repository}/blob/main/docs/assurance/qualification.json`}>Provider support status</a>{" · "}
               <a href={`${repository}/blob/main/docs/assurance/operations.md`}>Recovery runbook</a>{" · "}
-              <a href={`${repository}/blob/main/verify/vault/README.md`}>Proof scopes and assumptions</a>
+              <a href={`${repository}/blob/main/verify/README.md`}>Verification scopes and assumptions</a>
             </p>
           </MarketingInstallPanel>
 

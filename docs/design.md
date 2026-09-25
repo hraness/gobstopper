@@ -54,9 +54,9 @@ provider-qualification evidence for this implementation.
   cost at a bounded context with maintained or improved Terminal-Bench 2.0
   results on the Kimi and GLM models they tested. `cliff` applies the drop
   rule and the protected head and tail to a transcript copy; the vault, not
-  the copy, holds the originals. Compacting a `cliff` copy again selects the
-  records one compaction from the source would select, which a unit test
-  pins. Tool-call signatures and reasoning caps are outside the copy
+  the copy, holds the originals. When both passes produce a plan at the same cut,
+  the records dropped from the source and then from a `cliff` copy are, together, the records one compaction from the source would drop; one unit test
+  checks a synthetic case, and trigger or minimum-savings gating on the smaller copy can make the paths differ. Tool-call signatures and reasoning caps are outside the copy
   transform, which replaces tool-result payloads only.
 
 ## Request-time compaction (`gobstopper proxy`)

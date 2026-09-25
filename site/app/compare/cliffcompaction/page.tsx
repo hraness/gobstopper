@@ -62,14 +62,14 @@ export default function CompareCliffCompaction() {
         <article>
           <h1>Gobstopper compared with CliffCompaction</h1>
           <p>
-            Both tools shrink a coding agent&apos;s context without asking a
+            Both tools can shrink a coding agent&apos;s context without asking a
             model to summarize it, and both keep the newest turns untouched.
             CliffCompaction compacts each API request through a local proxy
             while the session runs. <code>gobstopper proxy</code> ports the same
             rule for Claude Code and Codex, and Gobstopper&apos;s file commands
             prepare compacted copies of saved sessions that you inspect and then
-            resume. Both are in the current source build; install from source to
-            use them, because the latest tagged release predates them.
+            resume. The proxy is in the current source build and not in a tagged
+            release yet; install from source to use it.
           </p>
 
           <h2>What CliffCompaction does</h2>
@@ -145,8 +145,9 @@ gobstopper proxy replay <session>    # what the proxy would have sent; calls no 
           <p>
             <code>cliff</code> keeps the head (the system prompt and the first
             user prompt) and the newest <code>keep_recent_turns</code> assistant
-            steps byte-for-byte, drops every older tool result larger than{" "}
-            <code>result_max_bytes</code>, and leaves smaller results, user
+            steps byte-for-byte, drops older tool results larger than{" "}
+            <code>result_max_bytes</code> except the newest{" "}
+            <code>keep_recent_tool_outputs</code> (default 8), and leaves smaller results, user
             prompts, assistant text, and reasoning in place. The defaults are
             three steps and 500 bytes, the proxy&apos;s defaults. A step starts
             where the assistant side resumes after a user prompt or a tool
@@ -155,11 +156,10 @@ gobstopper proxy replay <session>    # what the proxy would have sent; calls no 
             the copy is as small as the rule makes it.
           </p>
           <p>
-            Because the strategy only removes payloads by class, compacting a{" "}
-            <code>cliff</code> copy again at a later point selects the same
-            records a single compaction from the source would. That is the
-            file-side form of never compacting a compaction, and a unit test
-            in the repository pins it. Two parts of the proxy&apos;s rule are not
+            When both passes run at the same cut and both produce a plan, the records dropped from the source and then from a{" "}
+            <code>cliff</code> copy are, together, the records a single compaction from the source would drop.
+            That is the file-side analogue of never compacting a compaction; a unit test
+            in the repository checks one synthetic case. A copy below the trigger or the minimum savings is not compacted again, so the two paths can differ. Two parts of the proxy&apos;s rule are not
             part of the copy: tool-call signatures and reasoning caps, because
             Gobstopper&apos;s copy transforms replace tool-result payloads only.
             Codex <code>compacted</code> records count as one result.
@@ -171,7 +171,8 @@ gobstopper eval <session>      # cliff appears beside the other strategies
 [presets.cliff]
 strategy = "cliff"
 keep_recent_turns = 3
-result_max_bytes = 500`}</code></pre>
+result_max_bytes = 500
+keep_recent_tool_outputs = 0`}</code></pre>
 
           <h2>Which one fits</h2>
           <p>

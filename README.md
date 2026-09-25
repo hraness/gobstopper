@@ -10,7 +10,7 @@ its trigger; see [Compact live Claude Code and Codex requests](#compact-live-cla
 
 Preview compaction at a context size you choose, then prepare a separate Codex
 or Claude Code copy. Gobstopper archives the exact source and candidate bytes
-and checks supported structural and retention properties.
+and checks supported structural properties and protected recent output.
 
 Use `gobstopper watch --dry-run` to inspect threshold decisions, or prepare a
 copy with a file strategy. Released CLI builds cannot ask providers to compact,
@@ -197,7 +197,7 @@ the strategy and where it cuts matter as much as the timing.
 | `sawtooth` | provider | proposes provider-native compaction to the session owner; released CLI dispatch is blocked pending qualification |
 | `cache_edits` | provider | emits bounded Claude `tool_use_id` values for API-layer context editing; never rewrites a transcript |
 | `elide` | transcript | stubs stale tool outputs oldest-first until the floor |
-| `cliff` | transcript | keeps the head and the newest three assistant steps byte-for-byte and drops every older tool result over 500 bytes; no floor seeking and no state card (see [CliffCompaction](#how-gobstopper-compares-with-cliffcompaction); for running sessions, use [`gobstopper proxy`](#compact-live-claude-code-and-codex-requests)) |
+| `cliff` | transcript | keeps the head, the newest three assistant steps, and the newest `keep_recent_tool_outputs` tool results (default 8) byte-for-byte and drops older eligible tool results over 500 bytes; no floor seeking and no state card (see [CliffCompaction](#how-gobstopper-compares-with-cliffcompaction); for running sessions, use [`gobstopper proxy`](#compact-live-claude-code-and-codex-requests)) |
 | `cache_aware` | transcript | elides a tailward stale-output window and injects a bounded state card while preserving the longest practical prefix |
 | `compacted` | transcript | elides stale outputs and injects the state card; synthetic Codex `compacted` records require `--experimental-compacted` |
 | `scored` | transcript | ranks candidates with deterministic recency, error, reference, TF-IDF, duplicate, and tool-type signals before elision |
@@ -488,6 +488,7 @@ trigger_tokens = 150_000
 strategy = "cliff"
 keep_recent_turns = 3        # newest assistant steps kept byte-for-byte
 result_max_bytes = 500       # older tool results above this are dropped
+keep_recent_tool_outputs = 0 # no extra protected result tail
 
 [presets.custom-script]      # legacy userspace code preset
 command = "python3 ~/bin/my_compactor.py"
@@ -742,8 +743,8 @@ session files:
 | Where it runs | A local HTTP proxy between the agent and the Anthropic or OpenAI API | A local HTTP proxy for Claude Code and Codex, plus a CLI over the session files Claude Code, Codex, and Devin write |
 | Clients | Any client of the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses API | Claude Code (Anthropic Messages) and Codex (OpenAI Responses); Devin cannot be proxied |
 | What it changes | Each outgoing request, transparently, while the session runs | The proxy rewrites outgoing requests over the threshold; file commands publish a separate compacted copy and leave the source unchanged |
-| How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy applies the same rule; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; nothing paraphrases |
-| Recompaction | Rebuilt from the original history; the prior summary is discarded | The proxy and `cliff` rebuild from the original history; strategies that inject a state card carry it forward into the next copy |
+| How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy applies the same rule; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
+| Recompaction | Rebuilt from the original history; the prior summary is discarded | The proxy rebuilds from the original history; `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy |
 | What holds the originals | The agent's own history and the files on disk; the proxy keeps only an in-memory cache of compacted prefixes | For proxied requests, the agent's own transcript and an in-memory cache; for copies, a content-addressed vault with `search-snapshot` and `read-snapshot` |
 | Evidence published | Terminal-Bench 2.0, SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models | Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, literal retention probes, and dated single-session trials; no task-success or billing claims |
 | Model needed | None; the summary is mechanical | None for the proxy or the built-in strategies; optional model scorers |
@@ -759,15 +760,18 @@ in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 The `cliff` strategy applies the drop rule to a transcript copy instead:
 the head and the newest `keep_recent_turns` assistant steps stay
-byte-for-byte, older tool results over `result_max_bytes` are dropped, smaller
-ones stay, and nothing is summarized or added. A step starts where the
+byte-for-byte, older tool results over `result_max_bytes` are dropped unless they are among
+the newest `keep_recent_tool_outputs` (default 8), smaller ones stay, and nothing is summarized or added. A step starts where the
 assistant side resumes after a user prompt or a tool result and includes the
 tool results that answer it. Tool-call signatures and reasoning caps are not
 part of the file transform, because Gobstopper's copy transforms only replace
-tool-result payloads. Codex `compacted` records count as one result. Because
-the strategy only removes payloads by class, compacting a `cliff` copy again
-selects the same records a single compaction from the source would; a unit
-test pins that property. The dropped bytes stay in the vault, not in the copy.
+tool-result payloads. Codex `compacted` records count as one result. When both
+passes run at the same cut and both produce a plan, the records dropped from
+the source and then from the copy are, together, the records a single
+compaction from the source would drop; one unit test checks this on a
+synthetic transcript. A copy below the trigger or the minimum savings is not
+compacted again, so under the default policy the two paths can differ. The
+dropped bytes stay in the vault, not in the copy.
 
 ```sh
 gobstopper plan <session> --strategy cliff
@@ -949,12 +953,13 @@ roots. Operation pins have no automatic retirement policy. Transcript processing
 defaults to 512 MiB and 100,000 records. Process-death fixtures and
 [TLA+ vault models](verify/vault/README.md), the
 [native dispatch model](verify/watch/README.md),
-[production Rust proof kernels](verify/core/README.md), and
+[Kani proofs of selected production Rust kernels](verify/core/README.md), and
 [Lean transcript algebra](verify/transcript/README.md) cover their declared
-invariants and bounds. The [bounded synthetic stress gate](verify/stress/README.md)
+invariants and bounds; the TLA+ models check safety only, without fairness, so they make no eventual-completion claim. The [bounded synthetic stress gate](verify/stress/README.md)
 exercises named fault, restart and process fixtures. The
 [verification guide](verify/README.md) describes reproducible tool inputs and CI
-gates. These checks do not prove arbitrary filesystem power-loss
+gates. These checks do not prove that the Rust code implements the TLA+ models
+or the Lean algebra (that link is reviewed, or tested on finite fixtures), arbitrary filesystem power-loss
 behavior, proprietary provider acceptance, or preservation of every task fact.
 
 Direct provider controls still belong to the live session owner. Synthetic
