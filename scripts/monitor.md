@@ -40,7 +40,11 @@ unavailable. `--eval-budget` keeps transcript loading and plan evaluation seven
 seconds inside the command's own timeout: a pass that exhausts it defers its
 remaining sessions unevaluated instead of hitting TIMEOUT, prints a
 `[dry-run] eval budget:` coverage line (not a failure shape), and still exits
-zero with a possibly smaller plan count. Both commands use a 180-second file-recency window for JSONL
+zero with a possibly smaller plan count. Both commands also reuse the
+advisory discovery fingerprint snapshot each watcher lane leaves in
+`discovery-cache-<provider>.json` beside watch state, so an unchanged
+session file is restated rather than reparsed; a missing or corrupt
+snapshot simply costs a cold rescan. Both commands use a 180-second file-recency window for JSONL
 discovery. Claude also includes older files whose bounded metadata scan finds
 a live process; Devin also includes sessions with an observed held provider
 lock. These observations do not establish mutation custody. The report is

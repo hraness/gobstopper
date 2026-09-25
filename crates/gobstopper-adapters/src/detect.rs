@@ -252,12 +252,109 @@ struct CachedSession {
     meta: (Option<String>, Option<PathBuf>),
     usage: UsageSample,
 }
+/// Serializable form of one [`CachedSession`]. Path and usage are the same
+/// information class the provider's own directory listing already exposes.
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+pub struct DiscoveryCacheRow {
+    pub path: PathBuf,
+    pub len: u64,
+    pub mtime: Option<(i64, u32)>,
+    pub dev: u64,
+    pub ino: u64,
+    pub ctime: i64,
+    pub ctime_nanos: i64,
+    pub identified: bool,
+    pub sampled_unix: i64,
+    pub meta_id: Option<String>,
+    pub meta_path: Option<PathBuf>,
+    pub usage: UsageSample,
+}
+
+/// On-disk snapshot written by watcher lanes beside their watch state; a
+/// cold one-shot read consumes it to skip content rescans of unchanged
+/// files. `schema` changes evict the whole snapshot rather than merge.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub struct DiscoveryCacheFile {
+    pub schema: String,
+    pub provider: String,
+    pub written_unix: u64,
+    pub entries: Vec<DiscoveryCacheRow>,
+}
+
+impl DiscoveryCacheFile {
+    pub const SCHEMA: &'static str = "gobstopper.discovery-cache.v1";
+}
+
 impl DiscoveryCache {
     /// Validity bound for entries whose fingerprint lacks identity fields.
     const SAMPLE_TTL_SECS: u64 = 60;
     /// Entries kept before the cache is dropped and rebuilt; a corpus
     /// larger than this bound rescans once per pass.
     const MAX_ENTRIES: usize = 4096;
+
+    /// Rows for `provider` in a form that survives a process restart.
+    /// Persisted discovery is advisory only: a stale or corrupt snapshot
+    /// simply costs a rescan, exactly like a cold start.
+    pub fn persist_rows(&self, provider: Provider) -> Vec<DiscoveryCacheRow> {
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        self.0
+            .iter()
+            .filter(|((p, _), _)| *p == provider)
+            .map(|((_, path), e)| DiscoveryCacheRow {
+                path: path.clone(),
+                len: e.fingerprint.0,
+                mtime: e
+                    .fingerprint
+                    .1
+                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|d| (d.as_secs() as i64, d.subsec_nanos())),
+                dev: e.fingerprint.2,
+                ino: e.fingerprint.3,
+                ctime: e.fingerprint.4,
+                ctime_nanos: e.fingerprint.5,
+                identified: e.identified,
+                sampled_unix: epoch - e.sampled.elapsed().as_secs() as i64,
+                meta_id: e.meta.0.clone(),
+                meta_path: e.meta.1.clone(),
+                usage: e.usage,
+            })
+            .collect()
+    }
+
+    /// Merge rows from a persisted snapshot. Non-identified rows expire
+    /// against [`DiscoveryCache::SAMPLE_TTL_SECS`] measured from the
+    /// recorded wall-clock sample, never from load time.
+    pub fn merge_persisted(&mut self, provider: Provider, rows: Vec<DiscoveryCacheRow>) {
+        let epoch = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs() as i64;
+        for row in rows {
+            if self.0.len() >= Self::MAX_ENTRIES {
+                break;
+            }
+            let mtime = row
+                .mtime
+                .map(|(s, n)| std::time::UNIX_EPOCH + std::time::Duration::new(s as u64, n));
+            let age = (epoch - row.sampled_unix).max(0) as u64;
+            let sampled = std::time::Instant::now()
+                .checked_sub(std::time::Duration::from_secs(age))
+                .unwrap_or_else(std::time::Instant::now);
+            self.0.insert(
+                (provider, row.path),
+                CachedSession {
+                    fingerprint: (row.len, mtime, row.dev, row.ino, row.ctime, row.ctime_nanos),
+                    identified: row.identified,
+                    sampled,
+                    meta: (row.meta_id, row.meta_path),
+                    usage: row.usage,
+                },
+            );
+        }
+    }
 
     fn inspect(
         &mut self,

@@ -2793,6 +2793,20 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/detect.rs",
+      "symbol": "persist_rows",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/detect.rs",
+      "symbol": "merge_persisted",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/detect.rs",
       "symbol": "default_max_age_secs",
       "effects": [
         "pure"

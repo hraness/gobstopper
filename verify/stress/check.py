@@ -33,7 +33,7 @@ SUITES = {
     "vault-metadata": ("gobstopper-adapters", ["--lib", "vault::accounting::tests::"], 13, 90),
     "vault-accounting-cli": ("gobstopper", ["--test", "vault_accounting"], 2, 90),
     "journal": ("gobstopper", ["--bin", "gobstopper", "native_operations::tests::"], 10, 180),
-    "watch": ("gobstopper", ["--test", "watch"], 29, 240),
+    "watch": ("gobstopper", ["--test", "watch"], 30, 240),
     "claude-process": ("gobstopper-adapters", ["--test", "native_process"], 2, 60),
     "acp-process": ("gobstopper-adapters", ["--lib", "devin::tests::acp_"], 10, 90),
     "codex-process": ("gobstopper", ["--bin", "gobstopper", "tests::codex_"], 11, 90),

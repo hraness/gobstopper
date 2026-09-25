@@ -3963,6 +3963,91 @@ fn save_watch_state(path: &Path, state: &WatchState) -> Result<()> {
     result.context("persist watch state")
 }
 
+/// Persisted discovery cache: same directory and same write discipline as
+/// watch state, but advisory — a corrupt or missing snapshot only costs a
+/// rescan, so every reader treats parse or schema drift as a cold start.
+const MAX_DISCOVERY_CACHE_BYTES: u64 = 8 * 1024 * 1024;
+
+fn discovery_cache_path(dir: &Path, provider: Provider) -> PathBuf {
+    dir.join(format!("discovery-cache-{}.json", provider.as_str()))
+}
+
+fn file_providers(provider: Option<Provider>) -> impl Iterator<Item = Provider> {
+    [Provider::Codex, Provider::ClaudeCode]
+        .into_iter()
+        .filter(move |p| provider.is_none_or(|q| q == *p))
+}
+
+fn load_persisted_discovery(
+    cache: &mut detect::DiscoveryCache,
+    dir: &Path,
+    provider: Option<Provider>,
+) {
+    for p in file_providers(provider) {
+        let path = discovery_cache_path(dir, p);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Ok(file) = serde_json::from_str::<detect::DiscoveryCacheFile>(&text) else {
+            continue;
+        };
+        if file.schema != detect::DiscoveryCacheFile::SCHEMA || file.provider != p.as_str() {
+            continue;
+        }
+        cache.merge_persisted(p, file.entries);
+    }
+}
+
+fn save_persisted_discovery(
+    cache: &detect::DiscoveryCache,
+    dir: &Path,
+    provider: Option<Provider>,
+) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static NEXT_WRITE: AtomicU64 = AtomicU64::new(0);
+    for p in file_providers(provider) {
+        let path = discovery_cache_path(dir, p);
+        let rows = cache.persist_rows(p);
+        if rows.is_empty() {
+            continue;
+        }
+        let file = detect::DiscoveryCacheFile {
+            schema: detect::DiscoveryCacheFile::SCHEMA.to_owned(),
+            provider: p.as_str().to_owned(),
+            written_unix: now_secs(),
+            entries: rows,
+        };
+        let tmp = dir.join(format!(
+            ".discovery-cache-{}-{}.tmp",
+            std::process::id(),
+            NEXT_WRITE.fetch_add(1, Ordering::Relaxed),
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let result = (|| -> Result<()> {
+            let mut writer = options.open(&tmp)?;
+            serde_json::to_writer(&mut writer, &file)?;
+            if writer.metadata()?.len() > MAX_DISCOVERY_CACHE_BYTES {
+                bail!("discovery cache exceeds byte bound; snapshot not persisted");
+            }
+            writer.sync_all()?;
+            std::fs::rename(&tmp, &path)?;
+            #[cfg(unix)]
+            std::fs::File::open(dir)?.sync_all()?;
+            Ok(())
+        })();
+        if result.is_err() {
+            let _ = std::fs::remove_file(&tmp);
+            eprintln!("discovery cache persist failed (non-fatal): {path:?}");
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn cmd_watch(
     cli: &Cli,
@@ -4059,6 +4144,12 @@ fn cmd_watch(
     // provider_compact/skipped events are not re-logged every pass.
     let mut delegated_ctx = persisted.delegated_ctx;
     let mut discovery_cache = detect::DiscoveryCache::default();
+    // A cold start (one-shot monitor probe, watcher restart) borrows the
+    // snapshot the previous pass left on disk so unchanged session files
+    // are not reparsed. Advisory only: any drift means a cold rescan.
+    if let Some(dir) = state_path.parent() {
+        load_persisted_discovery(&mut discovery_cache, dir, provider);
+    }
     let mut pass_started_at_ms;
     let mut pass_completed_at_ms;
     let mut decisions;
@@ -5138,6 +5229,11 @@ fn cmd_watch(
             native_operations::artifact_sha256()?;
             pass_completed_at_ms = Some(now_millis());
             persist_watch_state!()?;
+            // Next cold process skips reparsing fingerprint-unchanged
+            // session files. Advisory snapshot; failure never fails a pass.
+            if let Some(dir) = state_path.parent() {
+                save_persisted_discovery(&discovery_cache, dir, provider);
+            }
         } else if once && decisions.eval_deferred > 0 {
             // Shape differs from "[dry-run] provider session: plan" on
             // purpose: a deferred count is pass coverage, not a plan line.
