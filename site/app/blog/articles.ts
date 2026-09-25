@@ -69,7 +69,7 @@ const introducing: BlogPost = {
       source("Registered xcb relation sentence", repo("src/portfolio.generated.json", "design-kit")),
     ],
     observations: [
-      "The latest release tag predates the safeguards the post describes, so the correct install path is the main branch, not the tagged release.",
+      "The current release includes the safeguards the post describes, so the tagged release and the main branch install paths now agree.",
       "In the September 19, 2026 replay, 637 of 729 sessions produced no plan, so the all-session median reduction was 0% while the 73 high-context Codex root tasks had a 36.4% median.",
     ],
     scores: { readerUtility: 2, originalEvidence: 2, factualConfidence: 1, hostFit: 2, voiceIntegrity: 2, maintenanceValue: 1 },
