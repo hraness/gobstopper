@@ -163,6 +163,7 @@
         "codex_native_compact_runs_before_plan_evaluation",
         "dry_run_once_does_not_write_events_or_forks",
         "eval_budget_flag_completes_a_pass_and_deferred_line_is_not_a_plan_line",
+        "discovery_cache_persists_across_processes_and_never_gates_correctness",
         "native_noop_has_snapshot_evidence_and_retries_after_cooldown_expiry",
         "native_usage_reset_is_unmeasured_and_missing_post_state_is_not_savings",
         "native_reduction_uses_observed_context_and_not_the_elision_projection",
@@ -185,7 +186,7 @@
         "unqualified_devin_unknown_context_never_exports_or_snapshots",
         "active_auto_unknown_devin_delegates_without_export_or_snapshot"
       ],
-      "seconds": 240
+      "seconds": 360
     },
     {
       "name": "claude-process",

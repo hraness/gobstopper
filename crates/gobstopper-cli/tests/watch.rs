@@ -351,7 +351,7 @@ fn poisoned_devin_source(f: &Fixture, active: bool) -> PathBuf {
     let conn = Connection::open(&path).unwrap();
     conn.execute_batch(
         "CREATE TABLE sessions (id TEXT PRIMARY KEY, title TEXT, working_directory TEXT, created_at INTEGER, last_activity_at INTEGER, main_chain_id INTEGER);
-         CREATE TABLE message_nodes (session_id TEXT, node_id INTEGER, parent_node_id INTEGER, chat_message TEXT, created_at INTEGER, metadata TEXT);
+         CREATE TABLE message_nodes (row_id INTEGER PRIMARY KEY, session_id TEXT, node_id INTEGER, parent_node_id INTEGER, chat_message TEXT, created_at INTEGER, metadata TEXT);
          CREATE INDEX nodes_by_session ON message_nodes(session_id, node_id);"
     ).unwrap();
     let idle = std::time::SystemTime::now()
@@ -374,7 +374,8 @@ fn poisoned_devin_source(f: &Fixture, active: bool) -> PathBuf {
             serde_json::json!({"message_id":format!("m{node}"), "role":"assistant", "content":"synthetic", "metadata":{"metrics":null}}).to_string()
         };
         conn.execute(
-            "INSERT INTO message_nodes VALUES ('synthetic-devin', ?1, ?2, ?3, ?4, NULL)",
+            "INSERT INTO message_nodes (session_id, node_id, parent_node_id, chat_message, created_at, metadata) \
+             VALUES ('synthetic-devin', ?1, ?2, ?3, ?4, NULL)",
             params![
                 node,
                 if node == 0 { None } else { Some(node - 1) },
@@ -708,6 +709,44 @@ fn eval_budget_flag_completes_a_pass_and_deferred_line_is_not_a_plan_line() {
         .output()
         .unwrap();
     assert!(!String::from_utf8_lossy(&output.stderr).contains("eval budget:"));
+}
+
+#[test]
+fn discovery_cache_persists_across_processes_and_never_gates_correctness() {
+    let f = Fixture::new();
+    f.idle(&f.0.join("codex/sessions/rollout-fixture.jsonl"));
+    let pass = || {
+        let output = f.command(&["watch", "--once"]).output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    };
+    pass();
+    let cache_path = f.0.join("data/gobstopper/discovery-cache-codex.json");
+    let text = fs::read_to_string(&cache_path).unwrap();
+    assert!(text.contains("gobstopper.discovery-cache.v1"));
+    assert!(text.contains("rollout-fixture.jsonl"));
+    // Dry-run observation consumes the snapshot but never writes it.
+    let output = f
+        .command(&["watch", "--once", "--dry-run"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    // A torn snapshot is advisory only: the pass still completes.
+    fs::write(&cache_path, "{").unwrap();
+    pass();
+    // Cache rows are re-seeded after the corrupt file was ignored.
+    let text = fs::read_to_string(&cache_path).unwrap();
+    assert!(text.contains("rollout-fixture.jsonl"));
+    // Rows stay in their own provider's lane file.
+    let claude = f.0.join("data/gobstopper/discovery-cache-claude_code.json");
+    if claude.exists() {
+        assert!(!fs::read_to_string(&claude)
+            .unwrap()
+            .contains("rollout-fixture"));
+    }
 }
 
 #[test]
