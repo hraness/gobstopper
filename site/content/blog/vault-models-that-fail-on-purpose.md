@@ -6,7 +6,7 @@ Gobstopper's archive has exactly this shape. Before Gobstopper writes a compacte
 
 ## Storage bugs show up weeks after the cause
 
-Plenty of software now ships as vibe-coded slop: code a model produced quickly that looks finished and breaks on the second use. Underneath a lot of it sits a fragile foundation, a storage layer nobody checked beyond the happy path. Storage bugs are the worst kind to find late, because the symptom shows up weeks after the cause. A typical one appears only if you start a save, lose power, reopen, and then run cleanup before the next save. Nobody types that sequence into a test by hand.
+Plenty of software now ships as vibe-coded slop: code a model produced quickly that looks finished and breaks on the second use. Underneath a lot of it sits a fragile foundation, a storage layer nobody checked beyond the happy path. Storage bugs are the worst kind to find late, because the symptom shows up weeks after the cause. A typical one appears only if a save is killed partway, you reopen, and then run cleanup before the next save. Nobody types that sequence into a test by hand.
 
 A save that is interrupted is ordinary. Laptops sleep, terminals close, processes get killed. What matters is what the half-finished save leaves behind, and whether some other part of the program can mistake that leftover state for garbage, or for success.
 
@@ -14,7 +14,7 @@ A save that is interrupted is ordinary. Laptops sleep, terminals close, processe
 
 You can write down the few things that must always be true about the archive, such as "a snapshot the index lists still has all its pieces," and then have a tool try every possible ordering of saves, reads, cleanups and crashes in a small world, stopping if any ordering breaks a rule. When that search finishes clean, a whole class of failure is ruled out for that design at that size, including orderings no person would think to test.
 
-The catch is that a search can pass for a bad reason. A model that never lets anything happen will never break a rule. So each check comes with deliberately broken versions: copies of the design with one safety rule switched off, which must fail with the specific loss that rule exists to prevent. If a broken copy passes, the check is not looking at what it claims to.
+The catch is that a search can pass for a bad reason. A model that never lets anything happen will never break a rule. So each model comes with deliberately broken versions: copies of the design with one safeguard switched off, which must fail with the specific loss that safeguard exists to prevent. If a broken copy passes, the check is not looking at what it claims to.
 
 ## How Gobstopper saves a snapshot
 
@@ -37,7 +37,7 @@ The rules, in plain words:
 - Every snapshot in the index still has its chunk list and every chunk.
 - Every pinned snapshot can still be rebuilt, even after the writer that pinned it has crashed.
 - A reader that has started rebuilding a snapshot cannot have it deleted underneath it.
-- Cleanup never holds its exclusive lock while a writer or reader is active.
+- Cleanup never holds its exclusive lock while a writer or reader is active (a check that the model's lock is wired up consistently).
 
 The first rule, as the model states it (a manifest is a snapshot's chunk list, and `Parts(s)` is the set of chunks it names):
 
@@ -52,7 +52,7 @@ In the run recorded on 24 September 2026, the safe configuration explored 25,810
 
 The first broken copy removes the lock. The checker must then find a way to break the index rule, and it does: a writer stores its chunks, cleanup marks them as unreferenced because no chunk list names them yet, the writer finishes and indexes its snapshot, and cleanup deletes the chunks it marked. The index now lists a snapshot that cannot be rebuilt. The model gives cleanup an atomic check that the index has not changed before it acts, and the race still gets through. That is why saves and cleanup share a lock instead of relying on a last-moment comparison.
 
-The second broken copy keeps the lock but lets cleanup ignore pins. The checker must break the pin rule: a writer pins its snapshot, crashes, releases its lock, and cleanup collects the data that recovery would have needed.
+The second broken copy keeps the lock but lets cleanup ignore pins. The checker must break the pin rule: a writer pins its snapshot and releases its lock, and cleanup deletes the pinned snapshot's chunk list. In the run TLC reports, the writer finished normally; a crash after pinning opens the same gap.
 
 Two more configurations check the opposite direction. One must reach a state where both writers, the reader and cleanup all finish. Another must reach a crashed writer whose pin still protects its snapshot. They show the model permits both finished and interrupted work, so the rules held while things actually happened.
 
@@ -67,17 +67,17 @@ A second model covers the part after the snapshot: writing the compacted copy an
 - Damaged index or operation state stops cleanup entirely.
 - A snapshot's chunk list never outlives its chunks, even when a delete fails partway.
 
-Four broken copies each switch one of those off and must fail on it. A fifth configuration must reach a completed operation after an interruption and a restart. Recovery never reruns the compaction; it checks the stored record and either confirms the exact output or refuses. In the same 24 September run, this model explored 28,082 distinct states and finished.
+Four broken copies each disable one safeguard behind those rules and must then fail on the matching rule. A fifth configuration must reach a completed operation after a crash and a restart; the run TLC reports crashes just after the operation completed. Recovery never reruns the compaction; it checks the stored record and then confirms the exact output, publishes the exact bytes it prepared before the crash, or refuses. In the same 24 September run, this model explored 28,082 distinct states and finished.
 
 ## The same method for native compaction requests
 
-Gobstopper's watch mode has a separate model for asking a provider to compact a live session. That path is turned off in released builds, and the model exists so the design is checked before it is turned on. Its main rule is to write down "about to send" before sending. A crash between that note and the actual request leaves the same record as a request whose answer was lost, so the only safe reading is "unknown." The model checks that an unknown outcome is never cleared by a timer or a configuration change, that each operation is sent at most once, that an acknowledgement alone never counts as success, that the recovery snapshot is pinned before the operation is recorded, that uncertainty never triggers an automatic fallback to editing files, and that an unknown outcome is settled only with retained evidence that exactly matches the request.
+Gobstopper's watch mode has a separate model for asking a provider to compact a live session. That path is turned off in released builds, and the model exists so the design is checked before it is turned on. Its main rule is to write down "about to send" before sending. A crash between that note and the actual request leaves the same record as a request whose answer was lost, so the only safe reading is "unknown." The model checks that an unknown outcome is never cleared by a timer or a configuration change, that no operation is sent twice (the model has no resend step, so this checks the send guard itself), that an acknowledgement alone never counts as success, that the recovery snapshot is pinned before the operation is recorded, and that an unknown outcome is settled only with retained evidence that exactly matches the request. The safe model has no automatic fallback to editing files; a broken copy that adds one reaches it after an uncertain outcome.
 
-Five broken copies must each fail on one of those rules, and six more configurations must reach real outcomes, including a crash that leaves a request in the "sent, outcome unknown" state. The safe configuration covers two watchers and two operations. It explored 32,251 distinct states in the 24 September run.
+Five broken copies must each fail on one of those rules, and six more configurations must reach real outcomes, including a crash that leaves an operation marked "about to send" with no outcome recorded. The safe configuration covers two watchers and two operations. It explored 32,251 distinct states in the 24 September run.
 
 ## Random edits against the real code
 
-The models run none of Gobstopper's Rust. To test the code itself, Gobstopper uses Hegel, a property-testing library that draws random inputs, runs a random sequence of commands, and shrinks any failure to a short case a person can read.
+The models run none of Gobstopper's Rust. To test the code itself, Gobstopper uses Hegel, a property-testing library that draws random inputs and shrinks any failure to a short case a person can read.
 
 Each test case generates a random Claude Code or Codex transcript, with tool calls and results, side branches, bookkeeping records and awkward text, then runs between one and twelve random commands against the production code: shorten some records, insert a summary, snapshot and restore from the archive, or append new records the way a provider would. After every command it checks that the transcript still passes Gobstopper's structural checks, and after each shortening that the fields linking records together have not moved. The shape of the loop, simplified from the test file:
 
@@ -98,12 +98,12 @@ The restore step asserts that a snapshot comes back byte for byte, into a new fi
 
 Two regression tests in the same file are marked as coming from shrunk failures. In one, shortening a Codex output that was already under the size floor produced a stub larger than the original. In the other, shortening the same records twice changed the bytes a second time. Both now have fixed tests alongside the random ones.
 
-Process crashes in the real code get their own tests. The storage tests kill child processes with `SIGKILL` at declared points, then check that the lock is released and a fresh process recovers.
+Process crashes in the real code get their own tests. The storage tests kill child processes with `SIGKILL` at declared points, then check that the lock is released and that a fresh process either finishes the recorded operation or refuses to clean up until the archive is repaired.
 
 ## Keeping the claims tied to the files
 
-Gobstopper keeps a machine-readable ledger of what each check covers, its limits and what it excludes. Each model run produces a record with the SHA-256 of every model, configuration and runner file it used, plus hashes of the Java and TLC programs that ran it. A script in CI reads the ledger and fails if a recorded run did not pass, or if any file it lists has changed since the run. Editing a model without rerunning it breaks the build instead of leaving an out-of-date claim in place. A separate CI job reruns both models and all their broken copies on every pull request and push to main.
+Gobstopper keeps a machine-readable ledger of what each check covers, its limits and what it excludes. Each model run produces a record with the SHA-256 of every model, configuration and runner file it used, plus hashes of the Java and TLC programs that ran it. A script in CI reads the ledger and fails if a recorded run did not pass, or if any file it lists has changed since the run. Editing a model without rerunning it breaks the build instead of leaving an out-of-date claim in place. A separate CI job reruns all three models, with their broken copies and reachability checks, on every pull request and push to main.
 
 ## Limits of the models and tests
 
-Gobstopper as a whole is not formally verified. The models check a finite design with a small, fixed number of writers, readers and cleanup passes. They do not prove anything about larger counts, about eventual progress, or about the Rust code itself; the match between model steps and Rust functions is a reviewed table, not a proof. Every save in the models is atomic and durable. A power cut that loses or reorders unsynced writes, a disk that fills, a network filesystem, Windows locking, and another program that writes into the archive folder without taking the lock are all outside what they check. The Hegel tests cover 64 random cases per property on synthetic transcripts. The kill tests stop processes; they do not cut power to hardware.
+Gobstopper as a whole is not formally verified. The models check a finite design with a small, fixed number of writers, readers and cleanup passes. They do not prove anything about larger counts, about eventual progress, or about the Rust code itself; the match between model steps and Rust functions is a reviewed table, not a proof. Every save in the models is atomic and durable. A power cut that loses or reorders unsynced writes, a disk that fills, a network filesystem, Windows locking, and another program that writes into the archive folder without taking the lock are all outside what they check. The Hegel tests cover 32 to 64 random cases per property on synthetic transcripts. The kill tests stop processes; they do not cut power to hardware.

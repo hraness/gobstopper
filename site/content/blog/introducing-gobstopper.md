@@ -8,7 +8,7 @@ Late in a long coding-agent session, much of the context can be old tool output:
 
 Providers offer their own compaction, which usually replaces history with a model-written summary. That makes the context smaller, but a summary can lose detail, and it does not show you what it left out.
 
-Gobstopper treats compaction as an edit you can inspect and undo. A rule decides which records to shorten. A preview shows what would change. The original bytes go into an archive before a new copy is written, and the copy is checked for structural problems, such as a tool call left without its result, before it is published.
+Gobstopper treats compaction as an edit you can inspect and undo. A rule decides which records to shorten. A preview shows what would change. The original bytes go into an archive before a new copy is written, and the copy is checked for structural problems it would introduce, such as a tool call left without its result, before it is published.
 
 ## Who it is for
 
@@ -68,10 +68,10 @@ On September 19, 2026, an offline replay ran the `compacted` strategy over 729 a
 
 The roadmap describes Gobstopper as the context-compaction layer for the Hraness agent stack: a policy engine that agent runtimes such as xcb embed, with measurement shared with AI Charts. The intent is to steer provider-native compaction rather than only trigger it, and to compact at natural breaks between tasks instead of at a flat token count. None of this has shipped.
 
-Some core pieces are checked with more than tests today. The archive's concurrency design has TLA+ models, including deliberately broken variants that must fail; [Vault models that fail on purpose](/blog/vault-models-that-fail-on-purpose) walks through them. The limits on an edit plan, such as at most 64 edits and at most one state card per plan, are small Rust functions shared by the production code and Kani proofs; [Proofs for the plan-size arithmetic](/blog/proofs-for-the-admission-math) explains what those proofs cover.
+Some core pieces on the main branch are checked with more than tests. The archive's concurrency design has TLA+ models, including deliberately broken variants that must fail; [Vault models that fail on purpose](/blog/vault-models-that-fail-on-purpose) walks through them. The limits on an edit plan, such as at most 64 edits and at most one state card per plan, are small Rust functions shared by the production code and Kani proofs, and Lean proves that masking, in a model of a transcript, keeps record IDs, their order and tool links; [How Gobstopper proves its compaction arithmetic and transcript laws](/blog/proofs-for-the-admission-math) explains what those proofs cover.
 
 ## Limits
 
-Each of those checks covers a specific component at a stated scope. The TLA+ models check a finite design, not the Rust code. The Kani proofs cover selected arithmetic, not whole programs. Lean proves list laws about transcripts, with finite checks against the Rust code. None of them establish whole-system correctness, behavior after a power loss, or that a provider will accept a copy.
+Each of those checks covers a specific component at a stated scope. The TLA+ models check a finite design, not the Rust code. The Kani proofs cover selected small Rust functions, some only at fixed input sizes, not whole programs. Lean proves list laws about a model of transcripts, with finite checks against the Rust code. None of them establish whole-system correctness, that an operation eventually finishes, behavior after a power loss, or that a provider will accept a copy.
 
 A compacted copy passing Gobstopper's structural checks does not mean Claude Code or Codex will resume it; test that yourself before relying on it. Released builds cannot ask a provider to compact a live session, and direct rewrites of provider files or stores are turned off. The archive returns a missing detail only when you or your agent ask for it.

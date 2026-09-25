@@ -14,9 +14,9 @@ The same goes for the edit itself. Replacing old output looks simple, but a care
 
 A proof checks a statement for every input it describes, where a test checks only the examples it was given. When the statement is "this limit check accepts 64 and refuses 65, for every possible number," there is no untested edge left for that check, because every value was considered, including the largest the machine can hold.
 
-You no longer have to hope the last test run hit the bad value. When the proof runs against the code that ships, a later change that breaks the rule fails the repository's checks before it reaches your transcripts.
+You no longer have to hope the last test run hit the bad value. When the proof runs against the code that ships, a later change to a proved function that breaks its rule fails the repository's CI on the pull request that makes it.
 
-Gobstopper uses two tools for this. Kani checks small Rust functions against every value of their inputs, and Lean proves laws about transcripts of any length.
+Gobstopper uses two tools for this. Kani checks small Rust functions against every value of their numeric inputs, and Lean proves laws about a model of transcripts of any length.
 
 ## Kani checks the limits for every number
 
@@ -43,15 +43,15 @@ fn production_plan_bounds() {
 
 The proofs sit beside the functions Gobstopper runs, and they do not swap in smaller limits to make the check easier. Among the laws they establish, each over every value of its numeric inputs:
 
-- A plan with at most 64 edits over at most 100,000 transcript items passes, and anything larger is refused.
+- A plan with at most 64 edits over at most 100,000 transcript items passes the size check, and anything larger is refused.
 - Summary text added to a plan stays at or under 32,768 bytes, and an addition that would overflow is refused instead of wrapping.
 - A token estimate is the byte count divided by four and rounded up, never zero, with no overflow at the largest byte count.
 - Adding token counts saturates at the maximum value instead of wrapping around, so a running total never shrinks.
 - The savings estimated for replacing one output, after subtracting the stub's own cost, are never larger than that output's token estimate, and an output with no bytes or a zero estimate saves nothing.
 - The count of records outside the protected recent tail is exactly the total minus the tail, or zero when the tail covers everything, with no wraparound for any two inputs.
-- Adding an edit to a plan either succeeds and keeps the plan valid, or fails and leaves the plan's state unchanged. A plan holds at most one summary, and a provider or cache control edit must be the plan's only edit.
+- Adding an edit to a plan either succeeds and keeps the plan's edit tally within its rules, or fails and leaves that tally unchanged. A plan holds at most one summary, and a provider or cache control edit must be the plan's only edit.
 
-Two groups of proofs cover fixed sizes only. The edit-sequence proof checks every sequence of four edits, each of any of the four edit kinds, while the one-step proof covers the real 64-edit limit, and the sorted lookup of record positions is checked for lists of length 0, 1, 2, and 4. Everywhere else the inputs are single numbers, and Kani covers their whole range.
+Two groups of proofs cover fixed sizes only. The edit-sequence proof checks every sequence of four edits, each of any of the four edit kinds, while the one-step proof covers the real 64-edit limit, and the sorted lookup of record positions is checked for lists of length 0, 1, 2, and 4. Everywhere else the inputs are fixed-size values such as numbers, flags and optional numbers, and Kani covers their whole range.
 
 To show that the proof can fail, the check plants a bug. It copies the crate, changes `edits <= MAX_EDITS` to `edits < MAX_EDITS` in that copy, and reruns the proof. The run passes only if that one assertion fails. The repository's CI runs the positive proofs and this planted bug on every pull request and every push to main.
 
@@ -75,14 +75,14 @@ The model's 27 theorems include these laws, for transcripts of any length:
 
 - Masking keeps the transcript's length, the order of records, and every record's ID.
 - Protected records and records that are not live keep their content.
-- Every selection the rules accept names a known record that is live, eligible, and unprotected.
+- Every ID in a selection the rules accept names a known record that is live, eligible, and unprotected.
 - The sequence of tool calls and tool results is unchanged, so if every result followed its one call before, it still does.
 - With the records' flags held fixed, masking with one selection and then another equals masking once with both.
 - Appending a summary record with a fresh ID keeps every earlier record in place, keeps tool links valid, and keeps IDs unique.
 
-The checker rebuilds the proofs from scratch, replays them in a fresh Lean kernel, and allows only Lean's two standard axioms.
+The checker rebuilds the proofs from scratch, replays them in a fresh Lean kernel, and allows only two of Lean's three standard axioms, `propext` and `Quot.sound`, so no proof relies on the axiom of choice.
 
-## Tying the Lean model to the shipped Rust
+## Tying the Lean model to the Rust code
 
 A proof about a model helps only if the model matches the program, and Gobstopper checks that match with tests. A Lean program runs the proved operations on 20 synthetic cases and writes the expected results to a file. A Rust test then builds synthetic transcript files in the Codex, Claude Code, and Devin formats, runs the same 23 steps through Gobstopper's actual validation and transform code for each provider, and compares the output record by record: 12 accepted steps, including 3 that add a summary, and 11 refused.
 
@@ -90,8 +90,8 @@ Two planted bugs check that the comparison can fail from either side. One change
 
 ## Where the repository records each proof's scope
 
-Gobstopper's public repository keeps a claims register that states the scope and exclusions of each check. It lists both the Kani and Lean claims with the status `bounded_check`, meaning each holds for its stated inputs and limits and no further. The records of passing runs for both are dated September 24, 2026, and tie each run to hashes of the exact source files and tool binaries it checked. A change to any of those files voids the record until the checks pass again; on September 24 the recorded source hashes still matched the main branch.
+Gobstopper's public repository keeps a claims register that states the scope and exclusions of each check. It lists both the Kani and Lean claims with the status `bounded_check`, meaning each holds for its stated inputs and limits and no further. The records of passing runs for both are dated September 24, 2026, and tie each run to hashes of the exact source files and tool binaries it checked. A change to any of those source files fails the repository's assurance check until the checks are rerun and a new record is committed; on September 24 the recorded source hashes still matched the main branch.
 
 ## What the proofs do not cover
 
-The proofs do not show that a session stays under any context budget: Gobstopper's token counts are estimates at four bytes per token, not the provider's tokenizer or bill. The Lean laws are about the structure of an edit; they do not show that a compacted transcript can be turned back into the original, or that a lossy stub keeps what a later task needs. Getting the original back relies on Gobstopper's archive, which these proofs do not cover. The Rust correspondence covers 20 small, valid, linear synthetic histories; arbitrary provider files, branched sessions, and a live resume fall outside it. Parsing, file writes, sorting, allocation, the compiler, and the operating system are trusted rather than proved, and a Kani run proves its result for the platform it ran on. Gobstopper's own ledger records whole-system correctness as an objective with no complete proof.
+The proofs do not show that a session stays under any context budget: when a transcript carries no provider usage data, Gobstopper estimates tokens at four bytes each, which is not the provider's tokenizer or bill. The Lean laws are about the structure of an edit; they do not show that a compacted transcript can be turned back into the original, or that a lossy stub keeps what a later task needs. Getting the original back relies on Gobstopper's archive, which these proofs do not cover. The Rust correspondence covers 20 request sequences on one small, valid, linear synthetic history per provider; arbitrary provider files, branched sessions, and a live resume fall outside it. Parsing, file writes, sorting, allocation, the compiler, and the operating system are trusted rather than proved, and a Kani run proves its result for the platform it ran on. Gobstopper's own claims register records whole-system correctness as an objective with no complete proof.

@@ -21,7 +21,7 @@ When to use this site:
 - [Gobstopper blog](https://gobstopper.sh/blog): every post, newest first. Atom feed at https://gobstopper.sh/blog/feed.xml.
 - [Introducing Gobstopper](https://gobstopper.sh/blog/introducing-gobstopper): what Gobstopper does, who it is for, and how to try it.
 - [How Gobstopper proves its compaction arithmetic and transcript laws](https://gobstopper.sh/blog/proofs-for-the-admission-math): what the Kani and Lean proofs cover and leave out.
-- [How Gobstopper checks its archive against crashes at every step](https://gobstopper.sh/blog/vault-models-that-fail-on-purpose): the TLA+ models, their broken copies, and the Hegel tests.
+- [How Gobstopper checks its archive design against crashes at every step](https://gobstopper.sh/blog/vault-models-that-fail-on-purpose): the TLA+ models, their broken copies, and the Hegel tests.
 
 ## Optional
 

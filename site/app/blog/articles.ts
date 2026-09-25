@@ -94,7 +94,7 @@ const introducing: BlogPost = {
 const proofs: BlogPost = {
   slug: "proofs-for-the-admission-math",
   title: "How Gobstopper proves its compaction arithmetic and transcript laws",
-  dek: "Gobstopper uses Kani to check its edit limits and token sums for every value of their numeric inputs, and Lean to prove that masking keeps each record's ID, order, and tool links.",
+  dek: "Gobstopper uses Kani to check its edit limits and token sums for every value of their numeric inputs, and Lean to prove, in a model of the transcript, that masking keeps each record's ID, order, and tool links.",
   eyebrow: "Technique",
   published: "2026-09-24",
   keywords: ["Kani", "Lean", "Rust", "formal proofs", "context compaction", "coding agents"],
@@ -102,7 +102,7 @@ const proofs: BlogPost = {
     href: "/blog/proofs-for-the-admission-math",
     lifecycle: "indexable",
     readerJob: "Find out which parts of Gobstopper's compaction logic are proved, with which tools, and what the proofs leave out.",
-    nonObviousAnswer: "The proofs cover edit-plan limits, token-estimate arithmetic and structural masking laws, not the context budget or recovery of the original transcript; a Rust test replays the Lean cases through the shipped Codex, Claude Code and Devin code paths, and planted bugs show each check can fail.",
+    nonObviousAnswer: "The proofs cover edit-plan limits, token-estimate arithmetic and structural masking laws, not the context budget or recovery of the original transcript; a Rust test replays the Lean cases through the production Codex, Claude Code and Devin code paths, and planted bugs show each check can fail.",
     originalContribution: "Shows the real Kani harness and Lean theorem statements from the repository, lists the laws in plain words, and states the fixed sizes, trusted components, and correspondence coverage the proofs leave out.",
     hostFit: "A product-specific technique post about Gobstopper's own proofs, on Gobstopper's host.",
     nearestUrls: [
@@ -119,7 +119,7 @@ const proofs: BlogPost = {
       source("Assurance ledger: scope, limits and exclusions for the core and transcript checks", repo("docs/assurance/ledger.json")),
       source("Claims register: status bounded_check for CLAIM-CORE and CLAIM-TRANSCRIPT", repo("docs/assurance/claims.json")),
       source("Passing Kani run record, 2026-09-24", repo("docs/assurance/receipts/2026-09-24-core.json")),
-      source("Passing Lean and correspondence run record, 2026-09-24", repo("docs/assurance/receipts/2026-09-24-transcript-r2.json")),
+      source("Passing Lean and correspondence run record, 2026-09-24", repo("docs/assurance/receipts/2026-09-24-transcript-r3.json")),
       source("CI jobs that run both checks on pull requests and pushes to main", repo(".github/workflows/ci.yml")),
       source("Public wording rule for verification claims", repo("STYLE.md")),
     ],
@@ -148,8 +148,8 @@ const proofs: BlogPost = {
 
 const vault: BlogPost = {
   slug: "vault-models-that-fail-on-purpose",
-  title: "How Gobstopper checks its archive against crashes at every step",
-  dek: "Gobstopper model-checks its archive design with a crash allowed at every step, and each safety rule has a broken copy that must reproduce the loss it prevents.",
+  title: "How Gobstopper checks its archive design against crashes at every step",
+  dek: "Gobstopper model-checks its archive design with a crash allowed at every step, and broken copies of the design, each missing one safeguard, must reproduce the loss that safeguard prevents.",
   eyebrow: "Technique",
   published: "2026-09-24",
   keywords: ["Gobstopper", "TLA+", "model checking", "property testing", "crash recovery", "transcripts"],
@@ -165,7 +165,7 @@ const vault: BlogPost = {
       { url: "/blog/introducing-gobstopper", distinction: "The introduction says what the archive is for; this post shows how its design is checked." },
     ],
     sources: [
-      source("Vault model: publishers, a reader and cleanup, with a crash at every step", repo("verify/vault/Vault.tla")),
+      source("Vault model: publishers, a reader and cleanup, with a publisher crash in every holding phase", repo("verify/vault/Vault.tla")),
       source("Vault model notes: properties, broken variants, bounds, code correspondence and limits", repo("verify/vault/README.md")),
       source("Publication and restart model", repo("verify/vault/Publication.tla")),
       source("Vault model runner: expected failure for each broken variant", repo("verify/vault/check.py")),
@@ -176,7 +176,7 @@ const vault: BlogPost = {
       source("Hegel stateful tests against the real transcript edits and vault", repo("crates/gobstopper-adapters/tests/surgery_hegel.rs")),
       source("Assurance ledger: what each check covers, its bounds and exclusions", repo("docs/assurance/ledger.json")),
       source("Ledger checker: file hashes and failed or stale results", repo("scripts/check_assurance.py")),
-      source("CI workflow: ledger check on every run and a job that reruns both models", repo(".github/workflows/ci.yml")),
+      source("CI workflow: ledger check on every run and a job that reruns all three models", repo(".github/workflows/ci.yml")),
     ],
     observations: [
       "The TLA+ models were added on September 23, 2026, after the v0.2.1 tag of September 18, so no release includes them.",
