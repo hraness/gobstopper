@@ -249,6 +249,14 @@ a { text-underline-offset: 0.2em; }
 
 .gobstopper-topic-icon { display: block; width: 88px; height: 88px; margin: 0 0 18px; }
 
+.gob-agent-marks {
+  display: flex; flex-wrap: wrap; gap: 18px 30px; align-items: center;
+}
+.gob-doc-marks {
+  display: flex; flex-wrap: wrap; gap: 12px 22px; align-items: center;
+  margin-block-end: 2rem;
+}
+
 /* ── Hero: ambient compaction field ─────────────────────────────────────── */
 .gob-opening { position: relative; overflow: clip; }
 .gob-opening .gobstopper-marketing-hero { position: relative; z-index: 1; }

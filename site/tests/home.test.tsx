@@ -59,6 +59,29 @@ test("the docs page renders the README with its installation anchor", () => {
   expect(html).not.toContain("data-hraness-marketing-preset");
 });
 
+test("the supported-agent strips render shared marks for every routed client", () => {
+  const agentNames = ["Claude Code", "Codex", "opencode", "Crush", "Aider", "Goose"];
+  const home = renderToStaticMarkup(<Home />);
+  const homeChips: string[] = [];
+  new HTMLRewriter()
+    .on(".gob-agent-marks .hraness-provider-mark__chip", {
+      element() { homeChips.push("chip"); },
+    })
+    .transform(home);
+  expect(homeChips).toHaveLength(agentNames.length);
+  expect(home).toContain("hraness-provider-mark__art");
+  for (const name of agentNames) expect(home).toContain(name);
+
+  const docs = renderToStaticMarkup(<Docs />);
+  const docChips: string[] = [];
+  new HTMLRewriter()
+    .on(".gob-doc-marks .hraness-provider-mark__chip", {
+      element() { docChips.push("chip"); },
+    })
+    .transform(docs);
+  expect(docChips).toHaveLength(agentNames.length);
+});
+
 test("scopes the editorial preset to the homepage header and real command example", () => {
   const html = renderToStaticMarkup(<Home />);
   const elements: string[] = [];

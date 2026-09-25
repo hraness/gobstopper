@@ -11,6 +11,7 @@ import {
   MarketingSection,
   MarketingTrustBoundary,
   ProductHero,
+  ProviderMarkChip,
 } from "@hraness/design-kit/react/server";
 
 import { SiteHeader, SiteFooter } from "./_components/site-chrome";
@@ -68,6 +69,8 @@ const primitives = [
     summary: "Events link snapshots with observed usage. Eval compares strategies on frozen input, checks supported structures, and counts which sampled details remain. It reports missing measurements and coverage; model judgments, billing, and successful task continuation need separate evidence.",
   },
 ] as const;
+
+const agents = ["claudecode", "codex", "opencode", "crush", "aider", "goose"] as const;
 
 const trust = [
   {
@@ -181,6 +184,20 @@ autocompact 100    56,300  no`}</code></pre>
             label=""
             summary="Set a threshold, compare strategies on frozen input, and inspect the candidate before provider resume. Smaller context, cache behavior and task quality need separate evidence."
           />
+
+          <MarketingSection
+            heading="Works with the agents you already use."
+            headingId="agents-title"
+            id="agents"
+            label=""
+            summary="The proxy speaks Anthropic Messages, OpenAI Responses, and OpenAI Chat Completions. Any agent that accepts a custom provider address can point at it; Claude Code and Codex routing is live-checked and the rest are contract-tested."
+          >
+            <div className="gob-agent-marks">
+              {agents.map((agent) => (
+                <ProviderMarkChip key={agent} mark={agent} size={34} />
+              ))}
+            </div>
+          </MarketingSection>
 
           <MarketingInterfaceGrid
             heading="Run it yourself, in the background, or from your own code."
