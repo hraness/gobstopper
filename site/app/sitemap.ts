@@ -1,48 +1,19 @@
 import type { MetadataRoute } from "next";
 import { createSitemap } from "@hraness/web-discovery";
 
+import { SITE_PAGES } from "./_lib/pages";
 import { absoluteUrl, SITE_ORIGIN } from "./_lib/site";
 import { blogSitemapPaths } from "./blog/discovery";
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const now = new Date();
   return [
-    {
-      url: absoluteUrl("/"),
-      lastModified: now,
-      changeFrequency: "weekly",
-      priority: 1,
-    },
-    {
-      url: absoluteUrl("/docs"),
-      lastModified: now,
-      changeFrequency: "monthly",
-      priority: 0.9,
-    },
-    {
-      url: absoluteUrl("/methodology"),
-      lastModified: now,
-      changeFrequency: "monthly",
-      priority: 0.7,
-    },
-    {
-      url: absoluteUrl("/benchmarks"),
-      lastModified: now,
-      changeFrequency: "weekly",
-      priority: 0.7,
-    },
-    {
-      url: absoluteUrl("/compare/cliffcompaction"),
-      lastModified: new Date("2026-09-24"),
-      changeFrequency: "monthly",
-      priority: 0.6,
-    },
-    {
-      url: absoluteUrl("/compare/claude-code-compact"),
-      lastModified: new Date("2026-09-26"),
-      changeFrequency: "monthly",
-      priority: 0.6,
-    },
+    ...SITE_PAGES.map((page) => ({
+      url: absoluteUrl(page.path),
+      lastModified: page.lastModified === undefined ? now : new Date(page.lastModified),
+      changeFrequency: page.changeFrequency,
+      priority: page.priority,
+    })),
     // Only posts whose review record admits them for indexing.
     ...createSitemap(SITE_ORIGIN as `https://${string}`, blogSitemapPaths()),
   ];
