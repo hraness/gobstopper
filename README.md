@@ -764,8 +764,31 @@ the TTL maximum is 3,600 seconds.
 
 `GOBSTOPPER_SCORER=apple` (macOS 26+, Apple Silicon) scores on-device with
 Apple Intelligence Foundation Models via the shared `apple-foundation`
-bridge with no remote API key. Inference requires an already installed bridge
-(or an explicit `GOBSTOPPER_APPLE_BRIDGE`); it never builds Swift code on demand.
+bridge with no remote API key. It needs a small helper program, built once on
+your Mac:
+
+```bash
+gobstopper apple install   # builds ~/.local/share/gobstopper/apple-bridge (about 10 seconds)
+gobstopper apple status    # says whether Apple's model is ready, and what to do if not
+```
+
+`apple install` needs Xcode 26 or Apple's command line tools. It checks for
+them first: when they are missing it prints `xcode-select --install` and stops,
+so the macOS install dialog never appears unannounced. Compiler output goes to
+`apple-bridge-build.log` next to the helper instead of your terminal. Set
+`GOBSTOPPER_APPLE_BRIDGE` to install to, or use, a different path. A helper
+named `apple-bridge` next to the `gobstopper` binary is used before the one in
+`~/.local/share`, and `apple install` rebuilds that one when it exists. Scoring
+and `plan` never build the helper themselves.
+
+When Apple's model can't be used, the scorer says why once and uses the
+built-in scorer: Apple Intelligence is off, the model is still downloading,
+this Mac can't run it, macOS is older than 26, or the helper isn't installed.
+Each message names the fix and, where there is one, the System Settings pane
+(for example `open x-apple.systempreferences:com.apple.Siri-Settings.extension`
+for Apple Intelligence & Siri). `gobstopper apple status` prints the same
+message on demand and exits 1 until the model is ready; `--json` gives the
+reason code.
 Uncached requests are serialized, each using one bounded `--once` process with
 guided JSON output and owned process cleanup. Failure retains heuristic scores.
 `GOBSTOPPER_APPLE_TIMEOUT_MS`, `_MAX_CANDIDATES`, `_BATCH_SIZE`, and
@@ -785,7 +808,8 @@ by the on-device model instead of keyword extraction. Because inference is
 local, it may read bounded excerpts of the records being elided without a
 remote request. Each field still
 lands in the same `DigestBlock` shape via guided output, capped to a small
-token overhead, and falls back to the mechanical card on any failure.
+token overhead, and falls back to the mechanical card on any failure, saying
+why on stderr the same way the scorer does.
 `GOBSTOPPER_APPLE_DIGEST_ITEMS`, `_ITEM_BYTES`, and `_TOTAL_BYTES` tune the
 excerpt budget, hard-capped at 32 records, 2,048 bytes per record, and 16,000
 bytes total; zero disables the model digest and preserves the mechanical card.

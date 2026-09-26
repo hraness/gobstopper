@@ -34,7 +34,7 @@ use gobstopper_core::Transcript;
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::{apple, llm_scorer};
+use crate::{apple, apple_cmd, llm_scorer};
 
 const MAX_FIELD_ITEMS: usize = 8;
 const MAX_FIELD_CHARS: usize = 300;
@@ -90,7 +90,11 @@ fn decode_response(value: Value, count: usize) -> anyhow::Result<DigestResponse>
 /// Rewrite `plan`'s `InjectDigest` digest with model-extracted fields when
 /// `GOBSTOPPER_DIGEST=apple` and the bridge is available. No-op otherwise.
 pub fn maybe_upgrade(plan: &mut CompactionPlan, transcript: &Transcript) {
-    if std::env::var("GOBSTOPPER_DIGEST").as_deref() != Ok("apple") || !cfg!(target_os = "macos") {
+    if std::env::var("GOBSTOPPER_DIGEST").as_deref() != Ok("apple") {
+        return;
+    }
+    if !cfg!(target_os = "macos") {
+        apple_cmd::warn_unsupported(apple_cmd::Feature::Digest);
         return;
     }
     let elided: HashSet<usize> = plan
@@ -110,12 +114,14 @@ pub fn maybe_upgrade(plan: &mut CompactionPlan, transcript: &Transcript) {
     if elided.is_empty() {
         return;
     }
-    let Some(bridge_path) = apple::resolve_bridge() else {
-        return;
-    };
-    if !apple::available(&bridge_path) {
+    let (bridge_path, availability) = apple::probe();
+    if let Some(reason) = availability.reason.filter(|_| !availability.available) {
+        apple_cmd::warn_fallback(apple_cmd::Feature::Digest, reason);
         return;
     }
+    let Some(bridge_path) = bridge_path else {
+        return;
+    };
     let Some(bridge) = apple::shared_bridge(&bridge_path, apple::timeout_ms()) else {
         return;
     };
@@ -159,7 +165,7 @@ pub fn maybe_upgrade(plan: &mut CompactionPlan, transcript: &Transcript) {
                 .context_tokens_after
                 .saturating_add(stub_residual_tokens(&plan.edits, &by_line));
         }
-        Err(_) => eprintln!("apple digest: response_unavailable; keeping mechanical state card"),
+        Err(error) => apple_cmd::warn_request_failed(apple_cmd::Feature::Digest, &error),
     }
 }
 

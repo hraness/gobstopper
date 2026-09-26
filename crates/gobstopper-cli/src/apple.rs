@@ -6,7 +6,8 @@
 //! an already-installed bridge follows the scorer docs:
 //! `GOBSTOPPER_APPLE_BRIDGE` → sibling of
 //! the gobstopper binary → `~/.local/share/gobstopper/apple-bridge`
-//! (missing binaries cause mechanical fallback; inference never builds tools).
+//! (missing binaries cause mechanical fallback; inference never builds tools;
+//! `gobstopper apple install` builds the helper on request).
 //!
 //!   GOBSTOPPER_APPLE_BRIDGE     - explicit bridge binary path
 //!   GOBSTOPPER_APPLE_TIMEOUT_MS - 180000 (uncached requests may pay model warm-up)
@@ -21,19 +22,40 @@ use sha2::{Digest, Sha256};
 
 /// Resolve an installed bridge without invoking a compiler or changing files.
 pub(crate) fn resolve_bridge() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("GOBSTOPPER_APPLE_BRIDGE") {
-        let path = PathBuf::from(path);
+    if let Some(path) = explicit_bridge() {
         return path.is_file().then_some(path);
     }
-    if let Ok(exe) = std::env::current_exe() {
-        let sibling = exe.parent()?.join("apple-bridge");
-        if sibling.is_file() {
-            return Some(sibling);
-        }
+    if let Some(sibling) = sibling_bridge().filter(|path| path.is_file()) {
+        return Some(sibling);
     }
-    let installed = std::env::var_os("HOME")
-        .map(|h| PathBuf::from(h).join(".local/share/gobstopper/apple-bridge"))?;
+    let installed = default_install_path()?;
     installed.is_file().then_some(installed)
+}
+
+/// Where `gobstopper apple install` builds, chosen so the helper it builds
+/// is the one [`resolve_bridge`] finds next: `GOBSTOPPER_APPLE_BRIDGE`, else
+/// an existing helper next to the binary, else
+/// `~/.local/share/gobstopper/apple-bridge`.
+pub(crate) fn install_target() -> Option<PathBuf> {
+    if let Some(path) = explicit_bridge() {
+        return Some(path);
+    }
+    if let Some(sibling) = sibling_bridge().filter(|path| path.is_file()) {
+        return Some(sibling);
+    }
+    default_install_path()
+}
+
+/// `GOBSTOPPER_APPLE_BRIDGE`, when set and nonempty.
+fn explicit_bridge() -> Option<PathBuf> {
+    std::env::var_os("GOBSTOPPER_APPLE_BRIDGE")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
+
+fn sibling_bridge() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join("apple-bridge"))
 }
 
 pub(crate) fn timeout_ms() -> u64 {
@@ -44,16 +66,85 @@ pub(crate) fn timeout_ms() -> u64 {
         .clamp(100, 600_000)
 }
 
-/// Bounded availability check. Provider diagnostics are never echoed.
-pub(crate) fn available(bridge: &Path) -> bool {
+/// `~/.local/share/gobstopper/apple-bridge`.
+fn default_install_path() -> Option<PathBuf> {
+    std::env::var_os("HOME")
+        .filter(|home| !home.is_empty())
+        .map(|home| PathBuf::from(home).join(".local/share/gobstopper/apple-bridge"))
+}
+
+/// Resolve the helper and ask whether Apple's model can be used, keeping the
+/// reason when it can't. With no helper installed, a Mac that can't run the
+/// model at all (Intel, or macOS before 26) reports that instead of
+/// "not installed", since installing wouldn't help.
+pub(crate) fn probe() -> (Option<PathBuf>, apple_foundation::Availability) {
+    match resolve_bridge() {
+        Some(bridge) => {
+            let availability = check(&bridge);
+            (Some(bridge), availability)
+        }
+        None => {
+            let reason = match apple_foundation::platform_check() {
+                Err(apple_foundation::Error::Unavailable(reason)) => reason,
+                _ => apple_foundation::Reason::HelperMissing,
+            };
+            (None, apple_foundation::Availability::unavailable(reason))
+        }
+    }
+}
+
+/// Bounded `--check`. Returns the bridge's typed reason when the model can't
+/// be used; unknown reason names become `Unavailable`, so nothing the bridge
+/// prints is echoed.
+pub(crate) fn check(bridge: &Path) -> apple_foundation::Availability {
     let mut command = inference_command(bridge);
     command.arg("--check");
-    gobstopper_adapters::plugins::run_bounded(command, Vec::new(), 15_000, 32 * 1024)
+    let value = gobstopper_adapters::plugins::run_bounded(command, Vec::new(), 15_000, 32 * 1024)
         .ok()
-        .and_then(|raw| crate::mcp::strict_json(&raw).ok())
-        .is_some_and(|value| {
-            value.get("available").and_then(serde_json::Value::as_bool) == Some(true)
-        })
+        .and_then(|raw| crate::mcp::strict_json(&raw).ok());
+    availability_from_check(value.as_ref(), apple_foundation::platform_check)
+}
+
+fn availability_from_check(
+    value: Option<&serde_json::Value>,
+    platform: impl FnOnce() -> apple_foundation::Result<()>,
+) -> apple_foundation::Availability {
+    use apple_foundation::{Availability, Reason};
+    let Some(value) = value else {
+        // A bridge built for macOS 26 on Apple silicon dies in the loader on
+        // an older or Intel Mac; say that rather than "unavailable".
+        return match platform() {
+            Err(apple_foundation::Error::Unavailable(reason)) => Availability::unavailable(reason),
+            _ => Availability::unavailable(Reason::Unavailable),
+        };
+    };
+    if value.get("available").and_then(serde_json::Value::as_bool) == Some(true) {
+        return Availability::ready();
+    }
+    let reason = value
+        .get("reason")
+        .and_then(serde_json::Value::as_str)
+        .map_or(Reason::Unavailable, Reason::from_wire);
+    Availability::unavailable(reason)
+}
+
+/// A request failed because the model itself can't be used (Apple
+/// Intelligence turned off mid-run, the model still downloading). Displays
+/// as a code; callers downcast to reach the reason.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ModelUnavailable(pub(crate) apple_foundation::Reason);
+
+impl std::fmt::Display for ModelUnavailable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("model_unavailable")
+    }
+}
+
+impl std::error::Error for ModelUnavailable {}
+
+/// The typed reason behind a failed request, when there is one.
+pub(crate) fn unavailable_reason(error: &anyhow::Error) -> Option<apple_foundation::Reason> {
+    error.downcast_ref::<ModelUnavailable>().map(|e| e.0)
 }
 
 fn inference_command(path: &Path) -> std::process::Command {
@@ -169,6 +260,9 @@ impl Bridge {
                 .map_err(|_| anyhow::anyhow!("inference_process_failed"))?;
         let envelope = crate::mcp::strict_json(&raw)
             .map_err(|_| anyhow::anyhow!("inference_response_invalid"))?;
+        if let Some(reason) = model_unavailable(&envelope) {
+            return Err(ModelUnavailable(reason).into());
+        }
         anyhow::ensure!(
             envelope.get("id").and_then(serde_json::Value::as_u64) == Some(1)
                 && envelope.get("ok").and_then(serde_json::Value::as_bool) == Some(true)
@@ -181,6 +275,24 @@ impl Bridge {
         anyhow::ensure!(value.to_string().len() <= max, "inference_response_invalid");
         Ok(value.clone())
     }
+}
+
+/// `{"id":1,"ok":false,"error":{"code":"modelUnavailable","reason":…}}`.
+/// Older bridges omit `reason`; it reads as `Unavailable`.
+fn model_unavailable(envelope: &serde_json::Value) -> Option<apple_foundation::Reason> {
+    let error = envelope.get("error")?;
+    (envelope.get("id").and_then(serde_json::Value::as_u64) == Some(1)
+        && envelope.get("ok").and_then(serde_json::Value::as_bool) == Some(false)
+        && error.get("code").and_then(serde_json::Value::as_str) == Some("modelUnavailable"))
+    .then(|| {
+        error
+            .get("reason")
+            .and_then(serde_json::Value::as_str)
+            .map_or(
+                apple_foundation::Reason::Unavailable,
+                apple_foundation::Reason::from_wire,
+            )
+    })
 }
 
 /// Construct an identified client; no process starts until an uncached request.
@@ -525,6 +637,70 @@ mod tests {
             assert!(fixture.bridge.request(&request).is_err());
             assert!(start.elapsed() < std::time::Duration::from_secs(2));
         }
+    }
+
+    #[test]
+    fn model_unavailable_keeps_its_reason_and_nothing_else() {
+        use apple_foundation::Reason;
+        let request = apple_foundation::Request::text("synthetic");
+        for (reply, reason) in [
+            (
+                r#"{"id":1,"ok":false,"error":{"code":"modelUnavailable","reason":"appleIntelligenceNotEnabled"}}"#,
+                Reason::AppleIntelligenceNotEnabled,
+            ),
+            (
+                r#"{"id":1,"ok":false,"error":{"code":"modelUnavailable"}}"#,
+                Reason::Unavailable,
+            ),
+            (
+                r#"{"id":1,"ok":false,"error":{"code":"modelUnavailable","reason":"PRIVATE_SENTINEL"}}"#,
+                Reason::Unavailable,
+            ),
+        ] {
+            let fixture = BridgeFixture::reply(reply);
+            let error = fixture.bridge.request(&request).unwrap_err();
+            assert_eq!(unavailable_reason(&error), Some(reason), "{reply}");
+            assert_eq!(error.to_string(), "model_unavailable");
+        }
+        let fixture = BridgeFixture::reply(
+            r#"{"id":2,"ok":false,"error":{"code":"modelUnavailable","reason":"modelNotReady"}}"#,
+        );
+        let error = fixture.bridge.request(&request).unwrap_err();
+        assert_eq!(unavailable_reason(&error), None);
+        assert_eq!(error.to_string(), "inference_response_invalid");
+    }
+
+    #[test]
+    fn check_output_maps_to_typed_availability() {
+        use apple_foundation::{Availability, Reason};
+        let platform_ok = || Ok(());
+        let json = |raw: &str| serde_json::from_str::<serde_json::Value>(raw).unwrap();
+        assert_eq!(
+            availability_from_check(Some(&json(r#"{"available":true}"#)), platform_ok),
+            Availability::ready()
+        );
+        assert_eq!(
+            availability_from_check(
+                Some(&json(r#"{"available":false,"reason":"modelNotReady"}"#)),
+                platform_ok
+            ),
+            Availability::unavailable(Reason::ModelNotReady)
+        );
+        assert_eq!(
+            availability_from_check(Some(&json(r#"{"available":false}"#)), platform_ok),
+            Availability::unavailable(Reason::Unavailable)
+        );
+        // No usable answer: the platform explains it when it can.
+        assert_eq!(
+            availability_from_check(None, || Err(apple_foundation::Error::Unavailable(
+                Reason::RequiresMacOS26
+            ))),
+            Availability::unavailable(Reason::RequiresMacOS26)
+        );
+        assert_eq!(
+            availability_from_check(None, platform_ok),
+            Availability::unavailable(Reason::Unavailable)
+        );
     }
 
     #[test]

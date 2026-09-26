@@ -1,6 +1,7 @@
 //! gobstopper: automatic context compaction for Codex and Claude Code.
 
 mod apple;
+mod apple_cmd;
 mod apple_digest;
 mod apple_scorer;
 mod config;
@@ -445,6 +446,12 @@ enum Cmd {
         #[arg(long)]
         double_buffer: bool,
     },
+    /// Set up and check Apple's on-device model for the apple scorer and
+    /// state card (GOBSTOPPER_SCORER=apple, GOBSTOPPER_DIGEST=apple).
+    Apple {
+        #[command(subcommand)]
+        command: apple_cmd::AppleCmd,
+    },
     /// Manage vaulted provider credentials (OS keychain).
     Auth {
         /// Provider to configure (currently only `jev`).
@@ -730,7 +737,8 @@ fn maybe_scorer() -> Option<Box<dyn gobstopper_core::ScoreDriver>> {
         "apple" => apple_scorer::maybe_apple_scorer(),
         _ => None,
     };
-    if driver.is_none() {
+    // The apple scorer says why it fell back itself, with the fix.
+    if driver.is_none() && name != "apple" {
         // A configured scorer that resolves to nothing silently becomes
         // the heuristic — say so once per process so a missing key,
         // unavailable bridge, or typo'd name is never invisible.
@@ -5521,6 +5529,7 @@ fn main() -> Result<()> {
             println!("native operation reconciled from its recorded matching terminal evidence");
             Ok(())
         }
+        Cmd::Apple { command } => apple_cmd::run(command),
         Cmd::Auth {
             provider,
             status,

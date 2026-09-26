@@ -1,0 +1,100 @@
+[status ready] exit 0
+--- stdout
+✓ Apple's on-device model is ready.
+  Helper: /fake/share/gobstopper/apple-bridge
+--- stderr
+Next: GOBSTOPPER_SCORER=apple gobstopper plan <session>
+[status ready quiet] exit 0
+--- stdout
+✓ Apple's on-device model is ready.
+  Helper: /fake/share/gobstopper/apple-bridge
+--- stderr
+[status ready json] exit 0
+--- stdout
+{"available":true,"reason":null,"helper":"/fake/share/gobstopper/apple-bridge","message":null,"fix":null,"settingsUrl":null,"next":"GOBSTOPPER_SCORER=apple gobstopper plan <session>"}
+--- stderr
+[status off] exit 1
+--- stdout
+⚠ Apple Intelligence is off.
+  Turn it on in System Settings › Apple Intelligence & Siri, then try again.
+  Helper: /fake/share/gobstopper/apple-bridge
+→ open x-apple.systempreferences:com.apple.Siri-Settings.extension
+--- stderr
+[status off json] exit 1
+--- stdout
+{"available":false,"reason":"appleIntelligenceNotEnabled","helper":"/fake/share/gobstopper/apple-bridge","message":"Apple Intelligence is off.","fix":"Turn it on in System Settings › Apple Intelligence & Siri, then try again.","settingsUrl":"x-apple.systempreferences:com.apple.Siri-Settings.extension","next":"open x-apple.systempreferences:com.apple.Siri-Settings.extension"}
+--- stderr
+[status missing] exit 1
+--- stdout
+⚠ The helper that talks to Apple's on-device model isn't installed.
+  Install it with gobstopper apple install. It needs Xcode 26 or Apple's command line tools.
+→ gobstopper apple install
+--- stderr
+[status intel] exit 1
+--- stdout
+⚠ This Mac can't run Apple's on-device model. It needs Apple silicon and Apple Intelligence support.
+  gobstopper works without it: leave GOBSTOPPER_SCORER and GOBSTOPPER_DIGEST unset.
+--- stderr
+[status linux] exit 1
+--- stdout
+--- stderr
+✗ Apple's on-device model only runs on macOS.
+[status linux json] exit 1
+--- stdout
+{"ok":false,"error":{"code":"unsupported","message":"Apple's on-device model only runs on macOS.","next":null}}
+--- stderr
+[install fresh] exit 0
+--- stdout
+✓ Installed the Apple model helper at /fake/share/gobstopper/apple-bridge.
+--- stderr
+Next: GOBSTOPPER_SCORER=apple gobstopper plan <session>
+[install fresh json] exit 0
+--- stdout
+{"ok":true,"helper":"/fake/share/gobstopper/apple-bridge","built":true,"available":true,"reason":null,"next":"GOBSTOPPER_SCORER=apple gobstopper plan <session>"}
+--- stderr
+[install current] exit 0
+--- stdout
+✓ The Apple model helper is already installed at /fake/share/gobstopper/apple-bridge.
+--- stderr
+Next: GOBSTOPPER_SCORER=apple gobstopper plan <session>
+[install no tools] exit 1
+--- stdout
+--- stderr
+✗ gobstopper needs Apple's command line tools. Nothing was installed.
+→ xcode-select --install
+[install no tools json] exit 1
+--- stdout
+{"ok":false,"error":{"code":"developer-tools-missing","message":"gobstopper needs Apple's command line tools. Nothing was installed.","next":"xcode-select --install"}}
+--- stderr
+[install old sdk] exit 1
+--- stdout
+--- stderr
+✗ The Apple model helper needs the macOS 26 SDK, but the selected tools have macOS 15.4.
+  Update Xcode or the command line tools in System Settings › General › Software Update.
+→ open x-apple.systempreferences:com.apple.Software-Update-Settings.extension
+[install build failed] exit 1
+--- stdout
+--- stderr
+✗ The Apple model helper didn't build: swiftc exited with status 1.
+  Check that Xcode 26 or later is selected (xcode-select -p), then try again.
+  Compiler output: /fake/share/gobstopper/apple-bridge-build.log
+→ gobstopper apple install
+[install old macos] exit 1
+--- stdout
+--- stderr
+✗ Apple's on-device model needs macOS 26 or later.
+  Update macOS in System Settings › General › Software Update, then try again.
+  Nothing was installed.
+→ open x-apple.systempreferences:com.apple.Software-Update-Settings.extension
+[install model downloading] exit 0
+--- stdout
+✓ Installed the Apple model helper at /fake/share/gobstopper/apple-bridge.
+--- stderr
+⚠ Apple's on-device model is still downloading.
+  Try again in a few minutes. System Settings › Apple Intelligence & Siri shows the progress.
+→ open x-apple.systempreferences:com.apple.Siri-Settings.extension
+[install no home] exit 1
+--- stdout
+--- stderr
+✗ gobstopper can't tell where to put the helper: HOME isn't set.
+→ GOBSTOPPER_APPLE_BRIDGE=/path/to/apple-bridge gobstopper apple install

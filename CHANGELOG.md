@@ -13,6 +13,9 @@ The request proxy keeps more of the agent's recent work after each compaction, a
 - `proxy status` shows `threshold_1m_tokens`, `keep_tail_percent` and `requests_1m` when the server reports them.
 - Each row of the proxy's stats file records `threshold_tokens`, the threshold applied to that request. A request over the configured threshold that is sent unchanged now gets a log line saying why: a large verbatim head raised the threshold, or there was nothing to compact.
 - `scripts/monitor.py --proxy PORT` runs `proxy status --json` on each pass and fails the pass when the proxy does not answer. It is off by default.
+- `gobstopper apple install` builds the helper the Apple scorer and state card need, and `gobstopper apple status` says whether Apple's on-device model is ready. Install checks for Xcode's command line tools first and prints `xcode-select --install` instead of letting macOS open its install dialog; compiler output goes to a log file.
+- When `GOBSTOPPER_SCORER=apple` or `GOBSTOPPER_DIGEST=apple` can't use Apple's model, gobstopper now says why once, with the fix and the System Settings link: Apple Intelligence is off, the model is still downloading, the Mac or macOS can't run it, or the helper isn't installed. The state card writer used to fall back silently, and the scorer printed `scorer_unavailable`.
+- apple-foundation moves to v0.2.0.
 
 ## v0.4.1 - 2026-09-25
 
