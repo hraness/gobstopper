@@ -10,6 +10,13 @@ import {
   comparisonQuestions,
   comparisonRows,
 } from "../app/compare/cliffcompaction/comparison";
+import CompareClaudeCodeCompact from "../app/compare/claude-code-compact/page";
+import {
+  CLAUDE_COMMANDS,
+  CLAUDE_CONTEXT_WINDOW,
+  comparisonQuestions as compactQuestions,
+  comparisonRows as compactRows,
+} from "../app/compare/claude-code-compact/comparison";
 import RootLayout from "../app/layout";
 
 const SUPPORT_URL = "https://account.hraness.com/support?product=gobstopper&amp;source=web#support";
@@ -51,4 +58,39 @@ test("the README comparison table carries the same cells as the page", async () 
     expect(cells(line)).toEqual([row.aspect, row.cliff, row.gobstopper]);
   });
   expect(section).toContain("https://gobstopper.sh/compare/cliffcompaction");
+});
+
+test("the /compact comparison page renders one heading, the shared rows, and primary sources", () => {
+  const html = renderToStaticMarkup(<RootLayout><CompareClaudeCodeCompact /></RootLayout>);
+  expect(html.match(/<h1\b/gu)).toHaveLength(1);
+  expect(html).toContain(`href="${CLAUDE_COMMANDS}"`);
+  expect(html).toContain(`href="${CLAUDE_CONTEXT_WINDOW}"`);
+  expect(html).toContain(SUPPORT_URL);
+  expect(html).toContain("gobstopper undo");
+  for (const row of compactRows) {
+    expect(html).toContain(`<th scope="row">${row.aspect}</th>`);
+  }
+  for (const { question } of compactQuestions) {
+    expect(html).toContain(question);
+  }
+  // Authored copy avoids em dashes; the shared chrome may carry its own text.
+  const article = /<article>([\s\S]*)<\/article>/u.exec(html)?.[1] ?? "";
+  expect(article).not.toContain("—");
+  expect(html).toContain('"@type":"FAQPage"');
+});
+
+test("the README /compact comparison table carries the same cells as the page", async () => {
+  const readme = await readFile(join(import.meta.dir, "..", "..", "README.md"), "utf8");
+  const start = readme.indexOf("## How Gobstopper compares with Claude Code /compact");
+  expect(start).toBeGreaterThan(-1);
+  const section = readme.slice(start, readme.indexOf("\n## ", start + 1));
+  const tableLines = section.split("\n").filter((line) => line.startsWith("|"));
+  // Header, separator, then one line per row.
+  const bodyLines = tableLines.slice(2);
+  expect(bodyLines).toHaveLength(compactRows.length);
+  bodyLines.forEach((line, index) => {
+    const row = compactRows[index]!;
+    expect(cells(line)).toEqual([row.aspect, row.compact, row.gobstopper]);
+  });
+  expect(section).toContain("https://gobstopper.sh/compare/claude-code-compact");
 });
