@@ -248,6 +248,27 @@ a { text-underline-offset: 0.2em; }
   --hraness-marketing-surface: var(--hraness-material-plane);
   box-shadow: var(--hraness-material-lift);
 }
+
+/* A framed component already draws its own boundary; a ruled section directly
+   after it would stack a second hairline on the card edge. */
+:is(
+  .hraness-marketing-install,
+  .hraness-marketing-proof,
+  .hraness-marketing-proof-frame
+) + :is(
+  .hraness-marketing-section,
+  .hraness-marketing-primitives,
+  .hraness-marketing-interfaces,
+  .hraness-marketing-trust,
+  .hraness-marketing-quotes,
+  .hraness-marketing-pricing,
+  .hraness-marketing-questions,
+  .hraness-marketing-maker,
+  .hraness-marketing-related,
+  .hraness-marketing-cta
+) {
+  border-block-start: 0;
+}
 [data-hraness-material="lantern"] .hraness-marketing-question[open] > summary {
   background-color: var(--hraness-material-warm-plane);
   color: var(--hraness-material-ink);
