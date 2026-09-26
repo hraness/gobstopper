@@ -11,6 +11,7 @@ The request proxy keeps more of the agent's recent work after each compaction, a
 - Consecutive assistant messages count as one turn in every dialect, so a compaction no longer separates tool results from their calls.
 - `proxy replay` reads subagent transcripts and reports head, summary and tail sizes per compaction, repeated reads, and the gap between compactions.
 - `proxy status` shows `threshold_1m_tokens`, `keep_tail_percent` and `requests_1m` when the server reports them.
+- Each row of the proxy's stats file records `threshold_tokens`, the threshold applied to that request. A request over the configured threshold that is sent unchanged now gets a log line saying why: a large verbatim head raised the threshold, or there was nothing to compact.
 - `scripts/monitor.py --proxy PORT` runs `proxy status --json` on each pass and fails the pass when the proxy does not answer. It is off by default.
 
 ## v0.4.1 - 2026-09-25

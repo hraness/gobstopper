@@ -21,8 +21,43 @@ custom provider address can use it:
 | OpenAI Responses | `.../responses` | Codex |
 | OpenAI Chat Completions | `.../chat/completions` | opencode, Crush, Aider, Goose, other OpenAI-compatible clients |
 
-The proxy is in the current `main` source build. It needs the system `curl`,
-version 8.3 or later (`curl --version`).
+The proxy has shipped in tagged releases since v0.3.1, and the Chat
+Completions dialect since v0.4.0. This page describes the current `main`
+source build: the tail budget (`--keep-tail-percent`) and the separate 1M
+threshold (`--threshold-1m`) are not yet in a release. The proxy needs the
+system `curl`, version 8.3 or later (`curl --version`).
+
+## What you get
+
+- **A smaller request each turn.** Past the threshold, older file reads and
+  command output longer than 500 characters leave the request. The system
+  prompt, the first task, and the newest turns stay word for word, so the
+  agent keeps what it was just working on.
+- **No model call to compact.** The summary is built by a fixed rule, so a
+  compaction costs no extra request and adds no model-written text.
+- **No summary of a summary.** Each compaction starts from the original
+  history the client resends, so detail is lost once, not again at every
+  compaction.
+- **A stable prompt cache.** Between compactions, every request carries the
+  same compacted prefix byte for byte, so the provider's prompt cache keeps
+  matching until the next compaction.
+- **The agent's own compaction stays idle.** The provider reports the
+  compacted size, so the client does not reach its auto-compaction trigger.
+  Its transcript keeps the full history, and resume works as before.
+- **Failures send the original.** An unparseable body, an internal error, or
+  a provider rejection for any reason other than length sends the client's
+  original bytes.
+
+CliffCompaction's authors report up to 50% lower cost at a bounded context,
+with Terminal-Bench 2.0 scores held or improved, on the Kimi K2.6 and GLM 5.1
+models they tested. In one run through Claude Code, their proxy scored above
+Claude Code's own auto-compaction. Those are their
+measurements of their proxy, computed with a model of perfect prompt caching;
+they report that the benefit depends on the agent and the task and matters
+only for medium-to-long tasks. Gobstopper has not rerun those benchmarks or
+measured task quality or billed cost under its proxy. Its own replays and
+local counters, which are estimates, are in the
+[README](../README.md#what-gobstopper-has-measured).
 
 ## Try it on one session
 
@@ -284,8 +319,13 @@ repeated reads and how many the kept history still held (`repeated_reads`,
   the provider rejects the rewritten request for any other reason, the proxy
   resends the client's original bytes.
 - If the verbatim head alone approaches the threshold, as it can after the
-  client compacted a session itself, the threshold for that session rises to
-  the head plus half the request's threshold.
+  client compacted a session itself or when a subagent starts with a long
+  prompt, the threshold for that session rises to the head plus half the
+  request's threshold. A request over the configured threshold but under the
+  raised one is sent unchanged, and the log says so (`sent unchanged ...
+  under the threshold raised to ~Nk by a large verbatim head`). A request
+  over the threshold with nothing to compact, such as one with too few
+  turns, is also sent unchanged and logged (`... with nothing to compact`).
 
 ## Privacy and security
 
@@ -297,7 +337,8 @@ repeated reads and how many the kept history still held (`repeated_reads`,
   response text.
 - Every compactable request also appends one JSONL record (timestamp,
   dialect, path, estimated tokens in and out, the estimated head, summary,
-  and tail sizes, the window, and flags) to
+  and tail sizes, the window, the threshold applied to that request, and
+  flags) to
   `~/.local/share/gobstopper/proxy-stats.jsonl`, so `gobstopper proxy status`
   reports estimated-token totals for this run and all time across restarts.
   `GOBSTOPPER_STATS_FILE` overrides the path; set it to `off` to disable the

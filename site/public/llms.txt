@@ -4,11 +4,11 @@
 
 Long coding-agent sessions collect tool output that mattered once: test logs from runs that have since passed, file listings from before a refactor, stack traces for bugs already fixed. Every turn sends all of it to the model again. Gobstopper is a free, open-source command-line tool that finds your Claude Code and Codex sessions, shows what each compaction strategy would cut, and writes a smaller copy. Before it writes, it stores the original bytes in a content-addressed vault on your machine, so you can search for the exact record a compaction left out or restore the whole session.
 
-The source build also runs a local proxy that compacts live Claude Code and Codex requests and keeps direct provider-store edits and automatic provider compaction disabled.
+`gobstopper proxy` is a local proxy on 127.0.0.1:8260 that compacts live requests from Claude Code, Codex, and any agent that speaks Anthropic Messages, OpenAI Responses, or OpenAI Chat Completions with a custom provider address (opencode, Crush, Aider, Goose). Past a threshold (128,000 estimated tokens by default), each request keeps the system prompt, the first task, and the newest turns word for word, and replaces older turns with one mechanical summary that drops tool results over 500 characters. The summary rule is ported from CliffCompaction (arXiv:2609.26779), whose authors report up to 50% lower cost at a bounded context on the models they tested; Gobstopper has not rerun those benchmarks. If it cannot parse a request, hits an internal error, or the provider rejects the compacted request for a reason other than length, it sends the original; a length rejection gets a further compaction and a retry. It never changes session files. It has shipped since v0.3.1. Direct provider-store edits and automatic provider compaction stay disabled.
 
 When to use this site:
 - Use gobstopper.sh to learn what Gobstopper does, which strategies it runs, and how to install it.
-- Use /docs for the full reference: installation, strategies, configuration, the watcher, hooks, the snapshot vault, and the MCP server.
+- Use /docs for the full reference: installation, the proxy, strategies, configuration, the watcher, hooks, the snapshot vault, and the MCP server.
 - Use /methodology for the occupancy model behind the projections and what each strategy does.
 - Use /benchmarks for dated results, cohort sizes, limitations, and aggregate downloads.
 - Use /compare/cliffcompaction to see how Gobstopper and its proxy compare with CliffCompaction, the API-proxy compactor, and what the cliff strategy does.
@@ -19,8 +19,8 @@ When to use this site:
 - [Gobstopper](https://gobstopper.sh/): what Gobstopper does, how to install it, and what it will not do to a running session.
 - [Gobstopper documentation](https://gobstopper.sh/docs): the README, with every command, strategy, and configuration setting it documents.
 - [Gobstopper methodology](https://gobstopper.sh/methodology): the occupancy model, the strategies, and the limits of the published benchmarks.
-- [Gobstopper benchmarks](https://gobstopper.sh/benchmarks): offline replays of 729 archived sessions, a synthetic snapshot-recovery study, and historical single-session resume trials.
-- [Gobstopper compared with CliffCompaction](https://gobstopper.sh/compare/cliffcompaction): where each tool runs, what each keeps and drops, what evidence each publishes, gobstopper proxy, which ports CliffCompaction's summary rule for Claude Code and Codex, and the cliff strategy for transcript copies.
+- [Gobstopper benchmarks](https://gobstopper.sh/benchmarks): offline replays of 729 archived sessions, request-proxy replays and one afternoon of live proxy counters, a synthetic snapshot-recovery study, and historical single-session resume trials.
+- [Gobstopper compared with CliffCompaction](https://gobstopper.sh/compare/cliffcompaction): where each tool runs, what each keeps and drops, what evidence each publishes, gobstopper proxy, which ports CliffCompaction's summary rule to the same three API dialects, and the cliff strategy for transcript copies.
 
 ## Blog
 

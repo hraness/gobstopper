@@ -43,8 +43,8 @@ export const comparisonRows: readonly ComparisonRow[] = [
   },
   {
     aspect: "Evidence published",
-    cliff: "Terminal-Bench 2.0, SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models",
-    gobstopper: "Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, literal retention probes, and dated single-session trials; no task-success or billing claims",
+    cliff: "Terminal-Bench 2.0 and 2.1 (including a run through Claude Code), SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models",
+    gobstopper: "Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, one dated afternoon of live proxy counters, literal retention probes, and dated single-session trials; no task-success or billing claims",
   },
   {
     aspect: "Model needed",

@@ -512,6 +512,7 @@ impl StatsLog {
             "est_summary_tokens": ctx.est_summary_tokens,
             "est_tail_tokens": ctx.est_tail_tokens,
             "window": window_name(request, ctx.dialect),
+            "threshold_tokens": ctx.threshold_tokens,
             "compacted": ctx.compacted,
             "reused_prefix": ctx.matched,
             "over_budget": ctx.over_budget,
@@ -773,6 +774,24 @@ impl Proxy {
                 "{kind} {path}: reused compacted prefix, ~{}k -> ~{}k est tokens {sizes}, window={window}{shadow}",
                 ctx.est_tokens_in / 1000,
                 ctx.est_tokens_out / 1000,
+            ));
+        } else if ctx.est_tokens_in > ctx.base_threshold_tokens {
+            // Over the selected threshold but sent unchanged. Say why, or the
+            // request looks missed.
+            let why = if ctx.est_tokens_in <= ctx.threshold_tokens {
+                format!(
+                    "under the threshold raised to ~{}k by a large verbatim head",
+                    ctx.threshold_tokens / 1000
+                )
+            } else {
+                format!(
+                    "over the ~{}k threshold with nothing to compact",
+                    ctx.threshold_tokens / 1000
+                )
+            };
+            log(&format!(
+                "{kind} {path}: sent unchanged at ~{}k est tokens, {why}, window={window}",
+                ctx.est_tokens_in / 1000,
             ));
         }
     }
