@@ -310,7 +310,7 @@
       "id": "E-PLAN",
       "kind": "specification",
       "revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
-      "scope": "Acceptance obligations C1–C15; an assigned gate is not completed evidence.",
+      "scope": "Acceptance obligations C1\u2013C15; an assigned gate is not completed evidence.",
       "bounds": "No production proof inferred from the roadmap.",
       "references": [
         {
@@ -348,7 +348,7 @@
       "id": "E-FOUNDATION-SOURCE",
       "kind": "source_review",
       "revision": "current-source; delivery revision recorded by PR 90",
-      "scope": "C2–C14 implementation and independent phase reviews recorded in the plan; public effect classifications track current source.",
+      "scope": "C2\u2013C14 implementation and independent phase reviews recorded in the plan; public effect classifications track current source.",
       "bounds": "Source review and test definitions do not replace a fresh exact-candidate aggregate gate or provider qualification.",
       "references": [
         {
@@ -385,8 +385,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-26-core-apple.json",
-        "sha256": "ca1672f6743fe2e4abd444ccdc9637505eb9b8d7f580ea95c2534e4a754abb3c"
+        "path": "docs/assurance/receipts/2026-09-26-core-ux.json",
+        "sha256": "7ea97b088f7d82d89823ec8a522db411a5be7bd717555646af24b58cc6278873"
       }
     },
     {
@@ -469,8 +469,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-26-stress-apple.json",
-        "sha256": "b7b45a8984ecf2bbd31f01ec5ac73678c333dc7c87940fd74654f950b755edaf"
+        "path": "docs/assurance/receipts/2026-09-26-stress-ux.json",
+        "sha256": "113c952b18f9c015b376271d270f3172cf74ac00158ff29d16cf381db62ec919"
       }
     }
   ],
