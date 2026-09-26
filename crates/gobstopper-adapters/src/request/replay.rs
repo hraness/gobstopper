@@ -21,6 +21,10 @@ pub struct Compaction {
     pub head_tokens: u64,
     pub summary_tokens: u64,
     pub tail_tokens: u64,
+    /// Characters of the carried section in the summary, label included;
+    /// 0 without one. Replay renders no attachments or system messages,
+    /// so carried human text is a lower bound. A size only.
+    pub carry_chars: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -286,6 +290,7 @@ pub fn replay(
                 head_tokens: ctx.est_head_tokens,
                 summary_tokens: ctx.est_summary_tokens,
                 tail_tokens: ctx.est_tail_tokens,
+                carry_chars: ctx.carry_chars,
             });
         } else if ctx.matched {
             report.reused_prefix += 1;
@@ -685,6 +690,29 @@ mod tests {
         assert_eq!(report.pairing_violations, 0);
         assert!(report.peak_est_tokens_out < report.peak_est_tokens_in);
         assert!(report.total_est_tokens_out < report.total_est_tokens_in);
+    }
+
+    #[test]
+    fn replay_reports_carried_characters_per_compaction() {
+        let history = a_session(20, 3000);
+        let run = |carry_max_chars| {
+            let cfg = CliffConfig {
+                threshold_tokens: 3_000,
+                keep_recent: 1,
+                carry_max_chars,
+                ..CliffConfig::default()
+            };
+            replay(&history, Dialect::Anthropic, cfg, 200)
+        };
+        let on = run(24_000);
+        assert!(on.compactions.len() >= 2);
+        // The first compaction has nothing to carry yet.
+        assert_eq!(on.compactions[0].carry_chars, 0);
+        assert!(on.compactions[1..].iter().all(|c| c.carry_chars > 0));
+        assert_eq!(on.pairing_violations, 0);
+        let off = run(0);
+        assert!(off.compactions.len() >= 2);
+        assert!(off.compactions.iter().all(|c| c.carry_chars == 0));
     }
 
     fn chat_session(steps: usize, result_chars: usize) -> Vec<Value> {

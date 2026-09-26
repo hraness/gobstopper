@@ -74,7 +74,8 @@ size and the client's auto-compaction does not reach its trigger.
   ignore volatile fields (`cache_control`, thinking signatures, Responses
   item `id` and `status`), a hash chain over the original messages, an LRU
   prefix store, the cliff step, the replay of threshold crossings, the
-  escalation steps, and image pricing by dimensions. It is a port of the
+  escalation steps, the carried conversation text, and image pricing by
+  dimensions. It is a port of the
   reference implementation, which is MIT-licensed (notice in
   `THIRD_PARTY_NOTICES.md`).
 - Three dialects share that engine. Anthropic Messages and Chat Completions
@@ -82,7 +83,7 @@ size and the client's auto-compaction does not reach its trigger.
   Each dialect owns its message digest, summary shape, and turn grouping, so
   a kept tail is always a whole number of model steps: an assistant
   `tool_calls` turn and the `tool` messages answering it are never split.
-- Five behaviors differ from the reference. The kept tail grows past the
+- Six behaviors differ from the reference. The kept tail grows past the
   newest `keep_recent` turns, one older whole turn at a time, while the
   summary and the tail fit a share of the room between the verbatim floor
   and the applied threshold (`--keep-tail-percent`, 40 by default; 0 keeps
@@ -103,7 +104,21 @@ size and the client's auto-compaction does not reach its trigger.
   floor plus half the request's threshold. Replays of Codex sessions that
   Codex had already compacted itself showed why: their heads were near 160k
   estimated tokens, and without the adjustment nearly every request
-  compacted again and no prefix was reused.
+  compacted again and no prefix was reused. The reference discards the
+  previous summary with everything in it; each summary here opens with the
+  human's words and the assistant's visible replies from the turns earlier
+  compactions summarized, oldest first, up to `--carry-max-chars` (24,000
+  characters by default) and a quarter of the room above the verbatim
+  floor, and 0 restores the reference rule. Each prefix-store entry keeps
+  its carried text. A carry depends on the turns summarized so far and on
+  its budget, the smaller of those two bounds. A restarted proxy that
+  replays the crossings rebuilds it exactly when the budget is unchanged,
+  which always holds when `--carry-max-chars` is less than half the
+  threshold, rounded down (at the default, above 48,001 tokens); a budget
+  that grew between requests leaves the live carry shorter until newer
+  words fill it.
+  A summary shortened to fit (after a length error, or under `--strict`)
+  starts its carry over.
 - `crates/gobstopper-cli/src/proxy.rs` owns the socket side: a thread per
   connection on 127.0.0.1, a host check against DNS rebinding, and the
   system `curl` for upstream HTTPS, as the model scorers already use.
@@ -170,6 +185,93 @@ consecutive requests 30 to 31 times at every share, the reference included;
 at 256,000 it never did. Its model, Claude Fable 5.1, has a 1M window by
 default, and the proxy applies `--threshold-1m` only when a request declares
 the window in `anthropic-beta` ([roadmap](roadmap.md#9-open-questions)).
+
+### Why a 24,000-character carry
+
+Without the carry, a human instruction older than one compaction cycle
+left the request with the summary that held it. The carry keeps the
+human's messages and the assistant's visible replies across cycles and
+nothing else. Extraction reads each message's structure rather than the
+summary text. In Claude Code 2.1.283, captured on September 26, 2026, a
+message typed while the agent works arrives as a system-role message that
+starts `The user sent a new message while you were working:` and ends with
+Claude Code's note on mid-turn messages, text typed after an interrupt
+follows the interrupt marker inside a tool-result message, and a skill's
+instructions arrive as text in a tool-result message, so the rules carry
+the first two, without the marker and the note, and never the third. The
+Claude Code binary shows two layouts the capture did not exercise: feedback
+typed when rejecting a tool call follows a fixed sentence at the start of
+the rejected call's result, and the rules carry the words after it; a skill
+loaded by a slash command opens a text block of the human's turn with
+`Base directory for this skill:`, and the rules drop it. Local transcripts
+show shell and local-command output in the human's turn inside
+`<bash-stdout>` and similar tags, and a local command's caveat inside
+`<local-command-caveat>`, which the rules also drop. No other tool
+output is read: files and command output can quote the marker of a queued
+message, so a queued message counts only as a system message or as a whole
+text block of the human's turn. For Responses and Chat Completions, the
+proxy carries user-role text apart from the context items Codex sends
+again; no capture has checked whether other clients send harness text as
+user items later in a session.
+
+The cap is sized to hold a talkative session whole. In a snapshot of the
+orchestrator session in the table below, the human's text outside one
+16,966-character skill body came to about 2,640 characters in 10 messages,
+and the assistant's visible text to 16,824 characters in 48 replies, the
+longest 3,286. That is about 20,000 characters with the role prefixes, so
+24,000 holds it, and the 4,000-character cap on each carried part cuts none
+of the replies. The carry also takes at most a quarter of the room above the
+verbatim floor. The floor rule leaves at least half the threshold as room,
+so at the default thresholds 24,000 characters is the bound that applies,
+and at 128,000 tokens it fills at most about 23% of the 40% tail share.
+
+On September 26, 2026, `gobstopper proxy replay` ran six recordings with
+the 40% tail share at 128,000 and 256,000, once with `--carry-max-chars 0`
+and once at 24,000, on a source build of the unreleased proxy with the
+carry. With the carry at 0, every replay's report matched that of a source
+build of b66fec4, the last commit without the carry, in every field that
+build reports. The recordings are the incident subagent above (1,631
+requests, 43,981 fixed tokens), another workflow subagent (854 requests,
+60,000), the orchestrator session (140 requests after its last client
+compaction, 30,000), two Claude Fable 5.1 main sessions (276 and 206
+requests, 30,000), and the second of those again at its measured 92,615
+fixed tokens. Carried characters are the mean and largest carried section
+per compaction at 24,000. Cost is estimated as in the table above, with
+cache writes at 1.25 for the subagents and 2.0 for the main sessions, in
+millions of input-token equivalents. Each pair reads carry 0 → carry
+24,000.
+
+| Recording | Threshold | Carried characters (mean / largest) | Compactions | Back-to-back | Cost |
+|---|---|---|---|---|---|
+| Incident subagent | 128,000 | 4,435 / 11,042 | 52 → 52 | 0 → 0 | 13.54 → 13.57 |
+| Incident subagent | 256,000 | 4,066 / 10,963 | 20 → 20 | 0 → 0 | 20.62 → 20.61 |
+| Another subagent | 128,000 | 398 / 584 | 30 → 31 | 0 → 0 | 7.08 → 7.12 |
+| Another subagent | 256,000 | 377 / 505 | 10 → 10 | 0 → 0 | 10.71 → 10.70 |
+| Orchestrator | 128,000 | 3,746 / 11,173 | 6 → 6 | 0 → 0 | 1.87 → 1.87 |
+| Orchestrator | 256,000 | 269 / 539 | 2 → 2 | 0 → 0 | 2.41 → 2.41 |
+| Main session, 276 requests | 128,000 | 4,137 / 7,586 | 27 → 27 | 0 → 0 | 6.48 → 6.44 |
+| Main session, 276 requests | 256,000 | 3,704 / 6,877 | 11 → 11 | 0 → 0 | 7.55 → 7.59 |
+| Main session, 206 requests | 128,000 | 3,895 / 6,918 | 49 → 49 | 1 → 1 | 9.72 → 9.73 |
+| Main session, 206 requests | 256,000 | 3,699 / 6,595 | 18 → 18 | 0 → 0 | 9.59 → 9.63 |
+| Same, 92,615 fixed | 128,000 | 4,025 / 7,117 | 90 → 92 | 31 → 34 | 11.42 → 11.65 |
+| Same, 92,615 fixed | 256,000 | 3,723 / 6,718 | 25 → 25 | 0 → 0 | 9.73 → 9.75 |
+
+No carried section reached 24,000 characters, and cost moved by less than
+1% except in one row. The incident's covered repeated reads went from 41 to
+47 of 276 at 128,000 and from 179 to 178 at 256,000. From a Claude Code
+transcript, replay rebuilds only the user and assistant records, so the
+replayed human text is a lower bound; the assistant text is complete.
+
+The exception is the session whose system prompt and tools took 92,615
+tokens, at 128,000. There the fixed fields and the head take more than half
+the threshold, so the floor rule raised the threshold on every request, and
+the three newest turns alone nearly filled the room above the floor: the
+session compacted on consecutive requests 31 times without the carry. The
+carried section moved some compactions one request earlier, for 34
+back-to-back compactions and 2.0% more estimated cost. A smaller cap does
+not remove the increase: at 2,000 characters there were 33. No other replay
+raised the threshold. The default is 24,000 for every request, and
+`--carry-max-chars 0` turns carrying off for such a session.
 
 ## Provider levers (historical version-specific observations)
 

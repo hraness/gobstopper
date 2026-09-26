@@ -2,6 +2,14 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## Unreleased
+
+The request proxy carries the conversation's words forward from one compaction to the next.
+
+- Each summary after a session's first compaction opens with the human's words and the assistant's visible replies from the turns that earlier compactions summarized, oldest first, up to `--carry-max-chars` (default 24,000 characters, and at most a quarter of the room below the threshold). From Claude Code, the human's words include messages typed while the agent works, text typed after an interrupt, and feedback typed when rejecting a tool call; tool calls, other tool output, thinking, skill instructions, shell output, and system reminders are never carried. In the Responses and Chat Completions dialects every user-role message is carried, except the context items Codex sends again. Compaction log lines and the ledger record the carried size (`carry N chars`, `carry_chars`), never the text. With `--carry-max-chars 0` no words carry, and each summary covers only the turns since the previous compaction.
+- `proxy replay` reports the carried size of each compaction as `carry_chars`.
+- `proxy status` shows `carry_max_chars` when the server reports it.
+
 ## v0.5.0 - 2026-09-26
 
 The request proxy keeps more of the agent's recent work after each compaction, and Claude Code requests that use a 1M-token window get their own threshold. `gobstopper proxy install` starts the proxy at login, `gobstopper apple` sets up Apple's on-device model, and help, errors and empty states now say what to do next.
