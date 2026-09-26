@@ -271,6 +271,9 @@ a { text-underline-offset: 0.2em; }
 /* ── Hero: ambient compaction field ─────────────────────────────────────── */
 .gob-opening { position: relative; overflow: clip; }
 .gob-opening .gobstopper-marketing-hero { position: relative; z-index: 1; }
+/* The shared backdrop is measured against the hero column; this opening lets
+   the field span the full wall so the haze dies at the viewport edges. */
+.gob-opening .hraness-marketing-hero-backdrop { margin-inline: calc(50% - 50vw); }
 .gob-opening .gobstopper-marketing-hero::before {
   content: ""; position: absolute; inset: -2rem -4rem; z-index: -1; pointer-events: none;
   background: radial-gradient(ellipse 72% 64% at 50% 55%, color-mix(in srgb, var(--background) 82%, transparent), color-mix(in srgb, var(--background) 50%, transparent) 58%, transparent);
@@ -279,7 +282,17 @@ a { text-underline-offset: 0.2em; }
 .gob-field::after {
   content: ""; pointer-events: none; position: absolute; inset: 0;
   background:
-    linear-gradient(to right, var(--background), transparent 14%, transparent 86%, var(--background)),
+    linear-gradient(to right,
+      var(--background),
+      color-mix(in srgb, var(--background) 78%, transparent) 5%,
+      color-mix(in srgb, var(--background) 42%, transparent) 11%,
+      color-mix(in srgb, var(--background) 15%, transparent) 18%,
+      transparent 25%,
+      transparent 75%,
+      color-mix(in srgb, var(--background) 15%, transparent) 82%,
+      color-mix(in srgb, var(--background) 42%, transparent) 89%,
+      color-mix(in srgb, var(--background) 78%, transparent) 95%,
+      var(--background)),
     linear-gradient(to bottom, var(--background), transparent 20%, transparent 84%, var(--background));
 }
 .gob-edges { position: absolute; inset: 0; inline-size: 100%; block-size: 100%; }
