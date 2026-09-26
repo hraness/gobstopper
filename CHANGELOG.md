@@ -16,6 +16,13 @@ The request proxy keeps more of the agent's recent work after each compaction, a
 - `gobstopper apple install` builds the helper the Apple scorer and state card need, and `gobstopper apple status` says whether Apple's on-device model is ready. Install checks for Xcode's command line tools first and prints `xcode-select --install` instead of letting macOS open its install dialog; compiler output goes to a log file.
 - When `GOBSTOPPER_SCORER=apple` or `GOBSTOPPER_DIGEST=apple` can't use Apple's model, gobstopper now says why once, with the fix and the System Settings link: Apple Intelligence is off, the model is still downloading, the Mac or macOS can't run it, or the helper isn't installed. The state card writer used to fall back silently, and the scorer printed `scorer_unavailable`.
 - apple-foundation moves to v0.2.0.
+- `gobstopper proxy install` starts the proxy at login on macOS: it writes the `sh.gobstopper.proxy` LaunchAgent with the `serve` settings you pass, says first that macOS will show a Background Items notice, logs to `~/Library/Logs/gobstopper-proxy.log`, and waits for the proxy to answer. `--print` shows the file, `--replace` swaps an existing agent, and `proxy uninstall` removes it.
+- `proxy status` says what to do when nothing answers: install the proxy, or restart an installed one and read its log. `proxy serve` ends with the `ANTHROPIC_BASE_URL` line to set.
+- Bare `gobstopper` prints a short "Start here" list and exits 0. `--help` groups commands under Start here, Sessions and snapshots, and Setup; evaluation and integration commands moved to `gobstopper help advanced`. Every command and option has a description.
+- Errors print one sentence and the next command to run (`✗ …` then `→ …`), with ASCII fallbacks for `TERM=dumb` and non-UTF-8 locales. Usage errors name the input and suggest the closest command or option. With `--json`, or when an agent runs gobstopper, an error is one `{"ok":false,"error":{…}}` object on stderr; a failed command still writes nothing to stdout.
+- `gobstopper detect | head` no longer panics, and `detect` shows the newest 20 sessions with a count of the rest (`--limit 0` shows all; `--json` still lists every session). Empty `detect` and `presets` say so.
+- `gobstopper auth jev` asks before it reads the clipboard. Keychain failures say whether access was denied or no keychain is available, and `auth jev --status` reports a stored key macOS refused to read instead of "no key".
+- `gobstopper events` names the log it can't read and why.
 
 ## v0.4.1 - 2026-09-25
 

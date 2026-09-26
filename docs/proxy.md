@@ -76,34 +76,22 @@ overrides, so route it with the provider block in [Codex](#codex).
 gobstopper proxy serve        # http://127.0.0.1:8260; --port changes it
 ```
 
-On macOS, a LaunchAgent keeps it running across logins. Save this as
-`~/Library/LaunchAgents/sh.gobstopper.proxy.plist`, replacing `YOU` with your
-user name:
-
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-  <key>Label</key><string>sh.gobstopper.proxy</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/Users/YOU/.cargo/bin/gobstopper</string>
-    <string>proxy</string>
-    <string>serve</string>
-  </array>
-  <key>RunAtLoad</key><true/>
-  <key>KeepAlive</key><true/>
-  <key>StandardOutPath</key><string>/Users/YOU/Library/Logs/gobstopper-proxy.log</string>
-  <key>StandardErrorPath</key><string>/Users/YOU/Library/Logs/gobstopper-proxy.log</string>
-</dict>
-</plist>
-```
+On macOS, `proxy install` keeps it running across logins:
 
 ```sh
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/sh.gobstopper.proxy.plist
+gobstopper proxy install                    # add serve settings after install
 gobstopper proxy status
 ```
+
+`install` writes `~/Library/LaunchAgents/sh.gobstopper.proxy.plist`, which
+runs `gobstopper proxy serve` with the settings you give it (for example
+`gobstopper proxy install --threshold 256000`), loads it, and waits for the
+proxy to answer. Its output goes to `~/Library/Logs/gobstopper-proxy.log`.
+macOS shows a "Background Items Added" notice for `gobstopper`; turn it off
+any time in System Settings › General › Login Items & Extensions, or run
+`gobstopper proxy uninstall`. `--print` shows the file without writing it,
+and `--replace` swaps an existing agent, including one written by hand from
+an earlier version of this page.
 
 Pass `--proxy 8260` to `scripts/monitor.py` so each observation pass also
 probes `proxy status`; a dead proxy lane then fails the monitor check instead
@@ -112,8 +100,8 @@ of silently breaking clients that route through it.
 After upgrading the binary, restart it with
 `launchctl kickstart -k gui/$(id -u)/sh.gobstopper.proxy`.
 
-Settings go in `ProgramArguments` after `serve`, one `<string>` element per
-argument. After an upgrade, compare them with [Settings](#settings): a
+To change settings, run `gobstopper proxy install --replace` with the new
+ones. After an upgrade, compare them with [Settings](#settings): a
 `--threshold` raised for 1M-window sessions applies to every request, while
 `--threshold-1m` applies only to requests that declare the 1M window.
 

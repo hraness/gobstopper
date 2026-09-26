@@ -11,9 +11,11 @@ mod llm_scorer;
 mod mcp;
 mod native_operations;
 mod proxy;
+mod proxy_agent;
 mod report;
 mod secrets;
 mod telemetry;
+mod ux;
 
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -33,29 +35,34 @@ use std::process::{Command, Stdio};
 #[command(
     name = "gobstopper",
     version,
-    about = "Automatic context compaction for coding-agent sessions"
+    about = "Gobstopper makes long coding sessions smaller",
+    override_help = ux::ROOT_HELP
 )]
 struct Cli {
     /// Codex state root (default: $CODEX_HOME or ~/.codex).
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help_heading = "Global options")]
     codex_home: Option<PathBuf>,
     /// Claude state root (default: $CLAUDE_CONFIG_DIR or ~/.claude).
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help_heading = "Global options")]
     claude_home: Option<PathBuf>,
     /// Codex CLI binary for provider controls (default: $GOBSTOPPER_CODEX_BIN or `codex` on PATH).
-    #[arg(long, global = true)]
+    #[arg(long, global = true, help_heading = "Global options")]
     codex_bin: Option<PathBuf>,
     #[command(subcommand)]
-    command: Cmd,
+    command: Option<Cmd>,
 }
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// List detected sessions with context occupancy.
+    /// List detected sessions with context occupancy, newest first.
     Detect {
         /// Include sessions of any age (default: last 7 days).
         #[arg(long)]
         all: bool,
+        /// Show at most this many sessions (default 20; 0 shows every
+        /// one). --json always lists every session.
+        #[arg(long, default_value_t = 20, value_name = "N")]
+        limit: usize,
         /// Emit JSON.
         #[arg(long)]
         json: bool,
@@ -210,14 +217,17 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Export inert provider hook settings candidates; direct mutation requires
-    /// provider-owned custody and is disabled. The output must be a new file.
+    /// Write the provider hook settings Gobstopper would add to a new file
+    /// for you to review and copy. It never edits provider settings.
     InstallHooks {
+        /// New file to write the settings to; it must not exist yet.
         #[arg(long)]
         output: Option<PathBuf>,
     },
-    /// Export candidates removing exactly owned hook entries.
+    /// Write provider hook settings with Gobstopper's own hooks removed to a
+    /// new file for you to review. It never edits provider settings.
     UninstallHooks {
+        /// New file to write the settings to; it must not exist yet.
         #[arg(long)]
         output: Option<PathBuf>,
     },
@@ -228,8 +238,8 @@ enum Cmd {
         /// "precompact" | "session-start" | "prompt-policy[:claude]"
         event: String,
     },
-    /// Emit a session-observations-v1 report (aicharts schema) joining
-    /// detected sessions with compaction telemetry. JSON on stdout.
+    /// Print a JSON report of sessions and compaction savings in the
+    /// session-observations-v1 format AI Charts reads.
     Report {
         /// Strip the `gobstopper` extension key so the output parses
         /// strictly against aicharts' session-observations-v1 schema.
@@ -410,12 +420,15 @@ enum Cmd {
         #[command(subcommand)]
         command: proxy::ProxyCmd,
     },
-    /// Inspect durable native operation metadata and unresolved dispatches.
-    /// Does not clear uncertainty, retry a provider call, or create state.
+    /// Show recorded native compaction operations and any whose outcome is
+    /// unknown. Changes nothing and calls no provider.
     NativeOperations,
-    /// Reconcile only an operation with already recorded matching Codex terminal
-    /// evidence. Does not infer completion or retry a provider call.
-    NativeReconcile { operation_sha256: String },
+    /// Close a native operation that Codex has already recorded as finished.
+    /// Never guesses an outcome or retries a provider call.
+    NativeReconcile {
+        /// The operation's SHA-256, from native-operations.
+        operation_sha256: String,
+    },
     /// Poll for sessions over threshold and prepare verified compacted forks.
     Watch {
         /// Poll interval in seconds.
@@ -463,8 +476,8 @@ enum Cmd {
         #[arg(long)]
         delete: bool,
     },
-    /// Pure policy check for integrators (oompa): give the numbers, get
-    /// the action. Reads no transcript files.
+    /// Return the compaction action for context numbers you supply, for
+    /// tools that embed Gobstopper. Reads no transcript unless --session.
     PolicyCheck {
         #[arg(long)]
         provider: String,
@@ -495,6 +508,7 @@ enum Cmd {
     Presets,
     /// Print the economics model behind gobstopper's defaults.
     Explain,
+    /// Check or inspect a strategy plugin manifest.
     Plugin {
         #[command(subcommand)]
         command: PluginCmd,
@@ -503,15 +517,22 @@ enum Cmd {
 
 #[derive(Subcommand)]
 enum PluginCmd {
+    /// Validate a plugin manifest without running the plugin.
     Check {
+        /// Path to the plugin's manifest.
         manifest: PathBuf,
     },
+    /// Run a trusted plugin against one transcript and print its findings.
     Inspect {
+        /// Path to the plugin's manifest.
         manifest: PathBuf,
+        /// SHA-256 you trust for the plugin bundle.
         #[arg(long)]
         trusted_sha256: String,
+        /// Provider of the source transcript (codex or claude_code).
         #[arg(long)]
         provider: String,
+        /// Transcript file to inspect.
         #[arg(long)]
         source: PathBuf,
     },
@@ -1900,7 +1921,7 @@ fn display_prefix(value: &str, max_bytes: usize) -> &str {
     &value[..end]
 }
 
-fn cmd_detect(cli: &Cli, all: bool, json: bool) -> Result<()> {
+fn cmd_detect(cli: &Cli, all: bool, limit: usize, json: bool) -> Result<()> {
     if json {
         println!("{}", serde_json::to_string_pretty(&session_rows(cli, all))?);
         return Ok(());
@@ -1911,11 +1932,21 @@ fn cmd_detect(cli: &Cli, all: bool, json: bool) -> Result<()> {
         detect::default_max_age_secs()
     };
     let sessions = detect::discover(&roots(cli), max_age);
+    if sessions.is_empty() {
+        let window = if all { "" } else { " in the last 7 days" };
+        println!("No Claude Code or Codex sessions found{window}.");
+        if !all {
+            ux::next_hint("gobstopper detect --all");
+        }
+        return Ok(());
+    }
+    let total = sessions.len();
+    let shown = if limit == 0 { total } else { limit.min(total) };
     println!(
         "{:<12} {:<38} {:<6} {:>12} {:>14}  PATH",
         "PROVIDER", "SESSION", "STATE", "CTX TOKENS", "LIFETIME IN"
     );
-    for d in sessions {
+    for d in sessions.into_iter().take(shown) {
         println!(
             "{:<12} {:<38} {:<6} {:>12} {:>14}  {}",
             d.handle.provider.as_str(),
@@ -1933,7 +1964,36 @@ fn cmd_detect(cli: &Cli, all: bool, json: bool) -> Result<()> {
             d.handle.path.display(),
         );
     }
+    if shown < total {
+        println!(
+            "\nShowing the newest {shown} of {} sessions · --limit 0 shows all",
+            thousands(total as u64)
+        );
+    }
     Ok(())
+}
+
+/// A plain-words reason for a local file error.
+fn io_reason(error: &std::io::Error) -> &'static str {
+    match error.kind() {
+        std::io::ErrorKind::PermissionDenied => "permission denied",
+        std::io::ErrorKind::InvalidData => "it has an unreadable line",
+        std::io::ErrorKind::NotFound => "it doesn't exist",
+        std::io::ErrorKind::FileTooLarge => "it is larger than gobstopper reads",
+        _ => "the file couldn't be read",
+    }
+}
+
+/// `22412649386` → `22,412,649,386`.
+fn thousands(value: u64) -> String {
+    let digits = value.to_string();
+    let mut groups: Vec<&str> = digits
+        .as_bytes()
+        .rchunks(3)
+        .map(|chunk| std::str::from_utf8(chunk).unwrap_or_default())
+        .collect();
+    groups.reverse();
+    groups.join(",")
 }
 
 fn cmd_verify(cli: &Cli, cfg: &config::Config, session: &str, json: bool) -> Result<()> {
@@ -2637,7 +2697,19 @@ fn cmd_events(
     let mut events = match gobstopper_core::events::read_events(&path) {
         Ok(events) => events,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
-        Err(_) => bail!("compaction telemetry unavailable"),
+        Err(error) => {
+            return Err(ux::guided(
+                format!(
+                    "Can't read the compaction log {}: {}",
+                    path.display(),
+                    io_reason(&error)
+                ),
+                format!(
+                    "move {} aside and gobstopper starts a new log",
+                    path.display()
+                ),
+            ))
+        }
     };
     if let Some(prefix) = session {
         events.retain(|e| e.session_id.starts_with(prefix));
@@ -4963,7 +5035,10 @@ fn cmd_watch(
 fn cmd_auth(provider: &str, status: bool, delete: bool) -> Result<()> {
     match provider {
         "jev" | "typesafe" => auth_jev(status, delete),
-        other => bail!("unknown provider '{other}' (supported: jev)"),
+        other => Err(ux::guided(
+            format!("Gobstopper stores keys for jev only, not \"{other}\""),
+            "gobstopper auth jev",
+        )),
     }
 }
 
@@ -4982,8 +5057,25 @@ fn auth_jev(status: bool, delete: bool) -> Result<()> {
         return Ok(());
     }
     if status {
-        let Some((key, source)) = jev::resolve_key() else {
-            println!("jev: no key configured (set TYPESAFE_API_KEY or run `gobstopper auth jev`)");
+        // One keychain read: a denied read must not prompt twice.
+        let resolved = match jev::env_key() {
+            Some(found) => Some(found),
+            None => match secrets::jev_key_state() {
+                secrets::KeyState::Stored(key) => Some((key, jev::KeySource::Keychain)),
+                secrets::KeyState::Denied => {
+                    return Err(ux::guided_detail(
+                        "keychain-denied",
+                        "A TypeSafe key is stored in your keychain, but macOS didn't let gobstopper read it",
+                        "Run it again and choose Always Allow when macOS asks.",
+                        "gobstopper auth jev --status",
+                    ))
+                }
+                secrets::KeyState::Absent | secrets::KeyState::Unavailable => None,
+            },
+        };
+        let Some((key, source)) = resolved else {
+            println!("jev: no key configured");
+            ux::next_hint("pbpaste | gobstopper auth jev");
             return Ok(());
         };
         println!(
@@ -5002,28 +5094,40 @@ fn auth_jev(status: bool, delete: bool) -> Result<()> {
             "authentication input must be valid UTF-8 with EOF within 64 KiB and five seconds",
         )?;
         buf.trim().to_string()
-    } else if let Some(k) = secrets::clipboard_secret() {
-        println!("found a plausible key on the clipboard");
-        print!("store it in the OS keychain? [y/N] ");
-        std::io::stdout().flush()?;
+    } else {
+        // Ask before touching the clipboard: reading it is the user's call.
+        eprint!("Read your TypeSafe key from the clipboard and store it in your keychain? [y/N] ");
+        std::io::stderr().flush()?;
         let mut ans = String::new();
         std::io::stdin().lock().read_line(&mut ans)?;
         if !matches!(ans.trim().to_lowercase().as_str(), "y" | "yes") {
-            println!("aborted");
+            eprintln!("Nothing was read or stored.");
+            ux::next_hint("pbpaste | gobstopper auth jev");
             return Ok(());
         }
-        k
-    } else {
-        bail!("no key on stdin or clipboard — pipe it in: `pbpaste | gobstopper auth jev`");
+        secrets::clipboard_secret().ok_or_else(|| {
+            ux::guided(
+                "The clipboard doesn't hold anything that looks like an API key",
+                "pbpaste | gobstopper auth jev",
+            )
+        })?
     };
     if !(12..=512).contains(&key.chars().count()) || key.contains(char::is_whitespace) {
-        bail!(
-            "that doesn't look like an API key ({} chars)",
-            key.chars().count()
-        );
+        return Err(ux::guided(
+            format!(
+                "That doesn't look like an API key ({} characters, expected 12 to 512 with no spaces)",
+                key.chars().count()
+            ),
+            "pbpaste | gobstopper auth jev",
+        ));
     }
     match jev::health_check(&key, &endpoint) {
-        jev::Health::Rejected => bail!("the API rejected that key (401/403) — not stored"),
+        jev::Health::Rejected => {
+            return Err(ux::guided(
+                "TypeSafe rejected that key (HTTP 401 or 403), so it wasn't stored",
+                "pbpaste | gobstopper auth jev",
+            ))
+        }
         health => {
             secrets::store_jev_key(&key)?;
             match health {
@@ -5251,12 +5355,76 @@ fn cmd_plugin(command: &PluginCmd) -> Result<()> {
     Ok(())
 }
 
-fn main() -> Result<()> {
-    let cli = Cli::parse();
+fn main() -> std::process::ExitCode {
+    let args: Vec<String> = std::env::args().collect();
+    let words: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
+    if matches!(
+        words.as_slice(),
+        ["help", "advanced"] | ["advanced", "--help"]
+    ) {
+        ux::write_stdout(ux::ADVANCED);
+        return std::process::ExitCode::SUCCESS;
+    }
+    let cli = match Cli::try_parse_from(&args) {
+        Ok(cli) => cli,
+        Err(error) => {
+            let code = ux::clap_failure(error, &<Cli as clap::CommandFactory>::command(), &args);
+            return std::process::ExitCode::from(code as u8);
+        }
+    };
+    let json = args.iter().any(|arg| arg == "--json");
+    // Read-only listings end quietly when their reader goes away
+    // (`detect | head`). Everything else keeps SIGPIPE ignored: servers must
+    // outlive a client that hangs up, and commands that drive a child
+    // process must see a dead pipe as an error and clean up.
+    if matches!(
+        cli.command,
+        None | Some(
+            Cmd::Detect { .. }
+                | Cmd::Verify { .. }
+                | Cmd::Report { .. }
+                | Cmd::Events { .. }
+                | Cmd::Vault { .. }
+                | Cmd::History { .. }
+                | Cmd::Show { .. }
+                | Cmd::Recall { .. }
+                | Cmd::Diff { .. }
+                | Cmd::PolicyCheck { .. }
+                | Cmd::Presets
+                | Cmd::Explain
+        )
+    ) {
+        ux::restore_sigpipe();
+    }
+    let protocol = matches!(
+        cli.command,
+        Some(
+            Cmd::Mcp { .. }
+                | Cmd::Hook { .. }
+                | Cmd::Watch { .. }
+                | Cmd::Proxy {
+                    command: proxy::ProxyCmd::Serve { .. } | proxy::ProxyCmd::Run { .. }
+                }
+        )
+    );
+    match run(cli) {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            ux::report_error(&error, json, protocol);
+            std::process::ExitCode::FAILURE
+        }
+    }
+}
+
+fn run(cli: Cli) -> Result<()> {
+    let Some(command) = &cli.command else {
+        ux::write_stdout(&ux::bare_text());
+        return Ok(());
+    };
     let cfg = config::load()?;
-    match &cli.command {
+    match command {
         Cmd::Plugin { command } => cmd_plugin(command),
-        Cmd::Detect { all, json } => cmd_detect(&cli, *all, *json),
+        Cmd::Detect { all, limit, json } => cmd_detect(&cli, *all, *limit, *json),
         Cmd::Plan {
             session,
             strategy,
@@ -5577,6 +5745,12 @@ fn main() -> Result<()> {
         ),
         Cmd::Export { session } => cmd_export(&cli, &cfg, session),
         Cmd::Presets => {
+            if cfg.presets.is_empty() {
+                println!("No presets in {}.", config::config_path().display());
+                ux::next_hint(
+                    "copy a [presets.<name>] table from config.example.toml into that file",
+                );
+            }
             for name in cfg.presets.keys() {
                 println!("{name}");
             }
@@ -5597,6 +5771,24 @@ fn _assert_error_surface(e: AdapterError) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn root_help_and_help_advanced_list_every_visible_command() {
+        use clap::CommandFactory as _;
+        let listed = format!("{}{}", super::ux::ROOT_HELP, super::ux::ADVANCED);
+        for command in super::Cli::command().get_subcommands() {
+            if command.is_hide_set() {
+                continue;
+            }
+            let name = command.get_name();
+            assert!(
+                listed
+                    .lines()
+                    .any(|line| line.split_whitespace().next() == Some(name)),
+                "{name} is missing from the grouped help"
+            );
+        }
+    }
+
     #[test]
     fn benchmark_csv_quotes_record_delimiters() {
         assert_eq!(super::csv_field("ordinary"), "ordinary");
