@@ -2425,6 +2425,13 @@
       ]
     },
     {
+      "path": "scripts/release_notes.py",
+      "effects": [
+        "inspect",
+        "output"
+      ]
+    },
+    {
       "path": "scripts/registered-study.py",
       "effects": [
         "offline-study-script"
