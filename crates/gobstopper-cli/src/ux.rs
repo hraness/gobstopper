@@ -280,20 +280,33 @@ pub(crate) fn render_json_error(error: &anyhow::Error) -> serde_json::Value {
     serde_json::json!({"ok": false, "error": {"code": code, "message": message, "next": next}})
 }
 
-/// Report a failed command. `--json` or an agent reader gets the error
-/// object on stdout; everyone else gets the human lines on stderr.
-pub(crate) fn report_error(error: &anyhow::Error, json: bool) {
-    if json || audience() == Audience::Agent {
-        println!("{}", render_json_error(error));
+/// Report a failed command on stderr. A failed command never writes to
+/// stdout, so a `--json` reader never mistakes an error for a result.
+/// `--json` or an agent reader gets the error as one JSON object; everyone
+/// else, and every command whose output belongs to a protocol peer (`mcp`,
+/// `hook`, `watch`, `proxy serve|run`), gets the human lines.
+pub(crate) fn report_error(error: &anyhow::Error, json: bool, protocol: bool) {
+    if !protocol && (json || audience() == Audience::Agent) {
+        eprintln!("{}", render_json_error(error));
     } else {
         eprintln!("{}", render_error(error, Style::stderr()));
     }
 }
 
+/// Write to stdout, ignoring a closed pipe: help and usage text may be
+/// piped to `head` before gobstopper knows which command runs.
+pub(crate) fn write_stdout(text: &str) {
+    use std::io::Write as _;
+    let mut stdout = std::io::stdout().lock();
+    let _ = stdout.write_all(text.as_bytes());
+    let _ = stdout.flush();
+}
+
 /// `gobstopper detect | head -1` ends quietly: restore the default SIGPIPE
 /// action so a closed pipe stops the process instead of panicking inside
-/// `println!`. Long-running servers keep Rust's ignored SIGPIPE, because a
-/// client that hangs up must not stop them.
+/// `println!`. Only read-only listing commands do this; servers and
+/// commands that talk to child processes keep Rust's ignored SIGPIPE, so a
+/// peer that hangs up is an error they handle, not a silent exit.
 pub(crate) fn restore_sigpipe() {
     #[cfg(unix)]
     // SAFETY: called once at the top of `main`, before any thread starts;
@@ -343,7 +356,7 @@ pub(crate) fn clap_failure(error: clap::Error, root: &clap::Command, args: &[Str
         | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
             // A group such as `gobstopper proxy` with no subcommand shows
             // its help as an answer, not an error.
-            print!("{}", error.render());
+            write_stdout(&error.render().to_string());
             return 0;
         }
         _ => {}
@@ -392,7 +405,7 @@ pub(crate) fn clap_failure(error: clap::Error, root: &clap::Command, args: &[Str
         }
     };
     if audience() == Audience::Agent {
-        println!(
+        eprintln!(
             "{}",
             serde_json::json!({"ok": false, "error": {"code": "usage", "message": message, "next": help}})
         );

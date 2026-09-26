@@ -153,13 +153,24 @@ pub fn install(serve_args: &[String], port: u16, replace: bool, print: bool) -> 
             "gobstopper proxy serve",
         ));
     }
-    say_notice(port);
     if path.exists() {
         // Replacing: stop the old agent first. It may not be loaded.
         let _ = launchctl()
             .args(["bootout", &format!("{}/{LABEL}", domain())])
             .output();
+        wait_for(|| !crate::proxy::is_answering(port));
     }
+    if crate::proxy::is_answering(port) {
+        // A proxy started by hand holds the port; the agent's proxy would
+        // fail to bind and restart forever.
+        return Err(ux::guided(
+            format!(
+                "A gobstopper proxy is already running on 127.0.0.1:{port}. Stop it first, or install on another port"
+            ),
+            format!("gobstopper proxy install --port {}", port.wrapping_add(1)),
+        ));
+    }
+    say_notice(port);
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("can't create {}", parent.display()))?;
@@ -185,13 +196,7 @@ pub fn install(serve_args: &[String], port: u16, replace: bool, print: bool) -> 
         ));
     }
     let style = Style::stdout();
-    let answering = (0..30).any(|_| {
-        if crate::proxy::is_answering(port) {
-            return true;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        false
-    });
+    let answering = wait_for(|| crate::proxy::is_answering(port));
     if answering {
         println!(
             "{} The proxy is running on http://127.0.0.1:{port} and starts at login.",
@@ -208,6 +213,17 @@ pub fn install(serve_args: &[String], port: u16, replace: bool, print: bool) -> 
         "export ANTHROPIC_BASE_URL=http://127.0.0.1:{port} in your shell profile, then start Claude Code"
     ));
     Ok(())
+}
+
+/// Poll `ready` for up to three seconds.
+fn wait_for(ready: impl Fn() -> bool) -> bool {
+    (0..30).any(|_| {
+        if ready() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        false
+    })
 }
 
 /// `gobstopper proxy uninstall`: stop the agent and remove its file.

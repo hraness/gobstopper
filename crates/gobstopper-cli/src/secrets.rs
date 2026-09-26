@@ -71,13 +71,22 @@ pub fn jev_key_state() -> KeyState {
         Ok(key) if !key.trim().is_empty() => KeyState::Stored(key),
         Ok(_) | Err(keyring::Error::NoEntry) => KeyState::Absent,
         Err(keyring::Error::NoStorageAccess(_)) => KeyState::Unavailable,
-        Err(_) => KeyState::Denied,
+        // Only macOS asks the user; elsewhere a failure means the store
+        // (Secret Service, D-Bus) isn't reachable.
+        Err(_) if cfg!(target_os = "macos") => KeyState::Denied,
+        Err(_) => KeyState::Unavailable,
     }
 }
 
 /// The recovery copy for a keychain failure (SPEC keychain templates).
 fn keychain_error(action: &str, error: &keyring::Error) -> anyhow::Error {
     match error {
+        _ if !cfg!(target_os = "macos") => crate::ux::guided_detail(
+            "keychain-unavailable",
+            format!("Gobstopper can't {action}: no keychain is available here"),
+            "Set TYPESAFE_API_KEY in your environment instead.",
+            "export TYPESAFE_API_KEY=<your key>",
+        ),
         keyring::Error::NoStorageAccess(_) => crate::ux::guided_detail(
             "keychain-unavailable",
             format!("Gobstopper can't {action}: no keychain is available here"),

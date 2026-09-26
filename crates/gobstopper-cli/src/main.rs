@@ -5057,20 +5057,26 @@ fn auth_jev(status: bool, delete: bool) -> Result<()> {
         return Ok(());
     }
     if status {
-        let Some((key, source)) = jev::resolve_key() else {
-            return match secrets::jev_key_state() {
-                secrets::KeyState::Denied => Err(ux::guided_detail(
-                    "keychain-denied",
-                    "A TypeSafe key is stored in your keychain, but macOS didn't let gobstopper read it",
-                    "Run it again and choose Always Allow when macOS asks.",
-                    "gobstopper auth jev --status",
-                )),
-                _ => {
-                    println!("jev: no key configured");
-                    ux::next_hint("pbpaste | gobstopper auth jev");
-                    Ok(())
+        // One keychain read: a denied read must not prompt twice.
+        let resolved = match jev::env_key() {
+            Some(found) => Some(found),
+            None => match secrets::jev_key_state() {
+                secrets::KeyState::Stored(key) => Some((key, jev::KeySource::Keychain)),
+                secrets::KeyState::Denied => {
+                    return Err(ux::guided_detail(
+                        "keychain-denied",
+                        "A TypeSafe key is stored in your keychain, but macOS didn't let gobstopper read it",
+                        "Run it again and choose Always Allow when macOS asks.",
+                        "gobstopper auth jev --status",
+                    ))
                 }
-            };
+                secrets::KeyState::Absent | secrets::KeyState::Unavailable => None,
+            },
+        };
+        let Some((key, source)) = resolved else {
+            println!("jev: no key configured");
+            ux::next_hint("pbpaste | gobstopper auth jev");
+            return Ok(());
         };
         println!(
             "jev: {} key configured — {}",
@@ -5352,19 +5358,11 @@ fn cmd_plugin(command: &PluginCmd) -> Result<()> {
 fn main() -> std::process::ExitCode {
     let args: Vec<String> = std::env::args().collect();
     let words: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
-    // Servers keep SIGPIPE ignored so a client hanging up can't stop them;
-    // everything else ends quietly when its reader goes away.
-    if !matches!(
-        words.first().copied(),
-        Some("proxy" | "mcp" | "watch" | "hook")
-    ) {
-        ux::restore_sigpipe();
-    }
     if matches!(
         words.as_slice(),
         ["help", "advanced"] | ["advanced", "--help"]
     ) {
-        print!("{}", ux::ADVANCED);
+        ux::write_stdout(ux::ADVANCED);
         return std::process::ExitCode::SUCCESS;
     }
     let cli = match Cli::try_parse_from(&args) {
@@ -5375,10 +5373,44 @@ fn main() -> std::process::ExitCode {
         }
     };
     let json = args.iter().any(|arg| arg == "--json");
+    // Read-only listings end quietly when their reader goes away
+    // (`detect | head`). Everything else keeps SIGPIPE ignored: servers must
+    // outlive a client that hangs up, and commands that drive a child
+    // process must see a dead pipe as an error and clean up.
+    if matches!(
+        cli.command,
+        None | Some(
+            Cmd::Detect { .. }
+                | Cmd::Verify { .. }
+                | Cmd::Report { .. }
+                | Cmd::Events { .. }
+                | Cmd::Vault { .. }
+                | Cmd::History { .. }
+                | Cmd::Show { .. }
+                | Cmd::Recall { .. }
+                | Cmd::Diff { .. }
+                | Cmd::PolicyCheck { .. }
+                | Cmd::Presets
+                | Cmd::Explain
+        )
+    ) {
+        ux::restore_sigpipe();
+    }
+    let protocol = matches!(
+        cli.command,
+        Some(
+            Cmd::Mcp { .. }
+                | Cmd::Hook { .. }
+                | Cmd::Watch { .. }
+                | Cmd::Proxy {
+                    command: proxy::ProxyCmd::Serve { .. } | proxy::ProxyCmd::Run { .. }
+                }
+        )
+    );
     match run(cli) {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
-            ux::report_error(&error, json);
+            ux::report_error(&error, json, protocol);
             std::process::ExitCode::FAILURE
         }
     }
@@ -5386,7 +5418,7 @@ fn main() -> std::process::ExitCode {
 
 fn run(cli: Cli) -> Result<()> {
     let Some(command) = &cli.command else {
-        print!("{}", ux::bare_text());
+        ux::write_stdout(&ux::bare_text());
         return Ok(());
     };
     let cfg = config::load()?;

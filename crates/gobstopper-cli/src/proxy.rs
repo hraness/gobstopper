@@ -1518,15 +1518,39 @@ fn relay(client: &mut TcpStream, mut upstream: Upstream, method: &str) -> Result
 /// The `serve` settings given to `proxy install`, as typed: everything after
 /// `install` except the flags that only `install` reads.
 fn install_serve_args() -> Vec<String> {
-    let args: Vec<String> = std::env::args().collect();
-    let Some(at) = args.iter().position(|arg| arg == "install") else {
+    serve_args_after_install(&std::env::args().collect::<Vec<_>>())
+}
+
+/// Everything after `proxy install` except `--replace`, `--print`, and the
+/// global session-folder options, which `serve` never reads and which could
+/// hold paths relative to this shell rather than launchd's `/`.
+fn serve_args_after_install(args: &[String]) -> Vec<String> {
+    const GLOBAL: [&str; 3] = ["--codex-home", "--claude-home", "--codex-bin"];
+    let Some(at) = args
+        .windows(2)
+        .position(|pair| pair[0] == "proxy" && pair[1] == "install")
+    else {
         return Vec::new();
     };
-    args[at + 1..]
-        .iter()
-        .filter(|arg| !matches!(arg.as_str(), "--replace" | "--print"))
-        .cloned()
-        .collect()
+    let mut out = Vec::new();
+    let mut rest = args[at + 2..].iter();
+    while let Some(arg) = rest.next() {
+        if matches!(arg.as_str(), "--replace" | "--print") {
+            continue;
+        }
+        if GLOBAL.contains(&arg.as_str()) {
+            rest.next();
+            continue;
+        }
+        if GLOBAL
+            .iter()
+            .any(|flag| arg.starts_with(&format!("{flag}=")))
+        {
+            continue;
+        }
+        out.push(arg.clone());
+    }
+    out
 }
 
 fn is_refused(error: &anyhow::Error) -> bool {
@@ -1582,6 +1606,31 @@ fn fetch_status(port: u16) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_keeps_serve_settings_and_drops_install_and_global_options() {
+        let args: Vec<String> = [
+            "gobstopper",
+            "--codex-home",
+            "./codex",
+            "proxy",
+            "install",
+            "--threshold",
+            "256000",
+            "--replace",
+            "--claude-home",
+            "rel/claude",
+            "--codex-bin=./codex",
+            "--port",
+            "8261",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            serve_args_after_install(&args),
+            ["--threshold", "256000", "--port", "8261"]
+        );
+    }
 
     #[test]
     fn recognizes_provider_length_errors_only() {

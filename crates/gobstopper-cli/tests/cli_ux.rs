@@ -162,7 +162,8 @@ fn usage_errors_name_the_input_and_the_help_to_read() {
     );
     let agent = sandbox.run(&["detcet"], &[("CLAUDECODE", "1")]);
     assert_eq!(agent.status.code(), Some(2));
-    let value: serde_json::Value = serde_json::from_slice(&agent.stdout).unwrap();
+    assert!(agent.stdout.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&agent.stderr).unwrap();
     assert_eq!(value["ok"], false);
     assert_eq!(value["error"]["code"], "usage");
     assert_eq!(value["error"]["next"], "gobstopper --help");
@@ -229,7 +230,8 @@ fn proxy_status_says_how_to_start_the_proxy() {
         format!("✗ No proxy is running on 127.0.0.1:{port}.\n→ gobstopper proxy install\n")
     );
     let json = sandbox.run(&["proxy", "status", "--port", &port, "--json"], &[]);
-    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert!(json.stdout.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&json.stderr).unwrap();
     assert_eq!(value["error"]["code"], "proxy-not-running");
     // Installed but not answering: point at the log and a restart.
     let agents = sandbox.home().join("Library/LaunchAgents");
@@ -333,6 +335,27 @@ fn proxy_install_says_what_macos_will_show_then_loads_the_agent() {
     );
     assert_eq!(quiet.status.code(), Some(0));
     assert!(quiet.stderr.is_empty(), "a quiet reader gets no notice");
+
+    // A proxy already on the port (started by hand) blocks a second one.
+    let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let busy_port = busy.local_addr().unwrap().port().to_string();
+    std::thread::spawn(move || {
+        use std::io::{Read, Write};
+        for stream in busy.incoming().flatten() {
+            let mut stream = stream;
+            let mut buffer = [0u8; 1024];
+            let _ = stream.read(&mut buffer);
+            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{}");
+        }
+    });
+    let blocked = sandbox.run(
+        &["proxy", "install", "--port", &busy_port, "--replace"],
+        &env,
+    );
+    assert_eq!(blocked.status.code(), Some(1), "{blocked:?}");
+    assert!(text(&blocked.stderr).starts_with(&format!(
+        "✗ A gobstopper proxy is already running on 127.0.0.1:{busy_port}."
+    )));
 
     let removed = sandbox.run(&["proxy", "uninstall"], &env);
     assert_eq!(removed.status.code(), Some(0));

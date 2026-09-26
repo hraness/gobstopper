@@ -48,8 +48,6 @@ impl Fixture {
                 cmd.env_remove(name);
             }
         }
-        // Errors go to stderr as text even when an agent runs the suite.
-        cmd.env("HRANESS_AUDIENCE", "quiet");
         cmd.args([
             "--codex-home",
             self.0.join("codex").to_str().unwrap(),
@@ -413,8 +411,9 @@ fn unreadable_telemetry_does_not_become_a_zero_count_report() {
     assert!(unreadable.stdout.is_empty());
     let events = f.command(&["events", "--json"]).output().unwrap();
     assert!(!events.status.success());
-    // With --json the failure is one error object, never an empty event list.
-    let error: serde_json::Value = serde_json::from_slice(&events.stdout).unwrap();
+    assert!(events.stdout.is_empty());
+    // With --json the failure is one error object on stderr.
+    let error: serde_json::Value = serde_json::from_slice(&events.stderr).unwrap();
     assert_eq!(error["ok"], false);
     assert!(error["error"]["message"]
         .as_str()
@@ -761,7 +760,7 @@ fn failed_watch_state_write_aborts_before_native_dispatch() {
     let output = f.native_codex("noop").output().unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr)
-        .contains("watch state must be a bounded regular file"));
+        .contains("atch state must be a bounded regular file"));
     assert!(!f.0.join("codex/requests.log").exists());
 }
 

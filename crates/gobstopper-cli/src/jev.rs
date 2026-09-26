@@ -78,6 +78,11 @@ impl KeySource {
 /// Key resolution order: env first (CI and ad-hoc shells keep working),
 /// then the OS keychain written by `gobstopper auth jev`.
 pub fn resolve_key() -> Option<(String, KeySource)> {
+    env_key().or_else(|| crate::secrets::jev_key().map(|k| (k, KeySource::Keychain)))
+}
+
+/// The key from the environment only, without touching the keychain.
+pub fn env_key() -> Option<(String, KeySource)> {
     if let Ok(k) = std::env::var("TYPESAFE_API_KEY") {
         if !k.trim().is_empty() {
             return Some((k, KeySource::EnvTypesafe));
@@ -88,7 +93,7 @@ pub fn resolve_key() -> Option<(String, KeySource)> {
             return Some((k, KeySource::EnvGobstopper));
         }
     }
-    crate::secrets::jev_key().map(|k| (k, KeySource::Keychain))
+    None
 }
 
 const DEFAULT_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
