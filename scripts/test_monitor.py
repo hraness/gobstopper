@@ -234,6 +234,11 @@ elif sys.argv[1:] == ["watch", "--dry-run", "--active-only", "--once", "--eval-b
         raise SystemExit(0)
     print("[dry-run] codex 01a00000-aaa: SECRET_TRANSCRIPT_SENTINEL", file=sys.stderr)
     print("[dry-run] codex 01a00000-ccc: UNRELATED_PRIVATE_PLAN", file=sys.stderr)
+elif sys.argv[1:4] == ["proxy", "status", "--json"]:
+    if os.environ.get("STUB_PROXY_FAILURE"):
+        raise SystemExit(9)
+    print(os.environ.get("STUB_PROXY",
+                         '{"name": "gobstopper-proxy", "requests": 3, "compacted": 1}'))
 else:
     raise SystemExit(9)
 ''')
@@ -412,6 +417,36 @@ else:
         self.assertEqual(observation["sessions"], [])
         with self.assertRaises(monitor.MonitorError):
             monitor.observe(self.binary, self.output, [])
+
+    def test_proxy_probe_is_opt_in_bounded_and_health_checked(self):
+        observation = self.sample()
+        self.assertEqual(observation["proxy"], {"monitored": False, "available": False,
+                                                "error": None})
+        observation = monitor.observe(self.binary, self.output, [A], proxy_port=8260)
+        proxy = observation["proxy"]
+        self.assertTrue(proxy["monitored"])
+        self.assertTrue(proxy["available"])
+        self.assertIsNone(proxy["error"])
+        self.assertEqual(proxy["status"]["name"], "gobstopper-proxy")
+        self.assertEqual(proxy["status"]["compacted"], 1)
+        self.assert_resources(proxy["resources"])
+        # An unreachable or crashing proxy is a real observation error:
+        # clients routed through it would fail without the flag.
+        with patch.dict(os.environ, {"STUB_PROXY_FAILURE": "1"}):
+            proxy = monitor.observe(self.binary, self.output, [A],
+                                    proxy_port=8260)["proxy"]
+        self.assertTrue(proxy["monitored"])
+        self.assertFalse(proxy["available"])
+        self.assertIsNotNone(proxy["error"])
+        self.assertNotIn("status", proxy)
+        # Invalid status output is classified, never retained.
+        with patch.dict(os.environ, {"STUB_PROXY": "not json"}):
+            proxy = monitor.observe(self.binary, self.output, [A],
+                                    proxy_port=8260)["proxy"]
+        self.assertEqual(proxy["error"], "invalid_proxy_status")
+        for bad in (True, 0, 65536, "8260"):
+            with self.assertRaises(monitor.MonitorError):
+                monitor.observe(self.binary, self.output, [A], proxy_port=bad)
 
     def test_unavailable_fields_and_compaction_boundary_are_not_zero_savings(self):
         self.sample()

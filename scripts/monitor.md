@@ -84,6 +84,15 @@ they are not cumulative provider coverage. `native_activation` remains
 watch decision inputs; it differs from the versioned parsed-config digest on
 new event records. Neither digest reveals private configuration strings.
 
+`--proxy PORT` additionally runs `gobstopper proxy status --json --port PORT`
+inside the pass deadline and reports it under `proxy` with the usual command
+shape plus the parsed status counters (no request content). When the flag is
+absent, `proxy` is `{"monitored": false, "available": false, "error": null}`.
+A monitored proxy that is down or fails the probe records an error and fails
+the pass status: clients routed through a dead proxy cannot reach the
+provider. Unparseable status output is classified as `invalid_proxy_status`
+and never retained.
+
 Each command also includes an additive `resources` object with `user_cpu_us`,
 `system_cpu_us`, `minor_page_faults`, `major_page_faults`,
 `voluntary_context_switches`, and `involuntary_context_switches`. CPU durations
