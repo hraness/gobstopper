@@ -12,6 +12,7 @@ When to use this site:
 - Use /methodology for the occupancy model behind the projections and what each strategy does.
 - Use /benchmarks for dated results, cohort sizes, limitations, and aggregate downloads.
 - Use /compare/cliffcompaction to see how Gobstopper and its proxy compare with CliffCompaction, the API-proxy compactor, and what the cliff strategy does.
+- Use /compare/claude-code-compact to see how Gobstopper compares with Claude Code's built-in /compact, which replaces session history with a model-written summary.
 - Use /blog for longer posts on what Gobstopper does and how its archive and edit limits are checked.
 
 ## Pages
@@ -21,6 +22,7 @@ When to use this site:
 - [Gobstopper methodology](https://gobstopper.sh/methodology): the occupancy model, the strategies, and the limits of the published benchmarks.
 - [Gobstopper benchmarks](https://gobstopper.sh/benchmarks): offline replays of 729 archived sessions, request-proxy replays and one afternoon of live proxy counters, a synthetic snapshot-recovery study, and historical single-session resume trials.
 - [Gobstopper compared with CliffCompaction](https://gobstopper.sh/compare/cliffcompaction): where each tool runs, what each keeps and drops, what evidence each publishes, gobstopper proxy, which ports CliffCompaction's summary rule to the same three API dialects, and the cliff strategy for transcript copies.
+- [Gobstopper compared with Claude Code /compact](https://gobstopper.sh/compare/claude-code-compact): preview and undo versus an in-place model-written summary, what happens to the original bytes, and how gobstopper proxy keeps a live session under its auto-compaction trigger.
 
 ## Blog
 

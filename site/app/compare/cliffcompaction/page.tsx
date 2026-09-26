@@ -197,7 +197,9 @@ keep_recent_tool_outputs = 0`}</code></pre>
             <code>proxy replay</code> to see what the proxy would have sent
             for a recorded Claude Code or Codex session. Use Gobstopper&apos;s file commands to
             compare strategies on frozen input, keep the exact source, and
-            resume a smaller copy. Run one proxy per client.
+            resume a smaller copy. Run one proxy per client. For the built-in
+            alternative, see{" "}
+            <a href="/compare/claude-code-compact">Gobstopper compared with Claude Code /compact</a>.
           </p>
 
           <h2>Questions</h2>

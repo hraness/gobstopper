@@ -920,6 +920,45 @@ comparison page at
 [gobstopper.sh/compare/cliffcompaction](https://gobstopper.sh/compare/cliffcompaction)
 carries the same table.
 
+## How Gobstopper compares with Claude Code /compact
+
+Claude Code ships its own compaction. `/compact` sends the conversation in a
+summarization request carrying the same system prompt, tools, and history,
+then replaces the in-context history with the summary the model writes;
+optional focus instructions steer it. Claude Code also compacts automatically
+as the context nears the model's limit, and `/autocompact` sets how full the
+window gets first. The session transcript file keeps the original messages,
+and `/rewind` can restore the conversation to an earlier checkpoint while its
+snapshots remain, but nothing previews what the summary will keep or lists
+what it dropped. Anthropic's [session-management
+guide](https://claude.com/blog/using-claude-code-session-management-and-1m-context)
+calls the trade "lossy".
+
+Gobstopper previews the cut on frozen bytes, writes a separate compacted copy
+under a fresh session ID, and keeps the exact source and candidate bytes in a
+content-addressed local vault:
+
+| | Claude Code /compact | Gobstopper |
+|---|---|---|
+| What it changes | The running session's in-context history, replaced by a summary the model writes | A separate copy of a saved Claude Code or Codex session file; the source is never changed. `gobstopper proxy` compacts each outgoing request and leaves session files alone |
+| Who writes the summary | The model, in a request carrying the same system prompt, tools, and history plus a summarization instruction; `/compact` focus text steers it | No model by default: built-in strategies drop or stub stale tool results by local rules, and `structured` and `compacted` add a metadata state card |
+| Seeing the cut first | No preview; the summary is written and applied in one step, and you read what it kept afterward | `gobstopper plan`, `eval`, and `diff` show each strategy's cut on the same frozen bytes before `apply` writes anything |
+| When it runs | On demand, or automatically as the context nears the model's limit; `/autocompact` sets how full the window gets first | On demand over saved sessions; `gobstopper proxy` compacts each request over a threshold you choose, so Claude Code's own auto-compaction does not reach its trigger |
+| Undo | `/rewind` returns the conversation to an earlier checkpoint; file snapshots cover the 100 most recent checkpoints and are swept about 30 days after the session last saved one | `gobstopper undo` restores a vaulted snapshot into a new fork; the source file is never rewritten |
+| What holds the originals | The session's own transcript file; Claude Code documents that summarizing leaves the original messages in the transcript | A content-addressed local vault stores the exact source and candidate bytes before a copy publishes; `search-snapshot` and `read-snapshot` return archived records |
+| Providers covered | Claude Code | Claude Code and Codex session files; the proxy covers any client that speaks Anthropic Messages, OpenAI Responses, or OpenAI Chat Completions with a custom provider address |
+| Price | Built into Claude Code; the summarization request consumes usage like any other model call | Free and open-source (MIT or Apache-2.0); the built-in strategies and the proxy make no model calls |
+
+The two work at different layers. `/compact` shrinks the live session's
+context in place. `gobstopper apply` writes the compacted copy as a new fork
+and never touches the source, and resuming a copy with a live provider
+requires separate compatibility testing. For a running session, `gobstopper
+proxy` compacts each request over the threshold so Claude Code's
+auto-compaction does not reach its trigger; `/compact` stays available either
+way. The comparison page at
+[gobstopper.sh/compare/claude-code-compact](https://gobstopper.sh/compare/claude-code-compact)
+carries the same table.
+
 ## Integrating with a session runtime
 
 A program that runs agent sessions can ask Gobstopper what to do without
