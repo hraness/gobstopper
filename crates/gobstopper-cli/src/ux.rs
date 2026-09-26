@@ -471,6 +471,7 @@ Sessions and snapshots
 Setup
   watch             Prepare compacted copies as sessions grow
   auth              Store or check the TypeSafe key for the jev scorer
+  apple             Set up and check Apple's on-device model for scoring
   mcp               Let an agent inspect sessions and snapshots
   presets           List the presets in your config
   explain           Show the cost model behind the defaults
