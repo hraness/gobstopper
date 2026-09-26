@@ -48,6 +48,8 @@ impl Fixture {
                 cmd.env_remove(name);
             }
         }
+        // Errors go to stderr as text even when an agent runs the suite.
+        cmd.env("HRANESS_AUDIENCE", "quiet");
         cmd.args([
             "--codex-home",
             self.0.join("codex").to_str().unwrap(),
@@ -411,8 +413,17 @@ fn unreadable_telemetry_does_not_become_a_zero_count_report() {
     assert!(unreadable.stdout.is_empty());
     let events = f.command(&["events", "--json"]).output().unwrap();
     assert!(!events.status.success());
-    assert!(events.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&events.stderr).contains("compaction telemetry unavailable"));
+    // With --json the failure is one error object, never an empty event list.
+    let error: serde_json::Value = serde_json::from_slice(&events.stdout).unwrap();
+    assert_eq!(error["ok"], false);
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("Can't read the compaction log "));
+    assert!(error["error"]["next"]
+        .as_str()
+        .unwrap()
+        .contains("events.jsonl aside"));
 }
 
 #[test]

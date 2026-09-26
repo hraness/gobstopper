@@ -14,7 +14,8 @@ Tim Dettmers. `gobstopper proxy` is a Rust port of it for the three dialects
 coding agents use: Anthropic Messages (Claude Code, opencode, Crush), OpenAI
 Responses (Codex), and OpenAI Chat Completions (opencode, Crush, Aider,
 Goose, and other OpenAI-compatible clients). Run `gobstopper proxy run --
-claude` to try it on one session, or see
+claude` to try it on one session, `gobstopper proxy install` to start it at
+login, or see
 [Compact live coding-agent requests](#compact-live-coding-agent-requests).
 
 Gobstopper also works on saved Claude Code and Codex session files. Preview a
@@ -177,13 +178,15 @@ below the point where the client compacts on its own, including any `claude
 ```sh
 gobstopper proxy run -- claude            # one session through a temporary proxy
 gobstopper proxy serve                    # background proxy on http://127.0.0.1:8260
+gobstopper proxy install                  # macOS: start that proxy at login (LaunchAgent)
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8260
 gobstopper proxy replay <session>         # what the proxy would have sent; calls no provider
 gobstopper proxy status                   # counters and estimated-token totals, this run and all time
 ```
 
 See [docs/proxy.md](docs/proxy.md) for per-agent setup (Claude Code, Codex,
-opencode, Crush, Aider, Goose), a macOS LaunchAgent, and every setting.
+opencode, Crush, Aider, Goose), `proxy install` and `proxy uninstall`, and
+every setting.
 Flags: `--threshold` (keep it below the client's auto-compaction point),
 `--threshold-1m`, `--keep-recent`, `--keep-tail-percent`,
 `--result-max-chars`, `--drop-thinking`, `--shadow` (log what would change

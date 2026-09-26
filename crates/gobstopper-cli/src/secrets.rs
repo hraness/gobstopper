@@ -45,28 +45,75 @@ pub(crate) fn configure_curl_bearer(command: &mut Command, key: &str) -> anyhow:
 /// store is unavailable (headless Linux without Secret Service, locked
 /// keychain) — callers fall back to env keys or skip the feature.
 pub fn jev_key() -> Option<String> {
-    let entry = keyring::Entry::new(JEV_SERVICE, JEV_ACCOUNT).ok()?;
-    entry.get_password().ok().filter(|k| !k.trim().is_empty())
+    match jev_key_state() {
+        KeyState::Stored(key) => Some(key),
+        _ => None,
+    }
+}
+
+/// What the credential store says about the stored key, so a denied read
+/// is never reported as "no key".
+pub enum KeyState {
+    Stored(String),
+    Absent,
+    /// The item exists but macOS refused access (denied, cancelled, or the
+    /// keychain is locked).
+    Denied,
+    /// No credential store is reachable here.
+    Unavailable,
+}
+
+pub fn jev_key_state() -> KeyState {
+    let Ok(entry) = keyring::Entry::new(JEV_SERVICE, JEV_ACCOUNT) else {
+        return KeyState::Unavailable;
+    };
+    match entry.get_password() {
+        Ok(key) if !key.trim().is_empty() => KeyState::Stored(key),
+        Ok(_) | Err(keyring::Error::NoEntry) => KeyState::Absent,
+        Err(keyring::Error::NoStorageAccess(_)) => KeyState::Unavailable,
+        Err(_) => KeyState::Denied,
+    }
+}
+
+/// The recovery copy for a keychain failure (SPEC keychain templates).
+fn keychain_error(action: &str, error: &keyring::Error) -> anyhow::Error {
+    match error {
+        keyring::Error::NoStorageAccess(_) => crate::ux::guided_detail(
+            "keychain-unavailable",
+            format!("Gobstopper can't {action}: no keychain is available here"),
+            "Set TYPESAFE_API_KEY in your environment instead.",
+            "export TYPESAFE_API_KEY=<your key>",
+        ),
+        _ => crate::ux::guided_detail(
+            "keychain-denied",
+            format!("Gobstopper can't {action}: the keychain request was denied"),
+            "Run it again and choose Always Allow when macOS asks.",
+            "gobstopper auth jev",
+        ),
+    }
 }
 
 /// Store a key in the OS credential store.
 pub fn store_jev_key(key: &str) -> anyhow::Result<()> {
-    anyhow::ensure!(safe_bearer_key(key), "api_key_invalid");
+    anyhow::ensure!(
+        safe_bearer_key(key),
+        "that isn't a usable API key: it must be one line of printable text"
+    );
     let entry = keyring::Entry::new(JEV_SERVICE, JEV_ACCOUNT)
-        .map_err(|_| anyhow::anyhow!("keychain_unavailable"))?;
+        .map_err(|error| keychain_error("store your TypeSafe key", &error))?;
     entry
         .set_password(key)
-        .map_err(|_| anyhow::anyhow!("keychain_store_failed"))
+        .map_err(|error| keychain_error("store your TypeSafe key", &error))
 }
 
 /// Remove the stored key. Ok(true) = a credential was deleted.
 pub fn delete_jev_key() -> anyhow::Result<bool> {
     let entry = keyring::Entry::new(JEV_SERVICE, JEV_ACCOUNT)
-        .map_err(|_| anyhow::anyhow!("keychain_unavailable"))?;
+        .map_err(|error| keychain_error("remove your TypeSafe key", &error))?;
     match entry.delete_credential() {
         Ok(()) => Ok(true),
         Err(keyring::Error::NoEntry) => Ok(false),
-        Err(_) => Err(anyhow::anyhow!("keychain_delete_failed")),
+        Err(error) => Err(keychain_error("remove your TypeSafe key", &error)),
     }
 }
 

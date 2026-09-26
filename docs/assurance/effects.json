@@ -1797,6 +1797,60 @@
         "E-FOUNDATION-SOURCE"
       ],
       "next_gate": "C15"
+    },
+    {
+      "id": "launch-agent",
+      "owner": "CLI proxy",
+      "reads": [
+        "config"
+      ],
+      "writes": [
+        {
+          "state": "launch_agent",
+          "mode": "create_replace",
+          "condition": "Explicit `proxy install` writes ~/Library/LaunchAgents/sh.gobstopper.proxy.plist (refusing to replace a different file without --replace; --print writes nothing) and bootstraps it in the user's gui launchd domain; `proxy uninstall` boots it out and deletes that file."
+        },
+        {
+          "state": "process_state",
+          "mode": "spawn",
+          "condition": "Runs launchctl bootstrap/bootout for the one sh.gobstopper.proxy label."
+        },
+        {
+          "state": "output",
+          "mode": "emit",
+          "condition": "The Background Items notice on stderr before loading, then one result line; no request or session content."
+        }
+      ],
+      "outbound": [],
+      "authority": "Explicit `gobstopper proxy install|uninstall` invocation for the current user's login session only.",
+      "invariants": [
+        "PRIV-1",
+        "OBS-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+          "anchor": "pub fn install"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+          "anchor": "pub fn uninstall"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "One fixed label and file path; the loaded agent runs `proxy serve` with the exact settings given to install.",
+      "exclusions": [
+        "No system-wide daemon",
+        "No signing or notarization; macOS attributes the item to the gobstopper executable"
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "next_gate": "C15"
     }
   ],
   "cli": [
@@ -1806,7 +1860,7 @@
         "inspect",
         "output"
       ],
-      "contract": "List configured provider sessions; --all changes age filter.",
+      "contract": "List configured provider sessions; --all changes age filter; text output shows the newest --limit rows (JSON lists all).",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2135,10 +2189,11 @@
       "name": "Proxy",
       "effects": [
         "request-proxy",
+        "launch-agent",
         "inspect",
         "output"
       ],
-      "contract": "serve/run forward loopback client requests through curl, compacting Anthropic Messages and OpenAI Responses bodies over the threshold and forwarding the original bytes on any failure; replay reads one recorded Claude Code or Codex transcript and calls no provider; status reads a local proxy's counters.",
+      "contract": "serve/run forward loopback client requests through curl, compacting Anthropic Messages and OpenAI Responses bodies over the threshold and forwarding the original bytes on any failure; replay reads one recorded Claude Code or Codex transcript and calls no provider; status reads a local proxy's counters; install writes and loads the sh.gobstopper.proxy LaunchAgent after saying macOS will show a Background Items notice, and uninstall boots it out and removes it.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2181,7 +2236,7 @@
       "effects": [
         "auth"
       ],
-      "contract": "Store/delete/status/clipboard/stdin authority; status is a live health check.",
+      "contract": "Store/delete/status/stdin authority; the clipboard is read only after an interactive yes; status is a live health check and reports a stored key macOS refused to read.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2217,7 +2272,7 @@
         "inspect",
         "output"
       ],
-      "contract": "Configured preset metadata.",
+      "contract": "Configured preset metadata, or an empty-state line naming the config file.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -4886,6 +4941,195 @@
     {
       "path": "crates/gobstopper-core/src/validation.rs",
       "symbol": "validate_edits",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy.rs",
+      "symbol": "is_answering",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "install",
+      "effects": [
+        "launch-agent"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "installed",
+      "effects": [
+        "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "log_path",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "login_item_notice",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "plist",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "plist_path",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "restart_command",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "uninstall",
+      "effects": [
+        "launch-agent"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/secrets.rs",
+      "symbol": "jev_key_state",
+      "effects": [
+        "credential-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "audience",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "bare_text",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "clap_failure",
+      "effects": [
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "detect",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "detect_audience",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "guided",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "guided_code",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "guided_detail",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "is_ascii",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "next_hint",
+      "effects": [
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "render_error",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "render_json_error",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "report_error",
+      "effects": [
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "restore_sigpipe",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "stderr",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "stdout",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "sym",
       "effects": [
         "pure"
       ]

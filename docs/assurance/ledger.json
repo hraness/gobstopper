@@ -100,6 +100,12 @@
       "meaning": "The Apple model helper executable, its source stamp and its build log",
       "owner": "explicit `gobstopper apple install`",
       "boundary": "Only the resolved install path and its siblings; planning, scoring and state-card writing never build or install it."
+    },
+    {
+      "id": "launch_agent",
+      "meaning": "The user's sh.gobstopper.proxy LaunchAgent file and its launchd registration",
+      "owner": "CLI proxy install/uninstall",
+      "boundary": "Only the one fixed label in the current user's gui domain; never a system daemon."
     }
   ],
   "assumptions": [

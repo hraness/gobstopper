@@ -106,6 +106,24 @@ pub enum ProxyCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Start the proxy at login on macOS (a LaunchAgent that runs
+    /// `proxy serve` with these settings) and start it now.
+    Install {
+        #[command(flatten)]
+        opts: ProxyOpts,
+        /// Loopback port.
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
+        /// Replace an existing proxy LaunchAgent.
+        #[arg(long)]
+        replace: bool,
+        /// Print the LaunchAgent file and change nothing.
+        #[arg(long)]
+        print: bool,
+    },
+    /// Stop the proxy LaunchAgent and remove it, so the proxy no longer
+    /// starts at login.
+    Uninstall,
     /// Show a running proxy's settings and counters.
     Status {
         #[arg(long, default_value_t = DEFAULT_PORT)]
@@ -292,6 +310,9 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             let proxy = Arc::new(Proxy::new(opts, port)?);
             println!("gobstopper proxy listening on http://127.0.0.1:{port}");
             std::io::stdout().flush()?;
+            crate::ux::next_hint(&format!(
+                "export ANTHROPIC_BASE_URL=http://127.0.0.1:{port} in the shell that starts Claude Code"
+            ));
             log(&format!(
                 "{}, result_max_chars {}{}{}",
                 proxy.settings(),
@@ -319,8 +340,22 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             log(&proxy.summary());
             std::process::exit(status.code().unwrap_or(1));
         }
+        ProxyCmd::Install {
+            opts,
+            port,
+            replace,
+            print,
+        } => {
+            threshold_1m(opts.threshold, opts.threshold_1m)?;
+            crate::proxy_agent::install(&install_serve_args(), *port, *replace, *print)
+        }
+        ProxyCmd::Uninstall => crate::proxy_agent::uninstall(),
         ProxyCmd::Status { port, json } => {
-            let status = fetch_status(*port)?;
+            let status = match fetch_status(*port) {
+                Ok(status) => status,
+                Err(error) if is_refused(&error) => return Err(proxy_down(*port)),
+                Err(error) => return Err(error),
+            };
             if *json {
                 println!("{}", serde_json::to_string_pretty(&status)?);
             } else {
@@ -1478,6 +1513,54 @@ fn relay(client: &mut TcpStream, mut upstream: Upstream, method: &str) -> Result
         ));
     }
     Ok(())
+}
+
+/// The `serve` settings given to `proxy install`, as typed: everything after
+/// `install` except the flags that only `install` reads.
+fn install_serve_args() -> Vec<String> {
+    let args: Vec<String> = std::env::args().collect();
+    let Some(at) = args.iter().position(|arg| arg == "install") else {
+        return Vec::new();
+    };
+    args[at + 1..]
+        .iter()
+        .filter(|arg| !matches!(arg.as_str(), "--replace" | "--print"))
+        .cloned()
+        .collect()
+}
+
+fn is_refused(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|error| error.kind() == std::io::ErrorKind::ConnectionRefused)
+}
+
+/// What to do when nothing answers on the status port.
+fn proxy_down(port: u16) -> anyhow::Error {
+    if crate::proxy_agent::installed() {
+        let log = crate::proxy_agent::log_path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "~/Library/Logs/gobstopper-proxy.log".into());
+        crate::ux::guided_code(
+            "proxy-not-running",
+            format!(
+                "The proxy is installed but isn't answering on 127.0.0.1:{port}. Its log is {log}"
+            ),
+            crate::proxy_agent::restart_command(),
+        )
+    } else {
+        crate::ux::guided_code(
+            "proxy-not-running",
+            format!("No proxy is running on 127.0.0.1:{port}"),
+            "gobstopper proxy install",
+        )
+    }
+}
+
+/// Whether a gobstopper proxy answers its status request on `port`.
+pub fn is_answering(port: u16) -> bool {
+    fetch_status(port).is_ok()
 }
 
 fn fetch_status(port: u16) -> Result<Value> {
