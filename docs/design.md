@@ -82,14 +82,28 @@ size and the client's auto-compaction does not reach its trigger.
   Each dialect owns its message digest, summary shape, and turn grouping, so
   a kept tail is always a whole number of model steps: an assistant
   `tool_calls` turn and the `tool` messages answering it are never split.
-- Two behaviors differ from the reference. A rewritten request the provider
-  rejects for a reason other than length is resent in its original form.
-  When the verbatim floor (fixed request fields plus the head) approaches
-  the threshold, the applied threshold becomes the floor plus half the
-  configured value. Replays of Codex sessions that Codex had already
-  compacted itself showed why: their heads were near 160k estimated tokens,
-  and without the adjustment nearly every request compacted again and no
-  prefix was reused.
+- Five behaviors differ from the reference. The kept tail grows past the
+  newest `keep_recent` turns, one older whole turn at a time, while the
+  summary and the tail fit a share of the room between the verbatim floor
+  and the applied threshold (`--keep-tail-percent`, 40 by default; 0 keeps
+  the reference tail, except for the grouping rule that follows). The rest
+  of that room is the margin before the next compaction, and the length
+  retry and the harsher steps use no extension. A run of consecutive model
+  messages is one step in every dialect; the reference groups runs only in
+  Responses and starts a turn at every Anthropic or Chat assistant message.
+  The Anthropic API merges consecutive assistant messages, and Claude Code
+  can record one step as two (the tool calls, then the text), so a split
+  between them would leave the tool results after the second message without
+  their calls. Anthropic requests that declare a 1M window in
+  `anthropic-beta` use a second threshold (`--threshold-1m`, 256,000 by default), and the prefix
+  store substitutes only entries computed at the request's threshold. A
+  rewritten request the provider rejects for a reason other than length is
+  resent in its original form. When the verbatim floor (fixed request fields
+  plus the head) approaches the threshold, the applied threshold becomes the
+  floor plus half the request's threshold. Replays of Codex sessions that
+  Codex had already compacted itself showed why: their heads were near 160k
+  estimated tokens, and without the adjustment nearly every request
+  compacted again and no prefix was reused.
 - `crates/gobstopper-cli/src/proxy.rs` owns the socket side: a thread per
   connection on 127.0.0.1, a host check against DNS rebinding, and the
   system `curl` for upstream HTTPS, as the model scorers already use.
@@ -99,6 +113,63 @@ size and the client's auto-compaction does not reach its trigger.
   Code or Codex session and runs it through the engine, with a pairing check
   that separates breakage already in the recording (interrupted or rewound
   turns) from breakage the proxy would introduce.
+
+### Why a 40% tail share and a 256,000-token 1M threshold
+
+On September 26, 2026, a Claude Code workflow subagent on a 1M-window model
+made 1,560 requests through `gobstopper proxy serve` at that day's defaults
+(128,000 tokens and three kept turns). It compacted 41 times and fetched the
+same 21 web pages 234 times. Its system prompt and tools took 43,981 tokens,
+the provider's cache read on every compaction request. After each
+compaction about 8,000 estimated tokens of its own history remained, the
+summary included, so each compaction removed what it had just read.
+
+`gobstopper proxy replay` of that transcript with `--fixed-tokens 43981`
+gives the table below. It ran on September 26, 2026, on a source build of
+the change after 0.4.1 that introduced these settings; 0.4.1 and earlier
+read no requests from a subagent's transcript. Kept history is the mean estimated history after a
+compaction, without the fixed fields and the head. Cost is estimated cache
+reads × 0.05 plus cache writes × 1.25, in millions of input-token
+equivalents: the multipliers for a five-minute cache on Claude Opus 5.5.
+Covered counts the 276 repeated reads (the same tool with the same URL, file
+range, or input) whose earlier result was still verbatim in the request that
+repeated it. Replay repeats the recorded re-reads, so coverage estimates how
+many re-reads the kept history could have answered; it does not show that
+the loop stops.
+
+| Threshold | Tail share | Compactions | Kept history | Cost | Covered |
+|---|---|---|---|---|---|
+| 128,000 | 0% (reference) | 36 | 8,152 | 11.00 | 25 |
+| 128,000 | 25% | 42 | 19,820 | 12.01 | 50 |
+| 128,000 | 40% | 52 | 32,416 | 13.54 | 41 |
+| 128,000 | 50% | 62 | 40,218 | 14.85 | 45 |
+| 128,000 | 60% | 76 | 48,727 | 16.66 | 61 |
+| 256,000 | 0% | 13 | 12,225 | 16.07 | 118 |
+| 256,000 | 25% | 16 | 51,495 | 18.47 | 147 |
+| 256,000 | 40% | 20 | 83,205 | 20.62 | 179 |
+| 256,000 | 50% | 24 | 104,503 | 22.44 | 183 |
+| 256,000 | 60% | 30 | 125,501 | 24.90 | 187 |
+
+The same grid ran on three more recorded sessions: a second subagent (726
+requests) and two main sessions (140 and 337 requests after their last
+client compaction), each with fixed tokens from its own cache reads. The
+pooled cost prices the two main sessions' cache writes at 2.0, the
+multiplier for their one-hour cache, and the subagents' at 1.25. Pooled
+over the four sessions at 256,000, 40% covers the most repeated reads per
+cost unit: 210 for 35.80, against 176 for 32.23 at 25% and 214 for 38.57 at
+50%. At 128,000, 25% covers at least as many as 40% for less cost on every
+session (65 against 50 pooled), but coverage there does not rise steadily
+with the share, so the default stays 40%. No session compacted on two
+consecutive requests at any share, and every replayed request kept each tool
+call with its result.
+
+A fifth main session shows a limit the tail share cannot reach. Its system
+prompt and tools took 92,615 tokens, and its three newest turns alone held
+45,000 to 60,000 tokens of parallel tool results. At 128,000 it compacted on
+consecutive requests 30 to 31 times at every share, the reference included;
+at 256,000 it never did. Its model, Claude Fable 5.1, has a 1M window by
+default, and the proxy applies `--threshold-1m` only when a request declares
+the window in `anthropic-beta` ([roadmap](roadmap.md#9-open-questions)).
 
 ## Provider levers (historical version-specific observations)
 

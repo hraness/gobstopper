@@ -3181,6 +3181,13 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/request/engine.rs",
+      "symbol": "prepare_at",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/engine.rs",
       "symbol": "reactive",
       "effects": [
         "pure"

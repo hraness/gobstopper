@@ -225,8 +225,12 @@ pub fn user_message(text: String) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use super::super::fixtures::{
+        burst_results, chain_against_fresh, mixed_results, reconvergences, tail_cfg,
+    };
     use super::super::{compact, Dialect};
     use super::*;
+    use serde_json::Map;
 
     fn reasoning(n: usize) -> Value {
         json!({"type": "reasoning", "id": format!("rs_{n}"), "encrypted_content": format!("enc{n}"),
@@ -311,5 +315,56 @@ mod tests {
             summarize_message(&item, &CliffConfig::default()),
             vec!["result: Done!".to_string()]
         );
+    }
+
+    /// Request bodies of a Codex session that grows one model step per
+    /// request; `size(n)` is the length of step n's output.
+    fn stepped_bodies(steps: usize, size: impl Fn(usize) -> usize) -> Vec<Map<String, Value>> {
+        let mut input = codex_history(0);
+        (0..steps)
+            .map(|n| {
+                input.push(json!({"type": "reasoning", "id": format!("rs_{n}"),
+                    "encrypted_content": format!("enc{n}"),
+                    "summary": [{"type": "summary_text", "text": format!("plan {n} {}", "t".repeat(200))}]}));
+                input.push(call(n));
+                input.push(output(n, &"O".repeat(size(n))));
+                let Value::Object(body) = json!({
+                    "model": "gpt-x",
+                    "instructions": "You are a coding agent.",
+                    "input": input.clone(),
+                }) else {
+                    unreachable!()
+                };
+                body
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_live_chain_equals_a_fresh_prepare_at_a_tail_percent() {
+        let steps = chain_against_fresh(
+            &tail_cfg(12_000),
+            Dialect::Responses,
+            &stepped_bodies(100, mixed_results),
+        );
+        let unequal: Vec<usize> = (0..steps.len()).filter(|&i| !steps[i].equal).collect();
+        assert!(unequal.is_empty(), "requests {unequal:?} differ");
+        assert!(steps.iter().filter(|s| s.compacted).count() >= 4);
+        assert!(steps.iter().all(|s| s.rung == 0));
+        // The budget kept more than `keep_recent` turns.
+        assert!(steps.iter().any(|s| s.compacted && s.tail_turns > 3));
+    }
+
+    #[test]
+    fn a_rung_one_burst_reconverges_with_a_fresh_prepare() {
+        let steps = chain_against_fresh(
+            &tail_cfg(6_000),
+            Dialect::Responses,
+            &stepped_bodies(90, burst_results),
+        );
+        assert!(steps.iter().any(|s| s.rung == 1));
+        assert!(reconvergences(&steps) >= 3);
+        // After the last burst the chains agree for good.
+        assert!(steps[60..].iter().all(|s| s.equal));
     }
 }

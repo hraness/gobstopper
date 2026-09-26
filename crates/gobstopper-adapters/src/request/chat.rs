@@ -222,8 +222,12 @@ pub fn user_message(text: String) -> Value {
 
 #[cfg(test)]
 mod tests {
+    use super::super::fixtures::{
+        burst_results, chain_against_fresh, mixed_results, reconvergences, tail_cfg,
+    };
     use super::super::{compact, Dialect};
     use super::*;
+    use serde_json::Map;
 
     fn cfg(keep_recent: usize) -> CliffConfig {
         CliffConfig {
@@ -343,5 +347,55 @@ mod tests {
         let result = compact(&messages, Dialect::ChatCompletions, &cfg(1)).unwrap();
         let summary = content_text(result.summary.get("content"));
         assert!(summary.contains("result: all 5 tests passed"));
+    }
+
+    /// Request bodies of a session that grows one tool step per request;
+    /// `size(i)` is the length of step i's result.
+    fn stepped_bodies(steps: usize, size: impl Fn(usize) -> usize) -> Vec<Map<String, Value>> {
+        let mut messages = vec![
+            json!({"role": "system", "content": "you are an agent"}),
+            user("fix the bug"),
+        ];
+        (0..steps)
+            .map(|i| {
+                messages.push(json!({"role": "assistant",
+                    "content": format!("step {i}: {}", "t".repeat(200)),
+                    "tool_calls": [{"id": format!("call_{i}"), "type": "function",
+                        "function": {"name": "bash", "arguments": format!("{{\"command\":\"s{i}\"}}")}}]}));
+                messages.push(tool(i, &"R".repeat(size(i))));
+                let Value::Object(body) = json!({"model": "gpt-x", "messages": messages.clone()}) else {
+                    unreachable!()
+                };
+                body
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_live_chain_equals_a_fresh_prepare_at_a_tail_percent() {
+        let steps = chain_against_fresh(
+            &tail_cfg(12_000),
+            Dialect::ChatCompletions,
+            &stepped_bodies(100, mixed_results),
+        );
+        let unequal: Vec<usize> = (0..steps.len()).filter(|&i| !steps[i].equal).collect();
+        assert!(unequal.is_empty(), "requests {unequal:?} differ");
+        assert!(steps.iter().filter(|s| s.compacted).count() >= 4);
+        assert!(steps.iter().all(|s| s.rung == 0));
+        // The budget kept more than `keep_recent` turns.
+        assert!(steps.iter().any(|s| s.compacted && s.tail_turns > 3));
+    }
+
+    #[test]
+    fn a_rung_one_burst_reconverges_with_a_fresh_prepare() {
+        let steps = chain_against_fresh(
+            &tail_cfg(6_000),
+            Dialect::ChatCompletions,
+            &stepped_bodies(90, burst_results),
+        );
+        assert!(steps.iter().any(|s| s.rung == 1));
+        assert!(reconvergences(&steps) >= 3);
+        // After the last burst the chains agree for good.
+        assert!(steps[60..].iter().all(|s| s.equal));
     }
 }

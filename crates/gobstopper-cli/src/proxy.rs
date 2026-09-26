@@ -16,6 +16,7 @@ use clap::{Args, Subcommand};
 use gobstopper_adapters::codex_compact::rfc3339_now;
 use gobstopper_adapters::request::{
     replay, CliffConfig, Dialect, Engine, RequestCtx, DEFAULT_THRESHOLD_TOKENS,
+    MAX_KEEP_TAIL_PERCENT,
 };
 use serde_json::{json, Value};
 use std::borrow::Cow;
@@ -90,6 +91,11 @@ pub enum ProxyCmd {
         threshold: u64,
         #[arg(long, default_value_t = 3)]
         keep_recent: usize,
+        /// Percent (0-60) of the room above the verbatim head that the
+        /// summary and the kept steps may fill. 0 keeps exactly --keep-recent.
+        #[arg(long, default_value_t = CliffConfig::default().keep_tail_percent,
+              value_parser = keep_tail_percent_arg())]
+        keep_tail_percent: u8,
         #[arg(long, default_value_t = 500)]
         result_max_chars: usize,
         /// Tokens assumed for the system prompt and tool definitions, which
@@ -112,13 +118,27 @@ pub enum ProxyCmd {
 
 #[derive(Args, Clone)]
 pub struct ProxyOpts {
-    /// Compact when the estimated outgoing request exceeds this many tokens.
+    /// Compact when the estimated outgoing request exceeds this many tokens;
+    /// Anthropic requests that declare a 1M-token window use --threshold-1m.
     /// Keep it below the client's own auto-compaction point.
     #[arg(long, default_value_t = DEFAULT_THRESHOLD_TOKENS)]
     threshold: u64,
     /// Newest assistant steps kept verbatim.
     #[arg(long, default_value_t = 3)]
     keep_recent: usize,
+    /// Percent (0-60) of the room above the verbatim head that the summary
+    /// and the kept steps may fill: more steps than --keep-recent stay
+    /// verbatim while they fit. 0 keeps exactly --keep-recent.
+    #[arg(long, default_value_t = CliffConfig::default().keep_tail_percent,
+          value_parser = keep_tail_percent_arg())]
+    keep_tail_percent: u8,
+    /// Threshold for Anthropic requests whose anthropic-beta header declares
+    /// a 1M-token context window (a token starting with context-1m). Unset:
+    /// the larger of 256,000 and --threshold. It may not be below
+    /// --threshold, and equal to it applies one threshold to every request.
+    /// Keep it below the client's own auto-compaction point.
+    #[arg(long = "threshold-1m", value_name = "TOKENS")]
+    threshold_1m: Option<u64>,
     /// Older tool results longer than this many characters are dropped from
     /// the summary; shorter ones are kept verbatim.
     #[arg(long, default_value_t = 500)]
@@ -145,6 +165,56 @@ pub struct ProxyOpts {
     chatgpt_upstream: String,
 }
 
+/// `--keep-tail-percent` accepts 0 through `MAX_KEEP_TAIL_PERCENT`.
+fn keep_tail_percent_arg() -> clap::builder::RangedI64ValueParser<u8> {
+    clap::value_parser!(u8).range(0..=i64::from(MAX_KEEP_TAIL_PERCENT))
+}
+
+/// The 1M-window threshold when `--threshold-1m` is unset (or `--threshold`
+/// when that is larger).
+const DEFAULT_THRESHOLD_1M_TOKENS: u64 = 256_000;
+
+/// The threshold for requests that declare a 1M-token window: the explicit
+/// `--threshold-1m`, which may not be below `--threshold`, or the larger of
+/// the default and `--threshold`.
+fn threshold_1m(threshold: u64, explicit: Option<u64>) -> Result<u64> {
+    match explicit {
+        Some(value) if value < threshold => {
+            bail!("--threshold-1m {value} is below --threshold {threshold}")
+        }
+        Some(value) => Ok(value),
+        None => Ok(DEFAULT_THRESHOLD_1M_TOKENS.max(threshold)),
+    }
+}
+
+/// Whether any `anthropic-beta` header line lists a token starting with
+/// `context-1m`. Header names match case-insensitively and a request may
+/// repeat the header (RFC 9110 section 5.3), so every line is checked; the
+/// tokens are comma-separated and match case-sensitively. This runs outside
+/// the engine's panic guard, so it uses no indexing.
+fn declares_1m_context(headers: &[(String, String)]) -> bool {
+    headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("anthropic-beta"))
+        .flat_map(|(_, value)| value.split(','))
+        .any(|token| token.trim().starts_with("context-1m"))
+}
+
+/// Whether a request gets the 1M-window threshold: an Anthropic request
+/// that declares the window. Every OpenAI-dialect request uses the base one.
+fn declares_1m_window(request: &Request, dialect: Dialect) -> bool {
+    dialect == Dialect::Anthropic && declares_1m_context(&request.headers)
+}
+
+/// The window tag on log lines and ledger records: `1m` or `base`.
+fn window_name(request: &Request, dialect: Dialect) -> &'static str {
+    if declares_1m_window(request, dialect) {
+        "1m"
+    } else {
+        "base"
+    }
+}
+
 /// Resolves a session argument to its provider and transcript path.
 pub type Resolve<'a> = dyn Fn(&str) -> Result<(gobstopper_core::Provider, std::path::PathBuf)> + 'a;
 
@@ -154,6 +224,7 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             session,
             threshold,
             keep_recent,
+            keep_tail_percent,
             result_max_chars,
             fixed_tokens,
             json,
@@ -163,6 +234,7 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             let cfg = CliffConfig {
                 threshold_tokens: *threshold,
                 keep_recent: *keep_recent,
+                keep_tail_percent: *keep_tail_percent,
                 result_max_chars: *result_max_chars,
                 ..CliffConfig::default()
             };
@@ -173,12 +245,13 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             }
             let k = |tokens: u64| format!("~{}k", tokens / 1000);
             println!(
-                "replayed {} requests from {} ({} messages); threshold {} tokens, keep_recent {}, {} fixed tokens assumed",
+                "replayed {} requests from {} ({} messages); threshold {} tokens, keep_recent {}, keep_tail_percent {}, {} fixed tokens assumed",
                 report.requests,
                 path.display(),
                 history.len(),
                 threshold,
                 keep_recent,
+                keep_tail_percent,
                 fixed_tokens
             );
             println!(
@@ -220,9 +293,8 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             println!("gobstopper proxy listening on http://127.0.0.1:{port}");
             std::io::stdout().flush()?;
             log(&format!(
-                "threshold {} tokens, keep_recent {}, result_max_chars {}{}{}",
-                opts.threshold,
-                opts.keep_recent,
+                "{}, result_max_chars {}{}{}",
+                proxy.settings(),
                 opts.result_max_chars,
                 if opts.shadow { ", shadow" } else { "" },
                 if opts.strict { ", strict" } else { "" },
@@ -237,7 +309,7 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             let server = Arc::clone(&proxy);
             std::thread::spawn(move || serve(listener, server));
             let base = format!("http://127.0.0.1:{port}");
-            log(&format!("{base}, threshold {} tokens", opts.threshold));
+            log(&format!("{base}, {}", proxy.settings()));
             let status = Command::new(&command[0])
                 .args(&command[1..])
                 .env("ANTHROPIC_BASE_URL", &base)
@@ -252,38 +324,7 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             if *json {
                 println!("{}", serde_json::to_string_pretty(&status)?);
             } else {
-                println!(
-                    "gobstopper proxy on 127.0.0.1:{port}: threshold {} tokens, keep_recent {}{}",
-                    status["threshold_tokens"],
-                    status["keep_recent"],
-                    if status["shadow"] == true {
-                        ", shadow"
-                    } else {
-                        ""
-                    }
-                );
-                println!(
-                    "requests {}, compacted {}, reused a compacted prefix {}, retried after a length error {}, upstream errors {}, uptime {}s",
-                    status["requests"],
-                    status["compacted"],
-                    status["matched"],
-                    status["reactive_retries"],
-                    status["upstream_errors"],
-                    status["uptime_secs"]
-                );
-                println!(
-                    "estimated tokens this run: {} -> {} ({}% less); all time: {} -> {} ({}% less){}",
-                    status["est_tokens_in"],
-                    status["est_tokens_out"],
-                    pct(status["est_tokens_in"].as_u64(), status["est_tokens_out"].as_u64()),
-                    status["all_time_est_tokens_in"],
-                    status["all_time_est_tokens_out"],
-                    pct(status["all_time_est_tokens_in"].as_u64(), status["all_time_est_tokens_out"].as_u64()),
-                    status["stats_file"]
-                        .as_str()
-                        .map(|p| format!(", ledger {p}"))
-                        .unwrap_or_default(),
-                );
+                print!("{}", status_text(*port, &status));
             }
             Ok(())
         }
@@ -292,6 +333,65 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
 
 fn log(message: &str) {
     eprintln!("{} gobstopper proxy: {message}", rfc3339_now());
+}
+
+/// The `proxy status` text for a server's status JSON. Keys added after
+/// 0.4.1 print only when the server returns them: after an upgrade the new
+/// CLI can query a server that still runs the old binary.
+fn status_text(port: u16, status: &Value) -> String {
+    let present = |key: &str, render: &dyn Fn(&Value) -> String| {
+        status
+            .get(key)
+            .filter(|value| !value.is_null())
+            .map(render)
+            .unwrap_or_default()
+    };
+    let mut text = format!(
+        "gobstopper proxy on 127.0.0.1:{port}: threshold {} tokens{}, keep_recent {}{}{}\n",
+        status["threshold_tokens"],
+        present("threshold_1m_tokens", &|value| format!(
+            ", threshold_1m {value} tokens"
+        )),
+        status["keep_recent"],
+        present("keep_tail_percent", &|value| format!(
+            ", keep_tail_percent {value}"
+        )),
+        if status["shadow"] == true {
+            ", shadow"
+        } else {
+            ""
+        }
+    );
+    text += &format!(
+        "requests {}{}, compacted {}, reused a compacted prefix {}, retried after a length error {}, upstream errors {}, uptime {}s\n",
+        status["requests"],
+        present("requests_1m", &|value| format!(" ({value} with a 1M window)")),
+        status["compacted"],
+        status["matched"],
+        status["reactive_retries"],
+        status["upstream_errors"],
+        status["uptime_secs"]
+    );
+    text += &format!(
+        "estimated tokens this run: {} -> {} ({}% less); all time: {} -> {} ({}% less){}\n",
+        status["est_tokens_in"],
+        status["est_tokens_out"],
+        pct(
+            status["est_tokens_in"].as_u64(),
+            status["est_tokens_out"].as_u64()
+        ),
+        status["all_time_est_tokens_in"],
+        status["all_time_est_tokens_out"],
+        pct(
+            status["all_time_est_tokens_in"].as_u64(),
+            status["all_time_est_tokens_out"].as_u64()
+        ),
+        status["stats_file"]
+            .as_str()
+            .map(|p| format!(", ledger {p}"))
+            .unwrap_or_default(),
+    );
+    text
 }
 
 fn pct(input: Option<u64>, output: Option<u64>) -> u64 {
@@ -323,6 +423,10 @@ struct Stats {
     reactive_retries: AtomicU64,
     upstream_errors: AtomicU64,
     fail_open: AtomicU64,
+    /// Anthropic requests that declared a 1M-token window. Counted when the
+    /// threshold is selected, so it includes requests the engine then left
+    /// unchanged or failed open on.
+    requests_1m: AtomicU64,
     /// Estimated tokens the clients sent this process lifetime.
     est_tokens_in: AtomicU64,
     /// Estimated tokens forwarded upstream this process lifetime.
@@ -396,12 +500,18 @@ impl StatsLog {
         } else {
             ctx.est_tokens_out
         };
+        // The head, summary and tail sizes describe the list the engine
+        // built; in shadow mode that list was not sent.
         let record = json!({
             "ts": rfc3339_now(),
             "dialect": ctx.dialect.name(),
             "path": request.path(),
             "est_tokens_in": ctx.est_tokens_in,
             "est_tokens_out": est_tokens_out,
+            "est_head_tokens": ctx.est_head_tokens,
+            "est_summary_tokens": ctx.est_summary_tokens,
+            "est_tail_tokens": ctx.est_tail_tokens,
+            "window": window_name(request, ctx.dialect),
             "compacted": ctx.compacted,
             "reused_prefix": ctx.matched,
             "over_budget": ctx.over_budget,
@@ -435,6 +545,8 @@ fn default_stats_path() -> Option<std::path::PathBuf> {
 
 struct Proxy {
     engine: Engine,
+    /// Threshold for Anthropic requests that declare a 1M-token window.
+    threshold_1m: u64,
     shadow: bool,
     anthropic: String,
     openai: String,
@@ -451,12 +563,14 @@ impl Proxy {
         let cfg = CliffConfig {
             threshold_tokens: opts.threshold,
             keep_recent: opts.keep_recent,
+            keep_tail_percent: opts.keep_tail_percent,
             result_max_chars: opts.result_max_chars,
             keep_thinking: !opts.drop_thinking,
             strict: opts.strict,
             ..CliffConfig::default()
         };
         Ok(Self {
+            threshold_1m: threshold_1m(opts.threshold, opts.threshold_1m)?,
             engine: Engine::new(cfg),
             shadow: opts.shadow,
             anthropic: validate_upstream(&opts.anthropic_upstream)?,
@@ -483,7 +597,9 @@ impl Proxy {
             "version": env!("CARGO_PKG_VERSION"),
             "port": self.port,
             "threshold_tokens": cfg.threshold_tokens,
+            "threshold_1m_tokens": self.threshold_1m,
             "keep_recent": cfg.keep_recent,
+            "keep_tail_percent": cfg.keep_tail_percent,
             "result_max_chars": cfg.result_max_chars,
             "keep_thinking": cfg.keep_thinking,
             "shadow": self.shadow,
@@ -496,6 +612,7 @@ impl Proxy {
             "reactive_retries": self.count(&self.stats.reactive_retries),
             "upstream_errors": self.count(&self.stats.upstream_errors),
             "fail_open": self.count(&self.stats.fail_open),
+            "requests_1m": self.count(&self.stats.requests_1m),
             "est_tokens_in": self.count(&self.stats.est_tokens_in),
             "est_tokens_out": self.count(&self.stats.est_tokens_out),
             "all_time_est_tokens_in": totals.0,
@@ -504,6 +621,15 @@ impl Proxy {
             "active_connections": self.active.load(Ordering::Relaxed),
             "uptime_secs": self.started.elapsed().as_secs(),
         })
+    }
+
+    /// The settings both startup lines show (serve and run).
+    fn settings(&self) -> String {
+        let cfg = self.engine.config();
+        format!(
+            "threshold {} tokens, threshold_1m {} tokens, keep_recent {}, keep_tail_percent {}",
+            cfg.threshold_tokens, self.threshold_1m, cfg.keep_recent, cfg.keep_tail_percent
+        )
     }
 
     fn summary(&self) -> String {
@@ -533,6 +659,19 @@ impl Proxy {
         }
     }
 
+    /// `threshold_1m` for an Anthropic request that declares a 1M-token
+    /// window, counted in `requests_1m`; the configured threshold for every
+    /// other request. The header gives the model's window, never the model
+    /// name.
+    fn threshold_for(&self, request: &Request, dialect: Dialect) -> u64 {
+        if declares_1m_window(request, dialect) {
+            self.stats.requests_1m.fetch_add(1, Ordering::Relaxed);
+            self.threshold_1m
+        } else {
+            self.engine.config().threshold_tokens
+        }
+    }
+
     fn prepare(&self, request: &Request) -> Option<RequestCtx> {
         if request.method != "POST" || request.body.is_empty() {
             return None;
@@ -557,9 +696,10 @@ impl Proxy {
                 return None;
             }
         };
+        let threshold = self.threshold_for(request, dialect);
         // Engine failures must never fail the request.
         let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.engine.prepare(parsed, dialect)
+            self.engine.prepare_at(parsed, dialect, threshold)
         }));
         match prepared {
             Ok(ctx) => ctx,
@@ -592,6 +732,14 @@ impl Proxy {
         self.stats_log.record(ctx, request, self.shadow);
         let kind = ctx.dialect.name();
         let path = request.path();
+        // Sizes and the window only, never content or header values.
+        let sizes = format!(
+            "(head ~{}k, summary ~{}k, tail ~{}k)",
+            ctx.est_head_tokens / 1000,
+            ctx.est_summary_tokens / 1000,
+            ctx.est_tail_tokens / 1000,
+        );
+        let window = window_name(request, ctx.dialect);
         let shadow = if self.shadow {
             " (shadow: sent unchanged)"
         } else {
@@ -599,7 +747,9 @@ impl Proxy {
         };
         if ctx.compacted {
             self.stats.compacted.fetch_add(1, Ordering::Relaxed);
-            let raised = if ctx.threshold_tokens > self.engine.config().threshold_tokens {
+            // Compared against the threshold selected for this request, so a
+            // 1M-window request at `threshold_1m` is not reported as raised.
+            let raised = if ctx.threshold_tokens > ctx.base_threshold_tokens {
                 format!(
                     ", threshold raised to ~{}k by a large verbatim head",
                     ctx.threshold_tokens / 1000
@@ -608,7 +758,7 @@ impl Proxy {
                 String::new()
             };
             log(&format!(
-                "{kind} {path}: compacted ~{}k -> ~{}k est tokens, {} -> {} messages, {} crossing(s), step {}{raised}{}{shadow}",
+                "{kind} {path}: compacted ~{}k -> ~{}k est tokens {sizes}, {} -> {} messages, {} crossing(s), step {}, window={window}{raised}{}{shadow}",
                 ctx.est_tokens_in / 1000,
                 ctx.est_tokens_out / 1000,
                 ctx.original_len(),
@@ -620,7 +770,7 @@ impl Proxy {
         } else if ctx.matched {
             self.stats.matched.fetch_add(1, Ordering::Relaxed);
             log(&format!(
-                "{kind} {path}: reused compacted prefix, ~{}k -> ~{}k est tokens{shadow}",
+                "{kind} {path}: reused compacted prefix, ~{}k -> ~{}k est tokens {sizes}, window={window}{shadow}",
                 ctx.est_tokens_in / 1000,
                 ctx.est_tokens_out / 1000,
             ));
@@ -680,8 +830,7 @@ impl Proxy {
                     "gobstopper_over_budget",
                     &format!(
                         "gobstopper proxy strict mode: ~{} est tokens after every compaction step, over the {} token threshold",
-                        ctx.est_tokens_out,
-                        self.engine.config().threshold_tokens
+                        ctx.est_tokens_out, ctx.base_threshold_tokens
                     ),
                 );
             }
@@ -725,7 +874,9 @@ impl Proxy {
                 Err(error) => self.upstream_failed(client, &error),
             };
         }
-        while is_context_error(&data) && self.engine.reactive(ctx) {
+        while is_context_error(&data)
+            && self.guarded_step(ctx.dialect, request.path(), || self.engine.reactive(ctx))
+        {
             self.stats.reactive_retries.fetch_add(1, Ordering::Relaxed);
             log(&format!(
                 "{} {}: provider rejected the length; replaying at ~{}k est tokens (step {})",
@@ -751,6 +902,24 @@ impl Proxy {
             .filter(|(name, _)| !STRIP_RESPONSE.contains(&name.to_ascii_lowercase().as_str()))
             .collect();
         write_buffered(client, status, "Bad Request", &headers, &data)
+    }
+
+    /// One reactive ladder step, which runs the compaction chain outside the
+    /// `catch_unwind` in `prepare`. A panic there must not fail the request:
+    /// it counts `fail_open` and stops the ladder (`false`), so the caller
+    /// relays the provider's last 400 unchanged.
+    fn guarded_step(&self, dialect: Dialect, path: &str, step: impl FnOnce() -> bool) -> bool {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(step)) {
+            Ok(retry) => retry,
+            Err(_) => {
+                self.stats.fail_open.fetch_add(1, Ordering::Relaxed);
+                log(&format!(
+                    "{} {path}: engine error during the length retry; relaying the provider's response",
+                    dialect.name()
+                ));
+                false
+            }
+        }
     }
 
     fn upstream_failed(&self, client: &mut TcpStream, error: &anyhow::Error) -> Result<()> {
@@ -1366,5 +1535,256 @@ mod tests {
         );
         assert!(validate_upstream("file:///etc/passwd").is_err());
         assert!(validate_upstream("https://a b").is_err());
+    }
+
+    fn headers(lines: &[(&str, &str)]) -> Vec<(String, String)> {
+        lines
+            .iter()
+            .map(|(name, value)| (name.to_string(), value.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn a_context_1m_token_on_any_beta_line_declares_the_long_window() {
+        let declared: [&[(&str, &str)]; 6] = [
+            &[("anthropic-beta", "context-1m-2025-08-07")],
+            &[(
+                "anthropic-beta",
+                "claude-code-20250219,context-1m-2025-08-07,interleaved-thinking-2025-05-14",
+            )],
+            &[
+                ("anthropic-beta", "claude-code-20250219"),
+                ("anthropic-beta", "context-1m-2025-08-07"),
+            ],
+            &[(
+                "anthropic-beta",
+                "  claude-code-20250219 ,   context-1m-2025-08-07  ",
+            )],
+            &[("Anthropic-Beta", "context-1m-2025-08-07")],
+            &[
+                ("ANTHROPIC-BETA", "fine-grained-tool-streaming-2025-05-14"),
+                ("content-type", "application/json"),
+                ("anthropic-beta", "context-1m"),
+            ],
+        ];
+        for lines in declared {
+            assert!(declares_1m_context(&headers(lines)), "{lines:?}");
+        }
+        let undeclared: [&[(&str, &str)]; 10] = [
+            &[],
+            &[(
+                "anthropic-beta",
+                "claude-code-20250219,interleaved-thinking-2025-05-14",
+            )],
+            &[("anthropic-beta", "xcontext-1m-2025-08-07")],
+            &[("anthropic-beta", "context-1")],
+            &[("anthropic-beta", "Context-1M-2025-08-07")],
+            &[("anthropic-beta", "")],
+            &[("anthropic-beta", ", ,")],
+            &[("x-anthropic-beta", "context-1m-2025-08-07")],
+            &[("anthropic-version", "context-1m-2025-08-07")],
+            &[("anthropic-beta-extra", "context-1m-2025-08-07")],
+        ];
+        for lines in undeclared {
+            assert!(!declares_1m_context(&headers(lines)), "{lines:?}");
+        }
+    }
+
+    #[test]
+    fn the_1m_threshold_defaults_above_the_base_and_is_never_below_it() {
+        assert_eq!(threshold_1m(128_000, None).unwrap(), 256_000);
+        assert_eq!(threshold_1m(300_000, None).unwrap(), 300_000);
+        assert_eq!(threshold_1m(128_000, Some(400_000)).unwrap(), 400_000);
+        assert_eq!(threshold_1m(128_000, Some(200_000)).unwrap(), 200_000);
+        // Equal to the base threshold: one threshold for every request.
+        assert_eq!(threshold_1m(128_000, Some(128_000)).unwrap(), 128_000);
+        let error = threshold_1m(128_000, Some(127_999))
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "--threshold-1m 127999 is below --threshold 128000");
+    }
+
+    #[derive(clap::Parser)]
+    struct OptsOnly {
+        #[command(flatten)]
+        opts: ProxyOpts,
+    }
+
+    #[test]
+    fn threshold_1m_is_an_optional_token_count() {
+        use clap::Parser;
+        let unset = OptsOnly::try_parse_from(["proxy"]).unwrap().opts;
+        assert_eq!(unset.threshold_1m, None);
+        let set = OptsOnly::try_parse_from([
+            "proxy",
+            "--threshold",
+            "100000",
+            "--threshold-1m",
+            "500000",
+        ])
+        .unwrap()
+        .opts;
+        assert_eq!((set.threshold, set.threshold_1m), (100_000, Some(500_000)));
+        assert!(OptsOnly::try_parse_from(["proxy", "--threshold-1m", "many"]).is_err());
+    }
+
+    /// A proxy without a stats file, so unit tests touch no disk.
+    fn test_proxy(threshold_tokens: u64, threshold_1m: u64) -> Proxy {
+        Proxy {
+            engine: Engine::new(CliffConfig {
+                threshold_tokens,
+                ..CliffConfig::default()
+            }),
+            threshold_1m,
+            shadow: false,
+            anthropic: "https://api.anthropic.com".into(),
+            openai: "https://api.openai.com".into(),
+            chatgpt: "https://chatgpt.com".into(),
+            port: 0,
+            started: Instant::now(),
+            active: AtomicUsize::new(0),
+            stats: Stats::default(),
+            stats_log: StatsLog {
+                writer: Mutex::new(None),
+                prior_in: 0,
+                prior_out: 0,
+                path: None,
+            },
+        }
+    }
+
+    fn request(target: &str, lines: &[(&str, &str)], body: &Value) -> Request {
+        Request {
+            method: "POST".into(),
+            target: target.into(),
+            headers: headers(lines),
+            body: serde_json::to_vec(body).unwrap(),
+        }
+    }
+
+    #[test]
+    fn only_anthropic_requests_that_declare_1m_are_prepared_at_the_1m_threshold() {
+        let proxy = test_proxy(128_000, 256_000);
+        let one_m = [
+            ("anthropic-version", "2023-06-01"),
+            (
+                "anthropic-beta",
+                "claude-code-20250219,context-1m-2025-08-07",
+            ),
+        ];
+        let messages = json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]});
+        let input = json!({"model": "m", "input": [{"role": "user", "content": "hi"}]});
+
+        let ctx = proxy
+            .prepare(&request("/v1/messages?beta=true", &one_m, &messages))
+            .unwrap();
+        assert_eq!(ctx.base_threshold_tokens, 256_000);
+        assert_eq!(proxy.count(&proxy.stats.requests_1m), 1);
+
+        let base = [("anthropic-version", "2023-06-01")];
+        let ctx = proxy
+            .prepare(&request("/v1/messages", &base, &messages))
+            .unwrap();
+        assert_eq!(ctx.base_threshold_tokens, 128_000);
+
+        // The header means nothing to the OpenAI dialects.
+        let ctx = proxy
+            .prepare(&request("/v1/responses", &one_m, &input))
+            .unwrap();
+        assert_eq!(ctx.base_threshold_tokens, 128_000);
+        assert_eq!(proxy.count(&proxy.stats.requests_1m), 1);
+
+        let status = proxy.status();
+        assert_eq!(
+            (&status["threshold_1m_tokens"], &status["requests_1m"]),
+            (&json!(256_000), &json!(1))
+        );
+        assert_eq!(status["threshold_tokens"], 128_000);
+    }
+
+    #[test]
+    fn a_panicking_reactive_step_fails_open_and_stops_the_ladder() {
+        let proxy = test_proxy(128_000, 256_000);
+        let path = "/v1/messages";
+        assert!(proxy.guarded_step(Dialect::Anthropic, path, || true));
+        assert!(!proxy.guarded_step(Dialect::Anthropic, path, || false));
+        assert_eq!(proxy.count(&proxy.stats.fail_open), 0);
+        let retry = proxy.guarded_step(Dialect::Anthropic, path, || {
+            panic!("synthetic engine failure")
+        });
+        assert!(!retry, "a panic stops the ladder");
+        assert_eq!(proxy.count(&proxy.stats.fail_open), 1);
+        assert_eq!(proxy.status()["fail_open"], 1);
+    }
+
+    #[test]
+    fn the_window_tag_follows_the_threshold_selection() {
+        let one_m = [
+            ("anthropic-version", "2023-06-01"),
+            ("anthropic-beta", "context-1m-2025-08-07"),
+        ];
+        let body = json!({"model": "m", "messages": []});
+        let tagged = |target: &str, lines: &[(&str, &str)], dialect: Dialect| {
+            window_name(&request(target, lines, &body), dialect)
+        };
+        assert_eq!(tagged("/v1/messages", &one_m, Dialect::Anthropic), "1m");
+        assert_eq!(
+            tagged("/v1/messages", &one_m[..1], Dialect::Anthropic),
+            "base"
+        );
+        assert_eq!(tagged("/v1/responses", &one_m, Dialect::Responses), "base");
+        assert_eq!(
+            tagged("/v1/chat/completions", &one_m, Dialect::ChatCompletions),
+            "base"
+        );
+        // Both startup lines show both thresholds and the tail percent.
+        assert_eq!(
+            test_proxy(128_000, 128_000).settings(),
+            "threshold 128000 tokens, threshold_1m 128000 tokens, keep_recent 3, keep_tail_percent 40"
+        );
+    }
+
+    /// Status JSON as a 0.4.1 server returns it, before the 1M threshold,
+    /// the tail percent and the 1M request counter.
+    fn status_0_4_1() -> Value {
+        json!({
+            "name": "gobstopper-proxy", "version": "0.4.1", "port": 8260,
+            "threshold_tokens": 128_000, "keep_recent": 3, "result_max_chars": 500,
+            "keep_thinking": true, "shadow": false, "strict": false,
+            "store_entries": 2, "store_chars": 9000, "requests": 10, "compacted": 2,
+            "matched": 7, "reactive_retries": 0, "upstream_errors": 0, "fail_open": 0,
+            "est_tokens_in": 1000, "est_tokens_out": 400,
+            "all_time_est_tokens_in": 5000, "all_time_est_tokens_out": 2000,
+            "stats_file": null, "active_connections": 1, "uptime_secs": 60
+        })
+    }
+
+    #[test]
+    fn status_text_prints_the_new_keys_only_when_the_server_returns_them() {
+        let old = status_text(8260, &status_0_4_1());
+        assert!(!old.contains("null"), "{old}");
+        assert_eq!(
+            old.lines().next(),
+            Some("gobstopper proxy on 127.0.0.1:8260: threshold 128000 tokens, keep_recent 3")
+        );
+        assert!(old.contains("\nrequests 10, compacted 2,"), "{old}");
+
+        let mut current = status_0_4_1();
+        current["threshold_1m_tokens"] = json!(256_000);
+        current["keep_tail_percent"] = json!(40);
+        current["requests_1m"] = json!(4);
+        let text = status_text(8260, &current);
+        assert_eq!(
+            text.lines().next(),
+            Some("gobstopper proxy on 127.0.0.1:8260: threshold 128000 tokens, threshold_1m 256000 tokens, keep_recent 3, keep_tail_percent 40")
+        );
+        assert!(
+            text.contains("\nrequests 10 (4 with a 1M window), compacted 2,"),
+            "{text}"
+        );
+
+        // An explicit null is treated as absent.
+        current["requests_1m"] = Value::Null;
+        assert!(!status_text(8260, &current).contains("null"));
     }
 }

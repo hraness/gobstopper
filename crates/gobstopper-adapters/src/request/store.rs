@@ -1,10 +1,12 @@
 //! Prefix store: chain hash of an original prefix -> its compacted
-//! replacement. An entry holds only `(head_len, summary, cut)`; the
-//! substitution for a request extending that prefix is
-//! `messages[..head_len] + [summary] + messages[cut..]`, with head bytes
-//! taken from the current request so volatile fields are never replayed
-//! stale. The store is a cache: compaction is deterministic, so an evicted
-//! entry is recomputed identically on demand.
+//! replacement. An entry holds only `(head_len, summary, cut)` and the base
+//! threshold it was computed under; the substitution for a request
+//! extending that prefix is `messages[..head_len] + [summary] +
+//! messages[cut..]`, with head bytes taken from the current request so
+//! volatile fields are never replayed stale. The store is a cache:
+//! compaction is deterministic for one base threshold, so an evicted entry
+//! is recomputed identically on demand, and an entry from another threshold
+//! is never substituted.
 
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
@@ -15,6 +17,10 @@ pub struct Entry {
     pub summary: Value,
     /// Length of the original prefix this entry replaces.
     pub cut: usize,
+    /// The selected base threshold the entry was computed under
+    /// (`RequestCtx::base_threshold_tokens`). Requests under another
+    /// threshold skip the entry.
+    pub base_threshold_tokens: u64,
 }
 
 /// LRU cache bounded by total summary size and entry count.
@@ -104,6 +110,7 @@ mod tests {
             head_len: 1,
             summary: json!({"role": "user", "content": text}),
             cut: 3,
+            base_threshold_tokens: 128_000,
         }
     }
 

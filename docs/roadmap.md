@@ -294,6 +294,40 @@ consumers need the same interface — is met.
 - Whether Anthropic server-side compaction (`compact_20260112`)
   becomes a better default than transcript surgery for Claude — decided
   by the eval harness, not by guess.
+- Whether the proxy's defaults stop re-read loops in live sessions. On
+  September 26, 2026, a workflow subagent on a 1M-window model made 1,560
+  requests through the proxy at that day's defaults (128,000 tokens, three
+  kept turns), compacted 41 times, fetched the same 21 web pages 234 times,
+  and wrote no code. Replay estimates that a 40% tail share with a
+  256,000-token threshold for 1M requests keeps the earlier result in
+  context for 179 of the session's 276 repeated reads, against 25 at that
+  day's defaults ([design](design.md#why-a-40-tail-share-and-a-256000-token-1m-threshold)).
+  Replay repeats the recorded re-reads, so only live sessions can show the
+  loop stopping.
+- Estimate calibration. The proxy sizes requests at four characters per
+  token. On that session reported input ran 13% to 38% above the estimate:
+  an estimated 128,000 tokens corresponded to 144,000 to 176,000 reported
+  input tokens.
+  Calibrating the threshold from provider-reported usage is open.
+- Preserved-thinking enforcement. On Claude Opus 5.5 and Claude Fable 5.1,
+  accounts created on or after August 31, 2026, 00:00 UTC enforce a prefix
+  check on thinking blocks by default: a request that replays a thinking
+  block after an edit to anything before it returns a 400
+  ([Preserved thinking](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking)).
+  The proxy keeps the tail verbatim, thinking included, after a replaced
+  summary, so on such an account and model a compacted request whose kept
+  turns replay a thinking block is rejected, and the proxy resends the
+  original, counted as `fail_open` in `gobstopper proxy status` (test
+  `a_rejected_compaction_falls_back_to_the_original_request`). Open: drop
+  thinking from the kept tail, or use the `drop_block` behavior.
+- Window selection without a header. The proxy applies `--threshold-1m` only
+  to Anthropic requests whose `anthropic-beta` header lists a `context-1m`
+  token. Claude Fable 5.1 has a 1M window by default. A replayed Fable 5.1
+  main session whose system prompt and tools took 92,615 tokens compacted 90
+  times in 206 requests at 128,000 and the default 40% tail share, 31 times
+  on consecutive requests, and 25 times with none consecutive at 256,000. Open: a selector for such
+  requests, and what to keep when the newest `--keep-recent` turns alone
+  fill the room under the threshold.
 
 ## 10. Correctness and qualification remediation
 
