@@ -19,7 +19,7 @@
 //! Configuration (all optional, defaults listed):
 //!   GOBSTOPPER_APPLE_BRIDGE      - env → sibling of the gobstopper binary →
 //!                                  ~/.local/share/gobstopper/apple-bridge
-//!                                  (must already be installed)
+//!                                  (`gobstopper apple install` builds it)
 //!   GOBSTOPPER_APPLE_TIMEOUT_MS  - 180000 (100..600000; first request warms)
 //!   GOBSTOPPER_APPLE_MAX_CANDIDATES - 64 (0..256)
 //!   GOBSTOPPER_APPLE_BATCH_SIZE  - 32 (1..64; max 8 with content)
@@ -38,7 +38,7 @@ use std::time::Instant;
 use gobstopper_core::{HeuristicScorer, ScoreDriver, ScoredItem, Transcript};
 use serde_json::Value;
 
-use crate::{apple, llm_scorer};
+use crate::{apple, apple_cmd, llm_scorer};
 
 const MAX_CANDIDATES: usize = 256;
 const MAX_BATCH_SIZE: usize = 64;
@@ -59,12 +59,15 @@ pub struct AppleConfig {
 impl AppleConfig {
     pub fn resolve() -> Option<Self> {
         if !cfg!(target_os = "macos") {
+            apple_cmd::warn_unsupported(apple_cmd::Feature::Scorer);
             return None;
         }
-        let bridge = apple::resolve_bridge()?;
-        if !apple::available(&bridge) {
+        let (bridge, availability) = apple::probe();
+        if let Some(reason) = availability.reason.filter(|_| !availability.available) {
+            apple_cmd::warn_fallback(apple_cmd::Feature::Scorer, reason);
             return None;
         }
+        let bridge = bridge?;
         let content_bytes = env_usize("GOBSTOPPER_APPLE_CONTENT_BYTES", 400);
         Some(
             Self {
@@ -204,9 +207,9 @@ impl ScoreDriver for AppleScorer {
                     Ok(scores) => {
                         answers.extend(llm_scorer::fan_out_answers(&inputs, &uniques, &scores))
                     }
-                    Err(_) => {
+                    Err(error) => {
                         failed += 1;
-                        eprintln!("apple scorer: response_unavailable; retaining heuristic scores");
+                        apple_cmd::warn_request_failed(apple_cmd::Feature::Scorer, &error);
                     }
                 }
             }
@@ -354,7 +357,8 @@ fn env_usize(name: &str, default: usize) -> usize {
 }
 
 /// Returns an Apple on-device driver when the bridge and model are available.
-/// Falls back to the heuristic scorer when unavailable or the build fails.
+/// Otherwise says why once on stderr and falls back to the heuristic scorer;
+/// it never builds the bridge (`gobstopper apple install` does).
 pub fn maybe_apple_scorer() -> Option<Box<dyn ScoreDriver>> {
     AppleConfig::resolve().map(|cfg| Box::new(AppleScorer::new(cfg)) as Box<dyn ScoreDriver>)
 }

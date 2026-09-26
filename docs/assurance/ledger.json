@@ -94,6 +94,12 @@
       "meaning": "Version 1 durable native target registry, stable locks and append-only operation records",
       "owner": "CLI native_operations",
       "boundary": "Registered missing/damaged journals refuse; unresolved work blocks replay indefinitely. Provider custody and qualification remain separate."
+    },
+    {
+      "id": "installed_helper",
+      "meaning": "The Apple model helper executable, its source stamp and its build log",
+      "owner": "explicit `gobstopper apple install`",
+      "boundary": "Only the resolved install path and its siblings; planning, scoring and state-card writing never build or install it."
     }
   ],
   "assumptions": [

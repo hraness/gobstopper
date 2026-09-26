@@ -1,0 +1,58 @@
+[Scorer appleIntelligenceNotEnabled]
+⚠ Apple Intelligence is off, so gobstopper is using the built-in scorer.
+  Turn it on in System Settings › Apple Intelligence & Siri, then try again.
+→ open x-apple.systempreferences:com.apple.Siri-Settings.extension
+[Scorer modelNotReady]
+⚠ Apple's on-device model is still downloading, so gobstopper is using the built-in scorer.
+  Try again in a few minutes. System Settings › Apple Intelligence & Siri shows the progress.
+→ open x-apple.systempreferences:com.apple.Siri-Settings.extension
+[Scorer deviceNotEligible]
+⚠ This Mac can't run Apple's on-device model, so gobstopper is using the built-in scorer.
+  It needs Apple silicon and Apple Intelligence support.
+  Unset GOBSTOPPER_SCORER to stop seeing this.
+→ unset GOBSTOPPER_SCORER
+[Scorer requiresMacOS26]
+⚠ Apple's on-device model needs macOS 26 or later, so gobstopper is using the built-in scorer.
+  Update macOS in System Settings › General › Software Update, then try again.
+→ open x-apple.systempreferences:com.apple.Software-Update-Settings.extension
+[Scorer helperMissing]
+⚠ The helper that talks to Apple's on-device model isn't installed, so gobstopper is using the built-in scorer.
+  Install it with gobstopper apple install. It needs Xcode 26 or Apple's command line tools.
+→ gobstopper apple install
+[Scorer unavailable]
+⚠ Apple's on-device model isn't available right now, so gobstopper is using the built-in scorer.
+  Check System Settings › Apple Intelligence & Siri, then try again.
+→ open x-apple.systempreferences:com.apple.Siri-Settings.extension
+[Digest appleIntelligenceNotEnabled]
+⚠ Apple Intelligence is off, so gobstopper is writing the built-in state card.
+  Turn it on in System Settings › Apple Intelligence & Siri, then try again.
+→ open x-apple.systempreferences:com.apple.Siri-Settings.extension
+[Digest modelNotReady]
+⚠ Apple's on-device model is still downloading, so gobstopper is writing the built-in state card.
+  Try again in a few minutes. System Settings › Apple Intelligence & Siri shows the progress.
+→ open x-apple.systempreferences:com.apple.Siri-Settings.extension
+[Digest deviceNotEligible]
+⚠ This Mac can't run Apple's on-device model, so gobstopper is writing the built-in state card.
+  It needs Apple silicon and Apple Intelligence support.
+  Unset GOBSTOPPER_DIGEST to stop seeing this.
+→ unset GOBSTOPPER_DIGEST
+[Digest requiresMacOS26]
+⚠ Apple's on-device model needs macOS 26 or later, so gobstopper is writing the built-in state card.
+  Update macOS in System Settings › General › Software Update, then try again.
+→ open x-apple.systempreferences:com.apple.Software-Update-Settings.extension
+[Digest helperMissing]
+⚠ The helper that talks to Apple's on-device model isn't installed, so gobstopper is writing the built-in state card.
+  Install it with gobstopper apple install. It needs Xcode 26 or Apple's command line tools.
+→ gobstopper apple install
+[Digest unavailable]
+⚠ Apple's on-device model isn't available right now, so gobstopper is writing the built-in state card.
+  Check System Settings › Apple Intelligence & Siri, then try again.
+→ open x-apple.systempreferences:com.apple.Siri-Settings.extension
+[Scorer not macOS]
+⚠ Apple's on-device model only runs on macOS, so gobstopper is using the built-in scorer.
+  Unset GOBSTOPPER_SCORER to stop seeing this.
+→ unset GOBSTOPPER_SCORER
+[Digest not macOS]
+⚠ Apple's on-device model only runs on macOS, so gobstopper is writing the built-in state card.
+  Unset GOBSTOPPER_DIGEST to stop seeing this.
+→ unset GOBSTOPPER_DIGEST

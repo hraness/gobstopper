@@ -1044,6 +1044,62 @@
       "next_gate": "C15"
     },
     {
+      "id": "apple-install",
+      "owner": "CLI/Apple library",
+      "reads": [
+        "config"
+      ],
+      "writes": [
+        {
+          "state": "installed_helper",
+          "mode": "create_replace",
+          "condition": "Explicit `apple install` only: apple-foundation compiles to a unique temporary file beside the target, renames it into place and writes the source stamp; a failed build writes apple-bridge-build.log beside the target instead."
+        },
+        {
+          "state": "process_state",
+          "mode": "spawn",
+          "condition": "/usr/bin/xcode-select -p first; xcrun --find swiftc, the SDK version and xcrun swiftc only when a developer directory exists, all with captured stdio; then the new helper's bounded --check."
+        },
+        {
+          "state": "output",
+          "mode": "emit",
+          "condition": "Closed reason categories, the helper path and fixed next steps; compiler output only in the log file."
+        }
+      ],
+      "outbound": [],
+      "authority": "Explicit `gobstopper apple install`; the target is GOBSTOPPER_APPLE_BRIDGE or ~/.local/share/gobstopper/apple-bridge. `apple status` only runs the resolved helper's --check.",
+      "invariants": [
+        "READ-1",
+        "PRIV-1",
+        "RES-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-AUTH",
+        "A-EXT"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/apple_cmd.rs",
+          "anchor": "pub(crate) fn run"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/apple_cmd.rs",
+          "anchor": "fn install"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "One build per invocation; the kept compiler output is at most 8 lines and 2 KiB; the helper check is bounded to 15 seconds and 32 KiB.",
+      "exclusions": [
+        "No live Apple model qualification",
+        "Compiler run time is not bounded by gobstopper"
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
       "id": "remote-score",
       "owner": "CLI/model scorers",
       "reads": [
@@ -2108,6 +2164,19 @@
       }
     },
     {
+      "name": "Apple",
+      "effects": [
+        "apple",
+        "apple-install",
+        "output"
+      ],
+      "contract": "status runs the resolved helper's bounded --check and prints its typed reason; install builds the helper only on explicit request, after a developer-tools preflight that never opens the macOS install dialog.",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "anchor": "enum Cmd"
+      }
+    },
+    {
       "name": "Auth",
       "effects": [
         "auth"
@@ -2750,20 +2819,6 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/detect.rs",
-      "symbol": "persist_rows",
-      "effects": [
-        "pure"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/detect.rs",
-      "symbol": "merge_persisted",
-      "effects": [
-        "pure"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-adapters/src/detect.rs",
       "symbol": "default_max_age_secs",
       "effects": [
         "pure"
@@ -2814,7 +2869,21 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/detect.rs",
+      "symbol": "merge_persisted",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/detect.rs",
       "symbol": "new",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/detect.rs",
+      "symbol": "persist_rows",
       "effects": [
         "pure"
       ]
@@ -3779,13 +3848,6 @@
     },
     {
       "path": "crates/gobstopper-cli/src/apple.rs",
-      "symbol": "available",
-      "effects": [
-        "apple"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-cli/src/apple.rs",
       "symbol": "cache_get",
       "effects": [
         "memory"
@@ -3800,6 +3862,20 @@
     },
     {
       "path": "crates/gobstopper-cli/src/apple.rs",
+      "symbol": "check",
+      "effects": [
+        "apple"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/apple.rs",
+      "symbol": "default_install_path",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/apple.rs",
       "symbol": "excerpt",
       "effects": [
         "pure"
@@ -3808,6 +3884,13 @@
     {
       "path": "crates/gobstopper-cli/src/apple.rs",
       "symbol": "new",
+      "effects": [
+        "apple"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/apple.rs",
+      "symbol": "probe",
       "effects": [
         "apple"
       ]
@@ -3859,6 +3942,43 @@
       "symbol": "timeout_ms",
       "effects": [
         "inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/apple.rs",
+      "symbol": "unavailable_reason",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/apple_cmd.rs",
+      "symbol": "run",
+      "effects": [
+        "apple",
+        "apple-install",
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/apple_cmd.rs",
+      "symbol": "warn_fallback",
+      "effects": [
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/apple_cmd.rs",
+      "symbol": "warn_request_failed",
+      "effects": [
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/apple_cmd.rs",
+      "symbol": "warn_unsupported",
+      "effects": [
+        "output"
       ]
     },
     {
