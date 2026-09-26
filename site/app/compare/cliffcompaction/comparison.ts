@@ -29,7 +29,7 @@ export const comparisonRows: readonly ComparisonRow[] = [
   {
     aspect: "How it shrinks",
     cliff: "Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases",
-    gobstopper: "The proxy applies the same rule; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card",
+    gobstopper: "The proxy applies the same summary rule and keeps at least the last three turns verbatim, plus older whole turns that fit in 40% of the room under the threshold; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card",
   },
   {
     aspect: "Recompaction",
@@ -62,7 +62,7 @@ export const comparisonQuestions = [
   {
     question: "Does Gobstopper reproduce CliffCompaction's benchmark results?",
     answer:
-      "No. The cost and Terminal-Bench figures are the authors' measurements of their proxy on the Kimi and GLM models they tested. `gobstopper proxy` ports the same rule, but Gobstopper has not run those benchmarks, and a smaller request is not evidence of a lower bill or a better result.",
+      "No. The cost and Terminal-Bench figures are the authors' measurements of their proxy on the Kimi and GLM models they tested. `gobstopper proxy` ports the same summary rule, but Gobstopper has not run those benchmarks, and a smaller request is not evidence of a lower bill or a better result.",
   },
   {
     question: "Where do the dropped tool results go?",

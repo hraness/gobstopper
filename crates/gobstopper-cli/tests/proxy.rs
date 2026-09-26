@@ -173,11 +173,17 @@ fn start_proxy(upstream: &str, extra: &[&str]) -> ProxyProcess {
 }
 
 fn start_proxy_env(upstream: &str, extra: &[&str], env: &[(&str, &str)]) -> ProxyProcess {
-    start_proxy_inner(upstream, upstream, upstream, extra, env)
+    start_proxy_inner(upstream, upstream, upstream, extra, env, Stdio::null())
 }
 
 fn start_proxy_with(anthropic: &str, chatgpt: &str, extra: &[&str]) -> ProxyProcess {
-    start_proxy_inner(anthropic, anthropic, chatgpt, extra, &[])
+    start_proxy_inner(anthropic, anthropic, chatgpt, extra, &[], Stdio::null())
+}
+
+/// A proxy whose log lines (stderr) go to `log`.
+fn start_proxy_logged(upstream: &str, extra: &[&str], log: &std::path::Path) -> ProxyProcess {
+    let file = std::fs::File::create(log).unwrap();
+    start_proxy_inner(upstream, upstream, upstream, extra, &[], Stdio::from(file))
 }
 
 fn start_proxy_inner(
@@ -186,6 +192,7 @@ fn start_proxy_inner(
     chatgpt: &str,
     extra: &[&str],
     env: &[(&str, &str)],
+    stderr: Stdio,
 ) -> ProxyProcess {
     let mut command = Command::new(env!("CARGO_BIN_EXE_gobstopper"));
     for (key, _) in std::env::vars_os() {
@@ -193,8 +200,11 @@ fn start_proxy_inner(
             command.env_remove(key);
         }
     }
+    // No ledger unless a test names one: the default path is the user's
+    // real ledger, whose all-time totals a test run must not change.
     command
         .env("XDG_CONFIG_HOME", std::env::temp_dir())
+        .env("GOBSTOPPER_STATS_FILE", "off")
         .args(["proxy", "serve", "--port", "0"])
         .args(["--anthropic-upstream", anthropic])
         .args(["--openai-upstream", openai])
@@ -205,7 +215,7 @@ fn start_proxy_inner(
     }
     let mut child = command
         .stdout(Stdio::piped())
-        .stderr(Stdio::null())
+        .stderr(stderr)
         .spawn()
         .unwrap();
     let mut line = String::new();
@@ -566,6 +576,7 @@ fn chat_completions_route_to_openai_and_compact() {
         &anthropic.url(),
         &["--threshold", "2000", "--keep-recent", "1"],
         &[],
+        Stdio::null(),
     );
     let mut messages = vec![
         json!({"role": "system", "content": "you are an agent"}),
@@ -670,4 +681,435 @@ fn the_stats_ledger_records_each_request_and_survives_a_restart() {
     assert_eq!(status["all_time_est_tokens_in"], first_in);
     assert_eq!(status["all_time_est_tokens_out"], first_out);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// The binary with no inherited `GOBSTOPPER_` settings, reading config from
+/// a scratch directory.
+fn gobstopper(args: &[&str], home: &std::path::Path) -> std::process::Output {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gobstopper"));
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GOBSTOPPER_") {
+            command.env_remove(key);
+        }
+    }
+    command
+        .env("XDG_CONFIG_HOME", home)
+        .env("XDG_DATA_HOME", home)
+        .args(args)
+        .output()
+        .unwrap()
+}
+
+/// A Claude Code transcript of 60 tool steps: a 3,000-character result
+/// every third step and 700-character results otherwise.
+fn tail_transcript(dir: &std::path::Path) -> std::path::PathBuf {
+    let mut records =
+        vec![json!({"type": "user", "message": {"role": "user", "content": "the task"}})];
+    for i in 0..60 {
+        records.push(json!({"type": "assistant", "message": {"id": format!("m{i}"), "role": "assistant", "content": [
+            {"type": "text", "text": format!("Step {i} {}", "t".repeat(200))},
+            {"type": "tool_use", "id": format!("tu_{i}"), "name": "bash", "input": {"command": format!("cmd {i}")}}
+        ]}}));
+        let size = if i % 3 == 0 { 3000 } else { 700 };
+        records.push(json!({"type": "user", "message": {"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": format!("tu_{i}"), "content": "R".repeat(size)}
+        ]}}));
+    }
+    let path = dir.join("session.jsonl");
+    let lines: String = records.iter().map(|record| format!("{record}\n")).collect();
+    std::fs::write(&path, lines).unwrap();
+    path
+}
+
+fn scratch_dir(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "gobstopper-{name}-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn the_tail_percent_is_bounded_and_reported_in_status() {
+    let dir = scratch_dir("tail-flag");
+    let transcript = tail_transcript(&dir);
+    let transcript = transcript.to_str().unwrap();
+    for args in [
+        vec!["proxy", "serve", "--port", "0", "--keep-tail-percent", "61"],
+        vec!["proxy", "replay", transcript, "--keep-tail-percent", "61"],
+    ] {
+        let output = gobstopper(&args, &dir);
+        assert!(!output.status.success(), "{args:?}");
+        assert!(output.stdout.is_empty(), "{args:?}");
+        assert!(String::from_utf8_lossy(&output.stderr).contains("61 is not in 0..=60"));
+    }
+    let proxy = start_proxy("http://127.0.0.1:9", &["--keep-tail-percent", "60"]);
+    let status = request(proxy.port, "GET", "/gobstopper/status", &[], b"").json();
+    assert_eq!(status["keep_tail_percent"], 60);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_1m_threshold_below_the_base_is_rejected_and_the_default_is_reported() {
+    let dir = scratch_dir("threshold-1m-flag");
+    let output = gobstopper(
+        &[
+            "proxy",
+            "serve",
+            "--port",
+            "0",
+            "--threshold",
+            "128000",
+            "--threshold-1m",
+            "127999",
+        ],
+        &dir,
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr)
+        .contains("--threshold-1m 127999 is below --threshold 128000"));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let unset = start_proxy("http://127.0.0.1:9", &["--threshold", "300000"]);
+    let status = request(unset.port, "GET", "/gobstopper/status", &[], b"").json();
+    assert_eq!(
+        (&status["threshold_tokens"], &status["threshold_1m_tokens"]),
+        (&json!(300_000), &json!(300_000))
+    );
+    assert_eq!(status["requests_1m"], 0);
+    let set = start_proxy("http://127.0.0.1:9", &["--threshold-1m", "128000"]);
+    let status = request(set.port, "GET", "/gobstopper/status", &[], b"").json();
+    assert_eq!(
+        status["threshold_1m_tokens"], 128_000,
+        "equal turns the split off"
+    );
+}
+
+/// Headers of an Anthropic request that declares the 1M-token window.
+const ANTHROPIC_1M: &[(&str, &str)] = &[
+    ("content-type", "application/json"),
+    ("anthropic-version", "2023-06-01"),
+    ("x-api-key", "sk-ant-synthetic-test-key"),
+    (
+        "anthropic-beta",
+        "interleaved-thinking-2025-05-14, context-1m-2025-08-07",
+    ),
+];
+
+#[test]
+fn a_1m_request_is_compacted_at_the_1m_threshold_without_a_raise() {
+    let dir = scratch_dir("threshold-1m-log");
+    let log = dir.join("proxy.log");
+    let fake = Fake::start(|_| Reply::Sse(sse_events()));
+    let proxy = start_proxy_logged(
+        &fake.url(),
+        &[
+            "--threshold",
+            "2000",
+            "--threshold-1m",
+            "8000",
+            "--keep-recent",
+            "1",
+        ],
+        &log,
+    );
+    // Over the base threshold, under the 1M one: sent byte for byte.
+    let under = body(&session(12));
+    let response = request(proxy.port, "POST", "/v1/messages", ANTHROPIC_1M, &under);
+    assert_eq!(response.status, 200);
+    assert_eq!(fake.seen()[0].body, under);
+
+    // Over the 1M threshold: compacted to fit it, not the base threshold.
+    let over = body(&session(40));
+    let response = request(proxy.port, "POST", "/v1/messages", ANTHROPIC_1M, &over);
+    assert_eq!(response.status, 200);
+    let sent = fake.seen()[1].body.len() as u64;
+    assert!(sent < over.len() as u64);
+    assert!(sent / 4 > 2000, "sized for the 1M threshold: {sent} bytes");
+
+    let status = request(proxy.port, "GET", "/gobstopper/status", &[], b"").json();
+    assert_eq!(status["requests_1m"], 2);
+    assert_eq!(status["compacted"], 1);
+    drop(proxy);
+    let lines = std::fs::read_to_string(&log).unwrap();
+    let compacted: Vec<&str> = lines
+        .lines()
+        .filter(|l| l.contains("compacted ~"))
+        .collect();
+    assert_eq!(compacted.len(), 1, "{lines}");
+    assert!(!compacted[0].contains("threshold raised"), "{lines}");
+    assert!(!compacted[0].contains("still over threshold"), "{lines}");
+    assert!(
+        !lines.contains("context-1m"),
+        "header values are never logged"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn the_strict_refusal_names_the_selected_threshold() {
+    let fake = Fake::start(|_| Reply::Json(200, json!({"ok": true})));
+    let proxy = start_proxy(
+        &fake.url(),
+        &["--threshold", "1000", "--threshold-1m", "2000", "--strict"],
+    );
+    let messages = vec![
+        json!({"role": "user", "content": "Fix the failing test."}),
+        json!({"role": "assistant", "content": [
+            {"type": "tool_use", "id": "tu_0", "name": "bash", "input": {"command": "cat log"}}
+        ]}),
+        json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "tu_0", "content": "R".repeat(40_000)}
+        ]}),
+    ];
+    for (headers, threshold) in [(ANTHROPIC_1M, 2000), (ANTHROPIC, 1000)] {
+        let response = request(
+            proxy.port,
+            "POST",
+            "/v1/messages",
+            headers,
+            &body(&messages),
+        );
+        assert_eq!(response.status, 400);
+        let error = response.json();
+        assert_eq!(error["error"]["type"], "gobstopper_over_budget");
+        let message = error["error"]["message"].as_str().unwrap();
+        assert!(
+            message.ends_with(&format!("over the {threshold} token threshold")),
+            "{message}"
+        );
+    }
+    assert!(
+        fake.seen().is_empty(),
+        "a refused request never reaches the provider"
+    );
+}
+
+#[test]
+fn log_lines_and_ledger_records_carry_sizes_and_the_window_but_no_content() {
+    let dir = scratch_dir("window-log");
+    let (log, stats) = (dir.join("proxy.log"), dir.join("proxy-stats.jsonl"));
+    let fake = Fake::start(|_| Reply::Sse(sse_events()));
+    let url = fake.url();
+    let proxy = start_proxy_inner(
+        &url,
+        &url,
+        &url,
+        &[
+            "--threshold",
+            "2000",
+            "--threshold-1m",
+            "8000",
+            "--keep-recent",
+            "1",
+        ],
+        &[("GOBSTOPPER_STATS_FILE", stats.to_str().unwrap())],
+        Stdio::from(std::fs::File::create(&log).unwrap()),
+    );
+    // A base-window compaction, its prefix reuse, then a 1M-window one.
+    let mut messages = session(12);
+    for i in 12..15 {
+        messages.push(json!({"role": "assistant", "content": [
+            {"type": "tool_use", "id": format!("tu_{i}"), "name": "bash", "input": {"command": "ls"}}
+        ]}));
+        messages.push(json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": format!("tu_{i}"), "content": "ok"}
+        ]}));
+    }
+    let mut grown = messages.clone();
+    grown.push(json!({"role": "assistant", "content": [{"type": "text", "text": "Done."}]}));
+    grown.push(json!({"role": "user", "content": "thanks"}));
+    for (headers, messages) in [
+        (ANTHROPIC, &messages),
+        (ANTHROPIC, &grown),
+        (ANTHROPIC_1M, &session(40)),
+    ] {
+        let response = request(proxy.port, "POST", "/v1/messages", headers, &body(messages));
+        assert_eq!(response.status, 200);
+    }
+    let status = request(proxy.port, "GET", "/gobstopper/status", &[], b"").json();
+    assert_eq!(
+        (
+            &status["compacted"],
+            &status["matched"],
+            &status["requests_1m"]
+        ),
+        (&json!(2), &json!(1), &json!(1))
+    );
+    drop(proxy);
+
+    let lines = std::fs::read_to_string(&log).unwrap();
+    assert!(
+        lines.contains(
+            "threshold 2000 tokens, threshold_1m 8000 tokens, keep_recent 1, keep_tail_percent 40, result_max_chars"
+        ),
+        "the startup line shows both thresholds and the tail percent: {lines}"
+    );
+    let tagged: Vec<&str> = lines.lines().filter(|l| l.contains("window=")).collect();
+    assert_eq!(tagged.len(), 3, "{lines}");
+    for (line, (kind, window)) in tagged.iter().zip([
+        ("compacted ~", "window=base"),
+        ("reused compacted prefix", "window=base"),
+        ("compacted ~", "window=1m"),
+    ]) {
+        assert!(line.contains(kind) && line.contains(window), "{line}");
+        assert!(
+            line.contains("(head ~") && line.contains(", summary ~") && line.contains(", tail ~"),
+            "{line}"
+        );
+    }
+    for content in [
+        "Fix the failing",
+        "pytest",
+        "XXXX",
+        "Step ",
+        "coding agent",
+        "thanks",
+        "sk-ant",
+        "context-1m",
+        "interleaved",
+    ] {
+        assert!(!lines.contains(content), "{content} logged: {lines}");
+    }
+
+    let records: Vec<Value> = std::fs::read_to_string(&stats)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    let windows: Vec<&Value> = records.iter().map(|record| &record["window"]).collect();
+    assert_eq!(windows, [&json!("base"), &json!("base"), &json!("1m")]);
+    for record in &records {
+        let size = |key: &str| {
+            record[key]
+                .as_u64()
+                .unwrap_or_else(|| panic!("{key}: {record}"))
+        };
+        let parts = size("est_head_tokens") + size("est_summary_tokens") + size("est_tail_tokens");
+        assert!(size("est_summary_tokens") > 0, "{record}");
+        assert!(parts > 0 && parts <= size("est_tokens_out"), "{record}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn proxy_status_prints_no_null_for_an_older_server() {
+    let dir = scratch_dir("status-text");
+    // A 0.4.1 server: no threshold_1m_tokens, keep_tail_percent or requests_1m.
+    let old = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = old.local_addr().unwrap().port().to_string();
+    let server = std::thread::spawn(move || {
+        let (stream, _) = old.accept().unwrap();
+        let mut reader = BufReader::new(stream.try_clone().unwrap());
+        let (line, _) = read_head(&mut reader).unwrap();
+        let body = serde_json::to_vec(&json!({
+            "name": "gobstopper-proxy", "version": "0.4.1", "port": 8260,
+            "threshold_tokens": 128_000, "keep_recent": 3, "result_max_chars": 500,
+            "keep_thinking": true, "shadow": false, "strict": false,
+            "store_entries": 0, "store_chars": 0, "requests": 5, "compacted": 1,
+            "matched": 3, "reactive_retries": 0, "upstream_errors": 0, "fail_open": 0,
+            "est_tokens_in": 100, "est_tokens_out": 50,
+            "all_time_est_tokens_in": 100, "all_time_est_tokens_out": 50,
+            "stats_file": null, "active_connections": 1, "uptime_secs": 9
+        }))
+        .unwrap();
+        let mut out = stream;
+        write!(
+            out,
+            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n",
+            body.len()
+        )
+        .unwrap();
+        out.write_all(&body).unwrap();
+        line
+    });
+    let output = gobstopper(&["proxy", "status", "--port", &port], &dir);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(!text.contains("null"), "{text}");
+    assert!(
+        text.starts_with(&format!(
+            "gobstopper proxy on 127.0.0.1:{port}: threshold 128000 tokens, keep_recent 3\nrequests 5, compacted 1,"
+        )),
+        "{text}"
+    );
+    assert_eq!(server.join().unwrap(), "GET /gobstopper/status HTTP/1.1");
+
+    let fake = Fake::start(|_| Reply::Json(200, json!({"ok": true})));
+    let current = start_proxy(&fake.url(), &["--threshold-1m", "300000"]);
+    let port = current.port.to_string();
+    let output = gobstopper(&["proxy", "status", "--port", &port], &dir);
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        text.contains(": threshold 128000 tokens, threshold_1m 300000 tokens, keep_recent 3, keep_tail_percent 40\nrequests 0 (0 with a 1M window), compacted 0,"),
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn replay_at_zero_tail_percent_matches_the_reference_report() {
+    let dir = scratch_dir("tail-replay");
+    let transcript = tail_transcript(&dir);
+    let replay = |percent: &str| -> Value {
+        let output = gobstopper(
+            &[
+                "proxy",
+                "replay",
+                transcript.to_str().unwrap(),
+                "--threshold",
+                "6000",
+                "--fixed-tokens",
+                "1000",
+                "--keep-tail-percent",
+                percent,
+                "--json",
+            ],
+            &dir,
+        );
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    };
+    // Recorded with gobstopper 0.4.0, before the tail budget existed.
+    let reference = replay("0");
+    for (field, value) in [
+        ("requests", 61),
+        ("compacted", 8),
+        ("reused_prefix", 43),
+        ("over_threshold_after", 0),
+        ("peak_est_tokens_out", 5830),
+        ("last_est_tokens_out", 3238),
+        ("total_est_tokens_in", 952_007),
+        ("total_est_tokens_out", 253_588),
+        ("pairing_violations", 0),
+    ] {
+        assert_eq!(reference[field], value, "{field}");
+    }
+    let first = &reference["compactions"][0];
+    for (field, value) in [
+        ("request", 10),
+        ("est_tokens_before", 6197),
+        ("est_tokens_after", 2943),
+        ("messages_before", 21),
+        ("messages_after", 8),
+    ] {
+        assert_eq!(first[field], value, "{field}");
+    }
+    // The flag reaches the engine: a 60% budget keeps more and compacts
+    // more often on the same transcript.
+    let tail = replay("60");
+    assert_eq!(tail["compacted"], 10);
+    assert_eq!(tail["pairing_violations"], 0);
+    assert!(tail["total_est_tokens_out"].as_u64() > reference["total_est_tokens_out"].as_u64());
+    let _ = std::fs::remove_dir_all(&dir);
 }

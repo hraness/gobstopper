@@ -14,7 +14,7 @@ import {
 const title = "Compared with CliffCompaction";
 const socialTitle = "Gobstopper compared with CliffCompaction";
 const description =
-  "CliffCompaction and gobstopper proxy compact live API requests with the same rule. Gobstopper also prepares compacted copies of saved sessions. This page compares what each keeps, drops, and measures.";
+  "CliffCompaction and gobstopper proxy compact live API requests with the same summary rule. Gobstopper also prepares compacted copies of saved sessions. This page compares what each keeps, drops, and measures.";
 
 export const metadata: Metadata = {
   title,
@@ -66,7 +66,7 @@ export default function CompareCliffCompaction() {
             model to summarize it, and both keep the newest turns untouched.
             CliffCompaction compacts each API request through a local proxy
             while the session runs. <code>gobstopper proxy</code> ports the same
-            rule for the Anthropic Messages, OpenAI Responses, and Chat
+            summary rule for the Anthropic Messages, OpenAI Responses, and Chat
             Completions dialects, covering Claude Code, Codex, opencode, Crush,
             Aider, Goose, and other agents with a configurable provider address.
             Gobstopper&apos;s file commands prepare compacted copies of saved
@@ -111,10 +111,13 @@ export default function CompareCliffCompaction() {
           <p>
             For a running session, <code>gobstopper proxy</code> listens on
             127.0.0.1 between the agent and its provider. Past the
-            threshold (128,000 estimated tokens by default) it sends the head,
-            one mechanical summary, and the newest three turns, so the provider
-            reports a smaller context and the client&apos;s own auto-compaction
-            does not reach its trigger. The session files stay unchanged.
+            threshold (128,000 estimated tokens by default, or 256,000 for
+            an Anthropic request that declares a 1M-token window) it sends
+            the head, one mechanical summary, and the newest turns (at least
+            three, and more while they fit its tail budget), so the provider
+            reports a smaller context and the client&apos;s own
+            auto-compaction does not reach its trigger. The session files
+            stay unchanged.
           </p>
           <pre tabIndex={0}><code>{`gobstopper proxy run -- claude       # one session through a temporary proxy
 gobstopper proxy serve               # background proxy on http://127.0.0.1:8260
@@ -122,7 +125,7 @@ gobstopper proxy replay <session>    # what the proxy would have sent; calls no 
 
           <h2>How they compare</h2>
           <table>
-            <caption>Read from each tool&apos;s documentation and source on September 25, 2026</caption>
+            <caption>Read from CliffCompaction&apos;s documentation and source on September 25, 2026, and from Gobstopper&apos;s on September 26, 2026</caption>
             <thead>
               <tr>
                 <th scope="col">Aspect</th>

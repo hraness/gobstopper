@@ -86,10 +86,13 @@ and its model provider, in the current `main` source build. Each time the
 client resends its history, the proxy estimates the request size. Past the
 threshold (128,000 tokens by default), it sends the system prompt and the
 first task verbatim, one mechanical summary of the older turns, and the
-newest three turns verbatim. The provider then reports the compacted size
-back to the client, so the client's own auto-compaction does not reach its
-trigger. The rule is CliffCompaction's; see
-[How Gobstopper compares with CliffCompaction](#how-gobstopper-compares-with-cliffcompaction).
+newest turns verbatim: at least three, plus older whole turns while the
+summary and the kept turns fit in 40% of the room left under the threshold
+after the system prompt and the first task. The provider then reports the
+compacted size back to the client, so the client's own auto-compaction does
+not reach its trigger. The summary rule is CliffCompaction's; see [How
+Gobstopper compares with
+CliffCompaction](#how-gobstopper-compares-with-cliffcompaction).
 
 It speaks the three dialects coding agents use:
 
@@ -116,6 +119,21 @@ The next compaction starts again from the history the client resends and
 discards the previous summary. Between compactions, requests reuse the same
 compacted prefix, so the provider's prompt cache can match it.
 
+The kept turns carry the files and command output the agent read most
+recently, which the summary drops once they pass 500 characters. Unless the
+newest `--keep-recent` turns alone need more, the summary and the kept turns
+fill at most 40% of that room, and the other 60% is left for new turns
+before the next compaction. `--keep-tail-percent` sets the share, from 0 to
+60, and `0` keeps exactly `--keep-recent` turns. Anthropic Messages requests
+that declare a 1M-token context window use a separate threshold,
+`--threshold-1m`: 256,000 estimated tokens by default, or `--threshold` if
+that is higher. The proxy reads the window from the `anthropic-beta` header,
+where Claude Code sends a token starting with `context-1m` for a model such
+as `opus[1m]`, and never from the model name. Setting `--threshold-1m` equal
+to `--threshold` applies one threshold to every request. Keep each threshold
+below the point where the client compacts on its own, including any `claude
+--autocompact` value.
+
 ```sh
 gobstopper proxy run -- claude            # one session through a temporary proxy
 gobstopper proxy serve                    # background proxy on http://127.0.0.1:8260
@@ -127,8 +145,9 @@ gobstopper proxy status                   # counters and estimated-token totals,
 See [docs/proxy.md](docs/proxy.md) for per-agent setup (Claude Code, Codex,
 opencode, Crush, Aider, Goose), a macOS LaunchAgent, and every setting.
 Flags: `--threshold` (keep it below the client's auto-compaction point),
-`--keep-recent`, `--result-max-chars`, `--drop-thinking`, `--shadow` (log
-what would change and forward everything unchanged), and `--strict`.
+`--threshold-1m`, `--keep-recent`, `--keep-tail-percent`,
+`--result-max-chars`, `--drop-thinking`, `--shadow` (log what would change
+and forward everything unchanged), and `--strict`.
 
 - The proxy listens on 127.0.0.1 and refuses requests addressed to other
   host names. It forwards through the system `curl` (8.3 or later) and hands
@@ -145,15 +164,16 @@ what would change and forward everything unchanged), and `--strict`.
 - Sizes are estimates at four characters per token, with images priced by
   their dimensions. A history the client already compacted itself can start
   with a long head that the proxy keeps verbatim; the threshold then rises to
-  that head plus half the configured threshold.
+  that head plus half the request's threshold.
 
-On September 25, 2026, `gobstopper proxy replay` over nine recorded sessions
-on one Mac kept six Claude Code sessions, whose recorded requests peaked at
-273k to 652k estimated tokens, at or under about 127k, and one Codex session
-that peaked at 242k under about 127k. Two Codex sessions that Codex had
-already compacted itself began with heads near 160k and stayed under about
-243k. No replayed request was left with an unpaired tool call. These are
-estimates over recorded histories, not billed tokens or task results.
+On September 25, 2026, `gobstopper proxy replay` with three kept turns, the
+default on that date, over nine recorded sessions on one Mac kept six Claude
+Code sessions, whose recorded requests peaked at 273k to 652k estimated
+tokens, at or under about 127k, and one Codex session that peaked at 242k
+under about 127k. Two Codex sessions that Codex had already compacted itself
+began with heads near 160k and stayed under about 243k. No replayed request
+was left with an unpaired tool call. These are estimates over recorded
+histories, not billed tokens or task results.
 
 ## Recoverable history
 
@@ -769,15 +789,15 @@ bounded context with maintained or improved Terminal-Bench 2.0 results for the
 Kimi and GLM models they tested; those are the authors' benchmark figures, not
 measurements of Gobstopper.
 
-Gobstopper runs the same rule in its own proxy and also works on saved
-session files:
+Gobstopper runs the same summary rule in its own proxy, keeps a larger recent
+tail by default, and also works on saved session files:
 
 | | CliffCompaction | Gobstopper |
 |---|---|---|
 | Where it runs | A local HTTP proxy between the agent and the Anthropic or OpenAI API | A local HTTP proxy between the agent and its model provider, plus a CLI over the session files Claude Code and Codex write |
 | Clients | Any client of the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses API | Any client of the same three dialects that accepts a custom provider address: Claude Code, Codex, opencode, Crush, Aider, Goose, and more |
 | What it changes | Each outgoing request, transparently, while the session runs | The proxy rewrites outgoing requests over the threshold; file commands publish a separate compacted copy and leave the source unchanged |
-| How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy applies the same rule; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
+| How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy applies the same summary rule and keeps at least the last three turns verbatim, plus older whole turns that fit in 40% of the room under the threshold; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
 | Recompaction | Rebuilt from the original history; the prior summary is discarded | The proxy rebuilds from the original history; `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy |
 | What holds the originals | The agent's own history and the files on disk; the proxy keeps only an in-memory cache of compacted prefixes | For proxied requests, the agent's own transcript and an in-memory cache; for copies, a content-addressed vault with `search-snapshot` and `read-snapshot` |
 | Evidence published | Terminal-Bench 2.0, SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models | Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, literal retention probes, and dated single-session trials; no task-success or billing claims |
@@ -786,7 +806,15 @@ session files:
 `gobstopper proxy` is a Rust port of CliffCompaction's request engine: the
 same summary format and header, prefix reuse between compactions, harsher
 settings when one pass leaves a request over the threshold, and a retry when
-the provider rejects a request for length. It adds two behaviors. When the
+the provider rejects a request for length. It departs from the reference in
+five ways. It keeps older whole turns verbatim beyond the last three while
+they fit its tail budget; `--keep-tail-percent 0` keeps the reference tail,
+except for the next rule. It counts a run of consecutive assistant messages
+as one turn in every dialect, where the reference does so only for
+Responses. Claude Code can record one step as two assistant messages, tool
+calls and then text; the Anthropic API merges them, so a split between them
+would separate the calls from their results. Anthropic requests that declare
+a 1M-token window use a separate threshold, `--threshold-1m`. When the
 provider rejects a rewritten request for another reason, it resends the
 original. When the verbatim head alone approaches the threshold, it raises
 the threshold instead of compacting every request. The port's MIT notice is

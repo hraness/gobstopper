@@ -8,8 +8,8 @@
 //! `base_cut + (k - (base_head + 1))`.
 
 use super::{
-    billable_chars, chain_hashes, compact, CliffConfig, CompactResult, Dialect, Entry, PrefixStore,
-    PART_SEPARATOR, SUMMARY_HEADER,
+    billable_chars, chain_hashes, compact_within, CliffConfig, CompactResult, Dialect, Entry,
+    PrefixStore, MAX_KEEP_TAIL_PERCENT, PART_SEPARATOR, SUMMARY_HEADER,
 };
 use serde_json::{Map, Value};
 use std::sync::{Mutex, MutexGuard};
@@ -24,6 +24,9 @@ pub struct RequestCtx {
     msgs: Vec<Value>,
     msg_chars: Vec<usize>,
     fixed_chars: usize,
+    /// The verbatim floor: fixed fields plus the original head (messages
+    /// before the first assistant message).
+    floor_chars: usize,
     chain: Vec<String>,
     /// Original-prefix length replaced by the summary (0 = none).
     pub base_cut: usize,
@@ -41,14 +44,29 @@ pub struct RequestCtx {
     pub rung: u8,
     /// Still over the threshold after the ladder.
     pub over_budget: bool,
-    /// The threshold applied to this request: the configured one, or the
-    /// verbatim floor (fixed fields plus head) plus half of it when the head
-    /// alone would keep every request over the configured value.
+    /// The threshold applied to this request: `base_threshold_tokens`, or
+    /// the verbatim floor (fixed fields plus head) plus half of it when the
+    /// head alone would keep every request over that value.
     pub threshold_tokens: u64,
     pub est_tokens_in: u64,
     pub est_tokens_out: u64,
     /// Threshold crossings replayed by the last compaction.
     pub chain_steps: usize,
+    /// Estimated tokens of the fixed fields (system prompt, tools and
+    /// other top-level fields); constant for one request.
+    pub est_fixed_tokens: u64,
+    /// Estimated tokens of the outgoing list, in three parts: the verbatim
+    /// head before the summary, the summary, and the messages after it.
+    /// Without a summary the head and summary are 0 and every message
+    /// counts as tail. Sizes only; set with `est_tokens_out`.
+    pub est_head_tokens: u64,
+    pub est_summary_tokens: u64,
+    pub est_tail_tokens: u64,
+    /// The threshold selected for this request before the floor rule: the
+    /// configured one for `Engine::prepare`, or the value passed to
+    /// `Engine::prepare_at`. Stored entries record it, and only entries
+    /// with the same value are substituted.
+    pub base_threshold_tokens: u64,
 }
 
 impl RequestCtx {
@@ -83,8 +101,34 @@ impl RequestCtx {
         ((self.fixed_chars + sizes.iter().sum::<usize>()) / 4) as u64
     }
 
+    /// Room above the verbatim floor under the applied threshold.
+    fn headroom_chars(&self) -> usize {
+        (self.threshold_tokens.saturating_mul(4) as usize).saturating_sub(self.floor_chars)
+    }
+
+    /// The share of the headroom a step with `knobs` may fill with its
+    /// summary and kept tail; 0 keeps exactly `keep_recent` turns.
+    fn tail_budget_chars(&self, knobs: &CliffConfig) -> usize {
+        let percent = knobs.keep_tail_percent.min(MAX_KEEP_TAIL_PERCENT);
+        (self.headroom_chars() as u128 * u128::from(percent) / 100) as usize
+    }
+
     fn refresh_estimate(&mut self) {
-        self.est_tokens_out = self.tokens_of(self.sizes());
+        let sizes = self.sizes();
+        let est_out = self.tokens_of(sizes);
+        let tokens = |part: &[usize]| (part.iter().sum::<usize>() / 4) as u64;
+        let (head, summary, tail) = match (self.substituted.is_some(), sizes.get(self.base_head)) {
+            (true, Some(summary)) => (
+                tokens(sizes.get(..self.base_head).unwrap_or(&[])),
+                (*summary / 4) as u64,
+                tokens(sizes.get(self.base_head + 1..).unwrap_or(&[])),
+            ),
+            _ => (0, 0, tokens(sizes)),
+        };
+        self.est_tokens_out = est_out;
+        self.est_head_tokens = head;
+        self.est_summary_tokens = summary;
+        self.est_tail_tokens = tail;
     }
 }
 
@@ -167,7 +211,19 @@ impl Engine {
 
     /// Prepare one request. `None` when the body has no non-empty history
     /// of message objects under the dialect's key: pass it through verbatim.
-    pub fn prepare(&self, mut body: Map<String, Value>, dialect: Dialect) -> Option<RequestCtx> {
+    pub fn prepare(&self, body: Map<String, Value>, dialect: Dialect) -> Option<RequestCtx> {
+        self.prepare_at(body, dialect, self.cfg.threshold_tokens)
+    }
+
+    /// `prepare` with a threshold selected for this request in place of the
+    /// configured one, such as a larger one for a request that declares a
+    /// longer context window. Every other setting comes from the config.
+    pub fn prepare_at(
+        &self,
+        mut body: Map<String, Value>,
+        dialect: Dialect,
+        threshold_tokens: u64,
+    ) -> Option<RequestCtx> {
         let msgs = match body.get_mut(dialect.messages_key()) {
             Some(Value::Array(items))
                 if !items.is_empty() && items.iter().all(Value::is_object) =>
@@ -190,6 +246,7 @@ impl Engine {
             msgs,
             msg_chars,
             fixed_chars,
+            floor_chars: fixed_chars,
             base_cut: 0,
             base_head: 0,
             substituted: None,
@@ -198,10 +255,15 @@ impl Engine {
             compacted: false,
             rung: 0,
             over_budget: false,
-            threshold_tokens: self.cfg.threshold_tokens,
+            threshold_tokens,
             est_tokens_in: 0,
             est_tokens_out: 0,
             chain_steps: 0,
+            est_fixed_tokens: (fixed_chars / 4) as u64,
+            est_head_tokens: 0,
+            est_summary_tokens: 0,
+            est_tail_tokens: 0,
+            base_threshold_tokens: threshold_tokens,
         };
         ctx.est_tokens_in = ctx.tokens_of(&ctx.msg_chars);
         // The head (everything before the first model turn) is always sent
@@ -213,11 +275,9 @@ impl Engine {
             .iter()
             .position(|m| dialect.is_assistant(m))
             .unwrap_or(ctx.msgs.len());
-        let floor = ctx.tokens_of(&ctx.msg_chars[..head_end]);
-        ctx.threshold_tokens = self
-            .cfg
-            .threshold_tokens
-            .max(floor.saturating_add(self.cfg.threshold_tokens / 2));
+        ctx.floor_chars = fixed_chars + ctx.msg_chars[..head_end].iter().sum::<usize>();
+        let floor = (ctx.floor_chars / 4) as u64;
+        ctx.threshold_tokens = threshold_tokens.max(floor.saturating_add(threshold_tokens / 2));
         self.substitute_longest_prefix(&mut ctx);
         ctx.refresh_estimate();
 
@@ -248,7 +308,13 @@ impl Engine {
     /// Called after the provider rejected the request for length. Walks the
     /// ladder one rung per call; `true` means replay `ctx.outgoing_body()`.
     pub fn reactive(&self, ctx: &mut RequestCtx) -> bool {
-        if !ctx.compacted && ctx.rung == 0 && self.compact_chain(ctx, true, None) {
+        // The provider refused the size, so the first step keeps exactly
+        // `keep_recent` turns instead of growing the tail.
+        let first = CliffConfig {
+            keep_tail_percent: 0,
+            ..self.cfg.clone()
+        };
+        if !ctx.compacted && ctx.rung == 0 && self.compact_chain(ctx, true, Some(&first)) {
             return true;
         }
         while ctx.rung < 3 {
@@ -267,6 +333,7 @@ impl Engine {
     fn rung_cfg(&self, rung: u8) -> CliffConfig {
         let mut cfg = CliffConfig {
             keep_recent: 1,
+            keep_tail_percent: 0,
             ..self.cfg.clone()
         };
         if rung >= 2 {
@@ -285,6 +352,11 @@ impl Engine {
             let Some(entry) = store.get(&ctx.chain[i]) else {
                 continue;
             };
+            if entry.base_threshold_tokens != ctx.base_threshold_tokens {
+                // Computed under another threshold: a fresh prepare at this
+                // one would not produce it. Try a shallower prefix.
+                continue;
+            }
             if entry.cut != i + 1 || entry.head_len > entry.cut {
                 // Inconsistent entry: ignore the store for this request.
                 return;
@@ -320,6 +392,8 @@ impl Engine {
     ) -> bool {
         let knobs = knobs.unwrap_or(&self.cfg);
         let threshold_chars = ctx.threshold_tokens.saturating_mul(4) as usize;
+        // Constant for the request, so every replayed crossing uses it.
+        let budget = ctx.tail_budget_chars(knobs);
         let mut replay = if ctx.base_cut > 0 {
             Replay {
                 working: ctx.messages()[..=ctx.base_head].to_vec(),
@@ -349,7 +423,8 @@ impl Engine {
             chars += ctx.msg_chars[i];
             if chars > threshold_chars {
                 // Not enough turns yet: keep feeding.
-                let Some(result) = compact(&replay.working, ctx.dialect, knobs) else {
+                let Some(result) = compact_within(&replay.working, ctx.dialect, knobs, budget)
+                else {
                     continue;
                 };
                 if !replay.adopt(result, original_len) {
@@ -359,7 +434,7 @@ impl Engine {
             }
         }
         if replay.steps == 0 && force {
-            if let Some(result) = compact(&replay.working, ctx.dialect, knobs) {
+            if let Some(result) = compact_within(&replay.working, ctx.dialect, knobs, budget) {
                 if !replay.adopt(result, original_len) {
                     return false;
                 }
@@ -382,6 +457,7 @@ impl Engine {
                 head_len: ctx.base_head,
                 summary,
                 cut: ctx.base_cut,
+                base_threshold_tokens: ctx.base_threshold_tokens,
             },
         );
         true
@@ -448,6 +524,7 @@ impl Engine {
                 head_len: ctx.base_head,
                 summary,
                 cut: ctx.base_cut,
+                base_threshold_tokens: ctx.base_threshold_tokens,
             },
         );
         true
@@ -553,6 +630,38 @@ mod tests {
         assert_eq!(out[2..], grown[second.base_cut..]);
         // Stable prefix: the same summary bytes as the first request sent.
         assert_eq!(out[1], first.messages()[1]);
+    }
+
+    #[test]
+    fn size_fields_split_the_outgoing_estimate() {
+        let tokens = |messages: &[Value]| {
+            (messages
+                .iter()
+                .map(|m| billable_chars(m) + 2)
+                .sum::<usize>()
+                / 4) as u64
+        };
+        let roomy = engine(1_000_000, 3)
+            .prepare(a_body(a_session(4, 3000)), Dialect::Anthropic)
+            .unwrap();
+        assert_eq!((roomy.est_head_tokens, roomy.est_summary_tokens), (0, 0));
+        assert_eq!(roomy.est_tail_tokens, tokens(roomy.messages()));
+        assert!(roomy.est_tokens_out - roomy.est_fixed_tokens - roomy.est_tail_tokens <= 1);
+
+        let ctx = engine(2_000, 1)
+            .prepare(a_body(a_session(10, 3000)), Dialect::Anthropic)
+            .unwrap();
+        assert!(ctx.compacted);
+        let out = ctx.messages();
+        let head = ctx.base_head;
+        assert_eq!(ctx.est_head_tokens, tokens(&out[..head]));
+        assert_eq!(ctx.est_summary_tokens, tokens(&out[head..=head]));
+        assert_eq!(ctx.est_tail_tokens, tokens(&out[head + 1..]));
+        let parts = ctx.est_fixed_tokens
+            + ctx.est_head_tokens
+            + ctx.est_summary_tokens
+            + ctx.est_tail_tokens;
+        assert!(parts <= ctx.est_tokens_out && ctx.est_tokens_out - parts <= 3);
     }
 
     #[test]
@@ -743,9 +852,11 @@ mod tests {
     fn a_head_near_the_threshold_raises_it_instead_of_recompacting_every_request() {
         // A history the client already compacted itself: a large verbatim
         // head, then ordinary steps.
+        // The reference tail isolates the floor rule; the companion test
+        // below covers the default tail budget.
         let mut messages = vec![a_user(&"h".repeat(9_000))];
         messages.extend(a_session(12, 3000).into_iter().skip(1));
-        let engine = engine(2_000, 1);
+        let engine = tail_engine(2_000, 1, 0);
         let first = engine
             .prepare(a_body(messages.clone()), Dialect::Anthropic)
             .unwrap();
@@ -758,6 +869,41 @@ mod tests {
         let second = engine.prepare(a_body(grown), Dialect::Anthropic).unwrap();
         assert!(second.matched && !second.compacted);
         assert_eq!(second.messages()[1], first.messages()[1]);
+    }
+
+    #[test]
+    fn a_head_near_the_threshold_recompacts_at_most_once_more_at_the_default_tail() {
+        let mut messages = vec![a_user(&"h".repeat(9_000))];
+        messages.extend(a_session(12, 3000).into_iter().skip(1));
+        let engine = engine(2_000, 1);
+        assert!(engine.config().keep_tail_percent > 0);
+        let first = engine
+            .prepare(a_body(messages.clone()), Dialect::Anthropic)
+            .unwrap();
+        assert!(first.threshold_tokens > 2_000);
+        assert!(first.compacted && !first.over_budget);
+        // Small steps: at most one more compaction, then the stored prefix
+        // is reused on every request.
+        let mut grown = messages;
+        let mut compacted = Vec::new();
+        let mut stable = 0;
+        for i in 0..10 {
+            grown.push(a_assistant(&format!("Done {i}."), None));
+            grown.push(a_user(&format!("thanks {i}")));
+            let ctx = engine
+                .prepare(a_body(grown.clone()), Dialect::Anthropic)
+                .unwrap();
+            assert!(!ctx.over_budget);
+            if ctx.compacted {
+                assert_eq!(stable, 0, "request {i} recompacted after reuse");
+                compacted.push(i);
+            } else {
+                assert!(ctx.matched, "request {i} neither compacted nor reused");
+                stable += 1;
+            }
+        }
+        assert!(compacted.len() <= 1, "recompacted on {compacted:?}");
+        assert!(stable >= 9);
     }
 
     #[test]
@@ -804,5 +950,332 @@ mod tests {
         assert_eq!(out["stream"], true);
         assert!(out["tools"].is_array());
         assert!(out["messages"].as_array().unwrap().len() < messages.len());
+    }
+
+    fn tail_engine(threshold_tokens: u64, keep_recent: usize, keep_tail_percent: u8) -> Engine {
+        Engine::new(CliffConfig {
+            threshold_tokens,
+            keep_recent,
+            keep_tail_percent,
+            ..CliffConfig::default()
+        })
+    }
+
+    fn kept_turns(ctx: &RequestCtx) -> usize {
+        ctx.messages()
+            .iter()
+            .filter(|m| ctx.dialect.is_assistant(m))
+            .count()
+    }
+
+    /// `(request, rung, kept turns)` for every compacting request of a
+    /// session whose first cycle summarizes a 15,000-character human
+    /// message, followed by small text turns.
+    fn text_heavy_compactions(keep_tail_percent: u8) -> Vec<(usize, u8, usize)> {
+        let engine = tail_engine(5_000, 3, keep_tail_percent);
+        let mut messages = vec![
+            a_user("task"),
+            a_assistant("a0", None),
+            a_user(&format!("u0: {}", "U".repeat(15_000))),
+        ];
+        let mut log = Vec::new();
+        for i in 1..60 {
+            messages.push(a_assistant(&format!("a{i} {}", "t".repeat(120)), None));
+            messages.push(a_user(&format!("u{i} {}", "v".repeat(120))));
+            let ctx = engine
+                .prepare(a_body(messages.clone()), Dialect::Anthropic)
+                .unwrap();
+            if ctx.compacted {
+                log.push((i, ctx.rung, kept_turns(&ctx)));
+            }
+        }
+        log
+    }
+
+    #[test]
+    fn a_large_prior_summary_still_compacts_on_the_base_step() {
+        // The second cycle starts with a summary near the whole headroom and
+        // small turns after it. The tail may grow by one turn but never
+        // swallows the first assistant turn, so the base step still compacts
+        // instead of falling to rung 1 with one kept turn.
+        assert_eq!(text_heavy_compactions(0), [(14, 0, 3), (16, 0, 3)]);
+        assert_eq!(text_heavy_compactions(50), [(14, 0, 3), (16, 0, 4)]);
+    }
+
+    #[test]
+    fn the_reactive_first_step_keeps_exactly_keep_recent_turns() {
+        let engine = tail_engine(1_000_000, 1, 60);
+        let mut ctx = engine
+            .prepare(a_body(a_session(10, 3000)), Dialect::Anthropic)
+            .unwrap();
+        assert!(!ctx.compacted);
+        // The base step's budget would hold the whole history.
+        assert!(ctx.tail_budget_chars(engine.config()) > 4 * ctx.est_tokens_in as usize);
+        assert!(engine.reactive(&mut ctx));
+        assert_eq!(ctx.rung, 0);
+        assert_eq!(kept_turns(&ctx), 1);
+    }
+
+    #[test]
+    fn rungs_keep_one_turn_whatever_the_tail_percent() {
+        let engine = tail_engine(4_000, 3, 60);
+        for rung in [1, 2] {
+            let knobs = engine.rung_cfg(rung);
+            assert_eq!((knobs.keep_recent, knobs.keep_tail_percent), (1, 0));
+        }
+    }
+
+    #[test]
+    fn the_tail_percent_is_capped_at_sixty() {
+        let capped = tail_engine(3_000, 1, MAX_KEEP_TAIL_PERCENT);
+        let over = tail_engine(3_000, 1, u8::MAX);
+        let off = tail_engine(3_000, 1, 0);
+        let mut messages = vec![a_user("the task")];
+        let mut differs = false;
+        for step in 0..40 {
+            messages = grow(&messages, step, 1, 700 + 300 * (step % 3));
+            let a = capped
+                .prepare(a_body(messages.clone()), Dialect::Anthropic)
+                .unwrap();
+            let b = over
+                .prepare(a_body(messages.clone()), Dialect::Anthropic)
+                .unwrap();
+            let c = off
+                .prepare(a_body(messages.clone()), Dialect::Anthropic)
+                .unwrap();
+            assert_eq!(a.messages(), b.messages(), "step {step}");
+            differs |= a.messages() != c.messages();
+        }
+        assert!(differs, "the tail budget changes the outgoing list");
+    }
+
+    /// Request bodies of a session that grows one tool step per request;
+    /// `size(i)` is the length of step i's result.
+    fn stepped_bodies(steps: usize, size: impl Fn(usize) -> usize) -> Vec<Map<String, Value>> {
+        let mut messages = vec![a_user("the task")];
+        (0..steps)
+            .map(|i| {
+                let id = format!("tu_{i}");
+                messages.push(a_assistant(
+                    &format!("Step {i} {}", "t".repeat(200)),
+                    Some((&id, "bash", json!({"command": format!("cmd {i}")}))),
+                ));
+                messages.push(a_result(&id, &"R".repeat(size(i))));
+                a_body(messages.clone())
+            })
+            .collect()
+    }
+
+    fn out_chars(ctx: &RequestCtx) -> usize {
+        ctx.fixed_chars + ctx.sizes().iter().sum::<usize>()
+    }
+
+    #[test]
+    fn a_live_chain_equals_a_fresh_prepare_at_a_tail_percent() {
+        let steps = chain_against_fresh(
+            &tail_cfg(12_000),
+            Dialect::Anthropic,
+            &stepped_bodies(100, mixed_results),
+        );
+        let unequal: Vec<usize> = (0..steps.len()).filter(|&i| !steps[i].equal).collect();
+        assert!(unequal.is_empty(), "requests {unequal:?} differ");
+        assert!(steps.iter().filter(|s| s.compacted).count() >= 4);
+        assert!(steps.iter().all(|s| s.rung == 0));
+        // The budget kept more than `keep_recent` turns.
+        assert!(steps.iter().any(|s| s.compacted && s.tail_turns > 3));
+    }
+
+    #[test]
+    fn a_rung_one_burst_reconverges_with_a_fresh_prepare() {
+        let steps = chain_against_fresh(
+            &tail_cfg(6_000),
+            Dialect::Anthropic,
+            &stepped_bodies(90, burst_results),
+        );
+        assert!(steps.iter().any(|s| s.rung == 1));
+        // A rung-1 request stores a deeper cut than a fresh replay makes, so
+        // the chains differ during a burst and agree again after it.
+        assert!(reconvergences(&steps) >= 3);
+        // After the last burst the chains agree for good.
+        assert!(steps[60..].iter().all(|s| s.equal));
+    }
+
+    #[test]
+    fn small_requests_after_a_compaction_reuse_the_prefix_until_the_margin_is_used() {
+        let engine = tail_engine(10_000, 3, 40);
+        let bodies = stepped_bodies(130, |_| 700);
+        let step_chars = bodies
+            .iter()
+            .map(|body| {
+                let messages = body["messages"].as_array().unwrap();
+                messages[messages.len() - 2..]
+                    .iter()
+                    .map(|m| billable_chars(m) + 2)
+                    .sum::<usize>()
+            })
+            .max()
+            .unwrap();
+        let mut compactions = Vec::new();
+        let mut margin = 0;
+        for (i, body) in bodies.into_iter().enumerate() {
+            let ctx = engine.prepare(body, Dialect::Anthropic).unwrap();
+            if ctx.compacted {
+                assert_eq!(ctx.rung, 0, "request {i}");
+                // Summary and kept tail fit the target; only the rest of
+                // the crossing step rides above it.
+                let bound = ctx.floor_chars + ctx.tail_budget_chars(engine.config());
+                assert!(out_chars(&ctx) <= bound + step_chars, "request {i}");
+                margin = ctx.threshold_tokens as usize * 4 - bound;
+                compactions.push(i);
+            } else if !compactions.is_empty() {
+                assert!(ctx.matched && !ctx.over_budget, "request {i}");
+            }
+        }
+        assert!(compactions.len() >= 3);
+        // (100 - p)% of the headroom stays free after each compaction.
+        assert!(margin / step_chars >= 15, "{margin} / {step_chars}");
+        for pair in compactions.windows(2) {
+            assert!(pair[1] - pair[0] >= margin / step_chars - 1, "{pair:?}");
+        }
+    }
+
+    #[test]
+    fn a_minimum_tail_over_the_target_is_kept_as_the_reference_keeps_it() {
+        let tail = tail_engine(6_000, 3, 40);
+        let reference = tail_engine(6_000, 3, 0);
+        let mut compactions = 0;
+        for (i, body) in stepped_bodies(40, |_| 6_000).into_iter().enumerate() {
+            let a = tail.prepare(body.clone(), Dialect::Anthropic).unwrap();
+            let b = reference.prepare(body, Dialect::Anthropic).unwrap();
+            assert_eq!(a.messages(), b.messages(), "request {i}");
+            if a.compacted {
+                compactions += 1;
+                assert_eq!((a.rung, kept_turns(&a)), (0, 3), "request {i}");
+                let target = a.floor_chars + a.tail_budget_chars(tail.config());
+                assert!(out_chars(&a) > target, "request {i}");
+            }
+        }
+        assert!(compactions >= 2);
+    }
+
+    #[test]
+    fn prepare_is_prepare_at_the_configured_threshold() {
+        let configured = tail_engine(4_000, 3, 40);
+        let selected = tail_engine(4_000, 3, 40);
+        let mut compactions = 0;
+        for (i, body) in stepped_bodies(60, mixed_results).into_iter().enumerate() {
+            let a = configured
+                .prepare(body.clone(), Dialect::Anthropic)
+                .unwrap();
+            let b = selected
+                .prepare_at(body, Dialect::Anthropic, 4_000)
+                .unwrap();
+            assert_eq!(a.messages(), b.messages(), "request {i}");
+            assert_eq!(
+                (a.base_cut, a.base_head, a.matched, a.compacted, a.rung),
+                (b.base_cut, b.base_head, b.matched, b.compacted, b.rung),
+                "request {i}"
+            );
+            assert_eq!(
+                (a.threshold_tokens, a.est_tokens_out),
+                (b.threshold_tokens, b.est_tokens_out),
+                "request {i}"
+            );
+            assert_eq!(
+                (a.base_threshold_tokens, b.base_threshold_tokens),
+                (4_000, 4_000)
+            );
+            compactions += usize::from(a.compacted);
+        }
+        assert!(compactions >= 2);
+    }
+
+    #[test]
+    fn the_floor_rule_raises_the_selected_threshold() {
+        let mut messages = vec![a_user(&"h".repeat(9_000))];
+        messages.extend(a_session(16, 3000).into_iter().skip(1));
+        let engine = tail_engine(2_000, 1, 0);
+        let floor = |ctx: &RequestCtx| (ctx.floor_chars / 4) as u64;
+
+        let configured = engine
+            .prepare(a_body(messages.clone()), Dialect::Anthropic)
+            .unwrap();
+        assert_eq!(configured.base_threshold_tokens, 2_000);
+        assert_eq!(configured.threshold_tokens, floor(&configured) + 1_000);
+
+        // A smaller selected threshold is raised by half of itself, not by
+        // half of the configured one.
+        let small = engine
+            .prepare_at(a_body(messages.clone()), Dialect::Anthropic, 1_000)
+            .unwrap();
+        assert_eq!(small.base_threshold_tokens, 1_000);
+        assert_eq!(small.threshold_tokens, floor(&small) + 500);
+        assert!(small.compacted && !small.over_budget);
+
+        // A selected threshold with room above the head is applied as is,
+        // though the configured one would have been raised.
+        let large = engine
+            .prepare_at(a_body(messages), Dialect::Anthropic, 8_000)
+            .unwrap();
+        assert!(floor(&large) + 4_000 < 8_000);
+        assert_eq!(
+            (large.base_threshold_tokens, large.threshold_tokens),
+            (8_000, 8_000)
+        );
+        assert!(large.compacted && !large.over_budget);
+        assert!(large.est_tokens_out <= 8_000);
+    }
+
+    #[test]
+    fn a_stored_entry_from_another_threshold_is_never_substituted() {
+        let bodies = stepped_bodies(40, mixed_results);
+        let shared = tail_engine(2_000, 1, 40);
+
+        // A 6,000-token request stores an entry for its regime.
+        let wide = shared
+            .prepare_at(bodies[30].clone(), Dialect::Anthropic, 6_000)
+            .unwrap();
+        assert!(wide.compacted && !wide.over_budget);
+        assert_eq!(wide.rung, 0, "the stored entry comes from the base step");
+        let wide_cut = wide.base_cut;
+
+        // The next request at the configured threshold finds only that
+        // entry: it is skipped, and the recompute equals a fresh prepare.
+        let base = shared
+            .prepare(bodies[31].clone(), Dialect::Anthropic)
+            .unwrap();
+        let fresh = tail_engine(2_000, 1, 40)
+            .prepare(bodies[31].clone(), Dialect::Anthropic)
+            .unwrap();
+        assert!(!base.matched && base.compacted);
+        assert_eq!(base.messages(), fresh.messages());
+        assert_eq!(
+            (base.base_cut, base.base_head),
+            (fresh.base_cut, fresh.base_head)
+        );
+        assert!(base.base_cut > wide_cut, "the base entry is deeper");
+
+        // Back at 6,000: the deeper base entry is skipped and the walk
+        // continues to the shallower entry of the same regime, which the
+        // small growth leaves under the threshold.
+        let again = shared
+            .prepare_at(bodies[32].clone(), Dialect::Anthropic, 6_000)
+            .unwrap();
+        assert!(again.matched && !again.compacted);
+        assert_eq!(again.base_cut, wide_cut);
+        assert_eq!(
+            again.messages()[again.base_head],
+            wide.messages()[wide.base_head]
+        );
+        let fresh_wide = tail_engine(2_000, 1, 40)
+            .prepare_at(bodies[32].clone(), Dialect::Anthropic, 6_000)
+            .unwrap();
+        assert!(!fresh_wide.matched);
+        assert_eq!(fresh_wide.base_threshold_tokens, 6_000);
+        assert_eq!(again.messages(), fresh_wide.messages());
+        assert_eq!(
+            (again.base_cut, again.base_head),
+            (fresh_wide.base_cut, fresh_wide.base_head)
+        );
     }
 }

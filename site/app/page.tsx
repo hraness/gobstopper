@@ -106,7 +106,7 @@ const questions = [
   },
   {
     question: "How is this different from CliffCompaction?",
-    answer: "CliffCompaction is an API proxy: it rewrites each request over a token threshold while the session runs, keeps the head and the last three turns verbatim, drops tool results over 500 characters, and never paraphrases. `gobstopper proxy` ports that rule for the Anthropic Messages, OpenAI Responses, and Chat Completions dialects. Gobstopper's file commands prepare copies you inspect and resume, with the source archived in a vault, and the `cliff` strategy applies the drop rule to those copies. The comparison page lists the differences and the authors' benchmark figures.",
+    answer: "CliffCompaction is an API proxy: it rewrites each request over a token threshold while the session runs, keeps the head and the last three turns verbatim, drops tool results over 500 characters, and never paraphrases. `gobstopper proxy` ports its summary rule to the Anthropic Messages, OpenAI Responses, and Chat Completions dialects and by default keeps more of the recent session verbatim: at least the last three turns, plus older whole turns that fit its tail budget. Gobstopper's file commands prepare copies you inspect and resume, with the source archived in a vault, and the `cliff` strategy applies the drop rule to those copies. The comparison page lists the differences and the authors' benchmark figures.",
   },
   {
     question: "Can I run my own compaction logic?",

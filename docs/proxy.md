@@ -2,12 +2,15 @@
 
 `gobstopper proxy` sits on 127.0.0.1 between a coding agent and its model
 provider. When a request passes the threshold, it sends the head verbatim,
-one mechanical summary of the older turns, and the newest turns verbatim. The
-provider then reports the smaller size back to the client, so the client's
-own auto-compaction does not reach its trigger. Session files are not
-changed. The rule is CliffCompaction's (Nguyen, Cho, Chen and Dettmers,
+one mechanical summary of the older turns, and the newest turns verbatim: at
+least three, plus older whole turns while the summary and the kept turns fit
+in 40% of the room under the threshold. The provider then reports the smaller
+size back to the client, so the client's own auto-compaction does not reach
+its trigger. Session files are not changed. The summary rule is
+CliffCompaction's (Nguyen, Cho, Chen and Dettmers,
 [arXiv:2609.26779](https://arxiv.org/abs/2609.26779)); the port's MIT notice
-is in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md).
+is in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md), and
+[How it works](#how-it-works) describes where the proxy departs from it.
 
 The proxy understands three API dialects. Any agent that lets you set a
 custom provider address can use it:
@@ -69,6 +72,11 @@ gobstopper proxy status
 
 After upgrading the binary, restart it with
 `launchctl kickstart -k gui/$(id -u)/sh.gobstopper.proxy`.
+
+Settings go in `ProgramArguments` after `serve`, one `<string>` element per
+argument. After an upgrade, compare them with [Settings](#settings): a
+`--threshold` raised for 1M-window sessions applies to every request, while
+`--threshold-1m` applies only to requests that declare the 1M window.
 
 ## Claude Code
 
@@ -191,14 +199,23 @@ through the engine, and reports the peak request with and without the proxy,
 the number of compactions and reused prefixes, the context sent across all
 requests, and any history left with an unpaired tool call. It calls no
 provider. Transcripts do not record the system prompt and tool definitions,
-so `--fixed-tokens` (20,000 by default) stands in for them.
+so `--fixed-tokens` (20,000 by default) stands in for them. It also reads a
+Claude Code subagent's own transcript. `--json` adds the estimated cache
+reads and writes (`est_cache_read_tokens`, `est_cache_write_tokens`),
+repeated reads and how many the kept history still held (`repeated_reads`,
+`repeated_reads_covered`), and the spacing of compactions
+(`back_to_back_compactions`, `min_compaction_gap`). `replay` has no
+`--threshold-1m`; to model a session that declares a 1M-token window, pass
+`--threshold 256000`.
 
 ## Settings
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--threshold` | 128000 | Compact when the estimated outgoing request exceeds this many tokens. Keep it below the client's own auto-compaction point. |
-| `--keep-recent` | 3 | Newest assistant steps kept verbatim. |
+| `--threshold` | 128000 | Compact when the estimated outgoing request exceeds this many tokens. Applies to every OpenAI-dialect request and to Anthropic requests that do not declare a 1M-token window; those that do use `--threshold-1m`. Keep it below the client's own auto-compaction point. |
+| `--threshold-1m` | 256000, or `--threshold` if higher | `serve` and `run` only. The threshold for Anthropic Messages requests whose `anthropic-beta` header lists a token starting with `context-1m`. It can't be lower than `--threshold`; an equal value applies one threshold to every request. Keep it below the client's own auto-compaction point, including any `claude --autocompact` value. |
+| `--keep-recent` | 3 | Newest assistant steps kept verbatim. A request still over the threshold after one pass keeps one. |
+| `--keep-tail-percent` | 40 | Share of the room under the threshold, after the fixed request fields and the head, that the summary and the kept steps may fill. Older whole steps are kept while they fit. From 0 to 60; `0` keeps exactly `--keep-recent` steps. |
 | `--result-max-chars` | 500 | Older tool results longer than this are dropped from the summary; shorter ones stay verbatim. |
 | `--drop-thinking` | off | Leave thinking and reasoning text out of summaries. |
 | `--shadow` | off | Log what would change and forward every request unchanged. |
@@ -219,30 +236,52 @@ so `--fixed-tokens` (20,000 by default) stands in for them.
   and `user` messages that precede the first assistant turn. It is always
   sent verbatim, as are the system prompt, tool definitions, and other
   request fields.
-- A turn starts at a model message and includes the tool results that answer
-  it: `tool_result` blocks for Anthropic, `function_call_output` items for
-  Responses, and the run of `tool` messages answering a `tool_calls` turn
-  for Chat Completions. The summary keeps human and assistant text (and
-  readable thinking), keeps tool results of at most 500 characters, reduces
-  each tool call to its name and up to 150 characters of arguments, and
-  drops images. Calls are never separated from their results: the kept tail
-  is whole turns, so a `tool` message can never outlive the call it answers.
+- A turn starts at a model message and includes any model messages right
+  after it and the tool results that answer them: `tool_result` blocks for
+  Anthropic, `function_call_output` items for Responses, and the run of
+  `tool` messages answering a `tool_calls` turn for Chat Completions. The
+  summary keeps human and assistant text (and readable thinking), keeps tool
+  results of at most 500 characters, reduces each tool call to its name and
+  up to 150 characters of arguments, and drops images. Calls are never
+  separated from their results: the kept tail is whole turns, so a `tool`
+  message can never outlive the call it answers. CliffCompaction starts a
+  turn at every Anthropic or Chat Completions assistant message; the proxy
+  keeps a run of them together, because Claude Code can record one step as
+  two assistant messages (the tool calls, then the text).
+- The kept tail starts with the newest `--keep-recent` turns and grows one
+  older whole turn at a time while the summary and the tail fit in
+  `--keep-tail-percent` of the room under the threshold, the threshold minus
+  the system prompt, tool definitions, and head. The kept turns carry the
+  files and command output the agent read most recently, which the summary
+  drops once they pass 500 characters. At the default 40%, a compacted
+  request leaves 60% of that room for new turns before the next compaction.
+  If the newest `--keep-recent` turns alone need more, the proxy keeps them
+  anyway, and the next request can compact again.
+- Anthropic Messages requests whose `anthropic-beta` header lists a
+  `context-1m` token use `--threshold-1m`. Claude Code sends that token for a
+  model such as `opus[1m]`. The proxy never reads the window from the model
+  name, so a request that does not declare the window uses `--threshold`,
+  even on a model whose default window is larger. `gobstopper proxy status`
+  counts the Anthropic requests that declared a 1M-token window
+  (`requests_1m`), and each compaction log line names the window it applied
+  (`window=1m` or `window=base`).
 - Clients resend their original history on every request. The proxy keys each
   compaction by a hash of the original prefix and substitutes it into later
   requests, so the compacted prefix stays byte-stable until the next
   compaction and the provider's prompt cache can match it. The cache lives in
   memory; after a restart, the proxy replays the threshold crossings over the
   full history and reaches the same result.
-- If one pass leaves a request over the threshold, the proxy retries with one
-  kept turn, then with assistant text capped at 300 characters and thinking
-  dropped. Without `--strict`, it then sends the request anyway.
+- If one pass leaves a request over the threshold, the proxy retries with
+  one kept turn and no tail extension, then with assistant text capped at
+  300 characters and thinking dropped. Without `--strict`, it then sends the
+  request anyway.
 - If the provider rejects a request for length, the proxy compacts further and
   retries, and as a last step shortens the summary to its newest parts. If
   the provider rejects the rewritten request for any other reason, the proxy
   resends the client's original bytes.
 - If the verbatim head alone approaches the threshold, as it can after the
   client compacted a session itself, the threshold for that session rises to
-  the head plus half the configured threshold.
+  the head plus half the request's threshold.
 
 ## Privacy and security
 
@@ -253,7 +292,8 @@ so `--fixed-tokens` (20,000 by default) stands in for them.
 - Logs contain paths, sizes, counts, and error summaries, never request or
   response text.
 - Every compactable request also appends one JSONL record (timestamp,
-  dialect, path, estimated tokens in and out, and flags) to
+  dialect, path, estimated tokens in and out, the estimated head, summary,
+  and tail sizes, the window, and flags) to
   `~/.local/share/gobstopper/proxy-stats.jsonl`, so `gobstopper proxy status`
   reports estimated-token totals for this run and all time across restarts.
   `GOBSTOPPER_STATS_FILE` overrides the path; set it to `off` to disable the
