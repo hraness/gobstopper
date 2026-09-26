@@ -5133,6 +5133,20 @@
       "effects": [
         "pure"
       ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/jev.rs",
+      "symbol": "env_key",
+      "effects": [
+        "credential-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/ux.rs",
+      "symbol": "write_stdout",
+      "effects": [
+        "output"
+      ]
     }
   ],
   "library_scan_scope": "Every public or crate-visible fn declaration before inline mod tests in Rust src files. Includes private-module methods/test-only helper declarations conservatively; enclosing profiles cover private implementations, trait methods and external code. An unchanged symbol gaining effects still requires manual review."
