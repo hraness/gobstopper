@@ -13,6 +13,7 @@ import {
   ProductHero,
   ProviderMarkChip,
 } from "@hraness/design-kit/react/server";
+import { product, type PortfolioProductId } from "@hraness/design-kit/portfolio";
 
 import { SiteHeader, SiteFooter } from "./_components/site-chrome";
 import { HeroField } from "./hero-field";
@@ -24,6 +25,12 @@ function TopicIcon({ slug }: Readonly<{ slug: string }>) {
   return (
     <img className="gobstopper-topic-icon" src={`/icons/${slug}.svg`} alt="" aria-hidden="true" width="88" height="88" loading="lazy" decoding="async" />
   );
+}
+
+/** A related-product card from the portfolio snapshot: mark, name, and one-line role. */
+function related(id: PortfolioProductId, name: string) {
+  const { canonicalUrl, mark, oneLiner } = product(id);
+  return { href: canonicalUrl, mark, name, role: oneLiner };
 }
 
 const releaseVersion = publishedRelease?.version;
@@ -353,54 +360,19 @@ gobstopper plan <session> --trigger 250000`}</code></pre>
                 headingId: "related-tools",
                 summary: "Tools for the accounts, web reads, and models your agent runs on.",
                 items: [
-                  {
-                    name: "Ghostget",
-                    href: "https://ghostget.com",
-                    role: "Named web actions for AI agents: read pages, save media, use connected accounts",
-                    relationship: "Ghostget gives the agent you already use a fixed list of reviewed web actions: read a page, save one media item, or act in a connected account. Your agent never sees your credentials and never steers a browser.",
-                  },
-                  {
-                    name: "xcb",
-                    href: "https://xcb.sh",
-                    role: "Routes coding tasks across the Claude, Codex, and Devin plans you have",
-                    relationship: "xcb uses Gobstopper's elision policy to drop stale tool output from Claude Code and Codex prompts once context passes a threshold, and keeps the original output in local history. It is on by default.",
-                  },
-                  {
-                    name: "AI Charts",
-                    href: "https://aicharts.io",
-                    role: "Model benchmark scores plotted against cost and tokens per task",
-                    relationship: "AI Charts plots published AI benchmark scores against cost and tokens per task, marking the best score at every budget. A local collector measures your own agents' token use.",
-                  },
+                  related("wrench", "Ghostget"),
+                  related("xcb", "xcb"),
+                  related("aicharts", "AI Charts"),
                 ],
               },
               {
                 heading: "The personal apps",
                 headingId: "related-apps",
                 items: [
-                  {
-                    name: "PeopleBlade",
-                    href: "https://peopleblade.com",
-                    role: "Local personal CRM for everyone you know, built for your agent",
-                    relationship: "PeopleBlade brings your contacts from Apple Contacts, iMessage, Google Contacts, WhatsApp, LinkedIn, and more into one private book on your computer. Keep notes beside each person, and let your agent search the book from the command line.",
-                  },
-                  {
-                    name: "Soulscrape",
-                    href: "https://soulscrape.com",
-                    role: "Free agent skill that writes dated dossiers on people, sources cited",
-                    relationship: "Soulscrape is a free agent skill that writes a dated dossier on how a person decides, writes, argues, and changes their mind, with every claim tied to its sources. Keep it private, or publish it.",
-                  },
-                  {
-                    name: "Textbutler",
-                    href: "https://textbutler.app",
-                    role: "AI butler for the iMessage, WhatsApp, and Beeper chats you choose",
-                    relationship: "Textbutler is an AI butler for the iMessage, WhatsApp, and Beeper chats you choose on your Mac. Turn it on for one person, and it replies as a clearly marked assistant that knows your history with them.",
-                  },
-                  {
-                    name: "Wordcell",
-                    href: "https://wordcell.io",
-                    role: "Markdown knowledge base that gives agents the decisions behind code",
-                    relationship: "Wordcell keeps decisions, plans, and sources as Markdown files beside your code. Coding agents find them by exact words, by meaning with an optional local model, or from the file they are about to change.",
-                  },
+                  related("peopleblade", "PeopleBlade"),
+                  related("soulscrape", "Soulscrape"),
+                  related("message-like-me", "Textbutler"),
+                  related("kb", "Wordcell"),
                 ],
               },
             ]}
