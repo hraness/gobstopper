@@ -853,6 +853,100 @@ fn a_1m_request_is_compacted_at_the_1m_threshold_without_a_raise() {
 }
 
 #[test]
+fn a_request_under_a_raised_threshold_is_logged_and_recorded() {
+    let dir = scratch_dir("raised-threshold-log");
+    let (log, stats) = (dir.join("proxy.log"), dir.join("proxy-stats.jsonl"));
+    let fake = Fake::start(|_| Reply::Sse(sse_events()));
+    let url = fake.url();
+    let proxy = start_proxy_inner(
+        &url,
+        &url,
+        &url,
+        &["--threshold", "2000"],
+        &[("GOBSTOPPER_STATS_FILE", stats.to_str().unwrap())],
+        Stdio::from(std::fs::File::create(&log).unwrap()),
+    );
+    // A head of about 3,000 estimated tokens raises the threshold to about
+    // 4,000, so a request of about 3,500 is over 2,000 but sent unchanged.
+    let mut messages = session(1);
+    messages[0] = json!({"role": "user", "content": "Y".repeat(12_000)});
+    let sent = body(&messages);
+    let response = request(proxy.port, "POST", "/v1/messages", ANTHROPIC, &sent);
+    assert_eq!(response.status, 200);
+    assert_eq!(fake.seen()[0].body, sent);
+    drop(proxy);
+
+    let lines = std::fs::read_to_string(&log).unwrap();
+    let unchanged: Vec<&str> = lines
+        .lines()
+        .filter(|l| l.contains("sent unchanged at ~"))
+        .collect();
+    assert_eq!(unchanged.len(), 1, "{lines}");
+    assert!(
+        unchanged[0].contains("under the threshold raised to ~4k by a large verbatim head"),
+        "{lines}"
+    );
+    assert!(!lines.contains("YYYY"), "content is never logged: {lines}");
+    let record: Value = serde_json::from_str(
+        std::fs::read_to_string(&stats)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["compacted"], false, "{record}");
+    let threshold = record["threshold_tokens"].as_u64().unwrap();
+    assert!(
+        threshold > record["est_tokens_in"].as_u64().unwrap(),
+        "{record}"
+    );
+    assert!(threshold > 2000, "{record}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_request_with_nothing_to_compact_is_logged_as_such() {
+    let dir = scratch_dir("nothing-to-compact-log");
+    let log = dir.join("proxy.log");
+    let fake = Fake::start(|_| Reply::Sse(sse_events()));
+    let url = fake.url();
+    let proxy = start_proxy_inner(
+        &url,
+        &url,
+        &url,
+        &["--threshold", "2000"],
+        &[],
+        Stdio::from(std::fs::File::create(&log).unwrap()),
+    );
+    // A short head and one long recent turn: over 2,000 with no older turn to
+    // summarize, so the request goes out unchanged over an unraised threshold.
+    let messages = vec![
+        json!({"role": "user", "content": "task"}),
+        json!({"role": "assistant", "content": "Z".repeat(12_000)}),
+        json!({"role": "user", "content": "continue"}),
+    ];
+    let sent = body(&messages);
+    let response = request(proxy.port, "POST", "/v1/messages", ANTHROPIC, &sent);
+    assert_eq!(response.status, 200);
+    assert_eq!(fake.seen()[0].body, sent);
+    drop(proxy);
+
+    let lines = std::fs::read_to_string(&log).unwrap();
+    let unchanged: Vec<&str> = lines
+        .lines()
+        .filter(|l| l.contains("sent unchanged at ~"))
+        .collect();
+    assert_eq!(unchanged.len(), 1, "{lines}");
+    assert!(
+        unchanged[0].contains("over the ~2k threshold with nothing to compact"),
+        "{lines}"
+    );
+    assert!(!lines.contains("ZZZZ"), "content is never logged: {lines}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_strict_refusal_names_the_selected_threshold() {
     let fake = Fake::start(|_| Reply::Json(200, json!({"ok": true})));
     let proxy = start_proxy(

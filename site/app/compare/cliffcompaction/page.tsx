@@ -70,8 +70,10 @@ export default function CompareCliffCompaction() {
             Completions dialects, covering Claude Code, Codex, opencode, Crush,
             Aider, Goose, and other agents with a configurable provider address.
             Gobstopper&apos;s file commands prepare compacted copies of saved
-            sessions that you inspect and then resume. The proxy ships in
-            tagged releases; the Chat Completions dialect lands in 0.4.0.
+            sessions that you inspect and then resume. The proxy has shipped
+            since v0.3.1 and the Chat Completions dialect since v0.4.0; the
+            tail budget and the 1M-window threshold described below are on
+            the main branch until the next release.
           </p>
 
           <h2>What CliffCompaction does</h2>
@@ -92,11 +94,19 @@ export default function CompareCliffCompaction() {
             discarded; the authors call this never compacting a compaction.
           </p>
           <p>
-            The paper reports up to 50% lower cost at a bounded context with
+            Each compacted request is smaller, and between compactions every
+            request repeats the same compacted prefix, so the provider&apos;s
+            prompt cache keeps matching until the next compaction. The paper
+            reports up to 50% lower cost at a bounded context with
             maintained or improved Terminal-Bench 2.0 results for the Kimi and
             GLM models the authors tested, plus SWE-bench Verified and
-            KernelBench results. Those are the authors&apos; figures for their
-            proxy. Gobstopper has not run those benchmarks.
+            KernelBench results. In one Terminal-Bench 2.1 run through Claude
+            Code with a GLM model, their proxy scored 76.69% against 70.97%
+            for Claude Code&apos;s own auto-compaction. The cost figures model
+            perfect prompt caching rather than metered bills, and the authors
+            report that the benefit depends on the agent and the task. Those
+            are the authors&apos; figures for their proxy. Gobstopper has not
+            run those benchmarks.
           </p>
 
           <h2>What Gobstopper does</h2>
@@ -181,9 +191,11 @@ keep_recent_tool_outputs = 0`}</code></pre>
           <p>
             Use CliffCompaction for request-time compaction in any client that
             speaks the Anthropic Messages, OpenAI Chat Completions, or OpenAI
-            Responses API. Use <code>gobstopper proxy</code> for Claude Code or
-            Codex when you also want to replay a recorded session and see what
-            the proxy would have sent. Use Gobstopper&apos;s file commands to
+            Responses API. Use <code>gobstopper proxy</code> for the same
+            dialects when you want a single Rust binary, a tail that keeps
+            more recent turns while they fit, and{" "}
+            <code>proxy replay</code> to see what the proxy would have sent
+            for a recorded Claude Code or Codex session. Use Gobstopper&apos;s file commands to
             compare strategies on frozen input, keep the exact source, and
             resume a smaller copy. Run one proxy per client.
           </p>
