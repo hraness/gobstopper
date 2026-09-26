@@ -5,6 +5,7 @@
 @import "@hraness/design-kit/palettes.css";
 @import "@hraness/design-kit/product-marketing.css";
 @import "@hraness/design-kit/plain-publication.css";
+@import "@hraness/design-kit/typography.css";
 
 @import "../vendor/paper-theme/paper-theme.css";
 @import "@hraness/design-kit/palette-system.css";
@@ -17,10 +18,19 @@
   --hraness-site-accent-ink: var(--primary-foreground);
   --inverse-background: #14202a;
   --gobstopper-code-foreground: #eef2ea;
-  --hraness-marketing-display-font: var(--font-text);
   --font-heading: var(--font-text);
   font-synthesis: none;
   line-height: 1.55;
+}
+
+/* Gobstopper sets every heading in its sans text face, including h1 and h2.
+ * The editorial preset declares its serif display face on the element that
+ * carries `data-hraness-marketing-preset`, so a value on :root alone never
+ * reaches the homepage; the override sits on both. */
+:root,
+[data-hraness-marketing-preset="editorial"] {
+  --hraness-marketing-display-font: var(--font-text);
+  --hraness-marketing-display-weight: 600;
 }
 
 * {
@@ -199,9 +209,9 @@ a { text-underline-offset: 0.2em; }
 .document-page th, .document-page td { border-bottom: 1px solid var(--line); padding: 0.5rem 0.6rem; text-align: left; vertical-align: top; }
 .document-nav { display: flex; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem; font-size: 0.95rem; }
 
-.document-page h1 { margin: 1.75rem 0 1rem; font-size: var(--hraness-paper-heading-size); font-weight: 600; }
-.document-page h2 { font-size: var(--hraness-paper-section-heading-size); font-weight: 600; margin-bottom: 1rem; }
-.document-page h3 { font-size: 1.25rem; font-weight: 600; margin: 1.75rem 0 0.75rem; }
+.document-page h1 { margin: 1.75rem 0 1rem; font-family: var(--hraness-type-h1-font); font-size: var(--hraness-type-h1-size); font-weight: var(--hraness-type-h1-weight); }
+.document-page h2 { font-family: var(--hraness-type-h2-font); font-size: var(--hraness-type-h2-size); font-weight: var(--hraness-type-h2-weight); margin-bottom: 1rem; }
+.document-page h3 { font-family: var(--hraness-type-h3-font); font-size: var(--hraness-type-h3-size); font-weight: var(--hraness-type-h3-weight); margin: 1.75rem 0 0.75rem; }
 .document-page p { margin: 1rem 0; }
 .document-page pre { margin: 1.25rem 0; }
 .document-page article a { text-decoration: underline; }
@@ -350,9 +360,10 @@ a { text-underline-offset: 0.2em; }
 .gob-sawtooth-swatch--pro { background: var(--muted); }
 .gob-sawtooth-swatch--gob { background: var(--hraness-site-accent); }
 
-.gobstopper-marketing-hero .hraness-marketing-hero__heading { font-family: var(--font-text); font-weight: 600; font-size: clamp(2.8rem, 4.8vw, 4.5rem); line-height: 1.06; letter-spacing: -.05em; }
+/* A deliberately larger hero than the shared h1 token, in the same face. */
+.gobstopper-marketing-hero .hraness-marketing-hero__heading { font-size: clamp(2.8rem, 4.8vw, 4.5rem); line-height: 1.06; letter-spacing: -.05em; }
 .document-page { font-size: 1rem; line-height: 1.75; }
-.document-page :is(h1, h2, h3) { font-family: var(--font-text); letter-spacing: -.025em; }
+.document-page :is(h1, h2, h3) { letter-spacing: -.025em; }
 
 /* Keep the appearance panel inside the viewport when navigation wraps. */
 @media (max-width: 48rem) {
