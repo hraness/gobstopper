@@ -70,6 +70,10 @@ launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/sh.gobstopper.proxy.plis
 gobstopper proxy status
 ```
 
+Pass `--proxy 8260` to `scripts/monitor.py` so each observation pass also
+probes `proxy status`; a dead proxy lane then fails the monitor check instead
+of silently breaking clients that route through it.
+
 After upgrading the binary, restart it with
 `launchctl kickstart -k gui/$(id -u)/sh.gobstopper.proxy`.
 

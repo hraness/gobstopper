@@ -1188,11 +1188,11 @@
         {
           "state": "process_state",
           "mode": "spawn",
-          "condition": "Bounded report or watch --dry-run with heuristic scorer and empty config."
+          "condition": "Bounded report, watch --dry-run or proxy status child with heuristic scorer and empty config."
         }
       ],
       "outbound": [],
-      "authority": "Explicit monitor request; child environment clears GOBSTOPPER_* overrides, forces heuristic scorer and uses an empty private config root. No provider-call option exists.",
+      "authority": "Explicit monitor request; child environment clears GOBSTOPPER_* overrides, forces heuristic scorer and uses an empty private config root. The optional --proxy probe adds a `proxy status` child that reads the selected loopback port; no provider-call option exists.",
       "invariants": [
         "READ-1",
         "RES-1",

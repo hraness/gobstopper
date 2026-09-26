@@ -319,6 +319,7 @@
         "MonitorTests.test_realistic_samples_are_private_allowlisted_and_nonmutating",
         "MonitorTests.test_context_samples_respect_allowlist_and_provider_opt_in",
         "MonitorTests.test_provider_opt_in_needs_no_session_allowlist",
+        "MonitorTests.test_proxy_probe_is_opt_in_bounded_and_health_checked",
         "MonitorTests.test_unavailable_fields_and_compaction_boundary_are_not_zero_savings",
         "MonitorTests.test_closed_session_compact_passthrough",
         "MonitorTests.test_retention_summary_counts_allowlisted_events_and_flags_lossy",

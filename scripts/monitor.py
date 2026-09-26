@@ -798,13 +798,15 @@ def retention_summary(log_path, selected):
     return out
 
 
-def observe(binary, output_dir, sessions, providers=()):
+def observe(binary, output_dir, sessions, providers=(), proxy_port=None):
     if len(sessions) > 128 or any(not SESSION_ID.fullmatch(s) for s in sessions):
         raise MonitorError("invalid_sessions")
     if not sessions and not providers:
         raise MonitorError("no_sessions_or_providers")
     if len(providers) > 8 or any(p not in ("codex", "claude_code") for p in providers):
         raise MonitorError("invalid_providers")
+    if proxy_port is not None and (type(proxy_port) is not int or not 1 <= proxy_port <= 65535):
+        raise MonitorError("invalid_proxy_port")
     sessions = list(dict.fromkeys(sessions))
     executable, digest = binary_hash(binary)
     directory = open_directory(output_dir)
@@ -847,6 +849,23 @@ def observe(binary, output_dir, sessions, providers=()):
                 [str(executable), "watch", "--dry-run", "--active-only", "--once",
                  "--eval-budget", str(TIMEOUT_SECONDS - 7)],
                 environment, time.monotonic() + TIMEOUT_SECONDS)
+            proxy_status = {"monitored": False, "available": False, "error": None}
+            if proxy_port is not None:
+                proxy_status, stdout, _ = run_command(
+                    [str(executable), "proxy", "status", "--json",
+                     "--port", str(proxy_port)],
+                    environment, time.monotonic() + TIMEOUT_SECONDS)
+                proxy_status["monitored"] = True
+                proxy_status["available"] = proxy_status["error"] is None
+                if proxy_status["available"]:
+                    try:
+                        status = strict_json(stdout)
+                        if not isinstance(status, dict):
+                            raise ValueError()
+                        proxy_status["status"] = status
+                    except (ValueError, UnicodeError, RecursionError):
+                        proxy_status.update({"status": None, "available": False,
+                                             "error": "invalid_proxy_status"})
         # watch reports per-session failures on stderr but can still exit 0.
         # Classify only its known diagnostic shapes; never retain their text.
         if watch_status["error"] is None and any(WATCH_FAILURE.match(line) for line in stderr.splitlines()):
@@ -888,6 +907,7 @@ def observe(binary, output_dir, sessions, providers=()):
             "attribution": "unknown_context_drops_are_not_gobstopper_savings",
             "report": report_status,
             "watch": watch_status,
+            "proxy": proxy_status,
             "sessions": session_rows(report, sessions, previous),
             "context_samples": samples,
             "coverage": coverage,
@@ -911,11 +931,15 @@ def main():
                         help="track this codex session id in detail")
     parser.add_argument("--provider", action="append", default=[],
                         help="also observe every active session of this provider")
+    parser.add_argument("--proxy", type=int, metavar="PORT",
+                        help="also probe `gobstopper proxy status` on this loopback port")
     args = parser.parse_args()
     handlers = {kind: signal.signal(kind, interrupt) for kind in (signal.SIGTERM, signal.SIGINT)}
     try:
-        observation = observe(args.binary, args.output_dir, args.session, args.provider)
-        error = observation["report"]["error"] or observation["watch"]["error"]
+        observation = observe(args.binary, args.output_dir, args.session, args.provider,
+                              args.proxy)
+        error = (observation["report"]["error"] or observation["watch"]["error"]
+                 or observation["proxy"].get("error"))
     except MonitorInterrupted:
         error = "interrupted"
     except MonitorError as failure:
