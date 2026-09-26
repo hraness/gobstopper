@@ -1067,7 +1067,7 @@
         }
       ],
       "outbound": [],
-      "authority": "Explicit `gobstopper apple install`; the target is GOBSTOPPER_APPLE_BRIDGE or ~/.local/share/gobstopper/apple-bridge. `apple status` only runs the resolved helper's --check.",
+      "authority": "Explicit `gobstopper apple install`; the target is GOBSTOPPER_APPLE_BRIDGE, else an existing apple-bridge next to the gobstopper binary, else ~/.local/share/gobstopper/apple-bridge, so the helper it builds is the one resolution finds. `apple status` only runs the resolved helper's --check.",
       "invariants": [
         "READ-1",
         "PRIV-1",
@@ -3869,16 +3869,16 @@
     },
     {
       "path": "crates/gobstopper-cli/src/apple.rs",
-      "symbol": "default_install_path",
+      "symbol": "excerpt",
       "effects": [
         "pure"
       ]
     },
     {
       "path": "crates/gobstopper-cli/src/apple.rs",
-      "symbol": "excerpt",
+      "symbol": "install_target",
       "effects": [
-        "pure"
+        "inspect"
       ]
     },
     {

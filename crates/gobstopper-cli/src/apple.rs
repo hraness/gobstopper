@@ -22,18 +22,40 @@ use sha2::{Digest, Sha256};
 
 /// Resolve an installed bridge without invoking a compiler or changing files.
 pub(crate) fn resolve_bridge() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("GOBSTOPPER_APPLE_BRIDGE") {
-        let path = PathBuf::from(path);
+    if let Some(path) = explicit_bridge() {
         return path.is_file().then_some(path);
     }
-    if let Ok(exe) = std::env::current_exe() {
-        let sibling = exe.parent()?.join("apple-bridge");
-        if sibling.is_file() {
-            return Some(sibling);
-        }
+    if let Some(sibling) = sibling_bridge().filter(|path| path.is_file()) {
+        return Some(sibling);
     }
     let installed = default_install_path()?;
     installed.is_file().then_some(installed)
+}
+
+/// Where `gobstopper apple install` builds, chosen so the helper it builds
+/// is the one [`resolve_bridge`] finds next: `GOBSTOPPER_APPLE_BRIDGE`, else
+/// an existing helper next to the binary, else
+/// `~/.local/share/gobstopper/apple-bridge`.
+pub(crate) fn install_target() -> Option<PathBuf> {
+    if let Some(path) = explicit_bridge() {
+        return Some(path);
+    }
+    if let Some(sibling) = sibling_bridge().filter(|path| path.is_file()) {
+        return Some(sibling);
+    }
+    default_install_path()
+}
+
+/// `GOBSTOPPER_APPLE_BRIDGE`, when set and nonempty.
+fn explicit_bridge() -> Option<PathBuf> {
+    std::env::var_os("GOBSTOPPER_APPLE_BRIDGE")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+}
+
+fn sibling_bridge() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    Some(exe.parent()?.join("apple-bridge"))
 }
 
 pub(crate) fn timeout_ms() -> u64 {
@@ -44,9 +66,8 @@ pub(crate) fn timeout_ms() -> u64 {
         .clamp(100, 600_000)
 }
 
-/// Where `gobstopper apple install` puts the helper when
-/// `GOBSTOPPER_APPLE_BRIDGE` is unset.
-pub(crate) fn default_install_path() -> Option<PathBuf> {
+/// `~/.local/share/gobstopper/apple-bridge`.
+fn default_install_path() -> Option<PathBuf> {
     std::env::var_os("HOME")
         .filter(|home| !home.is_empty())
         .map(|home| PathBuf::from(home).join(".local/share/gobstopper/apple-bridge"))

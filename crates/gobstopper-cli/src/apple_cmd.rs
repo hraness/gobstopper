@@ -32,9 +32,9 @@ pub enum AppleCmd {
     ///
     /// Needs macOS 26 on Apple silicon and Xcode 26 or Apple's command line
     /// tools. It checks for the tools first and never opens the macOS
-    /// install dialog. The helper goes to
-    /// ~/.local/share/gobstopper/apple-bridge, or to GOBSTOPPER_APPLE_BRIDGE
-    /// when that is set.
+    /// install dialog. The helper goes to GOBSTOPPER_APPLE_BRIDGE when that
+    /// is set, else replaces an apple-bridge next to gobstopper, else goes to
+    /// ~/.local/share/gobstopper/apple-bridge.
     Install {
         /// Rebuild even when the helper is already current.
         #[arg(long)]
@@ -366,10 +366,7 @@ impl Host for SystemHost {
         crate::apple::resolve_bridge()
     }
     fn default_target(&self) -> Option<PathBuf> {
-        match std::env::var_os("GOBSTOPPER_APPLE_BRIDGE").filter(|p| !p.is_empty()) {
-            Some(path) => Some(PathBuf::from(path)),
-            None => crate::apple::default_install_path(),
-        }
+        crate::apple::install_target()
     }
     fn platform(&self) -> apple_foundation::Result<()> {
         apple_foundation::platform_check()

@@ -776,9 +776,10 @@ gobstopper apple status    # says whether Apple's model is ready, and what to do
 them first: when they are missing it prints `xcode-select --install` and stops,
 so the macOS install dialog never appears unannounced. Compiler output goes to
 `apple-bridge-build.log` next to the helper instead of your terminal. Set
-`GOBSTOPPER_APPLE_BRIDGE` to install to, or use, a different path; a helper
-named `apple-bridge` next to the `gobstopper` binary also works. Scoring and
-`plan` never build the helper themselves.
+`GOBSTOPPER_APPLE_BRIDGE` to install to, or use, a different path. A helper
+named `apple-bridge` next to the `gobstopper` binary is used before the one in
+`~/.local/share`, and `apple install` rebuilds that one when it exists. Scoring
+and `plan` never build the helper themselves.
 
 When Apple's model can't be used, the scorer says why once and uses the
 built-in scorer: Apple Intelligence is off, the model is still downloading,
