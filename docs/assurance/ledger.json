@@ -304,7 +304,7 @@
       "id": "E-PLAN",
       "kind": "specification",
       "revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
-      "scope": "Acceptance obligations C1\u2013C15; an assigned gate is not completed evidence.",
+      "scope": "Acceptance obligations C1–C15; an assigned gate is not completed evidence.",
       "bounds": "No production proof inferred from the roadmap.",
       "references": [
         {
@@ -342,7 +342,7 @@
       "id": "E-FOUNDATION-SOURCE",
       "kind": "source_review",
       "revision": "current-source; delivery revision recorded by PR 90",
-      "scope": "C2\u2013C14 implementation and independent phase reviews recorded in the plan; public effect classifications track current source.",
+      "scope": "C2–C14 implementation and independent phase reviews recorded in the plan; public effect classifications track current source.",
       "bounds": "Source review and test definitions do not replace a fresh exact-candidate aggregate gate or provider qualification.",
       "references": [
         {
@@ -379,8 +379,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-25-core-r20.json",
-        "sha256": "d00cba7980496ec1d36ede8cccce10e94b0f2375518e54be405d139cdee67d03"
+        "path": "docs/assurance/receipts/2026-09-26-core-apple.json",
+        "sha256": "ca1672f6743fe2e4abd444ccdc9637505eb9b8d7f580ea95c2534e4a754abb3c"
       }
     },
     {
@@ -442,8 +442,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-26-transcript.json",
-        "sha256": "87d2f35c6b3e9472539e4b77f72bbc01191594a9cf90482eb7d565cb8279304d"
+        "path": "docs/assurance/receipts/2026-09-26-transcript-apple.json",
+        "sha256": "edc0db8cc8136eae7b3706d889ace8393fa37bc5604617f5682499d7e6cbe057"
       }
     },
     {
@@ -463,8 +463,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-26-stress.json",
-        "sha256": "527ac2a614e604e31f120d98fd49be99186a9877687356d298fbb237ed2f1909"
+        "path": "docs/assurance/receipts/2026-09-26-stress-apple.json",
+        "sha256": "b7b45a8984ecf2bbd31f01ec5ac73678c333dc7c87940fd74654f950b755edaf"
       }
     }
   ],
