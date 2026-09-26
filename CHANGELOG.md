@@ -2,9 +2,9 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
-## Unreleased
+## v0.5.0 - 2026-09-26
 
-The request proxy keeps more of the agent's recent work after each compaction, and Claude Code requests that use a 1M-token window get their own threshold.
+The request proxy keeps more of the agent's recent work after each compaction, and Claude Code requests that use a 1M-token window get their own threshold. `gobstopper proxy install` starts the proxy at login, `gobstopper apple` sets up Apple's on-device model, and help, errors and empty states now say what to do next.
 
 - `proxy serve`, `proxy run` and `proxy replay` keep a recent tail sized by `--keep-tail-percent` (default 40, from 0 to 60) of the room below the threshold, instead of only the last `--keep-recent` turns. `--keep-tail-percent 0` keeps the previous tail.
 - Anthropic requests whose `anthropic-beta` header lists a `context-1m` token use `--threshold-1m`: 256,000 estimated tokens by default, or `--threshold` if higher. Setting it equal to `--threshold` turns the split off.
