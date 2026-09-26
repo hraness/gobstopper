@@ -601,6 +601,210 @@ fn surgery_preserves_linkage_and_verify_clean(tc: TestCase) {
     }
 }
 
+/// The fault-drawn analogue of `surgery_preserves_linkage_and_verify_clean`:
+/// in addition to the normal surgery ops, each step may draw a storage or
+/// concurrency fault — a truncated/corrupted transcript healed by vault
+/// restore, a provider append racing surgery planned on stale indexes, an
+/// apply that must refuse malformed targets without touching bytes, or a
+/// repeated restore. After every fault the recovered file must verify
+/// clean with linkage intact.
+#[hegel::test(test_cases = 64, suppress_health_check = [hegel::HealthCheck::TooSlow])]
+fn surgery_survives_drawn_faults(tc: TestCase) {
+    let provider = if tc.draw(gs::booleans()) {
+        Provider::Codex
+    } else {
+        Provider::ClaudeCode
+    };
+    let dir = tmpdir("surgery-faults");
+    let path = dir.join(match provider {
+        Provider::Codex => "rollout.jsonl",
+        Provider::ClaudeCode => "session.jsonl",
+    });
+    let vault_root = dir.join("vault");
+
+    let mut lines = match provider {
+        Provider::Codex => gen_codex_transcript(&tc, tc.draw(gs::booleans())),
+        Provider::ClaudeCode => gen_claude_transcript(&tc),
+    };
+    write_lines(&path, &lines);
+    no_errors(provider, &path);
+
+    // Every snapshot taken so far, mapped to the bytes it must restore.
+    let mut snapshots: Vec<(String, Vec<u8>)> = Vec::new();
+    let take_snapshot = |path: &Path, vault_root: &Path, snapshots: &mut Vec<(String, Vec<u8>)>| {
+        let bytes = fs::read(path).unwrap();
+        let entry =
+            vault::snapshot(path, provider, "hegel-session", Some("hegel"), vault_root).unwrap();
+        snapshots.push((entry.sha256, bytes));
+    };
+
+    let steps = tc.draw(gs::integers::<usize>().min_value(1).max_value(12));
+    for _ in 0..steps {
+        match tc.draw(gs::integers::<u8>().max_value(5)) {
+            // Normal elide — also the stale-index target below.
+            0 => {
+                let indexes = draw_line_indexes(&tc, read_lines(&path).len());
+                let edits = vec![Edit::Elide {
+                    line_indexes: indexes,
+                    stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+                    per_item_stubs: Default::default(),
+                }];
+                match provider {
+                    Provider::Codex => transform_fixture(Provider::Codex, &path, &edits).unwrap(),
+                    Provider::ClaudeCode => {
+                        transform_fixture(Provider::ClaudeCode, &path, &edits).unwrap()
+                    }
+                };
+                no_errors(provider, &path);
+            }
+            // Digest inject — grows the tip.
+            1 => {
+                let edits = vec![Edit::InjectDigest {
+                    digest: gen_digest(&tc, read_lines(&path).len()),
+                }];
+                match provider {
+                    Provider::Codex => transform_fixture(Provider::Codex, &path, &edits).unwrap(),
+                    Provider::ClaudeCode => {
+                        transform_fixture(Provider::ClaudeCode, &path, &edits).unwrap()
+                    }
+                };
+                no_errors(provider, &path);
+            }
+            // Crash fault: snapshot, then truncate the transcript at a
+            // random byte boundary — an interrupted provider write — then
+            // (sometimes) attempt surgery on the damaged file, then heal
+            // from the vault. Restore must reproduce the exact bytes and
+            // verify must return to clean.
+            2 => {
+                take_snapshot(&path, &vault_root, &mut snapshots);
+                let before = snapshots.last().unwrap().1.clone();
+                let len = before.len();
+                let cut = tc.draw(gs::integers::<usize>().max_value(len - 1));
+                fs::write(&path, &before[..cut]).unwrap();
+                if tc.draw(gs::booleans()) {
+                    // Surgery on a damaged transcript may refuse; it must
+                    // never panic or make the damage unrecoverable.
+                    let indexes = draw_line_indexes(&tc, read_lines(&path).len().max(1));
+                    let edits = vec![Edit::Elide {
+                        line_indexes: indexes,
+                        stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+                        per_item_stubs: Default::default(),
+                    }];
+                    let _ = match provider {
+                        Provider::Codex => transform_fixture(Provider::Codex, &path, &edits),
+                        Provider::ClaudeCode => {
+                            transform_fixture(Provider::ClaudeCode, &path, &edits)
+                        }
+                    };
+                }
+                let sha = snapshots.last().unwrap().0.clone();
+                vault::restore(&sha, &path, &vault_root).unwrap();
+                assert_eq!(
+                    fs::read(&path).unwrap(),
+                    before,
+                    "vault restore did not heal the truncated transcript"
+                );
+                no_errors(provider, &path);
+            }
+            // Interleaved-writer fault: snapshot, the provider appends a
+            // record (indexes drawn before the append are now stale),
+            // surgery runs anyway. Either it refuses or it lands cleanly —
+            // afterwards the file must verify clean; if it failed, the
+            // snapshot still heals byte-identically.
+            3 => {
+                take_snapshot(&path, &vault_root, &mut snapshots);
+                let before = snapshots.last().unwrap().1.clone();
+                let stale = draw_line_indexes(&tc, read_lines(&path).len());
+                // Provider writes one more record before our apply runs.
+                let count = read_lines(&path).len();
+                let appended = match provider {
+                    Provider::Codex => serde_json::to_string(&json!({
+                        "timestamp": "2026-09-15T00:00:02Z", "type": "response_item",
+                        "ordinal": count as i64,
+                        "payload": {"type": "message", "role": "assistant",
+                            "content": [{"type": "output_text", "text": "more"}]}
+                    }))
+                    .unwrap(),
+                    Provider::ClaudeCode => {
+                        let last_uuid = lines.iter().rev().find_map(|l| {
+                            serde_json::from_str::<Value>(l).ok().and_then(|v| {
+                                v.get("uuid").and_then(Value::as_str).map(str::to_string)
+                            })
+                        });
+                        serde_json::to_string(&json!({
+                            "type": "user", "uuid": format!("f{count}"),
+                            "parentUuid": last_uuid, "sessionId": "s",
+                            "message": {"role": "user", "content": "race"}
+                        }))
+                        .unwrap()
+                    }
+                };
+                let mut grown = read_lines(&path);
+                grown.push(appended);
+                write_lines(&path, &grown);
+                let grown_bytes = fs::read(&path).unwrap();
+                let edits = vec![Edit::Elide {
+                    line_indexes: stale,
+                    stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+                    per_item_stubs: Default::default(),
+                }];
+                let outcome = match provider {
+                    Provider::Codex => transform_fixture(Provider::Codex, &path, &edits),
+                    Provider::ClaudeCode => transform_fixture(Provider::ClaudeCode, &path, &edits),
+                };
+                if outcome.is_err() {
+                    // Refusal must leave the grown file untouched, and the
+                    // snapshot must still heal back to pre-append bytes.
+                    assert_eq!(fs::read(&path).unwrap(), grown_bytes);
+                    let sha = snapshots.last().unwrap().0.clone();
+                    vault::restore(&sha, &path, &vault_root).unwrap();
+                    assert_eq!(fs::read(&path).unwrap(), before);
+                }
+                no_errors(provider, &path);
+            }
+            // Malformed-target fault: an apply against out-of-range or
+            // duplicate indexes must fail without touching the file.
+            4 => {
+                let before = fs::read(&path).unwrap();
+                let n = read_lines(&path).len();
+                let bad = vec![n + tc.draw(gs::integers::<usize>().max_value(7)) + 1];
+                let edits = vec![Edit::Elide {
+                    line_indexes: bad,
+                    stub_template: "[elided {bytes} bytes of {kind}]".to_string(),
+                    per_item_stubs: Default::default(),
+                }];
+                let _ = match provider {
+                    Provider::Codex => transform_fixture(Provider::Codex, &path, &edits),
+                    Provider::ClaudeCode => transform_fixture(Provider::ClaudeCode, &path, &edits),
+                };
+                assert_eq!(
+                    fs::read(&path).unwrap(),
+                    before,
+                    "a refused apply still rewrote the file"
+                );
+                no_errors(provider, &path);
+            }
+            // Restore storm: replay any earlier snapshot, then the latest;
+            // the newest one wins byte-identically.
+            _ => {
+                if snapshots.is_empty() {
+                    take_snapshot(&path, &vault_root, &mut snapshots);
+                    continue;
+                }
+                let i = tc.draw(gs::integers::<usize>().max_value(snapshots.len() - 1));
+                vault::restore(&snapshots[i].0, &path, &vault_root).unwrap();
+                assert_eq!(fs::read(&path).unwrap(), snapshots[i].1);
+                let (sha, bytes) = snapshots.last().cloned().unwrap();
+                vault::restore(&sha, &path, &vault_root).unwrap();
+                assert_eq!(fs::read(&path).unwrap(), bytes);
+                no_errors(provider, &path);
+            }
+        }
+        lines = read_lines(&path);
+    }
+    let _ = lines;
+}
+
 /// Regression for a shrunk failure: eliding a Codex `output` at or under
 /// the 256-byte floor rewrote it into a stub *larger* than the original
 /// and double-application churned `{bytes}` — so `watch` would rewrite the
