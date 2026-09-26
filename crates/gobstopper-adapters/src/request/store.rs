@@ -1,12 +1,12 @@
 //! Prefix store: chain hash of an original prefix -> its compacted
-//! replacement. An entry holds only `(head_len, summary, cut)` and the base
-//! threshold it was computed under; the substitution for a request
-//! extending that prefix is `messages[..head_len] + [summary] +
-//! messages[cut..]`, with head bytes taken from the current request so
-//! volatile fields are never replayed stale. The store is a cache:
-//! compaction is deterministic for one base threshold, so an evicted entry
-//! is recomputed identically on demand, and an entry from another threshold
-//! is never substituted.
+//! replacement. An entry holds only `(head_len, summary, cut)`, the base
+//! threshold it was computed under, and the conversation's carried words
+//! for the next compaction; the substitution for a request extending that
+//! prefix is `messages[..head_len] + [summary] + messages[cut..]`, with
+//! head bytes taken from the current request so volatile fields are never
+//! replayed stale. The store is a cache: compaction is deterministic for
+//! one base threshold, so an evicted entry is recomputed identically on
+//! demand, and an entry from another threshold is never substituted.
 
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
@@ -21,9 +21,14 @@ pub struct Entry {
     /// (`RequestCtx::base_threshold_tokens`). Requests under another
     /// threshold skip the entry.
     pub base_threshold_tokens: u64,
+    /// The words carried into the next compaction's summary, oldest first
+    /// (`CompactResult::carry`). Held in memory only; empty when carrying
+    /// is off or a truncated summary dropped part of its text.
+    pub carry: Vec<String>,
 }
 
-/// LRU cache bounded by total summary size and entry count.
+/// LRU cache bounded by entry count and total size: each entry's summary
+/// characters plus the characters of its carried parts.
 #[derive(Debug)]
 pub struct PrefixStore {
     max_entries: usize,
@@ -65,7 +70,12 @@ impl PrefixStore {
     }
 
     pub fn put(&mut self, key: String, entry: Entry) {
-        let size = super::json_chars(&entry.summary);
+        let size = super::json_chars(&entry.summary)
+            + entry
+                .carry
+                .iter()
+                .map(|part| part.chars().count())
+                .sum::<usize>();
         if let Some((_, old)) = self.entries.remove(&key) {
             self.bytes -= old;
             self.order.retain(|k| *k != key);
@@ -111,6 +121,7 @@ mod tests {
             summary: json!({"role": "user", "content": text}),
             cut: 3,
             base_threshold_tokens: 128_000,
+            carry: Vec::new(),
         }
     }
 
@@ -136,6 +147,36 @@ mod tests {
         store.put("b".into(), entry("z"));
         assert_eq!(store.len(), 1);
         assert_eq!(store.bytes(), json_size("z"));
+    }
+
+    #[test]
+    fn an_entrys_size_counts_its_carried_characters() {
+        let carried = |text: &str, carry: &[&str]| Entry {
+            carry: carry.iter().map(|part| part.to_string()).collect(),
+            ..entry(text)
+        };
+        let mut store = PrefixStore::new(10, usize::MAX);
+        // Characters, not bytes: "é" counts once.
+        store.put("a".into(), carried("s", &["user: abc", "assistant: dé"]));
+        assert_eq!(store.bytes(), json_size("s") + 9 + 13);
+        // Replacing the entry replaces its size.
+        store.put("a".into(), carried("s", &[]));
+        assert_eq!(store.bytes(), json_size("s"));
+
+        // The byte bound sees the carry: two entries whose summaries fit
+        // together but whose carries do not keep only the newest.
+        let bound = 2 * json_size("s") + 50;
+        let mut store = PrefixStore::new(10, bound);
+        store.put("a".into(), carried("s", &["x"]));
+        store.put("b".into(), carried("s", &["y"]));
+        assert_eq!(store.len(), 2);
+        store.put("c".into(), carried("s", &[&"z".repeat(60)]));
+        assert_eq!(store.len(), 1);
+        assert_eq!(
+            store.get("c").map(|entry| entry.carry),
+            Some(vec!["z".repeat(60)])
+        );
+        assert_eq!(store.bytes(), json_size("s") + 60);
     }
 
     fn json_size(text: &str) -> usize {

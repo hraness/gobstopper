@@ -3186,6 +3186,13 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/request/anthropic.rs",
+      "symbol": "carry_parts",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/anthropic.rs",
       "symbol": "digest_message",
       "effects": [
         "pure"
@@ -3222,6 +3229,13 @@
     {
       "path": "crates/gobstopper-adapters/src/request/anthropic.rs",
       "symbol": "user_message",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/chat.rs",
+      "symbol": "carry_parts",
       "effects": [
         "pure"
       ]
@@ -3460,6 +3474,13 @@
     {
       "path": "crates/gobstopper-adapters/src/request/replay.rs",
       "symbol": "replay",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/responses.rs",
+      "symbol": "carry_parts",
       "effects": [
         "pure"
       ]

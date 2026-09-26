@@ -448,8 +448,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-26-transcript-050.json",
-        "sha256": "872f84956d326cff2d19474033d33300ddb4267aafff13f17dd5cc628f4901a2"
+        "path": "docs/assurance/receipts/2026-09-26-transcript-carry.json",
+        "sha256": "4f595956cb204dad96c25a0be295b0dca7b057ea9d624f8d255df1fe7a0e1ae9"
       }
     },
     {
@@ -469,8 +469,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-26-stress-050.json",
-        "sha256": "3de49aeb026b0dc87ce142134c13d1dd0a49474e4fd5a2a73e6311657c8cbefa"
+        "path": "docs/assurance/receipts/2026-09-26-stress-carry.json",
+        "sha256": "bf17c3de8fd54cbd0a5cd47aceeb64de6aed157ccdb67f92e8f2f67a73f6bac9"
       }
     }
   ],

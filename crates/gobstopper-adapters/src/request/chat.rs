@@ -9,8 +9,8 @@
 //! `tool` message echoing its `tool_call_id`.
 
 use super::{
-    canonical_json, digest_value, sha256_hex, str_field, strip_task_notifications, truncate,
-    CliffConfig, SUMMARY_HEADER,
+    canonical_json, carry_assistant, carry_human, digest_value, sha256_hex, str_field,
+    strip_task_notifications, truncate, CliffConfig, SUMMARY_HEADER,
 };
 use serde_json::{json, Value};
 
@@ -216,6 +216,38 @@ pub fn summarize_message(message: &Value, cfg: &CliffConfig) -> Vec<String> {
     }
 }
 
+/// Text parts of `content`, or its string form, in order.
+fn text_parts(content: Option<&Value>) -> Vec<&str> {
+    match content {
+        Some(Value::String(text)) => vec![text.as_str()],
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter(|part| part.is_object())
+            .filter_map(part_text)
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The conversation's words in `messages`, oldest first, for the carried
+/// section of later summaries: the text of user messages and the
+/// assistant's visible text. System and developer messages, reasoning,
+/// tool calls, `tool` messages and prior summaries are never carried. Each
+/// message yields at most one text part, followed by one part per text part
+/// that is wholly a queued message.
+pub fn carry_parts(messages: &[Value]) -> Vec<String> {
+    let mut parts = Vec::new();
+    for message in messages.iter().filter(|m| !is_summary_message(m)) {
+        let texts = text_parts(message.get("content"));
+        match str_field(message, "role") {
+            "user" => parts.extend(carry_human(&texts)),
+            "assistant" => parts.extend(carry_assistant(&texts)),
+            _ => {}
+        }
+    }
+    parts
+}
+
 pub fn user_message(text: String) -> Value {
     json!({"role": "user", "content": text})
 }
@@ -223,7 +255,8 @@ pub fn user_message(text: String) -> Value {
 #[cfg(test)]
 mod tests {
     use super::super::fixtures::{
-        burst_results, chain_against_fresh, mixed_results, reconvergences, tail_cfg,
+        burst_results, carried, carry_cfg, chain_against_fresh, mixed_results, reconvergences,
+        tail_cfg, uncarried_cfg,
     };
     use super::super::{compact, Dialect};
     use super::*;
@@ -388,8 +421,9 @@ mod tests {
 
     #[test]
     fn a_rung_one_burst_reconverges_with_a_fresh_prepare() {
+        // Without a carry; the carried chain has its own test below.
         let steps = chain_against_fresh(
-            &tail_cfg(6_000),
+            &uncarried_cfg(6_000),
             Dialect::ChatCompletions,
             &stepped_bodies(90, burst_results),
         );
@@ -397,5 +431,127 @@ mod tests {
         assert!(reconvergences(&steps) >= 3);
         // After the last burst the chains agree for good.
         assert!(steps[60..].iter().all(|s| s.equal));
+    }
+
+    #[test]
+    fn carry_keeps_user_and_visible_assistant_text_of_a_chat_history() {
+        let messages = vec![
+            json!({"role": "system", "content": "you are an agent"}),
+            json!({"role": "developer", "content": [{"type": "text", "text": "be terse"}]}),
+            user_message(format!("{SUMMARY_HEADER}\n\nuser: old instruction")),
+            json!({"role": "user", "content": [
+                {"type": "text", "text": "Fix the bug."},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                {"type": "text", "text": "The log is attached."}
+            ]}),
+            json!({"role": "assistant", "reasoning_content": "private reasoning",
+                   "content": "Looking at the failing test.", "tool_calls": [{
+                "id": "call_0", "type": "function",
+                "function": {"name": "bash", "arguments": "{\"command\":\"cargo test\"}"}}]}),
+            tool(0, "test failed: overflow"),
+            json!({"role": "assistant", "content": [{"type": "text", "text": "Fixed the overflow."}]}),
+            user("<system-reminder>harness context</system-reminder>Thanks.\n---\nShip it."),
+        ];
+        assert_eq!(
+            carry_parts(&messages),
+            vec![
+                "user: Fix the bug.\nThe log is attached.",
+                "assistant: Looking at the failing test.",
+                "assistant: Fixed the overflow.",
+                "user: Thanks.\n- - -\nShip it.",
+            ]
+        );
+        let joined = carry_parts(&messages).join("\n");
+        for hidden in [
+            "you are an agent",
+            "be terse",
+            "old instruction",
+            "base64",
+            "private reasoning",
+            "cargo test",
+            "test failed",
+            "harness context",
+        ] {
+            assert!(!joined.contains(hidden), "{hidden} leaked");
+        }
+    }
+
+    #[test]
+    fn carry_of_a_compacted_chat_history_skips_the_summary() {
+        let mut messages = compact(&session(6, 2000), Dialect::ChatCompletions, &cfg(1))
+            .unwrap()
+            .messages;
+        assert!(messages.iter().any(is_summary_message));
+        messages.push(user(
+            "<task-notification>agent done</task-notification>Next task.",
+        ));
+        let parts = carry_parts(&messages);
+        assert!(parts.iter().all(|part| !part.contains(SUMMARY_HEADER)));
+        assert_eq!(parts.first().map(String::as_str), Some("user: fix the bug"));
+        assert_eq!(parts.last().map(String::as_str), Some("user: Next task."));
+    }
+
+    /// `stepped_bodies` with conversation: every fifth step is an assistant
+    /// reply and a user instruction instead of a tool call, so a carry holds
+    /// both.
+    fn talk_bodies(steps: usize, size: impl Fn(usize) -> usize) -> Vec<Map<String, Value>> {
+        let mut messages = vec![
+            json!({"role": "system", "content": "you are an agent"}),
+            user("fix the bug"),
+        ];
+        (0..steps)
+            .map(|i| {
+                if i % 5 == 4 {
+                    messages.push(json!({"role": "assistant",
+                        "content": format!("Reply {i}: part {i} is done.")}));
+                    messages.push(user(&format!("Instruction {i}: now take part {}.", i + 1)));
+                } else {
+                    messages.push(json!({"role": "assistant",
+                        "content": format!("step {i}: {}", "t".repeat(200)),
+                        "tool_calls": [{"id": format!("call_{i}"), "type": "function",
+                            "function": {"name": "bash", "arguments": format!("{{\"command\":\"s{i}\"}}")}}]}));
+                    messages.push(tool(i, &"R".repeat(size(i))));
+                }
+                let Value::Object(body) = json!({"model": "gpt-x", "messages": messages.clone()}) else {
+                    unreachable!()
+                };
+                body
+            })
+            .collect()
+    }
+
+    // C3-7: determinism with a nonempty carry.
+
+    #[test]
+    fn a_live_chain_with_a_carry_equals_a_fresh_prepare() {
+        let steps = chain_against_fresh(
+            &carry_cfg(12_000),
+            Dialect::ChatCompletions,
+            &talk_bodies(100, mixed_results),
+        );
+        let unequal: Vec<usize> = (0..steps.len()).filter(|&i| !steps[i].equal).collect();
+        assert!(unequal.is_empty(), "requests {unequal:?} differ");
+        assert!(steps.iter().filter(|s| s.compacted).count() >= 4);
+        assert!(steps.iter().all(|s| s.rung == 0));
+        // Nonempty carries and carried sections were compared.
+        assert!(carried(&steps) >= 20, "{}", carried(&steps));
+    }
+
+    #[test]
+    fn a_rung_one_burst_with_a_carry_reconverges_with_a_fresh_prepare() {
+        let steps = chain_against_fresh(
+            &carry_cfg(6_000),
+            Dialect::ChatCompletions,
+            &talk_bodies(90, burst_results),
+        );
+        assert!(steps.iter().any(|s| s.rung == 1));
+        assert!(reconvergences(&steps) >= 1);
+        let again = (1..steps.len())
+            .find(|&i| !steps[i - 1].equal && steps[i].equal)
+            .unwrap();
+        assert!(steps[again].carry_parts > 0, "request {again}");
+        // After the last burst the chains agree for good, carry included.
+        assert!(steps[60..].iter().all(|s| s.equal));
+        assert!(carried(&steps[60..]) >= 10, "{}", carried(&steps[60..]));
     }
 }

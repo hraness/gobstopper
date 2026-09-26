@@ -157,23 +157,29 @@ The summary keeps human and assistant text, keeps tool results of at most 500
 characters, and reduces each tool call to a one-line signature; longer tool
 results are dropped because the agent can read the file or rerun the command.
 The next compaction starts again from the history the client resends and
-discards the previous summary. Between compactions, requests reuse the same
-compacted prefix, so the provider's prompt cache can match it.
+discards the previous summary, but the human's words and the assistant's
+visible replies carry forward: each later summary opens with them, oldest
+first, up to 24,000 characters, and the oldest text drops out when they no
+longer fit. Between compactions, requests reuse the same compacted prefix,
+so the provider's prompt cache can match it.
 
-The kept turns carry the files and command output the agent read most
+The kept turns hold the files and command output the agent read most
 recently, which the summary drops once they pass 500 characters. Unless the
-newest `--keep-recent` turns alone need more, the summary and the kept turns
-fill at most 40% of that room, and the other 60% is left for new turns
-before the next compaction. `--keep-tail-percent` sets the share, from 0 to
-60, and `0` keeps exactly `--keep-recent` turns. Anthropic Messages requests
-that declare a 1M-token context window use a separate threshold,
+summary, with its carried text, and the newest `--keep-recent` turns need
+more, the summary and the kept turns fill at most 40% of that room, and the
+other 60% is left for new turns before the next compaction.
+`--keep-tail-percent` sets the share, from 0 to 60, and `0` keeps exactly
+`--keep-recent` turns. The carried words keep earlier instructions in view
+after the summary that held them is discarded; they use at most a quarter of
+that room, and `--carry-max-chars 0` turns carrying off. Anthropic Messages
+requests that declare a 1M-token context window use a separate threshold,
 `--threshold-1m`: 256,000 estimated tokens by default, or `--threshold` if
 that is higher. The proxy reads the window from the `anthropic-beta` header,
 where Claude Code sends a token starting with `context-1m` for a model such
 as `opus[1m]`, and never from the model name. Setting `--threshold-1m` equal
 to `--threshold` applies one threshold to every request. Keep each threshold
-below the point where the client compacts on its own, including any `claude
---autocompact` value.
+below the point where the client compacts on its own, including any
+`claude --autocompact` value.
 
 ```sh
 gobstopper proxy run -- claude            # one session through a temporary proxy
@@ -189,8 +195,8 @@ opencode, Crush, Aider, Goose), `proxy install` and `proxy uninstall`, and
 every setting.
 Flags: `--threshold` (keep it below the client's auto-compaction point),
 `--threshold-1m`, `--keep-recent`, `--keep-tail-percent`,
-`--result-max-chars`, `--drop-thinking`, `--shadow` (log what would change
-and forward everything unchanged), and `--strict`.
+`--result-max-chars`, `--carry-max-chars`, `--drop-thinking`, `--shadow`
+(log what would change and forward everything unchanged), and `--strict`.
 
 - The proxy listens on 127.0.0.1 and refuses requests addressed to other
   host names. It forwards through the system `curl` (8.3 or later) and hands
@@ -863,7 +869,8 @@ Kimi and GLM models they tested; those are the authors' benchmark figures, not
 measurements of Gobstopper.
 
 Gobstopper runs the same summary rule in its own proxy, keeps a larger recent
-tail by default, and also works on saved session files:
+tail and, by default, the conversation's words from the turns earlier
+compactions summarized, and also works on saved session files:
 
 | | CliffCompaction | Gobstopper |
 |---|---|---|
@@ -871,7 +878,7 @@ tail by default, and also works on saved session files:
 | Clients | Any client of the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses API | Any client of the same three dialects that accepts a custom provider address: Claude Code, Codex, opencode, Crush, Aider, Goose, and more |
 | What it changes | Each outgoing request, transparently, while the session runs | The proxy rewrites outgoing requests over the threshold; file commands publish a separate compacted copy and leave the source unchanged |
 | How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy applies the same summary rule and keeps at least the last three turns verbatim, plus older whole turns that fit in 40% of the room under the threshold; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
-| Recompaction | Rebuilt from the original history; the prior summary is discarded | The proxy rebuilds from the original history; `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy |
+| Recompaction | Rebuilt from the original history; the prior summary is discarded | The proxy rebuilds from the original history, and each summary keeps the human's words and the assistant's visible replies from the turns earlier compactions summarized, up to 24,000 characters; `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy |
 | What holds the originals | The agent's own history and the files on disk; the proxy keeps only an in-memory cache of compacted prefixes | For proxied requests, the agent's own transcript and an in-memory cache; for copies, a content-addressed vault with `search-snapshot` and `read-snapshot` |
 | Evidence published | Terminal-Bench 2.0 and 2.1 (including a run through Claude Code), SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models | Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, one dated afternoon of live proxy counters, literal retention probes, and dated single-session trials; no task-success or billing claims |
 | Model needed | None; the summary is mechanical | None for the proxy or the built-in strategies; optional model scorers |
@@ -880,7 +887,7 @@ tail by default, and also works on saved session files:
 same summary format and header, prefix reuse between compactions, harsher
 settings when one pass leaves a request over the threshold, and a retry when
 the provider rejects a request for length. It departs from the reference in
-five ways. It keeps older whole turns verbatim beyond the last three while
+six ways. It keeps older whole turns verbatim beyond the last three while
 they fit its tail budget; `--keep-tail-percent 0` keeps the reference tail,
 except for the next rule. It counts a run of consecutive assistant messages
 as one turn in every dialect, where the reference does so only for
@@ -890,8 +897,12 @@ would separate the calls from their results. Anthropic requests that declare
 a 1M-token window use a separate threshold, `--threshold-1m`. When the
 provider rejects a rewritten request for another reason, it resends the
 original. When the verbatim head alone approaches the threshold, it raises
-the threshold instead of compacting every request. The port's MIT notice is
-in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+the threshold instead of compacting every request. Each summary also carries
+the human's words and the assistant's visible replies from the turns earlier
+compactions summarized, up to 24,000 characters, where the reference keeps
+only the turns since the previous compaction; `--carry-max-chars 0` restores
+the reference rule. The port's MIT notice is in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 The `cliff` strategy applies the drop rule to a transcript copy instead:
 the head and the newest `keep_recent_turns` assistant steps stay
