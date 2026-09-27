@@ -2,7 +2,9 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
-## Unreleased
+## v0.7.2 - 2026-09-27
+
+The request proxy samples provider-reported usage on every dialect it serves, including the ChatGPT backend streams that carry no content type.
 
 - `proxy serve` samples the usage a response reports even when it carries no `content-type`, as ChatGPT's backend-api event streams do, so Codex traffic feeds estimate calibration like every other dialect.
 
