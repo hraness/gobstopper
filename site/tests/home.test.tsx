@@ -34,7 +34,7 @@ test("every public route has one optional support footer without product signup"
 test("the homepage shares the README identity and installs the guarded source build", () => {
   const html = renderToStaticMarkup(<Home />);
   expect(html.match(/<h1\b/gu)).toHaveLength(1);
-  expect(html).toContain("Every original byte stays in a local vault you can search and restore from.");
+  expect(html).toContain("Before writing a separate Claude Code or Codex copy, Gobstopper archives the original and prepared bytes.");
   expect(html).toContain("cargo install --git https://github.com/hraness/gobstopper gobstopper --locked");
   expect(html).not.toContain("--tag v");
   if (publishedRelease === null) {
@@ -43,7 +43,7 @@ test("the homepage shares the README identity and installs the guarded source bu
     expect(html).toContain(`href="https://github.com/hraness/gobstopper/releases/tag/v${publishedRelease.version}"`);
     expect(html).toContain(publishedRelease.verificationRun);
   }
-  expect(html).toMatch(/automatic provider compaction is disabled/iu);
+  expect(html).toMatch(/automatic provider compaction stays disabled/iu);
   expect(html).toMatch(/refuses automatic provider compaction[^.]+auto_compact_closed/u);
   expect(html).not.toContain("hraness.com/gobstopper");
   expect(html).toContain("gobstopper proxy serve");
@@ -88,12 +88,12 @@ test("scopes the editorial preset to the homepage header and real command exampl
     .on('[data-hraness-marketing-preset="editorial"] .hraness-marketing-header.hraness-material-chrome', {
       element() { elements.push("header"); },
     })
-    .on('[data-hraness-marketing-preset="editorial"] #main .hraness-material-wall .hraness-marketing-proof-frame.hraness-material-pane', {
+    .on('[data-hraness-marketing-preset="editorial"] #main .gob-proof', {
       element() { elements.push("proof"); },
     })
     .transform(html);
   expect(elements).toEqual(["header", "proof"]);
-  expect(html).toContain("autocompact 100    56,300  no");
+  expect(html).toMatch(/autocompact 100\s+56,300\s+no/u);
   expect(html).not.toContain("--in-place");
   // Retired or nonexistent flags must not appear in homepage examples.
   expect(html).not.toContain("--double-buffer");
@@ -102,7 +102,7 @@ test("scopes the editorial preset to the homepage header and real command exampl
   expect(html).not.toContain("command = [");
   expect(html).toContain("trusted_legacy_command = true");
   expect(html).toContain('href="/docs#install--use"');
-  expect(html).toContain("On a 333k-token Claude Code session");
+  expect(html).toContain("Resume trial on one 333k-token Claude Code session");
 });
 
 

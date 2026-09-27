@@ -75,7 +75,6 @@ export function SiteFooter({ path }: Readonly<{ path?: CanonicalPagePath }>) {
       </MarketingSiteFooter>
       <div className="network-footer">
         <HranessSiteFooter
-          placement="flow"
           mailingList={{ kind: "none" }}
           support={supportProfile}
         />

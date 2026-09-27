@@ -29,7 +29,7 @@
 :root,
 [data-hraness-marketing-preset="editorial"] {
   --hraness-marketing-display-font: var(--font-text);
-  --hraness-marketing-display-weight: 600;
+  --hraness-marketing-display-weight: 550;
 }
 
 * {
@@ -154,7 +154,7 @@ a { text-underline-offset: 0.2em; }
 }
 .document-page h1, .document-page h2, .document-page h3 { text-wrap: balance; line-height: 1.2; }
 .document-page h2 { margin-top: 2.5rem; padding-top: 1.25rem; }
-.document-page pre { overflow-x: auto; padding: 1rem; border: 1px solid var(--ui-surface-edge, var(--hraness-material-seam)); border-radius: .875rem; background: var(--surface); box-shadow: var(--elevation-inset, var(--hraness-material-inset)); }
+.document-page pre { overflow-x: auto; padding: 1rem; border: 1px solid var(--ui-surface-edge, var(--hraness-material-seam)); border-radius: .875rem; background: var(--surface); }
 .document-page code { font-family: var(--font-mono); font-size: 0.92em; }
 .document-page table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto; }
 .document-page th, .document-page td { border-bottom: 1px solid var(--line); padding: 0.5rem 0.6rem; text-align: left; vertical-align: top; }
