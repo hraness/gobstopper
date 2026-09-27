@@ -74,3 +74,9 @@ cargo install --path crates/gobstopper-cli --locked
 - Confirm installation with `bunx skills list --global`. If Bun or network access is unavailable, continue with repository-native tools instead of blocking delivery.
 - Treat ALGAL receipts as execution evidence, not provider attestation, and preserve the repository's normal verification and release gates.
 <!-- algal-skills:end -->
+
+# Hugging Face benchmark maintenance
+
+- When public benchmark artifacts change, follow [`hf/MAINTAINING.md`](hf/MAINTAINING.md) in the same change. Maintain the stable `hranesscom/gobstopper-benchmarks` dataset through `hf/manifest.json` and `hf/README.md`; stage with `python3 hf/stage.py`.
+- Add completed, reviewed studies under new immutable version folders. Preserve prior protocols, failures, exclusions, and hashes. Never export private results or infer a dataset license from the code license.
+- Use the official `hf` CLI only from the reviewed staging folder with verified account authority. Initial public publication still needs the exact-copy approval required by the browser handoff. Repository delivery and Hub publication are separate operations.
