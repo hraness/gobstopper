@@ -2,7 +2,7 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
-## Unreleased
+## v0.7.0 - 2026-09-27
 
 The request proxy corrects its token estimate with the input counts the provider reports, so it compacts before a 200,000-token window fills.
 
