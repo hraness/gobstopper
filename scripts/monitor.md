@@ -20,7 +20,7 @@ scope; it does not enable compaction.
 Use Python 3.9 or later on macOS/Linux. This
 script does not install a service. A supervisor can invoke it periodically;
 an exclusive lock prevents overlapping passes. Each pass gives each child
-command its own 45-second budget, so a pass can last about 90 seconds plus
+command its own 120-second budget, so a pass can last about 240 seconds plus
 cleanup before it fails, and bounds captured output to 8 MiB per command.
 Child process groups belong to this invocation and are collected on success
 as well as failure, before reaping their leader. Cleanup allows up to

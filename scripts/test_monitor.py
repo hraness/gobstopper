@@ -228,7 +228,7 @@ if os.environ.get("STUB_SLEEP"):
     time.sleep(float(os.environ["STUB_SLEEP"]))
 if sys.argv[1:] == ["report", "--active-only", "--context-only"]:
     sys.stdout.write(Path(os.environ["STUB_REPORT"]).read_text())
-elif sys.argv[1:] == ["watch", "--dry-run", "--active-only", "--once", "--eval-budget", "38"]:
+elif sys.argv[1:] == ["watch", "--dry-run", "--active-only", "--once", "--eval-budget", "113"]:
     if os.environ.get("STUB_WATCH_FAILURE"):
         print("load 01a00000-aaaa-7000-aaaa-aaaaaaaaaaaa failed: SECRET_ERROR_TEXT", file=sys.stderr)
         raise SystemExit(0)
@@ -345,7 +345,7 @@ else:
         source = self.transcript.read_bytes()
         with patch.object(monitor, "run_command", wraps=monitor.run_command) as commands:
             first = self.sample()
-        self.assertEqual(monitor.TIMEOUT_SECONDS, 45)
+        self.assertEqual(monitor.TIMEOUT_SECONDS, 120)
         self.assertEqual(len(commands.call_args_list), 2)
         report_deadline, watch_deadline = (call.args[2] for call in commands.call_args_list)
         self.assertGreater(watch_deadline, report_deadline)
@@ -380,7 +380,7 @@ else:
         self.assertTrue(all(call["gobstopper_env"] == {"GOBSTOPPER_SCORER": "heuristic"} for call in calls))
         self.assertEqual([call["arguments"] for call in calls], [
             ["report", "--active-only", "--context-only"],
-            ["watch", "--dry-run", "--active-only", "--once", "--eval-budget", "38"],
+            ["watch", "--dry-run", "--active-only", "--once", "--eval-budget", "113"],
         ] * 3)
 
     def test_context_samples_respect_allowlist_and_provider_opt_in(self):
