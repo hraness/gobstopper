@@ -79,4 +79,4 @@ cargo install --path crates/gobstopper-cli --locked
 
 - When public benchmark artifacts change, follow [`hf/MAINTAINING.md`](hf/MAINTAINING.md) in the same change. Maintain the stable `hranesscom/gobstopper-benchmarks` dataset through `hf/manifest.json` and `hf/README.md`; stage with `python3 hf/stage.py`.
 - Add completed, reviewed studies under new immutable version folders. Preserve prior protocols, failures, exclusions, and hashes. Never export private results or infer a dataset license from the code license.
-- Use the official `hf` CLI only from the reviewed staging folder with verified account authority. Initial public publication still needs the exact-copy approval required by the browser handoff. Repository delivery and Hub publication are separate operations.
+- Use the official `hf` CLI only from the reviewed staging folder with verified account authority. Ben approved initial publication and routine reviewed syncs to this existing dataset on 2026-09-27. Follow the standing authority and scope exclusions in the runbook without duplicate approval; preserve all review, license, history, and verification gates.
