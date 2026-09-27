@@ -14,12 +14,14 @@
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use gobstopper_adapters::codex_compact::rfc3339_now;
+use gobstopper_adapters::request::calibrate::{reported_input_tokens, Calibration};
 use gobstopper_adapters::request::{
     replay, CliffConfig, Dialect, Engine, RequestCtx, DEFAULT_THRESHOLD_TOKENS,
     MAX_KEEP_TAIL_PERCENT,
 };
 use serde_json::{json, Value};
 use std::borrow::Cow;
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -33,6 +35,15 @@ const MAX_HEAD_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 256 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 256;
+/// Most (upstream, model) pairs the proxy keeps a calibration for; later
+/// pairs are not calibrated.
+const MAX_CALIBRATIONS: usize = 64;
+/// Most bytes of a JSON response kept to read its usage after the relay;
+/// a larger body is not sampled.
+const MAX_TAP_JSON_BYTES: usize = 4 * 1024 * 1024;
+/// Most bytes of an event stream kept to find its `message_start` event,
+/// which the provider sends first.
+const MAX_TAP_STREAM_BYTES: usize = 64 * 1024;
 
 /// Never forwarded upstream: hop-by-hop fields and fields the proxy sets.
 const STRIP_REQUEST: &[&str] = &[
@@ -109,6 +120,12 @@ pub enum ProxyCmd {
         /// transcripts do not record.
         #[arg(long, default_value_t = 20_000)]
         fixed_tokens: u64,
+        /// Size requests at four characters per token only, as before
+        /// calibration. By default a Claude Code replay lowers the threshold
+        /// by the ratio of reported to estimated input learned from the
+        /// transcript's earlier replies, as `proxy serve` does.
+        #[arg(long)]
+        no_calibrate: bool,
         /// Emit JSON.
         #[arg(long)]
         json: bool,
@@ -178,6 +195,12 @@ pub struct ProxyOpts {
     /// Leave thinking and reasoning text out of summaries.
     #[arg(long)]
     drop_thinking: bool,
+    /// Size requests at four characters per token only. By default, once an
+    /// upstream and model have answered 5 Anthropic requests with usage, the
+    /// threshold is divided by the running ratio of reported to estimated
+    /// input (from 1.0 to 2.0), so compaction starts earlier and never later.
+    #[arg(long)]
+    no_calibrate: bool,
     /// Observe only: log what would be compacted and forward every request
     /// unchanged.
     #[arg(long)]
@@ -260,10 +283,11 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             result_max_chars,
             carry_max_chars,
             fixed_tokens,
+            no_calibrate,
             json,
         } => {
             let (provider, path) = resolve(session)?;
-            let (dialect, history) = replay::history_from_file(provider, &path)?;
+            let (dialect, history, usage) = replay::history_from_file(provider, &path)?;
             let cfg = CliffConfig {
                 threshold_tokens: *threshold,
                 keep_recent: *keep_recent,
@@ -272,7 +296,14 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
                 carry_max_chars: *carry_max_chars,
                 ..CliffConfig::default()
             };
-            let report = replay::replay(&history, dialect, cfg, *fixed_tokens);
+            let report = replay::replay_calibrated(
+                &history,
+                &usage,
+                dialect,
+                cfg,
+                *fixed_tokens,
+                !*no_calibrate,
+            );
             if *json {
                 println!("{}", serde_json::to_string_pretty(&report)?);
                 return Ok(());
@@ -318,6 +349,26 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
                 "  histories with broken tool pairing: {}",
                 report.pairing_violations
             );
+            if report.usage_requests > 0 {
+                let ratio = |permille: Option<u64>| {
+                    permille.map_or_else(|| "-".into(), |p| format!("{:.2}", p as f64 / 1000.0))
+                };
+                println!(
+                    "  provider-reported input on {} requests: {} to {} times the estimate (median {}); calibration {}, last ratio applied {:.2}",
+                    report.usage_requests,
+                    ratio(report.reported_ratio_min_permille),
+                    ratio(report.reported_ratio_max_permille),
+                    ratio(report.reported_ratio_median_permille),
+                    if report.calibrate { "on" } else { "off" },
+                    f64::from(report.last_ratio_permille) / 1000.0,
+                );
+                println!(
+                    "  largest request sent in reported tokens: {}; requests over the {} token threshold in reported tokens: {}",
+                    k(report.peak_reported_tokens_out),
+                    threshold,
+                    report.reported_over_threshold
+                );
+            }
             Ok(())
         }
         ProxyCmd::Serve { opts, port } => {
@@ -446,6 +497,29 @@ fn status_text(port: u16, status: &Value) -> String {
             .map(|p| format!(", ledger {p}"))
             .unwrap_or_default(),
     );
+    match status.get("calibrate").and_then(Value::as_bool) {
+        None => {}
+        Some(false) => text += "estimate calibration: off\n",
+        Some(true) => {
+            let rows = status["calibrations"]
+                .as_array()
+                .cloned()
+                .unwrap_or_default();
+            if rows.is_empty() {
+                text += "estimate calibration: on, no provider usage seen yet\n";
+            }
+            for row in rows {
+                text += &format!(
+                    "estimate calibration: {} via {}: ratio {} applied, {} measured over {} samples\n",
+                    row["model"].as_str().unwrap_or("-"),
+                    row["upstream"].as_str().unwrap_or("-"),
+                    row["ratio"],
+                    row["measured_ratio"],
+                    row["samples"],
+                );
+            }
+        }
+    }
     text
 }
 
@@ -569,6 +643,7 @@ impl StatsLog {
             "carry_chars": ctx.carry_chars,
             "window": window_name(request, ctx.dialect),
             "threshold_tokens": ctx.threshold_tokens,
+            "ratio_permille": ctx.ratio_permille,
             "compacted": ctx.compacted,
             "reused_prefix": ctx.matched,
             "over_budget": ctx.over_budget,
@@ -605,6 +680,10 @@ struct Proxy {
     /// Threshold for Anthropic requests that declare a 1M-token window.
     threshold_1m: u64,
     shadow: bool,
+    /// Learn the estimate ratio from provider-reported usage.
+    calibrate: bool,
+    /// Running ratio per (upstream, model), at most `MAX_CALIBRATIONS`.
+    calibrations: Mutex<HashMap<(String, String), Calibration>>,
     anthropic: String,
     openai: String,
     chatgpt: String,
@@ -631,6 +710,8 @@ impl Proxy {
             threshold_1m: threshold_1m(opts.threshold, opts.threshold_1m)?,
             engine: Engine::new(cfg),
             shadow: opts.shadow,
+            calibrate: !opts.no_calibrate,
+            calibrations: Mutex::new(HashMap::new()),
             anthropic: validate_upstream(&opts.anthropic_upstream)?,
             openai: validate_upstream(&opts.openai_upstream)?,
             chatgpt: validate_upstream(&opts.chatgpt_upstream)?,
@@ -663,6 +744,8 @@ impl Proxy {
             "keep_thinking": cfg.keep_thinking,
             "shadow": self.shadow,
             "strict": cfg.strict,
+            "calibrate": self.calibrate,
+            "calibrations": self.calibration_status(),
             "store_entries": entries,
             "store_chars": chars,
             "requests": self.count(&self.stats.requests),
@@ -682,16 +765,76 @@ impl Proxy {
         })
     }
 
+    fn calibrations(&self) -> std::sync::MutexGuard<'_, HashMap<(String, String), Calibration>> {
+        self.calibrations.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// One row per (upstream, model) with its samples, measured ratio and
+    /// applied ratio (1.0 until enough samples), sorted by key.
+    fn calibration_status(&self) -> Value {
+        let calibrations = self.calibrations();
+        let mut rows: Vec<_> = calibrations.iter().collect();
+        rows.sort_by(|a, b| a.0.cmp(b.0));
+        Value::Array(
+            rows.into_iter()
+                .map(|((upstream, model), calibration)| {
+                    json!({
+                        "upstream": upstream,
+                        "model": model,
+                        "samples": calibration.samples(),
+                        "measured_ratio": calibration
+                            .measured_permille()
+                            .map(|p| p as f64 / 1000.0),
+                        "ratio": f64::from(calibration.ratio_permille()) / 1000.0,
+                    })
+                })
+                .collect(),
+        )
+    }
+
+    /// The ratio to apply to a request to `upstream` for `model`, in
+    /// thousandths: 1000 when calibration is off, for non-Anthropic
+    /// dialects, and before enough samples.
+    fn ratio_for(&self, key: &(String, String), dialect: Dialect) -> u32 {
+        if !self.calibrate || dialect != Dialect::Anthropic {
+            return 1000;
+        }
+        self.calibrations()
+            .get(key)
+            .map_or(1000, Calibration::ratio_permille)
+    }
+
+    /// Record the provider's input count for a forwarded request whose
+    /// estimate was `est_tokens`.
+    fn observe(&self, key: (String, String), est_tokens: u64, reported_tokens: u64) {
+        let mut calibrations = self.calibrations();
+        if calibrations.len() >= MAX_CALIBRATIONS && !calibrations.contains_key(&key) {
+            return;
+        }
+        let calibration = calibrations.entry(key).or_default();
+        let before = calibration.ratio_permille();
+        calibration.observe(est_tokens, reported_tokens);
+        let after = calibration.ratio_permille();
+        if after != before && (before == 1000 || after.abs_diff(before) >= 50) {
+            log(&format!(
+                "estimate calibration: ratio {:.2} after {} samples",
+                f64::from(after) / 1000.0,
+                calibration.samples()
+            ));
+        }
+    }
+
     /// The settings both startup lines show (serve and run).
     fn settings(&self) -> String {
         let cfg = self.engine.config();
         format!(
-            "threshold {} tokens, threshold_1m {} tokens, keep_recent {}, keep_tail_percent {}, carry_max_chars {}",
+            "threshold {} tokens, threshold_1m {} tokens, keep_recent {}, keep_tail_percent {}, carry_max_chars {}, calibrate {}",
             cfg.threshold_tokens,
             self.threshold_1m,
             cfg.keep_recent,
             cfg.keep_tail_percent,
-            cfg.carry_max_chars
+            cfg.carry_max_chars,
+            if self.calibrate { "on" } else { "off" }
         )
     }
 
@@ -735,7 +878,9 @@ impl Proxy {
         }
     }
 
-    fn prepare(&self, request: &Request) -> Option<RequestCtx> {
+    /// The engine's view of a request, and the (upstream, model) key its
+    /// calibration is kept under.
+    fn prepare(&self, request: &Request) -> Option<(RequestCtx, (String, String))> {
         if request.method != "POST" || request.body.is_empty() {
             return None;
         }
@@ -760,12 +905,20 @@ impl Proxy {
             }
         };
         let threshold = self.threshold_for(request, dialect);
+        let model = parsed
+            .get("model")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let key = (self.upstream_for(request).to_string(), model);
+        let ratio = self.ratio_for(&key, dialect);
         // Engine failures must never fail the request.
         let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.engine.prepare_at(parsed, dialect, threshold)
+            self.engine
+                .prepare_calibrated(parsed, dialect, threshold, ratio)
         }));
         match prepared {
-            Ok(ctx) => ctx,
+            Ok(ctx) => ctx.map(|ctx| (ctx, key)),
             Err(_) => {
                 self.stats.fail_open.fetch_add(1, Ordering::Relaxed);
                 log(&format!(
@@ -805,6 +958,14 @@ impl Proxy {
             ctx.carry_chars,
         );
         let window = window_name(request, ctx.dialect);
+        let window = if ctx.ratio_permille == 1000 {
+            window.to_string()
+        } else {
+            format!(
+                "{window}, ratio {:.2}",
+                f64::from(ctx.ratio_permille) / 1000.0
+            )
+        };
         let shadow = if self.shadow {
             " (shadow: sent unchanged)"
         } else {
@@ -814,7 +975,7 @@ impl Proxy {
             self.stats.compacted.fetch_add(1, Ordering::Relaxed);
             // Compared against the threshold selected for this request, so a
             // 1M-window request at `threshold_1m` is not reported as raised.
-            let raised = if ctx.threshold_tokens > ctx.base_threshold_tokens {
+            let raised = if ctx.threshold_tokens > ctx.calibrated_threshold_tokens {
                 format!(
                     ", threshold raised to ~{}k by a large verbatim head",
                     ctx.threshold_tokens / 1000
@@ -839,7 +1000,7 @@ impl Proxy {
                 ctx.est_tokens_in / 1000,
                 ctx.est_tokens_out / 1000,
             ));
-        } else if ctx.est_tokens_in > ctx.base_threshold_tokens {
+        } else if ctx.est_tokens_in > ctx.calibrated_threshold_tokens {
             // Over the selected threshold but sent unchanged. Say why, or the
             // request looks missed.
             let why = if ctx.est_tokens_in <= ctx.threshold_tokens {
@@ -899,9 +1060,9 @@ impl Proxy {
 
     fn forward(&self, request: &Request, client: &mut TcpStream) -> Result<()> {
         let upstream = self.upstream_for(request);
-        let mut ctx = self.prepare(request);
+        let mut prepared = self.prepare(request);
         let mut body: Cow<[u8]> = Cow::Borrowed(&request.body);
-        if let Some(ctx) = &ctx {
+        if let Some((ctx, _)) = &prepared {
             self.report(ctx, request);
             if ctx.modified && !self.shadow {
                 body = Cow::Owned(serde_json::to_vec(&ctx.outgoing_body())?);
@@ -922,9 +1083,27 @@ impl Proxy {
             Ok(response) => response,
             Err(error) => return self.upstream_failed(client, &error),
         };
-        match ctx.as_mut() {
-            Some(ctx) if response.status == 400 && !self.shadow => {
+        match prepared.as_mut() {
+            Some((ctx, _)) if response.status == 400 && !self.shadow => {
                 self.reactive(request, upstream, ctx, response, client)
+            }
+            Some((ctx, key))
+                if self.calibrate
+                    && ctx.dialect == Dialect::Anthropic
+                    && response.status == 200 =>
+            {
+                // The estimate of the bytes actually forwarded.
+                let sent = if self.shadow {
+                    ctx.est_tokens_in
+                } else {
+                    ctx.est_tokens_out
+                };
+                let mut tap = UsageTap::new(&response.headers);
+                relay_tapped(client, response, &request.method, tap.as_mut())?;
+                if let Some(reported) = tap.and_then(|tap| tap.reported_tokens()) {
+                    self.observe(std::mem::take(key), sent, reported);
+                }
+                Ok(())
             }
             _ => relay(client, response, &request.method),
         }
@@ -1465,8 +1644,95 @@ fn write_error(client: &mut TcpStream, status: u16, kind: &str, message: &str) -
     )
 }
 
+/// Keeps the start of a response body so the proxy can read the provider's
+/// usage after the relay. It sees each chunk only after the chunk was
+/// written to the client, never changes it, and gives up past its bound.
+struct UsageTap {
+    event_stream: bool,
+    data: Vec<u8>,
+    overflow: bool,
+}
+
+impl UsageTap {
+    /// A tap for a JSON or event-stream response; `None` for anything else.
+    fn new(headers: &[(String, String)]) -> Option<Self> {
+        let kind = headers
+            .iter()
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
+            .map(|(_, value)| value.to_ascii_lowercase())?;
+        let event_stream = kind.contains("text/event-stream");
+        (event_stream || kind.contains("json")).then_some(Self {
+            event_stream,
+            data: Vec::new(),
+            overflow: false,
+        })
+    }
+
+    fn observe(&mut self, bytes: &[u8]) {
+        let limit = if self.event_stream {
+            MAX_TAP_STREAM_BYTES
+        } else {
+            MAX_TAP_JSON_BYTES
+        };
+        let room = limit - self.data.len();
+        if bytes.len() > room {
+            self.overflow = true;
+        }
+        self.data.extend_from_slice(&bytes[..bytes.len().min(room)]);
+    }
+
+    /// The input tokens the response reports: the top-level `usage` of a
+    /// JSON body, or the `message.usage` of a stream's `message_start`
+    /// event. `None` when absent, malformed, or cut off by the bound.
+    fn reported_tokens(&self) -> Option<u64> {
+        if !self.event_stream {
+            if self.overflow {
+                return None;
+            }
+            let body: Value = serde_json::from_slice(&self.data).ok()?;
+            return reported_input_tokens(body.get("usage")?);
+        }
+        self.data
+            .split(|b| *b == b'\n')
+            .filter_map(|line| line.strip_prefix(b"data:"))
+            .filter_map(|data| serde_json::from_slice::<Value>(data.trim_ascii()).ok())
+            .find(|event| event.get("type").and_then(Value::as_str) == Some("message_start"))
+            .and_then(|event| reported_input_tokens(event.get("message")?.get("usage")?))
+    }
+}
+
+/// A writer that hands each chunk to a tap after writing it.
+struct Tee<'a, W: Write> {
+    inner: &'a mut W,
+    tap: Option<&'a mut UsageTap>,
+}
+
+impl<W: Write> Write for Tee<'_, W> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let written = self.inner.write(buf)?;
+        if let Some(tap) = self.tap.as_deref_mut() {
+            tap.observe(&buf[..written]);
+        }
+        Ok(written)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.inner.flush()
+    }
+}
+
 /// Stream an upstream response to the client, re-framing the body.
-fn relay(client: &mut TcpStream, mut upstream: Upstream, method: &str) -> Result<()> {
+fn relay(client: &mut TcpStream, upstream: Upstream, method: &str) -> Result<()> {
+    relay_tapped(client, upstream, method, None)
+}
+
+/// `relay`, handing the body to `tap` as it is written to the client.
+fn relay_tapped(
+    client: &mut TcpStream,
+    mut upstream: Upstream,
+    method: &str,
+    mut tap: Option<&mut UsageTap>,
+) -> Result<()> {
     let headers: Vec<(String, String)> = upstream
         .headers
         .iter()
@@ -1493,7 +1759,17 @@ fn relay(client: &mut TcpStream, mut upstream: Upstream, method: &str) -> Result
                     &headers,
                     &format!("content-length: {length}\r\n"),
                 )?;
-                let copied = std::io::copy(&mut (&mut upstream.stdout).take(length), client)?;
+                let mut body = (&mut upstream.stdout).take(length);
+                let copied = match tap.as_deref_mut() {
+                    None => std::io::copy(&mut body, client)?,
+                    Some(tap) => std::io::copy(
+                        &mut body,
+                        &mut Tee {
+                            inner: &mut *client,
+                            tap: Some(tap),
+                        },
+                    )?,
+                };
                 client.flush()?;
                 Ok(copied == length)
             }
@@ -1514,6 +1790,9 @@ fn relay(client: &mut TcpStream, mut upstream: Upstream, method: &str) -> Result
                     client.write_all(&buffer[..read])?;
                     client.write_all(b"\r\n")?;
                     client.flush()?;
+                    if let Some(tap) = tap.as_deref_mut() {
+                        tap.observe(&buffer[..read]);
+                    }
                 }
                 Ok(true)
             }
@@ -1817,6 +2096,8 @@ mod tests {
             }),
             threshold_1m,
             shadow: false,
+            calibrate: true,
+            calibrations: Mutex::new(HashMap::new()),
             anthropic: "https://api.anthropic.com".into(),
             openai: "https://api.openai.com".into(),
             chatgpt: "https://chatgpt.com".into(),
@@ -1857,20 +2138,23 @@ mod tests {
 
         let ctx = proxy
             .prepare(&request("/v1/messages?beta=true", &one_m, &messages))
-            .unwrap();
+            .unwrap()
+            .0;
         assert_eq!(ctx.base_threshold_tokens, 256_000);
         assert_eq!(proxy.count(&proxy.stats.requests_1m), 1);
 
         let base = [("anthropic-version", "2023-06-01")];
         let ctx = proxy
             .prepare(&request("/v1/messages", &base, &messages))
-            .unwrap();
+            .unwrap()
+            .0;
         assert_eq!(ctx.base_threshold_tokens, 128_000);
 
         // The header means nothing to the OpenAI dialects.
         let ctx = proxy
             .prepare(&request("/v1/responses", &one_m, &input))
-            .unwrap();
+            .unwrap()
+            .0;
         assert_eq!(ctx.base_threshold_tokens, 128_000);
         assert_eq!(proxy.count(&proxy.stats.requests_1m), 1);
 
@@ -1922,7 +2206,7 @@ mod tests {
         assert_eq!(
             test_proxy(128_000, 128_000).settings(),
             format!(
-                "threshold 128000 tokens, threshold_1m 128000 tokens, keep_recent 3, keep_tail_percent 40, carry_max_chars {}",
+                "threshold 128000 tokens, threshold_1m 128000 tokens, keep_recent 3, keep_tail_percent 40, carry_max_chars {}, calibrate on",
                 CliffConfig::default().carry_max_chars
             )
         );
@@ -1972,5 +2256,175 @@ mod tests {
         current["requests_1m"] = Value::Null;
         current["carry_max_chars"] = Value::Null;
         assert!(!status_text(8260, &current).contains("null"));
+    }
+
+    fn tap(content_type: &str, chunks: &[&[u8]]) -> UsageTap {
+        let mut tap = UsageTap::new(&headers(&[("Content-Type", content_type)])).unwrap();
+        for chunk in chunks {
+            tap.observe(chunk);
+        }
+        tap
+    }
+
+    #[test]
+    fn the_usage_tap_reads_json_and_the_stream_start_and_tolerates_the_rest() {
+        let body = br#"{"type":"message","content":[],"usage":{"input_tokens":10,"cache_creation_input_tokens":200,"cache_read_input_tokens":3000,"output_tokens":9}}"#;
+        let (a, b) = body.split_at(40);
+        assert_eq!(
+            tap("application/json", &[a, b]).reported_tokens(),
+            Some(3210)
+        );
+        assert_eq!(
+            tap("application/json", &[b"{\"usage\":{}}"]).reported_tokens(),
+            None
+        );
+        assert_eq!(
+            tap("application/json", &[b"{\"usage\":"]).reported_tokens(),
+            None
+        );
+        assert_eq!(
+            tap("application/json", &[b"not json"]).reported_tokens(),
+            None
+        );
+        assert_eq!(tap("application/json", &[b"[1]"]).reported_tokens(), None);
+
+        let stream = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":4,\"cache_read_input_tokens\":96}}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":1}}\n\n";
+        let (a, b) = stream.as_bytes().split_at(30);
+        assert_eq!(
+            tap("text/event-stream; charset=utf-8", &[a, b]).reported_tokens(),
+            Some(100)
+        );
+        assert_eq!(
+            tap(
+                "text/event-stream",
+                &[b"data: {\"type\":\"message_start\",\"message\":{}}\n"]
+            )
+            .reported_tokens(),
+            None
+        );
+        assert_eq!(
+            tap("text/event-stream", &[b"data: {broken\n", b"\n"]).reported_tokens(),
+            None
+        );
+        assert_eq!(tap("text/event-stream", &[]).reported_tokens(), None);
+        assert!(UsageTap::new(&headers(&[("content-type", "text/plain")])).is_none());
+        assert!(UsageTap::new(&[]).is_none());
+    }
+
+    #[test]
+    fn the_usage_tap_is_bounded() {
+        let mut big = tap("application/json", &[b"{\"usage\":{\"input_tokens\":5}}"]);
+        assert_eq!(big.reported_tokens(), Some(5));
+        big.observe(&vec![b' '; MAX_TAP_JSON_BYTES]);
+        assert_eq!(big.data.len(), MAX_TAP_JSON_BYTES);
+        assert_eq!(
+            big.reported_tokens(),
+            None,
+            "a cut-off JSON body is not sampled"
+        );
+
+        let start =
+            b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n";
+        let mut stream = tap("text/event-stream", &[start]);
+        stream.observe(&vec![b'x'; 3 * MAX_TAP_STREAM_BYTES]);
+        assert_eq!(stream.data.len(), MAX_TAP_STREAM_BYTES);
+        assert_eq!(
+            stream.reported_tokens(),
+            Some(5),
+            "the stream start survives the bound"
+        );
+    }
+
+    #[test]
+    fn the_tee_writes_every_byte_unchanged_before_the_tap_sees_it() {
+        let mut out = Vec::new();
+        let mut usage = tap("application/json", &[]);
+        let body = br#"{"usage":{"input_tokens":77}}"#.to_vec();
+        let copied = std::io::copy(
+            &mut &body[..],
+            &mut Tee {
+                inner: &mut out,
+                tap: Some(&mut usage),
+            },
+        )
+        .unwrap();
+        assert_eq!(copied as usize, body.len());
+        assert_eq!(out, body);
+        assert_eq!(usage.reported_tokens(), Some(77));
+    }
+
+    #[test]
+    fn calibration_applies_per_upstream_and_model_after_enough_samples() {
+        let proxy = test_proxy(128_000, 256_000);
+        let base = [("anthropic-version", "2023-06-01")];
+        let messages = json!({"model": "m", "messages": [{"role": "user", "content": "hi"}]});
+        let (ctx, key) = proxy
+            .prepare(&request("/v1/messages", &base, &messages))
+            .unwrap();
+        assert_eq!(
+            key,
+            ("https://api.anthropic.com".to_string(), "m".to_string())
+        );
+        assert_eq!(ctx.ratio_permille, 1000);
+        for _ in 0..5 {
+            proxy.observe(key.clone(), 100_000, 125_000);
+        }
+        let (ctx, _) = proxy
+            .prepare(&request("/v1/messages", &base, &messages))
+            .unwrap();
+        assert_eq!(ctx.ratio_permille, 1250);
+        assert_eq!(ctx.calibrated_threshold_tokens, 102_400);
+        assert_eq!(ctx.base_threshold_tokens, 128_000);
+
+        // Another model, and the OpenAI dialects, are not affected.
+        let other = json!({"model": "n", "messages": [{"role": "user", "content": "hi"}]});
+        let (ctx, _) = proxy
+            .prepare(&request("/v1/messages", &base, &other))
+            .unwrap();
+        assert_eq!(ctx.ratio_permille, 1000);
+        let input = json!({"model": "m", "input": [{"role": "user", "content": "hi"}]});
+        let (ctx, _) = proxy
+            .prepare(&request("/v1/responses", &base, &input))
+            .unwrap();
+        assert_eq!(ctx.ratio_permille, 1000);
+
+        let status = proxy.status();
+        assert_eq!(status["calibrate"], true);
+        assert_eq!(
+            status["calibrations"],
+            json!([{"upstream": "https://api.anthropic.com", "model": "m",
+                    "samples": 5, "measured_ratio": 1.25, "ratio": 1.25}])
+        );
+        let text = status_text(8260, &status);
+        assert!(
+            text.ends_with("estimate calibration: m via https://api.anthropic.com: ratio 1.25 applied, 1.25 measured over 5 samples\n"),
+            "{text}"
+        );
+
+        // Off: the learned ratio is never applied.
+        let mut off = test_proxy(128_000, 256_000);
+        off.calibrate = false;
+        for _ in 0..5 {
+            off.observe(key.clone(), 100_000, 125_000);
+        }
+        let (ctx, _) = off
+            .prepare(&request("/v1/messages", &base, &messages))
+            .unwrap();
+        assert_eq!(ctx.ratio_permille, 1000);
+        assert!(status_text(8260, &off.status()).ends_with("estimate calibration: off\n"));
+    }
+
+    #[test]
+    fn calibration_keys_are_bounded() {
+        let proxy = test_proxy(128_000, 256_000);
+        for i in 0..MAX_CALIBRATIONS + 10 {
+            proxy.observe(("u".into(), format!("m{i}")), 100_000, 125_000);
+        }
+        assert_eq!(proxy.calibrations().len(), MAX_CALIBRATIONS);
+        proxy.observe(("u".into(), "m0".into()), 100_000, 125_000);
+        assert_eq!(
+            proxy.calibrations()[&("u".into(), "m0".into())].samples(),
+            2
+        );
     }
 }

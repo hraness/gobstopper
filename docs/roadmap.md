@@ -304,11 +304,17 @@ consumers need the same interface — is met.
   day's defaults ([design](design.md#why-a-40-tail-share-and-a-256000-token-1m-threshold)).
   Replay repeats the recorded re-reads, so only live sessions can show the
   loop stopping.
-- Estimate calibration. The proxy sizes requests at four characters per
-  token. On that session reported input ran 13% to 38% above the estimate:
-  an estimated 128,000 tokens corresponded to 144,000 to 176,000 reported
-  input tokens.
-  Calibrating the threshold from provider-reported usage is open.
+- ~~Estimate calibration~~ — **done (unreleased)**. The proxy sizes
+  requests at four characters per token. On that session reported input ran
+  13% to 38% above the estimate: an estimated 128,000 tokens corresponded to
+  144,000 to 176,000 reported input tokens. `proxy serve` now divides the
+  threshold for Anthropic requests by the ratio of reported to estimated
+  input it learns from each response's `usage`, per upstream and model,
+  bounded to 1.0 to 2.0 and applied after five samples, so compaction only
+  starts earlier; `--no-calibrate` turns it off
+  ([proxy](proxy.md#estimate-calibration)). Still open: calibrating the
+  OpenAI dialects, and whether live sessions stay under a 200,000-token
+  window.
 - Preserved-thinking enforcement. On Claude Opus 5.5 and Claude Fable 5.1,
   accounts created on or after August 31, 2026, 00:00 UTC enforce a prefix
   check on thinking blocks by default: a request that replays a thinking

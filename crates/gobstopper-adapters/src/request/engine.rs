@@ -7,6 +7,7 @@
 //! and an index `k` in that list maps back to the original list as
 //! `base_cut + (k - (base_head + 1))`.
 
+use super::calibrate::{calibrated_threshold, MAX_RATIO_PERMILLE, MIN_RATIO_PERMILLE};
 use super::{
     billable_chars, chain_hashes, compact_within, CliffConfig, CompactResult, Dialect, Entry,
     PrefixStore, CARRY_LABEL, MAX_KEEP_TAIL_PERCENT, PART_SEPARATOR, SUMMARY_HEADER,
@@ -67,6 +68,13 @@ pub struct RequestCtx {
     /// `Engine::prepare_at`. Stored entries record it, and only entries
     /// with the same value are substituted.
     pub base_threshold_tokens: u64,
+    /// The estimate calibration applied to this request, in thousandths
+    /// (1000 = none); see [`super::calibrate`].
+    pub ratio_permille: u32,
+    /// `base_threshold_tokens` divided by the calibration ratio, before the
+    /// floor rule. Equal to `base_threshold_tokens` without calibration and
+    /// never above it.
+    pub calibrated_threshold_tokens: u64,
     /// The words the next compaction carries into its summary, oldest
     /// first: restored from a substituted entry and replaced by each
     /// compaction. Content, so it never leaves the request module: the
@@ -241,10 +249,28 @@ impl Engine {
     /// longer context window. Every other setting comes from the config.
     pub fn prepare_at(
         &self,
-        mut body: Map<String, Value>,
+        body: Map<String, Value>,
         dialect: Dialect,
         threshold_tokens: u64,
     ) -> Option<RequestCtx> {
+        self.prepare_calibrated(body, dialect, threshold_tokens, MIN_RATIO_PERMILLE)
+    }
+
+    /// `prepare_at` with the estimate scaled by `ratio_permille` thousandths
+    /// before it is compared with the threshold: the request compacts when
+    /// its estimate exceeds `threshold_tokens * 1000 / ratio_permille`. The
+    /// ratio is clamped to 1000..=2000, so calibration can only compact
+    /// earlier; at 1000 this is exactly `prepare_at`. Stored prefixes stay
+    /// keyed by `threshold_tokens`, so a changing ratio keeps reusing them.
+    pub fn prepare_calibrated(
+        &self,
+        mut body: Map<String, Value>,
+        dialect: Dialect,
+        threshold_tokens: u64,
+        ratio_permille: u32,
+    ) -> Option<RequestCtx> {
+        let ratio_permille = ratio_permille.clamp(MIN_RATIO_PERMILLE, MAX_RATIO_PERMILLE);
+        let calibrated = calibrated_threshold(threshold_tokens, ratio_permille);
         let msgs = match body.get_mut(dialect.messages_key()) {
             Some(Value::Array(items))
                 if !items.is_empty() && items.iter().all(Value::is_object) =>
@@ -276,7 +302,7 @@ impl Engine {
             compacted: false,
             rung: 0,
             over_budget: false,
-            threshold_tokens,
+            threshold_tokens: calibrated,
             est_tokens_in: 0,
             est_tokens_out: 0,
             chain_steps: 0,
@@ -285,6 +311,8 @@ impl Engine {
             est_summary_tokens: 0,
             est_tail_tokens: 0,
             base_threshold_tokens: threshold_tokens,
+            ratio_permille,
+            calibrated_threshold_tokens: calibrated,
             carry: Vec::new(),
             carry_chars: 0,
         };
@@ -300,7 +328,7 @@ impl Engine {
             .unwrap_or(ctx.msgs.len());
         ctx.floor_chars = fixed_chars + ctx.msg_chars[..head_end].iter().sum::<usize>();
         let floor = (ctx.floor_chars / 4) as u64;
-        ctx.threshold_tokens = threshold_tokens.max(floor.saturating_add(threshold_tokens / 2));
+        ctx.threshold_tokens = calibrated.max(floor.saturating_add(calibrated / 2));
         self.substitute_longest_prefix(&mut ctx);
         ctx.refresh_estimate();
 
@@ -1927,5 +1955,94 @@ mod tests {
             let ((a, free), (b, _)) = (pair[0], pair[1]);
             assert!(b - a >= free / step_chars - 1, "{pair:?} step {step_chars}");
         }
+    }
+
+    #[test]
+    fn a_ratio_of_one_is_exactly_prepare_at() {
+        for ratio in [0, 1, 999, 1000] {
+            let plain = tail_engine(4_000, 3, 40);
+            let calibrated = tail_engine(4_000, 3, 40);
+            let mut compactions = 0;
+            for (i, body) in stepped_bodies(60, mixed_results).into_iter().enumerate() {
+                let a = plain
+                    .prepare_at(body.clone(), Dialect::Anthropic, 4_000)
+                    .unwrap();
+                let b = calibrated
+                    .prepare_calibrated(body, Dialect::Anthropic, 4_000, ratio)
+                    .unwrap();
+                assert_eq!(a.outgoing_body(), b.outgoing_body(), "request {i}");
+                assert_eq!(
+                    (a.base_cut, a.base_head, a.matched, a.compacted, a.rung),
+                    (b.base_cut, b.base_head, b.matched, b.compacted, b.rung),
+                    "request {i}"
+                );
+                assert_eq!(
+                    (a.threshold_tokens, a.est_tokens_in, a.est_tokens_out),
+                    (b.threshold_tokens, b.est_tokens_in, b.est_tokens_out),
+                    "request {i}"
+                );
+                assert_eq!(
+                    (b.ratio_permille, b.calibrated_threshold_tokens),
+                    (1000, 4_000)
+                );
+                compactions += usize::from(a.compacted);
+            }
+            assert!(compactions >= 2);
+            assert_eq!(plain.store_stats(), calibrated.store_stats());
+        }
+    }
+
+    #[test]
+    fn a_calibrated_request_compacts_earlier_and_never_later() {
+        let bodies = stepped_bodies(60, mixed_results);
+        let first_compaction = |ratio: u32| {
+            let engine = tail_engine(4_000, 3, 40);
+            bodies.iter().position(|body| {
+                engine
+                    .prepare_calibrated(body.clone(), Dialect::Anthropic, 4_000, ratio)
+                    .unwrap()
+                    .compacted
+            })
+        };
+        let plain = first_compaction(1000).unwrap();
+        let calibrated = first_compaction(1250).unwrap();
+        let halved = first_compaction(2000).unwrap();
+        assert!(calibrated < plain, "{calibrated} < {plain}");
+        assert!(halved <= calibrated);
+        // Above 2.0 the ratio is clamped.
+        assert_eq!(first_compaction(u32::MAX), Some(halved));
+
+        let engine = tail_engine(4_000, 3, 40);
+        for body in &bodies {
+            let ctx = engine
+                .prepare_calibrated(body.clone(), Dialect::Anthropic, 4_000, 1250)
+                .unwrap();
+            assert_eq!(ctx.ratio_permille, 1250);
+            assert_eq!(ctx.calibrated_threshold_tokens, 3_200);
+            assert_eq!(ctx.base_threshold_tokens, 4_000);
+            assert!(ctx.threshold_tokens >= 3_200);
+            if !ctx.over_budget {
+                assert!(ctx.est_tokens_out <= ctx.threshold_tokens);
+            }
+        }
+    }
+
+    #[test]
+    fn a_changed_ratio_keeps_reusing_the_stored_prefix() {
+        let engine = tail_engine(4_000, 3, 40);
+        let bodies = stepped_bodies(60, mixed_results);
+        let at = bodies
+            .iter()
+            .position(|body| {
+                engine
+                    .prepare_calibrated(body.clone(), Dialect::Anthropic, 4_000, 1100)
+                    .unwrap()
+                    .compacted
+            })
+            .unwrap();
+        let next = engine
+            .prepare_calibrated(bodies[at + 1].clone(), Dialect::Anthropic, 4_000, 1150)
+            .unwrap();
+        assert!(next.matched, "the entry is keyed by the base threshold");
     }
 }

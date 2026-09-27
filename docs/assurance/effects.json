@@ -1788,10 +1788,10 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Loopback bind with a host check; 64 KiB request heads, 256 MiB bodies, 256 connections; curl connect 30 s, stall 900 s, total 7200 s. Parse, engine and non-length provider failures forward the original bytes.",
+      "bounds": "Loopback bind with a host check; 64 KiB request heads, 256 MiB bodies, 256 connections; curl connect 30 s, stall 900 s, total 7200 s. Parse, engine and non-length provider failures forward the original bytes. Estimate calibration reads Anthropic usage from a copy of at most 4 MiB of a JSON response or 64 KiB of an event stream, taken after each chunk reaches the client, and keeps at most 64 per-upstream, per-model ratios in memory.",
       "exclusions": [
         "No live task-quality or billing claim",
-        "Estimates use four characters per token; provider counts can differ"
+        "Estimates use four characters per token, divided into the threshold by a ratio from 1.0 to 2.0 learned from Anthropic usage unless --no-calibrate; provider counts can differ"
       ],
       "evidence": [
         "E-FOUNDATION-SOURCE"
@@ -3234,6 +3234,48 @@
       ]
     },
     {
+      "path": "crates/gobstopper-adapters/src/request/calibrate.rs",
+      "symbol": "calibrated_threshold",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/calibrate.rs",
+      "symbol": "measured_permille",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/calibrate.rs",
+      "symbol": "observe",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/calibrate.rs",
+      "symbol": "ratio_permille",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/calibrate.rs",
+      "symbol": "reported_input_tokens",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/calibrate.rs",
+      "symbol": "samples",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
       "path": "crates/gobstopper-adapters/src/request/chat.rs",
       "symbol": "carry_parts",
       "effects": [
@@ -3327,6 +3369,13 @@
     {
       "path": "crates/gobstopper-adapters/src/request/engine.rs",
       "symbol": "prepare_at",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/engine.rs",
+      "symbol": "prepare_calibrated",
       "effects": [
         "pure"
       ]
@@ -3452,6 +3501,13 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/request/replay.rs",
+      "symbol": "claude_history_with_usage",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/replay.rs",
       "symbol": "codex_history",
       "effects": [
         "pure"
@@ -3474,6 +3530,13 @@
     {
       "path": "crates/gobstopper-adapters/src/request/replay.rs",
       "symbol": "replay",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/replay.rs",
+      "symbol": "replay_calibrated",
       "effects": [
         "pure"
       ]

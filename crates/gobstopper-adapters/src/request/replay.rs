@@ -3,6 +3,7 @@
 //! have, and check every outgoing history for broken tool pairing. No
 //! provider is called; sizes are the engine's estimates, not billed tokens.
 
+use super::calibrate::{reported_input_tokens, Calibration, MIN_RATIO_PERMILLE};
 use super::{canonical_json, CliffConfig, Dialect, Engine};
 use serde::Serialize;
 use serde_json::{json, Map, Value};
@@ -25,6 +26,9 @@ pub struct Compaction {
     /// 0 without one. Replay renders no attachments or system messages,
     /// so carried human text is a lower bound. A size only.
     pub carry_chars: usize,
+    /// Input tokens the provider reported for the recorded request, the
+    /// uncompacted history (`None` when the transcript has no usage for it).
+    pub reported_tokens_before: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -73,6 +77,31 @@ pub struct ReplayReport {
     pub back_to_back_compactions: usize,
     /// Fewest requests between two compactions (`None` below two).
     pub min_compaction_gap: Option<usize>,
+    /// Whether the replay applied estimate calibration learned from the
+    /// transcript's provider usage, as `proxy serve` does.
+    pub calibrate: bool,
+    /// Requests whose recorded reply carries provider usage. Replay reads
+    /// usage from Claude Code transcripts only.
+    pub usage_requests: usize,
+    /// Of those, samples the calibration accepted.
+    pub calibration_samples: u64,
+    /// The ratio applied to the last request, in thousandths (1000 without
+    /// calibration or before enough samples).
+    pub last_ratio_permille: u32,
+    /// Reported input tokens divided by the estimate of the recorded
+    /// request, in thousandths, over requests with usage: lowest, median
+    /// and highest.
+    pub reported_ratio_min_permille: Option<u64>,
+    pub reported_ratio_median_permille: Option<u64>,
+    pub reported_ratio_max_permille: Option<u64>,
+    /// The largest outgoing request in provider tokens, taken as its
+    /// estimate times the reported ratio of the recorded request, over
+    /// requests with usage. Replay assumes the recorded session did not run
+    /// behind the proxy, so its usage describes the uncompacted history.
+    pub peak_reported_tokens_out: u64,
+    /// Requests with usage whose outgoing size in provider tokens, taken
+    /// the same way, exceeded the configured threshold.
+    pub reported_over_threshold: usize,
 }
 
 /// Rebuild the Anthropic `messages` history of a Claude Code transcript:
@@ -82,7 +111,16 @@ pub struct ReplayReport {
 /// every record as a sidechain; when the first conversational record is a
 /// sidechain, the file is that subagent's chain and its records are kept.
 pub fn claude_history(raw: &[u8]) -> Vec<Value> {
+    claude_history_with_usage(raw).0
+}
+
+/// [`claude_history`] and, per history index, the input tokens the provider
+/// reported for the request that assistant message answered: the first
+/// record's `usage` (`input_tokens` plus the cache fields). `None` for
+/// user messages and for assistant records without usable usage.
+pub fn claude_history_with_usage(raw: &[u8]) -> (Vec<Value>, Vec<Option<u64>>) {
     let mut history: Vec<Value> = Vec::new();
+    let mut usage: Vec<Option<u64>> = Vec::new();
     let mut last_assistant_id: Option<String> = None;
     let mut subagent_file: Option<bool> = None;
     for line in raw.split(|b| *b == b'\n') {
@@ -101,6 +139,7 @@ pub fn claude_history(raw: &[u8]) -> Vec<Value> {
             && record.get("subtype").and_then(Value::as_str) == Some("compact_boundary")
         {
             history.clear();
+            usage.clear();
             last_assistant_id = None;
             continue;
         }
@@ -130,8 +169,13 @@ pub fn claude_history(raw: &[u8]) -> Vec<Value> {
         }
         last_assistant_id = if role == "assistant" { id } else { None };
         history.push(json!({"role": role, "content": content}));
+        usage.push(if role == "assistant" {
+            message.get("usage").and_then(reported_input_tokens)
+        } else {
+            None
+        });
     }
-    history
+    (history, usage)
 }
 
 /// Rebuild the Responses `input` history of a Codex rollout: `response_item`
@@ -160,15 +204,22 @@ pub fn codex_history(raw: &[u8]) -> Vec<Value> {
     history
 }
 
-/// Read a Claude Code or Codex transcript and rebuild its request history.
+/// Read a Claude Code or Codex transcript and rebuild its request history,
+/// with the provider-reported input per history index (Claude Code only;
+/// empty for Codex).
 pub fn history_from_file(
     provider: gobstopper_core::Provider,
     path: &std::path::Path,
-) -> anyhow::Result<(Dialect, Vec<Value>)> {
+) -> anyhow::Result<(Dialect, Vec<Value>, Vec<Option<u64>>)> {
     let raw = crate::transaction::read(path)?;
     match provider {
-        gobstopper_core::Provider::ClaudeCode => Ok((Dialect::Anthropic, claude_history(&raw))),
-        gobstopper_core::Provider::Codex => Ok((Dialect::Responses, codex_history(&raw))),
+        gobstopper_core::Provider::ClaudeCode => {
+            let (history, usage) = claude_history_with_usage(&raw);
+            Ok((Dialect::Anthropic, history, usage))
+        }
+        gobstopper_core::Provider::Codex => {
+            Ok((Dialect::Responses, codex_history(&raw), Vec::new()))
+        }
     }
 }
 
@@ -193,10 +244,31 @@ pub fn replay(
     cfg: CliffConfig,
     fixed_tokens: u64,
 ) -> ReplayReport {
+    replay_calibrated(history, &[], dialect, cfg, fixed_tokens, false)
+}
+
+/// [`replay`] with the provider-reported input per history index (as
+/// [`claude_history_with_usage`] returns it). Usage is always measured;
+/// with `calibrate` each request's threshold is also divided by the ratio
+/// learned from the replies before it, as `proxy serve` does. Without
+/// `calibrate`, or without usage, the requests are exactly [`replay`]'s.
+pub fn replay_calibrated(
+    history: &[Value],
+    usage: &[Option<u64>],
+    dialect: Dialect,
+    cfg: CliffConfig,
+    fixed_tokens: u64,
+    calibrate: bool,
+) -> ReplayReport {
+    let threshold = cfg.threshold_tokens;
     let engine = Engine::new(cfg);
+    let mut calibration = Calibration::default();
+    let mut ratios: Vec<u64> = Vec::new();
     let filler = "x".repeat((fixed_tokens as usize).saturating_mul(4));
     let mut report = ReplayReport {
         dialect: dialect.name(),
+        calibrate,
+        last_ratio_permille: MIN_RATIO_PERMILLE,
         ..ReplayReport::default()
     };
     let points = request_points(history, dialect);
@@ -226,7 +298,12 @@ pub fn replay(
             dialect.messages_key().into(),
             Value::Array(history[..end].to_vec()),
         );
-        let ctx = engine.prepare(body, dialect);
+        let ratio = if calibrate {
+            calibration.ratio_permille()
+        } else {
+            MIN_RATIO_PERMILLE
+        };
+        let ctx = engine.prepare_calibrated(body, dialect, threshold, ratio);
         // Repeats the response to this request issued, checked against
         // what this request actually sent.
         let outgoing = ctx.as_ref().map_or(&history[..end], |ctx| ctx.messages());
@@ -246,6 +323,26 @@ pub fn replay(
             continue;
         };
         report.requests += 1;
+        report.last_ratio_permille = ctx.ratio_permille;
+        // The reply to this request, when the transcript recorded its usage.
+        let reported = usage.get(end).copied().flatten();
+        if let Some(reported) = reported {
+            report.usage_requests += 1;
+            if ctx.est_tokens_in > 0 {
+                let ratio = u128::from(reported) * 1000 / u128::from(ctx.est_tokens_in);
+                let ratio = u64::try_from(ratio).unwrap_or(u64::MAX);
+                ratios.push(ratio);
+                let out = u128::from(ctx.est_tokens_out) * u128::from(ratio) / 1000;
+                let out = u64::try_from(out).unwrap_or(u64::MAX);
+                report.peak_reported_tokens_out = report.peak_reported_tokens_out.max(out);
+                if out > threshold {
+                    report.reported_over_threshold += 1;
+                }
+            }
+            // The recorded request is the uncompacted history, so its
+            // estimate is the one the reported count describes.
+            calibration.observe(ctx.est_tokens_in, reported);
+        }
         let sent = ctx.messages();
         let read = match &previous {
             Some((prefix, est))
@@ -267,7 +364,7 @@ pub fn replay(
         if ctx.est_tokens_out > ctx.threshold_tokens {
             report.over_threshold_after += 1;
         }
-        if ctx.threshold_tokens > ctx.base_threshold_tokens {
+        if ctx.threshold_tokens > ctx.calibrated_threshold_tokens {
             report.raised_threshold += 1;
         }
         if ctx.compacted {
@@ -291,6 +388,7 @@ pub fn replay(
                 summary_tokens: ctx.est_summary_tokens,
                 tail_tokens: ctx.est_tail_tokens,
                 carry_chars: ctx.carry_chars,
+                reported_tokens_before: reported,
             });
         } else if ctx.matched {
             report.reused_prefix += 1;
@@ -302,6 +400,11 @@ pub fn replay(
             report.first_violation.get_or_insert(index);
         }
     }
+    report.calibration_samples = calibration.samples();
+    ratios.sort_unstable();
+    report.reported_ratio_min_permille = ratios.first().copied();
+    report.reported_ratio_median_permille = ratios.get(ratios.len() / 2).copied();
+    report.reported_ratio_max_permille = ratios.last().copied();
     report
 }
 
@@ -674,6 +777,150 @@ mod tests {
             .unwrap()
             .contains("subagent"));
         assert!(pairing_intact(&history, Dialect::Anthropic));
+    }
+
+    /// Provider usage `ratio_permille` thousandths above the estimate of
+    /// each recorded request, at the assistant index that answered it.
+    fn usage_at(history: &[Value], fixed_tokens: u64, ratio_permille: u64) -> Vec<Option<u64>> {
+        let engine = Engine::new(CliffConfig {
+            threshold_tokens: u64::MAX / 4,
+            ..CliffConfig::default()
+        });
+        let filler = "x".repeat(fixed_tokens as usize * 4);
+        (0..history.len())
+            .map(|end| {
+                if !Dialect::Anthropic.is_assistant(&history[end]) {
+                    return None;
+                }
+                let mut body = Map::new();
+                body.insert("model".into(), json!("replay"));
+                body.insert("system".into(), json!(filler));
+                body.insert("messages".into(), Value::Array(history[..end].to_vec()));
+                let ctx = engine.prepare(body, Dialect::Anthropic)?;
+                Some(ctx.est_tokens_in * ratio_permille / 1000)
+            })
+            .collect()
+    }
+
+    fn same_requests(a: &ReplayReport, b: &ReplayReport) {
+        assert_eq!(
+            serde_json::to_value(&a.compactions)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| (c["request"].clone(), c["est_tokens_after"].clone()))
+                .collect::<Vec<_>>(),
+            serde_json::to_value(&b.compactions)
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| (c["request"].clone(), c["est_tokens_after"].clone()))
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            (
+                a.requests,
+                a.compacted,
+                a.reused_prefix,
+                a.total_est_tokens_out
+            ),
+            (
+                b.requests,
+                b.compacted,
+                b.reused_prefix,
+                b.total_est_tokens_out
+            )
+        );
+        assert_eq!(
+            (
+                a.peak_est_tokens_out,
+                a.est_cache_read_tokens,
+                a.raised_threshold
+            ),
+            (
+                b.peak_est_tokens_out,
+                b.est_cache_read_tokens,
+                b.raised_threshold
+            )
+        );
+    }
+
+    #[test]
+    fn claude_usage_follows_the_assistant_message_it_answered() {
+        let raw = transcript(&[
+            json!({"type": "user", "message": {"role": "user", "content": "old"}}),
+            json!({"type": "assistant", "message": {"id": "m0", "role": "assistant", "content": [{"type": "text", "text": "x"}], "usage": {"input_tokens": 99}}}),
+            json!({"type": "system", "subtype": "compact_boundary"}),
+            json!({"type": "user", "message": {"role": "user", "content": "task"}}),
+            json!({"type": "assistant", "message": {"id": "m1", "role": "assistant", "content": [{"type": "thinking", "thinking": "t"}], "usage": {"input_tokens": 3, "cache_creation_input_tokens": 1000, "cache_read_input_tokens": 20000}}}),
+            json!({"type": "assistant", "message": {"id": "m1", "role": "assistant", "content": [{"type": "tool_use", "id": "a", "name": "bash", "input": {}}], "usage": {"input_tokens": 5}}}),
+            json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "a", "content": "ok"}]}}),
+            json!({"type": "assistant", "message": {"id": "m2", "role": "assistant", "content": [{"type": "text", "text": "done"}], "usage": {"input_tokens": "bad"}}}),
+        ]);
+        let (history, usage) = claude_history_with_usage(&raw);
+        assert_eq!(history, claude_history(&raw));
+        assert_eq!(usage, vec![None, Some(21_003), None, None]);
+    }
+
+    #[test]
+    fn replay_without_calibration_or_usage_sends_the_same_requests() {
+        let history = a_session(20, 3000);
+        let cfg = CliffConfig {
+            threshold_tokens: 3_000,
+            keep_recent: 1,
+            ..CliffConfig::default()
+        };
+        let usage = usage_at(&history, 200, 1300);
+        let plain = replay(&history, Dialect::Anthropic, cfg.clone(), 200);
+        assert!(plain.compacted >= 2);
+        assert!(!plain.calibrate && plain.usage_requests == 0);
+        let off = replay_calibrated(
+            &history,
+            &usage,
+            Dialect::Anthropic,
+            cfg.clone(),
+            200,
+            false,
+        );
+        same_requests(&plain, &off);
+        assert_eq!(off.usage_requests, 20);
+        assert_eq!(off.last_ratio_permille, 1000);
+        let unused = replay_calibrated(&history, &[], Dialect::Anthropic, cfg, 200, true);
+        same_requests(&plain, &unused);
+        assert_eq!(unused.last_ratio_permille, 1000);
+    }
+
+    #[test]
+    fn calibrated_replay_compacts_earlier_and_stays_under_the_threshold() {
+        let history = a_session(30, 3000);
+        let cfg = CliffConfig {
+            threshold_tokens: 6_000,
+            keep_recent: 1,
+            ..CliffConfig::default()
+        };
+        let usage = usage_at(&history, 200, 1300);
+        let off = replay_calibrated(
+            &history,
+            &usage,
+            Dialect::Anthropic,
+            cfg.clone(),
+            200,
+            false,
+        );
+        let on = replay_calibrated(&history, &usage, Dialect::Anthropic, cfg, 200, true);
+        assert!(on.calibrate);
+        // Requests estimated under 1,000 tokens are not sampled.
+        assert!((5..30).contains(&on.calibration_samples));
+        assert!((1299..=1300).contains(&on.last_ratio_permille));
+        assert!((1299..=1300).contains(&on.reported_ratio_median_permille.unwrap()));
+        assert!(off.reported_over_threshold > 0);
+        assert!(on.reported_over_threshold < off.reported_over_threshold);
+        assert!(on.peak_reported_tokens_out < off.peak_reported_tokens_out);
+        assert!(on.compactions[0].request < off.compactions[0].request);
+        assert!(on.compactions[0].reported_tokens_before.is_some());
+        assert_eq!(on.pairing_violations, 0);
     }
 
     #[test]

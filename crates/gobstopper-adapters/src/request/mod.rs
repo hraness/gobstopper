@@ -22,6 +22,7 @@ use sha2::{Digest, Sha256};
 use std::ops::Range;
 
 pub mod anthropic;
+pub mod calibrate;
 pub mod chat;
 mod engine;
 mod images;
