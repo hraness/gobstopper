@@ -2,6 +2,10 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## Unreleased
+
+- `proxy serve` samples the usage a response reports even when it carries no `content-type`, as ChatGPT's backend-api event streams do, so Codex traffic feeds estimate calibration like every other dialect.
+
 ## v0.7.1 - 2026-09-27
 
 Help, errors, and permission notices now follow the shared Hraness CLI contract, for people at a terminal and agents calling the binary.
