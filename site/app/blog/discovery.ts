@@ -34,7 +34,12 @@ export const searchSite = {
   title: SITE_TITLE,
 } as const satisfies SearchSite;
 
-export const hraness: ArticleParty = { kind: "Organization", name: "Hraness" };
+export const hraness: ArticleParty = {
+  kind: "Organization",
+  name: "Hraness",
+  url: "https://hraness.com",
+  sameAs: ["https://github.com/hraness"],
+};
 const publisher: ArticleParty = { kind: "Organization", name: SITE_NAME, path: "/" };
 
 export function postDiscovery(post: BlogPost): ArticleDiscovery {
