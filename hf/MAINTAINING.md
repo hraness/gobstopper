@@ -18,11 +18,11 @@ The stable destination is `hranesscom/gobstopper-benchmarks`, repository type `d
 
 ## Publish an approved update
 
-The initial browser handoff requires showing Ben the exact public card and artifact manifest and receiving his explicit approval before public publication. That requirement remains in force until he changes it. Routine repository commits do not constitute approval to publish this dataset.
+On 2026-09-27, Ben approved initial publication and granted standing authority for routine reviewed syncs to the existing `hranesscom/gobstopper-benchmarks` dataset. This replaces the initial browser handoff's per-publication approval requirement for this destination. Complete the source review, rights review, repository gates, staging inspection, remote collision checks, and exact-revision hash verification in this runbook without asking for duplicate conversational approval. Preserve immutable study history and each artifact's reviewed license. This authority excludes new destinations, private data, paid resources, and expanded credential access.
 
 Use the official CLI pinned to `huggingface-hub==2.0.0` with `uvx --from huggingface-hub==2.0.0 hf` (substitute that prefix for `hf` below). Its upload command has no dry-run option; local staging is the review preview. Run `hf auth whoami` to verify the authorized account and organization membership. Do not print or create credentials or assume a signed-in browser authenticates the CLI. If CLI authority is missing, ask the owner to establish a supported approved credential route. An agent must not add a long-lived personal token to avoid authentication.
 
-After exact publication approval and verification that all added artifacts have reviewed rights, with the dataset repository already created under the approved owner:
+Under this standing authority, after verification that all added artifacts have reviewed rights and all applicable gates passed, with the existing dataset repository verified under the approved owner:
 
 ```sh
 hf upload hranesscom/gobstopper-benchmarks /tmp/gobstopper-hf-reviewed-export . --repo-type dataset --commit-message "Sync reviewed benchmark artifacts"
