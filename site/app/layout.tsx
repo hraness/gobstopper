@@ -143,7 +143,7 @@ export default function RootLayout({
   children,
 }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en" data-hraness-theme="paper" data-hraness-material="lantern" data-hraness-pattern="mesh" data-palette="tokyo-night" className={initialPalette.className} suppressHydrationWarning>
+    <html lang="en" data-hraness-theme="paper" data-hraness-material="lantern" data-hraness-pattern="none" data-palette="tokyo-night" className={initialPalette.className} suppressHydrationWarning>
       <head>
         {/* eslint-disable-next-line @next/next/no-sync-scripts */}
         <script src="/theme-bootstrap.js" />

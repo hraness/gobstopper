@@ -1,36 +1,20 @@
 import {
-  MarketingCallToAction,
-  MarketingInstallPanel,
-  MarketingInterfaceGrid,
-  MarketingMaker,
+  MarketingFlow,
   MarketingPage,
-  MarketingPrimitives,
-  MarketingProofFrame,
   MarketingQuestionList,
-  MarketingRelated,
   MarketingSection,
-  MarketingTrustBoundary,
   ProductHero,
   ProviderMarkChip,
 } from "@hraness/design-kit/react/server";
 import { product, type PortfolioProductId } from "@hraness/design-kit/portfolio";
 
 import { SiteHeader, SiteFooter } from "./_components/site-chrome";
-import { HeroField } from "./hero-field";
-import { HeroGraphic } from "./hero-graphic";
 import { publishedRelease } from "./publication";
 
-
-function TopicIcon({ slug }: Readonly<{ slug: string }>) {
-  return (
-    <img className="gobstopper-topic-icon" src={`/icons/${slug}.svg`} alt="" aria-hidden="true" width="88" height="88" loading="lazy" decoding="async" />
-  );
-}
-
-/** A related-product card from the portfolio snapshot: mark, name, and one-line role. */
+/** A related product from the portfolio snapshot: name, address, and one-line role. */
 function related(id: PortfolioProductId, name: string) {
-  const { canonicalUrl, mark, oneLiner } = product(id);
-  return { href: canonicalUrl, mark, name, role: oneLiner };
+  const { canonicalUrl, oneLiner } = product(id);
+  return { href: canonicalUrl, name, role: oneLiner };
 }
 
 const releaseVersion = publishedRelease?.version;
@@ -38,44 +22,85 @@ const repository = "https://github.com/hraness/gobstopper";
 
 const heading = "Context compaction you can undo.";
 const summary =
-  "A local proxy that keeps long sessions in Claude Code, Codex, opencode, Crush, Aider, Goose, and other agents under a context threshold. Past it, each request keeps the task and the newest turns word for word and drops old tool output the agent can read again, following CliffCompaction's rule. File commands preview the same kind of cut on saved sessions and write a smaller copy. Every original byte stays in a local vault you can search and restore from.";
-const footnote =
-  "Free and open source (MIT or Apache-2.0). Installs with Cargo and needs Rust 1.85 or newer; the proxy also needs curl 8.3 or newer. Runs on your machine with no account.";
+  "Gobstopper is a free, open-source command-line tool that makes long coding sessions smaller. Its local proxy keeps each request from Claude Code, Codex, and other agents under a token threshold by summarizing older turns and sending the newest ones word for word. On saved sessions it writes a smaller copy, and every original byte stays in a local vault you can search and restore from.";
+const facts =
+  "MIT or Apache-2.0 · Installs with Cargo (Rust 1.85 or newer) · The proxy needs curl 8.3 or newer · Runs on your machine, no account";
 
-const primitives = [
+const agents = ["claudecode", "codex", "opencode", "crush", "aider", "goose"] as const;
+
+const steps = [
   {
-    icon: "session-detection",
-    label: "Session detection",
-    summary: "Finds sessions in the Codex and Claude Code stores. Reports measured context separately from estimates and missing usage. Recent file activity cannot tell you whether another process is using a session.",
+    label: "Start the proxy with your agent",
+    code: "gobstopper proxy run -- claude",
+    detail: "It starts on a free local port, points the agent's ANTHROPIC_BASE_URL and OPENAI_BASE_URL at itself, and stops when the agent exits. Use `gobstopper proxy serve` for a background proxy on 127.0.0.1:8260.",
   },
   {
-    icon: "edit-ir",
-    label: "A few kinds of edit",
-    summary: "Strategies propose replacing stale tool output, inserting a digest, or having the provider compact. Gobstopper checks supported record links, order, and tool-call pairs before writing a copy. Those checks do not establish that a provider can resume it.",
+    label: "Small requests pass through",
+    detail: "Requests under the threshold, 128,000 estimated tokens by default, go to the provider unchanged.",
   },
   {
-    icon: "strategies",
-    label: "Strategies",
-    summary: "The default, auto, picks a strategy from the transcript. Sawtooth recommends provider compaction, elide replaces eligible stale tool output, cliff keeps the newest assistant steps and drops older tool results over 500 bytes, and structured writes a state card from metadata. For running sessions in Claude Code, Codex, and OpenAI-compatible agents, gobstopper proxy applies CliffCompaction's rule to each outgoing request. Scored ranks candidates; optional on-device models can score or draft cards. Agentic accepts edits proposed by a program you trust.",
+    label: "Large requests keep the recent work",
+    detail: "Past the threshold, the system prompt, the first task, and at least the last three turns go out word for word. Older turns become one summary that keeps human and assistant text and tool results up to 500 characters. Longer tool results are dropped, because the agent can read the file or rerun the command.",
   },
   {
-    icon: "presets-config",
-    label: "Presets, plugins and config",
-    summary: "Set defaults once, override them per provider or per session, and save named presets. Plugins are versioned bundles pinned to an exact executable, and Gobstopper checks every edit they return. The older command hook still works once you trust it explicitly.",
-  },
-  {
-    icon: "undo-vault",
-    label: "Undo vault",
-    summary: "Before writing a separate Claude Code or Codex copy, Gobstopper archives the original and prepared bytes. Search the snapshot for a missing record, read its saved text, or use undo to prepare a restored copy with a new session identity.",
-  },
-  {
-    icon: "telemetry-eval",
-    label: "Telemetry and eval",
-    summary: "Events link snapshots with observed usage. Eval compares strategies on frozen input, checks supported structures, and counts which sampled details remain. It reports missing measurements and coverage; model judgments, billing, and successful task continuation need separate evidence.",
+    label: "Check what it did",
+    code: "gobstopper proxy status",
+    detail: "Shows the running proxy's settings, how many requests it compacted, and the estimated tokens saved. Session files stay unchanged.",
   },
 ] as const;
 
-const agents = ["claudecode", "codex", "opencode", "crush", "aider", "goose"] as const;
+const ways = [
+  {
+    label: "Proxy",
+    summary: "Point an agent's provider address at the proxy, or let `proxy run` start one for a single session. Replay a recorded session to see what the proxy would have sent, without calling a provider.",
+    code: `gobstopper proxy run -- claude
+ANTHROPIC_BASE_URL=http://127.0.0.1:8260 claude
+gobstopper proxy replay <session>`,
+  },
+  {
+    label: "Saved sessions",
+    summary: "Find Claude Code and Codex sessions, preview a plan, and prepare a separate smaller copy. Check it for problems that would break resume, and keep the original for recovery.",
+    code: `gobstopper plan <session> --trigger 250000
+gobstopper apply <session> --strategy elide
+gobstopper verify <session> && gobstopper undo <session>`,
+  },
+  {
+    label: "Watcher and hooks",
+    summary: "The watcher checks sessions every 30 seconds by default and can prepare separate copies. Dry-run mode previews its decisions. Hook setup writes a settings file for you to review and does not change provider settings.",
+    code: `gobstopper watch --dry-run --once
+gobstopper install-hooks --output ./hook-candidates.json`,
+  },
+  {
+    label: "Your program",
+    summary: "A preset command receives the transcript as normalized JSON and returns edits. It runs only after you mark it trusted. Package it as a versioned plugin bundle to pin the exact executable.",
+    code: `[presets.my-policy]
+strategy = "elide"
+keep_recent_tool_outputs = 4
+
+[presets.custom]
+command = "node my-editor.js"
+trusted_legacy_command = true`,
+  },
+] as const;
+
+const inside = [
+  {
+    label: "Strategies",
+    detail: "The default, auto, picks a strategy from the transcript. Elide replaces eligible stale tool output, cliff keeps the newest assistant steps and drops older tool results over 500 bytes, structured writes a state card from metadata, and sawtooth recommends provider compaction. Scored ranks candidates; optional on-device models can score them or draft cards.",
+  },
+  {
+    label: "Undo vault",
+    detail: "Before writing a separate Claude Code or Codex copy, Gobstopper archives the original and prepared bytes. Search a snapshot for a missing record, read its saved text, or run `undo` to prepare a restored copy with a new session identity.",
+  },
+  {
+    label: "Presets and plugins",
+    detail: "Set defaults once, override them per provider or per session, and save named presets. Plugins are versioned bundles pinned to an exact executable, and Gobstopper checks every edit they return.",
+  },
+  {
+    label: "Eval and telemetry",
+    detail: "Eval compares strategies on frozen input, checks supported structures, and counts which sampled details remain. Events link snapshots with observed usage and report missing measurements as missing.",
+  },
+] as const;
 
 const trust = [
   {
@@ -84,7 +109,7 @@ const trust = [
   },
   {
     label: "Source files stay unchanged",
-    detail: "Claude Code and Codex compaction writes a separate copy and archives the original and prepared bytes. Snapshot readers coordinate with cleanup, and damaged recovery data stops cleanup. Keep backups of the vault: local snapshots depend on your storage.",
+    detail: "Claude Code and Codex compaction writes a separate copy and archives the original and prepared bytes. Damaged recovery data stops cleanup. Keep backups of the vault: local snapshots depend on your storage.",
   },
   {
     label: "Automatic provider compaction is disabled",
@@ -93,6 +118,10 @@ const trust = [
   {
     label: "Unknown outcomes stay unknown",
     detail: "If a provider operation has an uncertain result, Gobstopper does not retry it automatically after a restart or cooldown. Missing usage stays unmeasured. Hook observations do not establish that Gobstopper caused a compaction.",
+  },
+  {
+    label: "Smaller is not the same as better",
+    detail: "Copy checks cover record links, order, and tool-call pairs. They do not establish that a provider can resume the copy, that every task fact survives, or what you will be billed.",
   },
 ] as const;
 
@@ -123,6 +152,14 @@ const questions = [
   },
 ] as const;
 
+const relatedProducts = [
+  related("xcb", "xcb"),
+  related("wrench", "Ghostget"),
+  related("aicharts", "AI Charts"),
+  related("peopleblade", "PeopleBlade"),
+  related("kb", "Wordcell"),
+] as const;
+
 function withCode(text: string) {
   return text.split("`").map((part, index) => (index % 2 === 1 ? <code key={index}>{part}</code> : part));
 }
@@ -139,7 +176,7 @@ const structuredData = {
 
 export default function Home() {
   return (
-    <div data-hraness-marketing-preset="editorial">
+    <div data-hraness-marketing-preset="editorial" data-hraness-pattern="none" className="gob-home">
       <script
         dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
         type="application/ld+json"
@@ -148,250 +185,193 @@ export default function Home() {
 
       <main id="main" tabIndex={-1}>
         <MarketingPage>
-          <div className="hraness-material-wall gob-opening">
-            <ProductHero
-              backdrop={<HeroField />}
-              align="start"
-              actions={[
-                { href: "#install", label: "Install Gobstopper" },
-                { href: "/benchmarks", label: "See the benchmarks" },
-              ]}
-              boundary={footnote}
-              className="gobstopper-marketing-hero"
-              eyebrow="Session compaction tool"
-              frame={(
-                <MarketingProofFrame
-                  className="hraness-material-pane"
-                  caption="On a 333k-token Claude Code session, Claude's own autocompact cut the resume context by 82% and then said unfinished renames were done. Gobstopper's elide and compacted strategies cut about 30% and recalled the task correctly. One session, recorded on an earlier build; not a general benchmark."
-                  credit="Recorded September 17, 2026 · chart is illustrative"
-                  title="The smallest context forgot the task."
-                >
-                  <HeroGraphic />
-                  <pre className="transcript" tabIndex={0}><code>{`# input tokens on resume · recalled?
-no compaction     312,722  yes
-elide             219,167  yes
-compacted         220,447  yes
-autocompact 100    56,300  no`}</code></pre>
-                </MarketingProofFrame>
-              )}
-              heading={heading}
-              headingId="hero-title"
-              name=""
-              summary={summary}
-            />
-          </div>
-
-          <MarketingPrimitives
-            heading="You decide when to compact and how."
-            headingId="model-title"
-            id="model"
-            items={primitives.map((primitive) => ({
-              example: <TopicIcon slug={primitive.icon} />,
-              label: primitive.label,
-              summary: primitive.summary,
-            }))}
-            label=""
-            summary="Set a threshold, compare strategies on frozen input, and inspect the candidate before provider resume. Smaller context, cache behavior and task quality need separate evidence."
+          <ProductHero
+            backdrop={false}
+            align="start"
+            actions={[
+              { href: "#install", label: "Install Gobstopper" },
+              { href: "/benchmarks", label: "See the benchmarks", emphasis: "secondary" },
+            ]}
+            boundary={facts}
+            className="gob-hero"
+            eyebrow="Session compaction tool"
+            heading={heading}
+            headingId="hero-title"
+            name=""
+            summary={summary}
           />
+
+          <figure className="gob-proof" aria-labelledby="proof-title">
+            <figcaption className="gob-proof__head">
+              <span id="proof-title">Resume trial on one 333k-token Claude Code session</span>
+              <span className="gob-proof__date">September 17, 2026</span>
+            </figcaption>
+            <pre className="gob-code gob-proof__table" tabIndex={0}><code>{`strategy          input tokens on resume   recalled the task?
+no compaction          312,722               yes
+elide                  219,167               yes
+compacted              220,447               yes
+autocompact 100         56,300               no`}</code></pre>
+            <p className="gob-proof__note">
+              Claude&apos;s own autocompact cut the resume context by 82% and then said unfinished renames were done. Gobstopper&apos;s elide and compacted strategies cut about 30% and recalled the task correctly. One session on an earlier build, not a general benchmark.{" "}
+              <a href="/benchmarks">All dated measurements</a>
+            </p>
+          </figure>
+
+          <MarketingSection
+            heading="It keeps each request under a threshold you choose."
+            headingId="how-title"
+            id="how"
+            label="How the proxy works"
+            summary="No model call writes the summary, and each compaction starts again from the full history your agent resends, so a summary is never summarized."
+          >
+            <MarketingFlow
+              ariaLabel="How the proxy works"
+              className="gob-steps"
+              steps={steps.map(({ detail, label, ...rest }) => ({
+                label,
+                detail: detail.replaceAll("`", ""),
+                ...("code" in rest ? { code: rest.code } : {}),
+              }))}
+            />
+          </MarketingSection>
 
           <MarketingSection
             heading="Works with the agents you already use."
             headingId="agents-title"
             id="agents"
-            label=""
-            summary="The proxy speaks Anthropic Messages, OpenAI Responses, and OpenAI Chat Completions. Any agent that accepts a custom provider address can point at it; Claude Code and Codex routing is live-checked and the rest are contract-tested."
+            label="Agents"
+            summary="The proxy speaks Anthropic Messages, OpenAI Responses, and OpenAI Chat Completions. Any agent that accepts a custom provider address can point at it. Claude Code and Codex routing is live-checked; the others are contract-tested."
           >
             <div className="gob-agent-marks">
               {agents.map((agent) => (
-                <ProviderMarkChip key={agent} mark={agent} size={34} />
+                <ProviderMarkChip key={agent} mark={agent} size={32} />
               ))}
             </div>
           </MarketingSection>
 
-          <MarketingInterfaceGrid
+          <MarketingSection
             heading="In front of your agent, on saved sessions, or from your own code."
             headingId="interfaces-title"
             id="interfaces"
-            interfaces={[
-              {
-                label: "Proxy",
-                summary: "Point an agent's provider address at the proxy, or let proxy run start one for a single session. Replay a recorded session to see what the proxy would have sent, without calling a provider.",
-                example: (
-                  <>
-                    <TopicIcon slug="watcher" />
-                    <pre tabIndex={0}><code>{`gobstopper proxy run -- claude
-ANTHROPIC_BASE_URL=http://127.0.0.1:8260 claude
-gobstopper proxy replay <session>`}</code></pre>
-                  </>
-                ),
-              },
-              {
-                label: "CLI",
-                summary: "Find sessions, preview a plan, and prepare a separate Codex or Claude Code copy. Inspect its supported structures and keep the original for recovery.",
-                example: (
-                  <>
-                    <TopicIcon slug="cli" />
-                    <pre tabIndex={0}><code>{`gobstopper plan <session> --trigger 250000
-gobstopper apply <session> --strategy elide
-gobstopper verify <session> && gobstopper undo <session>`}</code></pre>
-                  </>
-                ),
-              },
-              {
-                label: "Watcher and hooks",
-                summary: "The watcher checks sessions every 30 seconds by default and can prepare separate Claude Code or Codex copies. Dry-run mode previews the decisions. Hook setup writes a settings candidate for you to review; it does not change provider settings.",
-                example: (
-                  <>
-                    <TopicIcon slug="presets-config" />
-                    <pre tabIndex={0}><code>{`gobstopper watch --dry-run --once
-gobstopper install-hooks --output ./hook-candidates.json`}</code></pre>
-                  </>
-                ),
-              },
-              {
-                label: "Your program",
-                summary: "A preset command receives the transcript as normalized JSON and returns edits. It runs only after you mark it trusted. Package it as a versioned plugin bundle to pin the exact executable.",
-                example: (
-                  <>
-                    <TopicIcon slug="custom-program" />
-                    <pre tabIndex={0}><code>{`[presets.my-policy]
-strategy = "elide"
-keep_recent_tool_outputs = 4
-
-[presets.custom]
-command = "node my-editor.js"
-trusted_legacy_command = true`}</code></pre>
-                  </>
-                ),
-              },
-            ]}
-            label=""
+            label="Four ways to run it"
             summary="Built-in strategies and trusted programs go through the same checks before Gobstopper writes a copy."
-          />
+          >
+            <div className="gob-rows">
+              {ways.map((way) => (
+                <div className="gob-row" key={way.label}>
+                  <div className="gob-row__text">
+                    <h3>{way.label}</h3>
+                    <p>{withCode(way.summary)}</p>
+                  </div>
+                  <pre className="gob-code" tabIndex={0}><code>{way.code}</code></pre>
+                </div>
+              ))}
+            </div>
+          </MarketingSection>
+
+          <MarketingSection
+            heading="What's inside."
+            headingId="model-title"
+            id="model"
+            label="Parts"
+            summary="Set a threshold, compare strategies on frozen input, and inspect the candidate before you resume it."
+          >
+            <dl className="gob-list">
+              {inside.map((item) => (
+                <div key={item.label}>
+                  <dt>{item.label}</dt>
+                  <dd>{withCode(item.detail)}</dd>
+                </div>
+              ))}
+            </dl>
+          </MarketingSection>
 
           <MarketingSection
             heading="What Gobstopper won't do."
             headingId="boundary-title"
             id="boundary"
-            label=""
-            summary="A compaction that breaks resume or hides a failure is worse than none."
+            label="Limits"
+            summary="A compaction that breaks resume or hides a failure is worse than none. The commands enforce these rules, and tests cover them."
           >
-            <MarketingTrustBoundary
-              heading="Rules the code enforces."
-              headingId="kernel-title"
-              id="kernel"
-              items={trust}
-              label=""
-              summary="Each rule is checked by the commands themselves and covered by tests."
-            />
+            <dl className="gob-list">
+              {trust.map((item) => (
+                <div key={item.label}>
+                  <dt>{item.label}</dt>
+                  <dd>{item.detail}</dd>
+                </div>
+              ))}
+            </dl>
           </MarketingSection>
 
-          <MarketingInstallPanel
-            eyebrow=""
+          <MarketingSection
             heading="Install and inspect your first session."
             headingId="install-title"
             id="install"
+            label="Install"
+            summary="This installs the current source build, which this page describes. It needs Rust 1.85 or newer."
           >
-            <p className="install-note">This installs the current source build, which this page describes.</p>
-            <pre className="install-command" tabIndex={0}><code>{`cargo install --git ${repository} gobstopper --locked
+            <div className="gob-install">
+              <pre className="gob-code install-command" tabIndex={0}><code>{`cargo install --git ${repository} gobstopper --locked
 gobstopper --help`}</code></pre>
-            <pre className="install-command" tabIndex={0}><code>{`gobstopper proxy run -- claude    # one Claude Code session through the proxy
+              <pre className="gob-code install-command" tabIndex={0}><code>{`gobstopper proxy run -- claude    # one Claude Code session through the proxy
 gobstopper proxy serve            # background proxy on http://127.0.0.1:8260
 gobstopper proxy status           # requests compacted, estimated tokens saved`}</code></pre>
-            <pre className="install-command" tabIndex={0}><code>{`gobstopper detect
-gobstopper plan <session> --trigger 250000`}</code></pre>
-            {publishedRelease === null ? (
-              <p className="install-note">No release yet.</p>
-            ) : (
-              <>
+              <pre className="gob-code install-command" tabIndex={0}><code>{`gobstopper detect                         # list sessions and their size
+gobstopper plan <session> --trigger 250000   # preview a compaction; changes nothing`}</code></pre>
+              {publishedRelease === null ? (
+                <p className="install-note">No release yet.</p>
+              ) : (
                 <p className="install-note">
                   Latest tagged release: <a href={`${repository}/releases/tag/v${releaseVersion}`}>v{releaseVersion}</a>.{" "}
-                  <a href={publishedRelease.verificationRun}>See how this release was verified</a>.{" "}
+                  <a href={publishedRelease.verificationRun}>See how this release was verified</a>.
                 </p>
-              </>
-            )}
-            <p className="install-note">
-              Needs Rust 1.85 or newer. Gobstopper reads Codex and Claude Code session data on your
-              machine. Built-in inspection makes no model call. If you enable a remote scorer,
-              it receives selected transcript text; trusted plugins run your code.{" "}
-              <a href="/docs#install--use">Read the full reference</a>.
-            </p>
-            <p className="install-note">
-              <a href={`${repository}/blob/main/docs/assurance/qualification.json`}>Provider support status</a>{" · "}
-              <a href={`${repository}/blob/main/docs/assurance/operations.md`}>Recovery runbook</a>{" · "}
-              <a href={`${repository}/blob/main/verify/README.md`}>Verification scopes and assumptions</a>
-            </p>
-          </MarketingInstallPanel>
+              )}
+              <p className="install-note">
+                Gobstopper reads Codex and Claude Code session data on your machine. Built-in
+                inspection makes no model call. If you enable a remote scorer, it receives
+                selected transcript text; trusted plugins run your code.{" "}
+                <a href="/docs#install--use">Read the full reference</a>.
+              </p>
+              <p className="install-note">
+                <a href={`${repository}/blob/main/docs/assurance/qualification.json`}>Provider support status</a>{" · "}
+                <a href={`${repository}/blob/main/docs/assurance/operations.md`}>Recovery runbook</a>{" · "}
+                <a href={`${repository}/blob/main/verify/README.md`}>Verification scopes and assumptions</a>
+              </p>
+            </div>
+          </MarketingSection>
 
           <MarketingQuestionList
             heading="Before you install."
             headingId="questions-title"
             id="questions"
-            label=""
+            label="Questions"
             questions={questions.map(({ answer, question }) => ({
               answer: <p>{withCode(answer)}</p>,
               question,
             }))}
           />
 
-          <MarketingMaker
+          <MarketingSection
             heading="Built by Hraness."
             headingId="maker-title"
             id="maker"
-            label=""
-            links={[
-              { href: "https://hraness.com", label: "hraness.com" },
-              { href: "https://x.com/hraness", label: "@hraness" },
-              { href: repository, label: "GitHub" },
-            ]}
+            label="Maker"
+            summary="Hraness is a software studio in Puerto Rico. We build tools that give AI agents memory, context, web access, and a record of their work, and we make apps and sourced archives for people. Hraness publishes Gobstopper under your choice of the MIT or Apache-2.0 license."
           >
-            <p>
-              Hraness is a software studio in Puerto Rico. We build tools that give AI
-              agents memory, context, web access, and a record of their work, and we
-              make apps and sourced archives for people. Hraness publishes Gobstopper
-              under your choice of the MIT or Apache-2.0 license.
+            <ul className="gob-related" aria-label="More from Hraness">
+              {relatedProducts.map((item) => (
+                <li key={item.href}>
+                  <a href={item.href}>{item.name}</a>
+                  <span>{item.role}</span>
+                </li>
+              ))}
+            </ul>
+            <p className="install-note">
+              <a href="https://hraness.com">hraness.com</a>{" · "}
+              <a href="https://x.com/hraness">@hraness</a>{" · "}
+              <a href={repository}>GitHub</a>
             </p>
-          </MarketingMaker>
-
-          <MarketingRelated
-            groups={[
-              {
-                heading: "The agent platform",
-                headingId: "related-tools",
-                summary: "Tools for the accounts, web reads, and models your agent runs on.",
-                items: [
-                  related("wrench", "Ghostget"),
-                  related("xcb", "xcb"),
-                  related("aicharts", "AI Charts"),
-                ],
-              },
-              {
-                heading: "The personal apps",
-                headingId: "related-apps",
-                items: [
-                  related("peopleblade", "PeopleBlade"),
-                  related("soulscrape", "Soulscrape"),
-                  related("message-like-me", "Textbutler"),
-                  related("kb", "Wordcell"),
-                ],
-              },
-            ]}
-            heading="More from Hraness."
-            headingId="related-title"
-            label="Related"
-            summary="Other tools your agent can use alongside Gobstopper."
-          />
-
-          <MarketingCallToAction
-            actions={[
-              { href: "#install", label: "Install Gobstopper" },
-              { href: "/benchmarks", label: "See the benchmarks" },
-            ]}
-            footnote={footnote}
-            heading="Make your next long session smaller."
-            headingId="cta-title"
-            summary="Set a trigger, compare a strategy, and keep the exact source behind every prepared copy."
-          />
+          </MarketingSection>
         </MarketingPage>
       </main>
 
