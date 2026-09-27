@@ -1,0 +1,53 @@
+{
+  "schema": "hraness-hf-export-v1",
+  "repo_type": "dataset",
+  "repo_id": "hranesscom/gobstopper-benchmarks",
+  "rights_status": "approved-owner-cc-by-4.0",
+  "files": [
+    {
+      "source": "site/public/benchmarks/2026-09-19/aggregates.json",
+      "destination": "data/2026-09-19/aggregates.json",
+      "sha256": "c45307746b6a69de54fe7e348c132ea9341cdf7a7d22f6e605d6eb0e6668eb6c"
+    },
+    {
+      "source": "site/public/benchmarks/2026-09-19/apple-retention-pilot.json",
+      "destination": "data/2026-09-19/apple-retention-pilot.json",
+      "sha256": "c43fff8b58aacd0f4cf0e898f3ca558fd6a4575fea5fa25e5b0a508d4df67db5"
+    },
+    {
+      "source": "site/public/benchmarks/2026-09-19/apple-retention-protocol.json",
+      "destination": "data/2026-09-19/apple-retention-protocol.json",
+      "sha256": "172035aeb79f652f47b8e6e41d5ad473e9e7f3b81315a4ea01255ccb97ec1b81"
+    },
+    {
+      "source": "site/public/benchmarks/2026-09-19/protocol.json",
+      "destination": "data/2026-09-19/protocol.json",
+      "sha256": "7fad1d81807079b33c623112591207ed47f93595be444abda17faf36602501db"
+    },
+    {
+      "source": "site/public/benchmarks/2026-09-19/report.md",
+      "destination": "data/2026-09-19/report.md",
+      "sha256": "b8a9c54afc28921d03da24dd7689f17a4f60cd4dcbfb62b1899dd72ad03a1fee"
+    },
+    {
+      "source": "site/public/benchmarks/2026-09-19/retention-ablation-protocol.json",
+      "destination": "data/2026-09-19/retention-ablation-protocol.json",
+      "sha256": "4f3fca370a072591d533544bf07334f1a53e57d4872608a9452a9b4d196e0b85"
+    },
+    {
+      "source": "site/public/benchmarks/2026-09-19/retention-ablation.json",
+      "destination": "data/2026-09-19/retention-ablation.json",
+      "sha256": "f34b48fcf89e7660acdbe0ca77b9952868f00e876adc5dc1c38a43a9eefd8e1f"
+    },
+    {
+      "source": "site/public/benchmarks/2026-09-20/recovery-study-protocol.json",
+      "destination": "data/2026-09-20/recovery-study-protocol.json",
+      "sha256": "bb258a751c6e5126c6f4f8a22b9d83f8ec5a7837e6f734bbd7a66045813090be"
+    },
+    {
+      "source": "site/public/benchmarks/2026-09-20/recovery-study-results.json",
+      "destination": "data/2026-09-20/recovery-study-results.json",
+      "sha256": "7c293eeb44b3e92395a720ff38ec67dfecdb96eae4d9f78608fb11c64bfa5654"
+    }
+  ]
+}
