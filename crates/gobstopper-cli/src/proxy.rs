@@ -1655,13 +1655,20 @@ struct UsageTap {
 
 impl UsageTap {
     /// A tap for a JSON or event-stream response; `None` for anything else.
+    /// A missing content type means an event stream: the ChatGPT backend
+    /// sends none, and a JSON body parses no `data:` lines anyway.
     fn new(headers: &[(String, String)], dialect: Dialect) -> Option<Self> {
         let kind = headers
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
-            .map(|(_, value)| value.to_ascii_lowercase())?;
-        let event_stream = kind.contains("text/event-stream");
-        (event_stream || kind.contains("json")).then_some(Self {
+            .map(|(_, value)| value.to_ascii_lowercase());
+        let event_stream = match kind.as_deref() {
+            Some(value) if value.contains("text/event-stream") => true,
+            Some(value) if value.contains("json") => false,
+            Some(_) => return None,
+            None => true,
+        };
+        Some(Self {
             dialect,
             event_stream,
             data: Vec::new(),
@@ -2354,7 +2361,8 @@ mod tests {
             Dialect::Anthropic
         )
         .is_none());
-        assert!(UsageTap::new(&[], Dialect::Anthropic).is_none());
+        // The ChatGPT backend sends no content type on its event streams.
+        assert!(UsageTap::new(&[], Dialect::Responses).is_some());
     }
 
     #[test]

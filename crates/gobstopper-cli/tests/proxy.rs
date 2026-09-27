@@ -33,6 +33,8 @@ impl Recorded {
 enum Reply {
     Json(u16, Value),
     Sse(Vec<String>),
+    /// An event stream with no content type, as the ChatGPT backend sends.
+    SseBare(Vec<String>),
 }
 
 type Responder = dyn Fn(&Recorded) -> Reply + Send + Sync;
@@ -133,7 +135,9 @@ fn serve_fake(stream: TcpStream, log: &Mutex<Vec<Recorded>>, responder: &Respond
     };
     log.lock().unwrap().push(recorded.clone());
     let mut out = stream;
-    match responder(&recorded) {
+    let reply = responder(&recorded);
+    let bare = matches!(&reply, Reply::SseBare(_));
+    match reply {
         Reply::Json(status, value) => {
             let body = serde_json::to_vec(&value).unwrap();
             let head = format!(
@@ -143,9 +147,16 @@ fn serve_fake(stream: TcpStream, log: &Mutex<Vec<Recorded>>, responder: &Respond
             out.write_all(head.as_bytes()).unwrap();
             out.write_all(&body).unwrap();
         }
-        Reply::Sse(events) => {
-            out.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n")
-                .unwrap();
+        Reply::Sse(events) | Reply::SseBare(events) => {
+            let content_type = if bare {
+                ""
+            } else {
+                "content-type: text/event-stream\r\n"
+            };
+            out.write_all(
+                format!("HTTP/1.1 200 OK\r\n{content_type}transfer-encoding: chunked\r\nconnection: close\r\n\r\n").as_bytes(),
+            )
+            .unwrap();
             for event in events {
                 out.write_all(format!("{:x}\r\n{event}\r\n", event.len()).as_bytes())
                     .unwrap();
@@ -1617,20 +1628,27 @@ fn openai_dialects_calibrate_from_json_and_streamed_usage() {
     );
     drop(proxy);
 
-    // Responses: the terminal stream event's `response.usage.input_tokens`.
+    // Responses: the terminal stream event's `response.usage.input_tokens`,
+    // from a backend-api stream that sends no content type, as ChatGPT does.
     let responses_warm = responses_body(&warm);
     assert!(estimate_as(&responses_warm, Dialect::Responses) >= 1_000);
     let responses_target = (4..40)
         .map(|turns| responses_body(&chat_session(turns)))
         .find(|sent| (5_600..7_800).contains(&estimate_as(sent, Dialect::Responses)))
         .expect("a session sized between the thresholds");
-    let responses = Fake::start(|recorded| Reply::Sse(responses_usage_events(&recorded.body)));
+    let responses = Fake::start(|recorded| Reply::SseBare(responses_usage_events(&recorded.body)));
     let proxy = start_proxy(
         &responses.url(),
         &["--threshold", "8000", "--keep-recent", "1"],
     );
     for i in 0..5 {
-        let response = request(proxy.port, "POST", "/v1/responses", OPENAI, &responses_warm);
+        let response = request(
+            proxy.port,
+            "POST",
+            "/backend-api/codex/responses",
+            OPENAI,
+            &responses_warm,
+        );
         assert_eq!(response.status, 200);
         // The client receives the provider's bytes unchanged.
         assert_eq!(
@@ -1642,7 +1660,7 @@ fn openai_dialects_calibrate_from_json_and_streamed_usage() {
     let response = request(
         proxy.port,
         "POST",
-        "/v1/responses",
+        "/backend-api/codex/responses",
         OPENAI,
         &responses_target,
     );
