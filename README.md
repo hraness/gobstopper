@@ -195,8 +195,9 @@ opencode, Crush, Aider, Goose), `proxy install` and `proxy uninstall`, and
 every setting.
 Flags: `--threshold` (keep it below the client's auto-compaction point),
 `--threshold-1m`, `--keep-recent`, `--keep-tail-percent`,
-`--result-max-chars`, `--carry-max-chars`, `--drop-thinking`, `--shadow`
-(log what would change and forward everything unchanged), and `--strict`.
+`--result-max-chars`, `--carry-max-chars`, `--drop-thinking`,
+`--no-calibrate`, `--shadow` (log what would change and forward everything
+unchanged), and `--strict`.
 
 - The proxy listens on 127.0.0.1 and refuses requests addressed to other
   host names. It forwards through the system `curl` (8.3 or later) and hands
@@ -211,7 +212,12 @@ Flags: `--threshold` (keep it below the client's auto-compaction point),
   resume works as before, and Claude Code and Codex histories still feed the
   file commands below.
 - Sizes are estimates at four characters per token, with images priced by
-  their dimensions. A history the client already compacted itself can start
+  their dimensions. Claude models count more tokens than that, so the proxy
+  reads the input count the provider reports in each Anthropic response.
+  After five responses from one upstream and model, it divides the threshold
+  by the running ratio of reported to estimated input, between 1.0 and 2.0,
+  and compaction starts earlier. It never starts later. `--no-calibrate`
+  turns this off. A history the client already compacted itself can start
   with a long head that the proxy keeps verbatim; the threshold then rises to
   that head plus half the request's threshold.
 

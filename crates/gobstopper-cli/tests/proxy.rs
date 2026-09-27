@@ -1042,7 +1042,7 @@ fn log_lines_and_ledger_records_carry_sizes_and_the_window_but_no_content() {
 
     let lines = std::fs::read_to_string(&log).unwrap();
     let startup = format!(
-        "threshold 2000 tokens, threshold_1m 8000 tokens, keep_recent 1, keep_tail_percent 40, carry_max_chars {}, result_max_chars",
+        "threshold 2000 tokens, threshold_1m 8000 tokens, keep_recent 1, keep_tail_percent 40, carry_max_chars {}, calibrate on, result_max_chars",
         CliffConfig::default().carry_max_chars
     );
     assert!(
@@ -1389,4 +1389,145 @@ fn a_carry_is_sent_upstream_and_only_its_size_is_logged() {
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The estimate a fresh engine gives an Anthropic body.
+fn estimate(body: &[u8]) -> u64 {
+    use gobstopper_adapters::request::{Dialect, Engine};
+    let Ok(Value::Object(map)) = serde_json::from_slice::<Value>(body) else {
+        panic!("not a JSON object");
+    };
+    Engine::new(CliffConfig {
+        threshold_tokens: u64::MAX / 8,
+        ..CliffConfig::default()
+    })
+    .prepare(map, Dialect::Anthropic)
+    .map_or(0, |ctx| ctx.est_tokens_in)
+}
+
+/// Events whose `message_start` reports half again the estimate of `sent`.
+fn usage_events(sent: &[u8]) -> Vec<String> {
+    let reported = estimate(sent) * 3 / 2;
+    vec![
+        format!("event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"usage\":{{\"input_tokens\":2,\"cache_read_input_tokens\":{}}}}}}}\n\n", reported - 2),
+        "event: content_block_delta\ndata: {\"delta\":{\"text\":\"hi\"}}\n\n".to_string(),
+        "event: message_stop\ndata: {\"type\":\"message_stop\"}\n\n".to_string(),
+    ]
+}
+
+/// The proxy reads usage after the client has the whole response, so wait
+/// until `samples` samples are recorded (or give up after five seconds).
+fn status_after_samples(port: u16, samples: u64) -> Value {
+    for _ in 0..100 {
+        let status = request(port, "GET", "/gobstopper/status", &[], b"").json();
+        if status["calibrations"][0]["samples"].as_u64() >= Some(samples) {
+            return status;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    request(port, "GET", "/gobstopper/status", &[], b"").json()
+}
+
+#[test]
+fn provider_usage_calibrates_the_threshold_and_no_calibrate_keeps_the_estimate() {
+    let threshold = 8_000u64;
+    // A request estimated between the calibrated threshold (8,000 / 1.5)
+    // and the threshold: only a calibrated proxy compacts it.
+    let target = (4..40)
+        .map(|turns| body(&session(turns)))
+        .find(|sent| (5_600..7_800).contains(&estimate(sent)))
+        .expect("a session sized between the thresholds");
+    let warm = body(&session(4));
+    assert!(estimate(&warm) >= 1_000);
+
+    let run = |extra: &[&str]| {
+        let fake = Fake::start(|recorded| Reply::Sse(usage_events(&recorded.body)));
+        let mut args = vec!["--threshold", "8000", "--keep-recent", "1"];
+        args.extend_from_slice(extra);
+        let proxy = start_proxy(&fake.url(), &args);
+        let calibrating = !extra.contains(&"--no-calibrate");
+        for i in 0..5 {
+            let response = request(proxy.port, "POST", "/v1/messages", ANTHROPIC, &warm);
+            assert_eq!(response.status, 200);
+            // The client receives the provider's bytes unchanged.
+            assert_eq!(
+                String::from_utf8(response.body).unwrap(),
+                usage_events(&warm).concat()
+            );
+            if calibrating {
+                status_after_samples(proxy.port, i + 1);
+            }
+        }
+        let response = request(proxy.port, "POST", "/v1/messages", ANTHROPIC, &target);
+        assert_eq!(response.status, 200);
+        let status = if calibrating {
+            status_after_samples(proxy.port, 6)
+        } else {
+            request(proxy.port, "GET", "/gobstopper/status", &[], b"").json()
+        };
+        (fake.seen().last().unwrap().body.clone(), status)
+    };
+
+    let (sent, status) = run(&[]);
+    assert_ne!(sent, target, "the calibrated proxy compacts");
+    assert!(estimate(&sent) <= threshold * 1000 / 1500 + 1);
+    assert_eq!(status["calibrate"], true);
+    let row = &status["calibrations"][0];
+    assert_eq!(row["model"], "claude-test");
+    assert_eq!(row["samples"], 6);
+    assert!(
+        (1.49..=1.5).contains(&row["ratio"].as_f64().unwrap()),
+        "{row}"
+    );
+    assert_eq!(status["compacted"], 1);
+
+    let (sent, status) = run(&["--no-calibrate"]);
+    assert_eq!(
+        sent, target,
+        "without calibration the estimate is under the threshold"
+    );
+    assert_eq!(status["calibrate"], false);
+    assert_eq!(status["calibrations"], json!([]));
+    assert_eq!(status["compacted"], 0);
+}
+
+#[test]
+fn malformed_or_missing_usage_is_ignored_and_json_usage_is_read() {
+    let fake = Fake::start(|recorded| {
+        if recorded.json()["max_tokens"] == 1 {
+            Reply::Json(
+                200,
+                json!({"usage": {"input_tokens": estimate(&recorded.body) * 5 / 4}}),
+            )
+        } else {
+            Reply::Json(200, json!({"usage": {"input_tokens": "many"}, "ok": true}))
+        }
+    });
+    let proxy = start_proxy(&fake.url(), &[]);
+    let warm = body(&session(4));
+    let response = request(proxy.port, "POST", "/v1/messages", ANTHROPIC, &warm);
+    assert_eq!(
+        response.json(),
+        json!({"usage": {"input_tokens": "many"}, "ok": true})
+    );
+    // Give a (wrong) late sample time to land before checking there is none.
+    std::thread::sleep(Duration::from_millis(300));
+    let status = request(proxy.port, "GET", "/gobstopper/status", &[], b"").json();
+    assert_eq!(status["calibrations"], json!([]));
+
+    let mut json_body: Value = serde_json::from_slice(&warm).unwrap();
+    json_body["max_tokens"] = json!(1);
+    let json_body = serde_json::to_vec(&json_body).unwrap();
+    let response = request(proxy.port, "POST", "/v1/messages", ANTHROPIC, &json_body);
+    assert_eq!(response.status, 200);
+    let status = status_after_samples(proxy.port, 1);
+    assert_eq!(status["calibrations"][0]["samples"], 1);
+    assert_eq!(
+        status["calibrations"][0]["ratio"], 1.0,
+        "one sample is not applied"
+    );
+    let measured = status["calibrations"][0]["measured_ratio"]
+        .as_f64()
+        .unwrap();
+    assert!((1.24..=1.25).contains(&measured), "{measured}");
 }

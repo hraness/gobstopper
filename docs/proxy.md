@@ -238,7 +238,9 @@ repeated reads and how many the kept history still held (`repeated_reads`,
 `repeated_reads_covered`), and the spacing of compactions
 (`back_to_back_compactions`, `min_compaction_gap`), and each compaction
 lists the characters its summary carried from the turns earlier compactions
-summarized (`carry_chars`).
+summarized (`carry_chars`). From a Claude Code transcript, `replay` also
+reads the provider-reported input and calibrates as the proxy does; see
+[Estimate calibration](#estimate-calibration).
 From a Claude Code transcript, `replay` rebuilds only the user and assistant
 records, so messages typed while the agent worked are missing from its
 carried text. `replay` has no `--threshold-1m`; to model a session that
@@ -255,6 +257,7 @@ declares a 1M-token window, pass `--threshold 256000`.
 | `--result-max-chars` | 500 | Older tool results longer than this are dropped from the summary; shorter ones stay verbatim. |
 | `--carry-max-chars` | 24000 | Characters of the human's words and the assistant's visible replies that each summary carries forward from the turns earlier compactions summarized. The oldest text drops out first, and the carried text takes at most a quarter of the room under the threshold after the fixed request fields and the head. `0` turns carrying off. |
 | `--drop-thinking` | off | Leave thinking and reasoning text out of summaries. |
+| `--no-calibrate` | off | Compare the plain four-characters-per-token estimate with the threshold. By default the threshold for Anthropic requests is divided by the ratio of provider-reported to estimated input, learned per upstream and model (see [Estimate calibration](#estimate-calibration)). Also a `replay` flag. |
 | `--shadow` | off | Log what would change and forward every request unchanged. |
 | `--strict` | off | Refuse (HTTP 400) a request still over the threshold after every step, instead of sending it. |
 | `--anthropic-upstream` | `https://api.anthropic.com` | Where Anthropic requests go. |
@@ -348,6 +351,8 @@ declares a 1M-token window, pass `--threshold 256000`.
   retries, and as a last step shortens the summary to its newest parts. If
   the provider rejects the rewritten request for any other reason, the proxy
   resends the client's original bytes.
+- Anthropic requests are calibrated to the provider's count; see
+  [Estimate calibration](#estimate-calibration).
 - If the verbatim head alone approaches the threshold, as it can after the
   client compacted a session itself or when a subagent starts with a long
   prompt, the threshold for that session rises to the head plus half the
@@ -357,6 +362,55 @@ declares a 1M-token window, pass `--threshold 256000`.
   over the threshold with nothing to compact, such as one with too few
   turns, is also sent unchanged and logged (`... with nothing to compact`).
 
+## Estimate calibration
+
+The proxy estimates a request at four characters per token. Claude models
+count more: on the September 26, 2026 incident session, provider-reported
+input ran 13% to 38% above the estimate, so the 128,000-token threshold
+fired at 144,000 to 176,000 reported tokens, too late for a client with a
+200,000-token window.
+
+- After relaying an Anthropic Messages response, the proxy reads its
+  `usage`: `input_tokens` plus `cache_creation_input_tokens` and
+  `cache_read_input_tokens`, from a JSON body or from the `message_start`
+  event of a stream. It reads a copy of the body after each chunk reached
+  the client, so the response is neither changed nor delayed. A missing,
+  malformed, or oversized usage record (a JSON body over 4 MiB, or no
+  `message_start` in the first 64 KiB of a stream) is skipped.
+- Each response adds one sample: reported input divided by the proxy's
+  estimate of the request it forwarded. Requests estimated under 1,000
+  tokens and samples outside 0.25 to 4.0 are skipped. The proxy keeps a
+  running ratio per upstream and model (each sample moves it one eighth of
+  the way), for up to 64 pairs, in memory only.
+- After five samples, a request's threshold is divided by that ratio,
+  bounded to 1.0 to 2.0: at a ratio of 1.25, a 128,000-token threshold
+  compacts at 102,400 estimated tokens. The bound means calibration can only
+  compact earlier, never later, and never below half the threshold. Stored
+  compactions stay keyed by the configured threshold, so a changing ratio
+  keeps reusing them.
+- OpenAI Responses and Chat Completions requests are not calibrated.
+- `gobstopper proxy status` shows the ratio applied and measured, and the
+  sample count, for each upstream and model (`calibrate`, `calibrations`).
+  Compaction log lines name a ratio other than 1.0 after the window
+  (`window=base, ratio 1.25`), the ledger records `ratio_permille` (1250 for
+  1.25), and the proxy logs a line when the applied ratio first departs
+  from 1.0 or one sample moves it by 0.05 or more.
+- `--no-calibrate` restores the uncalibrated threshold: every request is
+  sized and compacted exactly as before calibration existed.
+
+`gobstopper proxy replay` calibrates the same way from the usage a Claude
+Code transcript records, unless given `--no-calibrate`. It assumes the
+recorded session did not run behind the proxy: behind the proxy, the
+recorded usage describes the compacted request the proxy sent, not the
+history the transcript holds. The ratio also depends on `--fixed-tokens`.
+`--json` adds `usage_requests`, `calibration_samples`,
+`last_ratio_permille`, the lowest, median, and highest reported ratio
+(`reported_ratio_min_permille`, `reported_ratio_median_permille`,
+`reported_ratio_max_permille`), the largest request sent in reported tokens
+(`peak_reported_tokens_out`), the requests over the threshold in reported
+tokens (`reported_over_threshold`), and each compaction's
+`reported_tokens_before`.
+
 ## Privacy and security
 
 - The proxy binds 127.0.0.1 and refuses requests addressed to any host name
@@ -364,13 +418,13 @@ declares a 1M-token window, pass `--threshold 256000`.
 - It forwards your request headers, including API keys and sign-in tokens, to
   curl through curl's environment, not its command line.
 - Logs contain paths, sizes, counts, and error summaries, never request or
-  response text. Carried text stays in the proxy's memory and in the
+  response text. The status page names each calibrated upstream and model. Carried text stays in the proxy's memory and in the
   requests it forwards; log lines and the ledger below record only its
   size.
 - Every compactable request also appends one JSONL record (timestamp,
   dialect, path, estimated tokens in and out, the estimated head, summary,
   and tail sizes, the carried characters, the window, the threshold applied
-  to that request, and flags) to
+  to that request, the calibration ratio, and flags) to
   `~/.local/share/gobstopper/proxy-stats.jsonl`, so `gobstopper proxy status`
   reports estimated-token totals for this run and all time across restarts.
   `GOBSTOPPER_STATS_FILE` overrides the path; set it to `off` to disable the
@@ -380,7 +434,10 @@ declares a 1M-token window, pass `--threshold 256000`.
 ## Limits
 
 - Sizes are estimates at four characters per token, with images priced by
-  their dimensions; the provider's count can differ.
+  their dimensions; the provider's count can differ. Calibration corrects
+  the threshold for Anthropic requests only after five responses, so the
+  first requests of each upstream and model, and every OpenAI-dialect
+  request, use the plain estimate.
 - A summary drops the details of long tool results. The agent can read the
   file or rerun the command, but nothing makes it notice that a detail is
   missing.
