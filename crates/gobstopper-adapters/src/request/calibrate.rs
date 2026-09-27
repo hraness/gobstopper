@@ -17,6 +17,8 @@
 
 use serde_json::Value;
 
+use super::Dialect;
+
 /// The applied ratio's lower bound: 1.0, so calibration never compacts later
 /// than the uncalibrated estimate would.
 pub const MIN_RATIO_PERMILLE: u32 = 1000;
@@ -98,20 +100,28 @@ pub fn calibrated_threshold(threshold_tokens: u64, ratio_permille: u32) -> u64 {
     (u128::from(threshold_tokens) * 1000 / u128::from(ratio)) as u64
 }
 
-/// The input tokens an Anthropic Messages `usage` object reports:
-/// `input_tokens` plus `cache_creation_input_tokens` and
-/// `cache_read_input_tokens` when present. `None` without a numeric
-/// `input_tokens`, or when a cache field is present but not a number.
-pub fn reported_input_tokens(usage: &Value) -> Option<u64> {
-    let input = usage.get("input_tokens")?.as_u64()?;
-    let mut total = input;
-    for key in ["cache_creation_input_tokens", "cache_read_input_tokens"] {
-        match usage.get(key) {
-            None | Some(Value::Null) => {}
-            Some(value) => total = total.checked_add(value.as_u64()?)?,
+/// The input tokens a `usage` object reports, per dialect:
+/// Anthropic Messages' `input_tokens` plus `cache_creation_input_tokens`
+/// and `cache_read_input_tokens` when present; an OpenAI Responses reply's
+/// `input_tokens`; an OpenAI Chat Completions reply's `prompt_tokens`. The
+/// OpenAI counts already include cached input. `None` without a numeric
+/// count, or when a counted field is present but not a number.
+pub fn reported_input_tokens(dialect: Dialect, usage: &Value) -> Option<u64> {
+    match dialect {
+        Dialect::Anthropic => {
+            let input = usage.get("input_tokens")?.as_u64()?;
+            let mut total = input;
+            for key in ["cache_creation_input_tokens", "cache_read_input_tokens"] {
+                match usage.get(key) {
+                    None | Some(Value::Null) => {}
+                    Some(value) => total = total.checked_add(value.as_u64()?)?,
+                }
+            }
+            Some(total)
         }
+        Dialect::Responses => usage.get("input_tokens")?.as_u64(),
+        Dialect::ChatCompletions => usage.get("prompt_tokens")?.as_u64(),
     }
-    Some(total)
 }
 
 #[cfg(test)]
@@ -192,23 +202,48 @@ mod tests {
             "cache_read_input_tokens": 140_000,
             "output_tokens": 50,
         });
-        assert_eq!(reported_input_tokens(&usage), Some(143_012));
-        assert_eq!(reported_input_tokens(&json!({"input_tokens": 7})), Some(7));
+        let anthropic = |usage: &Value| reported_input_tokens(Dialect::Anthropic, usage);
+        assert_eq!(anthropic(&usage), Some(143_012));
+        assert_eq!(anthropic(&json!({"input_tokens": 7})), Some(7));
         assert_eq!(
-            reported_input_tokens(&json!({"input_tokens": 7, "cache_read_input_tokens": null})),
+            anthropic(&json!({"input_tokens": 7, "cache_read_input_tokens": null})),
             Some(7)
         );
-        assert_eq!(reported_input_tokens(&json!({"output_tokens": 7})), None);
-        assert_eq!(reported_input_tokens(&json!({"input_tokens": "7"})), None);
-        assert_eq!(reported_input_tokens(&json!({"input_tokens": -1})), None);
+        assert_eq!(anthropic(&json!({"output_tokens": 7})), None);
+        assert_eq!(anthropic(&json!({"input_tokens": "7"})), None);
+        assert_eq!(anthropic(&json!({"input_tokens": -1})), None);
         assert_eq!(
-            reported_input_tokens(&json!({"input_tokens": 7, "cache_read_input_tokens": "x"})),
+            anthropic(&json!({"input_tokens": 7, "cache_read_input_tokens": "x"})),
             None
         );
         assert_eq!(
-            reported_input_tokens(&json!({"input_tokens": u64::MAX, "cache_read_input_tokens": 1})),
+            anthropic(&json!({"input_tokens": u64::MAX, "cache_read_input_tokens": 1})),
             None
         );
-        assert_eq!(reported_input_tokens(&json!(null)), None);
+        assert_eq!(anthropic(&json!(null)), None);
+    }
+
+    #[test]
+    fn reported_input_reads_each_openai_dialects_count() {
+        // Both counts already include cached input.
+        let responses = |usage: &Value| reported_input_tokens(Dialect::Responses, usage);
+        let chat = |usage: &Value| reported_input_tokens(Dialect::ChatCompletions, usage);
+        let usage = json!({
+            "input_tokens": 800,
+            "input_tokens_details": {"cached_tokens": 600},
+            "prompt_tokens": 900,
+            "prompt_tokens_details": {"cached_tokens": 600},
+            "output_tokens": 50,
+        });
+        assert_eq!(responses(&usage), Some(800));
+        assert_eq!(chat(&usage), Some(900));
+        assert_eq!(responses(&json!({"input_tokens": 7})), Some(7));
+        assert_eq!(chat(&json!({"prompt_tokens": 7})), Some(7));
+        assert_eq!(responses(&json!({"prompt_tokens": 7})), None);
+        assert_eq!(chat(&json!({"input_tokens": 7})), None);
+        assert_eq!(responses(&json!({"input_tokens": "7"})), None);
+        assert_eq!(chat(&json!({"usage": null})), None);
+        assert_eq!(responses(&json!(null)), None);
+        assert_eq!(chat(&json!(null)), None);
     }
 }

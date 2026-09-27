@@ -41,8 +41,9 @@ const MAX_CALIBRATIONS: usize = 64;
 /// Most bytes of a JSON response kept to read its usage after the relay;
 /// a larger body is not sampled.
 const MAX_TAP_JSON_BYTES: usize = 4 * 1024 * 1024;
-/// Most bytes of an event stream kept to find its `message_start` event,
-/// which the provider sends first.
+/// Most bytes of an event stream kept to find its usage event: the first
+/// bytes for an Anthropic stream, whose `message_start` opens it, and the
+/// last bytes for an OpenAI stream, which ends with the count.
 const MAX_TAP_STREAM_BYTES: usize = 64 * 1024;
 
 /// Never forwarded upstream: hop-by-hop fields and fields the proxy sets.
@@ -196,7 +197,7 @@ pub struct ProxyOpts {
     #[arg(long)]
     drop_thinking: bool,
     /// Size requests at four characters per token only. By default, once an
-    /// upstream and model have answered 5 Anthropic requests with usage, the
+    /// upstream and model have answered 5 requests with usage, the
     /// threshold is divided by the running ratio of reported to estimated
     /// input (from 1.0 to 2.0), so compaction starts earlier and never later.
     #[arg(long)]
@@ -793,10 +794,9 @@ impl Proxy {
     }
 
     /// The ratio to apply to a request to `upstream` for `model`, in
-    /// thousandths: 1000 when calibration is off, for non-Anthropic
-    /// dialects, and before enough samples.
-    fn ratio_for(&self, key: &(String, String), dialect: Dialect) -> u32 {
-        if !self.calibrate || dialect != Dialect::Anthropic {
+    /// thousandths: 1000 when calibration is off and before enough samples.
+    fn ratio_for(&self, key: &(String, String)) -> u32 {
+        if !self.calibrate {
             return 1000;
         }
         self.calibrations()
@@ -911,7 +911,7 @@ impl Proxy {
             .unwrap_or_default()
             .to_string();
         let key = (self.upstream_for(request).to_string(), model);
-        let ratio = self.ratio_for(&key, dialect);
+        let ratio = self.ratio_for(&key);
         // Engine failures must never fail the request.
         let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.engine
@@ -1087,18 +1087,14 @@ impl Proxy {
             Some((ctx, _)) if response.status == 400 && !self.shadow => {
                 self.reactive(request, upstream, ctx, response, client)
             }
-            Some((ctx, key))
-                if self.calibrate
-                    && ctx.dialect == Dialect::Anthropic
-                    && response.status == 200 =>
-            {
+            Some((ctx, key)) if self.calibrate && response.status == 200 => {
                 // The estimate of the bytes actually forwarded.
                 let sent = if self.shadow {
                     ctx.est_tokens_in
                 } else {
                     ctx.est_tokens_out
                 };
-                let mut tap = UsageTap::new(&response.headers);
+                let mut tap = UsageTap::new(&response.headers, ctx.dialect);
                 relay_tapped(client, response, &request.method, tap.as_mut())?;
                 if let Some(reported) = tap.and_then(|tap| tap.reported_tokens()) {
                     self.observe(std::mem::take(key), sent, reported);
@@ -1644,10 +1640,14 @@ fn write_error(client: &mut TcpStream, status: u16, kind: &str, message: &str) -
     )
 }
 
-/// Keeps the start of a response body so the proxy can read the provider's
-/// usage after the relay. It sees each chunk only after the chunk was
-/// written to the client, never changes it, and gives up past its bound.
+/// Keeps a bounded part of a response body so the proxy can read the
+/// provider's usage after the relay: the whole body of a JSON reply, the
+/// start of an Anthropic stream (whose `message_start` event opens it),
+/// and the tail of an OpenAI stream (whose usage event ends it). It sees
+/// each chunk only after the chunk was written to the client, never
+/// changes it, and gives up past its bound.
 struct UsageTap {
+    dialect: Dialect,
     event_stream: bool,
     data: Vec<u8>,
     overflow: bool,
@@ -1655,13 +1655,14 @@ struct UsageTap {
 
 impl UsageTap {
     /// A tap for a JSON or event-stream response; `None` for anything else.
-    fn new(headers: &[(String, String)]) -> Option<Self> {
+    fn new(headers: &[(String, String)], dialect: Dialect) -> Option<Self> {
         let kind = headers
             .iter()
             .find(|(name, _)| name.eq_ignore_ascii_case("content-type"))
             .map(|(_, value)| value.to_ascii_lowercase())?;
         let event_stream = kind.contains("text/event-stream");
         (event_stream || kind.contains("json")).then_some(Self {
+            dialect,
             event_stream,
             data: Vec::new(),
             overflow: false,
@@ -1674,6 +1675,13 @@ impl UsageTap {
         } else {
             MAX_TAP_JSON_BYTES
         };
+        if self.event_stream && self.dialect != Dialect::Anthropic {
+            // The usage event ends an OpenAI stream: keep the tail.
+            self.data.extend_from_slice(bytes);
+            let over = self.data.len().saturating_sub(limit);
+            self.data.drain(..over);
+            return;
+        }
         let room = limit - self.data.len();
         if bytes.len() > room {
             self.overflow = true;
@@ -1682,22 +1690,39 @@ impl UsageTap {
     }
 
     /// The input tokens the response reports: the top-level `usage` of a
-    /// JSON body, or the `message.usage` of a stream's `message_start`
-    /// event. `None` when absent, malformed, or cut off by the bound.
+    /// JSON body, the `message.usage` of an Anthropic stream's
+    /// `message_start` event, the `response.usage` of a Responses stream's
+    /// last event carrying it, or the `usage` of a Chat Completions
+    /// stream's last chunk carrying one. `None` when absent, malformed, or
+    /// cut off by the bound.
     fn reported_tokens(&self) -> Option<u64> {
         if !self.event_stream {
             if self.overflow {
                 return None;
             }
             let body: Value = serde_json::from_slice(&self.data).ok()?;
-            return reported_input_tokens(body.get("usage")?);
+            return reported_input_tokens(self.dialect, body.get("usage")?);
         }
-        self.data
+        let mut events = self
+            .data
             .split(|b| *b == b'\n')
             .filter_map(|line| line.strip_prefix(b"data:"))
-            .filter_map(|data| serde_json::from_slice::<Value>(data.trim_ascii()).ok())
-            .find(|event| event.get("type").and_then(Value::as_str) == Some("message_start"))
-            .and_then(|event| reported_input_tokens(event.get("message")?.get("usage")?))
+            .filter_map(|data| serde_json::from_slice::<Value>(data.trim_ascii()).ok());
+        match self.dialect {
+            Dialect::Anthropic => events
+                .find(|event| event.get("type").and_then(Value::as_str) == Some("message_start"))
+                .and_then(|event| {
+                    reported_input_tokens(self.dialect, event.get("message")?.get("usage")?)
+                }),
+            Dialect::Responses => events
+                .filter_map(|event| event.get("response").and_then(|r| r.get("usage")).cloned())
+                .filter_map(|usage| reported_input_tokens(self.dialect, &usage))
+                .next_back(),
+            Dialect::ChatCompletions => events
+                .filter_map(|event| event.get("usage").cloned())
+                .filter_map(|usage| reported_input_tokens(self.dialect, &usage))
+                .next_back(),
+        }
     }
 }
 
@@ -2258,8 +2283,8 @@ mod tests {
         assert!(!status_text(8260, &current).contains("null"));
     }
 
-    fn tap(content_type: &str, chunks: &[&[u8]]) -> UsageTap {
-        let mut tap = UsageTap::new(&headers(&[("Content-Type", content_type)])).unwrap();
+    fn tap(dialect: Dialect, content_type: &str, chunks: &[&[u8]]) -> UsageTap {
+        let mut tap = UsageTap::new(&headers(&[("Content-Type", content_type)]), dialect).unwrap();
         for chunk in chunks {
             tap.observe(chunk);
         }
@@ -2271,31 +2296,40 @@ mod tests {
         let body = br#"{"type":"message","content":[],"usage":{"input_tokens":10,"cache_creation_input_tokens":200,"cache_read_input_tokens":3000,"output_tokens":9}}"#;
         let (a, b) = body.split_at(40);
         assert_eq!(
-            tap("application/json", &[a, b]).reported_tokens(),
+            tap(Dialect::Anthropic, "application/json", &[a, b]).reported_tokens(),
             Some(3210)
         );
         assert_eq!(
-            tap("application/json", &[b"{\"usage\":{}}"]).reported_tokens(),
+            tap(Dialect::Anthropic, "application/json", &[b"{\"usage\":{}}"]).reported_tokens(),
             None
         );
         assert_eq!(
-            tap("application/json", &[b"{\"usage\":"]).reported_tokens(),
+            tap(Dialect::Anthropic, "application/json", &[b"{\"usage\":"]).reported_tokens(),
             None
         );
         assert_eq!(
-            tap("application/json", &[b"not json"]).reported_tokens(),
+            tap(Dialect::Anthropic, "application/json", &[b"not json"]).reported_tokens(),
             None
         );
-        assert_eq!(tap("application/json", &[b"[1]"]).reported_tokens(), None);
+        assert_eq!(
+            tap(Dialect::Anthropic, "application/json", &[b"[1]"]).reported_tokens(),
+            None
+        );
 
         let stream = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":4,\"cache_read_input_tokens\":96}}}\n\nevent: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"input_tokens\":1}}\n\n";
         let (a, b) = stream.as_bytes().split_at(30);
         assert_eq!(
-            tap("text/event-stream; charset=utf-8", &[a, b]).reported_tokens(),
+            tap(
+                Dialect::Anthropic,
+                "text/event-stream; charset=utf-8",
+                &[a, b]
+            )
+            .reported_tokens(),
             Some(100)
         );
         assert_eq!(
             tap(
+                Dialect::Anthropic,
                 "text/event-stream",
                 &[b"data: {\"type\":\"message_start\",\"message\":{}}\n"]
             )
@@ -2303,17 +2337,122 @@ mod tests {
             None
         );
         assert_eq!(
-            tap("text/event-stream", &[b"data: {broken\n", b"\n"]).reported_tokens(),
+            tap(
+                Dialect::Anthropic,
+                "text/event-stream",
+                &[b"data: {broken\n", b"\n"]
+            )
+            .reported_tokens(),
             None
         );
-        assert_eq!(tap("text/event-stream", &[]).reported_tokens(), None);
-        assert!(UsageTap::new(&headers(&[("content-type", "text/plain")])).is_none());
-        assert!(UsageTap::new(&[]).is_none());
+        assert_eq!(
+            tap(Dialect::Anthropic, "text/event-stream", &[]).reported_tokens(),
+            None
+        );
+        assert!(UsageTap::new(
+            &headers(&[("content-type", "text/plain")]),
+            Dialect::Anthropic
+        )
+        .is_none());
+        assert!(UsageTap::new(&[], Dialect::Anthropic).is_none());
+    }
+
+    #[test]
+    fn the_usage_tap_reads_openai_json_and_stream_tails() {
+        // A Responses JSON reply and a Chat Completions JSON reply.
+        let responses = tap(
+            Dialect::Responses,
+            "application/json",
+            &[br#"{"status":"completed","usage":{"input_tokens":410,"output_tokens":9}}"#],
+        );
+        assert_eq!(responses.reported_tokens(), Some(410));
+        let chat = tap(
+            Dialect::ChatCompletions,
+            "application/json",
+            &[br#"{"choices":[],"usage":{"prompt_tokens":512,"completion_tokens":9}}"#],
+        );
+        assert_eq!(chat.reported_tokens(), Some(512));
+        // A Chat Completions usage field shaped like the other dialect is
+        // not read.
+        assert_eq!(
+            tap(
+                Dialect::ChatCompletions,
+                "application/json",
+                &[br#"{"usage":{"input_tokens":7}}"#]
+            )
+            .reported_tokens(),
+            None
+        );
+
+        // A Responses stream's terminal `response.completed` carries the
+        // count; an earlier event's incomplete usage does not win.
+        let stream = concat!(
+            "event: response.created\ndata: {\"type\":\"response.created\",\"response\":{\"usage\":null}}\n\n",
+            "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n",
+            "event: response.completed\ndata: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":777,\"output_tokens\":3}}}\n\n"
+        );
+        assert_eq!(
+            tap(
+                Dialect::Responses,
+                "text/event-stream",
+                &[stream.as_bytes()]
+            )
+            .reported_tokens(),
+            Some(777)
+        );
+        // Past the stream bound the tap still sees the tail.
+        let mut padded = format!("data: {}\n\n", "x".repeat(MAX_TAP_STREAM_BYTES));
+        padded.push_str(stream);
+        let (a, rest) = padded.as_bytes().split_at(10);
+        let (b, c) = rest.split_at(rest.len() / 2);
+        assert_eq!(
+            tap(Dialect::Responses, "text/event-stream", &[a, b, c]).reported_tokens(),
+            Some(777)
+        );
+
+        // A Chat Completions stream's final `usage` chunk.
+        let chat_stream = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n",
+            "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":640,\"completion_tokens\":2}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        assert_eq!(
+            tap(
+                Dialect::ChatCompletions,
+                "text/event-stream",
+                &[chat_stream.as_bytes()]
+            )
+            .reported_tokens(),
+            Some(640)
+        );
+        // Without a usage chunk or terminal event there is no sample.
+        assert_eq!(
+            tap(
+                Dialect::ChatCompletions,
+                "text/event-stream",
+                &[b"data: {\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n"]
+            )
+            .reported_tokens(),
+            None
+        );
+        assert_eq!(
+            tap(
+                Dialect::Responses,
+                "text/event-stream",
+                &[b"data: {\"type\":\"response.output_text.delta\"}\n\n"]
+            )
+            .reported_tokens(),
+            None
+        );
     }
 
     #[test]
     fn the_usage_tap_is_bounded() {
-        let mut big = tap("application/json", &[b"{\"usage\":{\"input_tokens\":5}}"]);
+        let mut big = tap(
+            Dialect::Anthropic,
+            "application/json",
+            &[b"{\"usage\":{\"input_tokens\":5}}"],
+        );
         assert_eq!(big.reported_tokens(), Some(5));
         big.observe(&vec![b' '; MAX_TAP_JSON_BYTES]);
         assert_eq!(big.data.len(), MAX_TAP_JSON_BYTES);
@@ -2325,7 +2464,7 @@ mod tests {
 
         let start =
             b"data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":5}}}\n";
-        let mut stream = tap("text/event-stream", &[start]);
+        let mut stream = tap(Dialect::Anthropic, "text/event-stream", &[start]);
         stream.observe(&vec![b'x'; 3 * MAX_TAP_STREAM_BYTES]);
         assert_eq!(stream.data.len(), MAX_TAP_STREAM_BYTES);
         assert_eq!(
@@ -2333,12 +2472,20 @@ mod tests {
             Some(5),
             "the stream start survives the bound"
         );
+
+        let mut openai = tap(Dialect::Responses, "text/event-stream", &[]);
+        openai.observe(&vec![b'x'; 3 * MAX_TAP_STREAM_BYTES]);
+        assert_eq!(
+            openai.data.len(),
+            MAX_TAP_STREAM_BYTES,
+            "an OpenAI stream keeps the tail, not the start"
+        );
     }
 
     #[test]
     fn the_tee_writes_every_byte_unchanged_before_the_tap_sees_it() {
         let mut out = Vec::new();
-        let mut usage = tap("application/json", &[]);
+        let mut usage = tap(Dialect::Anthropic, "application/json", &[]);
         let body = br#"{"usage":{"input_tokens":77}}"#.to_vec();
         let copied = std::io::copy(
             &mut &body[..],
@@ -2376,7 +2523,7 @@ mod tests {
         assert_eq!(ctx.calibrated_threshold_tokens, 102_400);
         assert_eq!(ctx.base_threshold_tokens, 128_000);
 
-        // Another model, and the OpenAI dialects, are not affected.
+        // Another model, and another upstream, are not affected.
         let other = json!({"model": "n", "messages": [{"role": "user", "content": "hi"}]});
         let (ctx, _) = proxy
             .prepare(&request("/v1/messages", &base, &other))
@@ -2384,9 +2531,15 @@ mod tests {
         assert_eq!(ctx.ratio_permille, 1000);
         let input = json!({"model": "m", "input": [{"role": "user", "content": "hi"}]});
         let (ctx, _) = proxy
-            .prepare(&request("/v1/responses", &base, &input))
+            .prepare(&request("/v1/responses", &[], &input))
             .unwrap();
         assert_eq!(ctx.ratio_permille, 1000);
+        // The learned ratio is per upstream and model, not per dialect: a
+        // Responses request routed to the calibrated upstream gets it too.
+        let (ctx, _) = proxy
+            .prepare(&request("/v1/responses", &base, &input))
+            .unwrap();
+        assert_eq!(ctx.ratio_permille, 1250);
 
         let status = proxy.status();
         assert_eq!(status["calibrate"], true);

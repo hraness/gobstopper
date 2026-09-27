@@ -170,7 +170,9 @@ pub fn claude_history_with_usage(raw: &[u8]) -> (Vec<Value>, Vec<Option<u64>>) {
         last_assistant_id = if role == "assistant" { id } else { None };
         history.push(json!({"role": role, "content": content}));
         usage.push(if role == "assistant" {
-            message.get("usage").and_then(reported_input_tokens)
+            message
+                .get("usage")
+                .and_then(|usage| reported_input_tokens(Dialect::Anthropic, usage))
         } else {
             None
         });

@@ -1,7 +1,7 @@
 //! `gobstopper proxy` end to end: the real binary between a raw HTTP client
 //! and a fake upstream, over real sockets and the system curl.
 
-use gobstopper_adapters::request::{CliffConfig, SUMMARY_HEADER};
+use gobstopper_adapters::request::{CliffConfig, Dialect, SUMMARY_HEADER};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -317,6 +317,36 @@ fn body(messages: &[Value]) -> Vec<u8> {
     .unwrap()
 }
 
+const OPENAI: &[(&str, &str)] = &[
+    ("content-type", "application/json"),
+    ("authorization", "Bearer synthetic"),
+];
+
+/// An OpenAI Chat Completions session: system and user, then `turns`
+/// assistant calls with their tool results.
+fn chat_session(turns: usize) -> Vec<Value> {
+    let mut messages = vec![
+        json!({"role": "system", "content": "you are an agent"}),
+        json!({"role": "user", "content": "Fix the bug."}),
+    ];
+    for n in 0..turns {
+        messages.push(json!({"role": "assistant", "content": format!("step {n}"),
+            "tool_calls": [{"id": format!("call_{n}"), "type": "function",
+                "function": {"name": "bash", "arguments": format!("{{\"cmd\":\"s{n}\"}}")}}]}));
+        messages.push(json!({"role": "tool", "tool_call_id": format!("call_{n}"),
+            "content": "R".repeat(3000)}));
+    }
+    messages
+}
+
+fn chat_body(messages: &[Value]) -> Vec<u8> {
+    serde_json::to_vec(&json!({"model": "gpt-test", "messages": messages, "stream": true})).unwrap()
+}
+
+fn responses_body(messages: &[Value]) -> Vec<u8> {
+    serde_json::to_vec(&json!({"model": "gpt-test", "input": messages, "stream": true})).unwrap()
+}
+
 fn summaries(sent: &Value) -> Vec<String> {
     sent["messages"]
         .as_array()
@@ -580,26 +610,10 @@ fn chat_completions_route_to_openai_and_compact() {
         &[],
         Stdio::null(),
     );
-    let mut messages = vec![
-        json!({"role": "system", "content": "you are an agent"}),
-        json!({"role": "user", "content": "Fix the bug."}),
-    ];
-    for n in 0..10 {
-        messages.push(json!({"role": "assistant", "content": format!("step {n}"),
-            "tool_calls": [{"id": format!("call_{n}"), "type": "function",
-                "function": {"name": "bash", "arguments": format!("{{\"cmd\":\"s{n}\"}}")}}]}));
-        messages.push(json!({"role": "tool", "tool_call_id": format!("call_{n}"),
-            "content": "R".repeat(3000)}));
-    }
-    let sent =
-        serde_json::to_vec(&json!({"model": "gpt-test", "messages": messages, "stream": true}))
-            .unwrap();
-    let headers = [
-        ("content-type", "application/json"),
-        ("authorization", "Bearer synthetic"),
-    ];
+    let messages = chat_session(10);
+    let sent = chat_body(&messages);
     for target in ["/v1/chat/completions", "/chat/completions"] {
-        let response = request(proxy.port, "POST", target, &headers, &sent);
+        let response = request(proxy.port, "POST", target, OPENAI, &sent);
         assert_eq!(response.json(), json!({"from": "openai"}), "{target}");
     }
     assert!(anthropic.seen().is_empty());
@@ -1393,7 +1407,12 @@ fn a_carry_is_sent_upstream_and_only_its_size_is_logged() {
 
 /// The estimate a fresh engine gives an Anthropic body.
 fn estimate(body: &[u8]) -> u64 {
-    use gobstopper_adapters::request::{Dialect, Engine};
+    estimate_as(body, Dialect::Anthropic)
+}
+
+/// The estimate a fresh engine gives a body of `dialect`.
+fn estimate_as(body: &[u8], dialect: Dialect) -> u64 {
+    use gobstopper_adapters::request::Engine;
     let Ok(Value::Object(map)) = serde_json::from_slice::<Value>(body) else {
         panic!("not a JSON object");
     };
@@ -1401,7 +1420,7 @@ fn estimate(body: &[u8]) -> u64 {
         threshold_tokens: u64::MAX / 8,
         ..CliffConfig::default()
     })
-    .prepare(map, Dialect::Anthropic)
+    .prepare(map, dialect)
     .map_or(0, |ctx| ctx.est_tokens_in)
 }
 
@@ -1530,4 +1549,107 @@ fn malformed_or_missing_usage_is_ignored_and_json_usage_is_read() {
         .as_f64()
         .unwrap();
     assert!((1.24..=1.25).contains(&measured), "{measured}");
+}
+
+/// A Responses stream whose `response.completed` reports half again the
+/// estimate of `sent`.
+fn responses_usage_events(sent: &[u8]) -> Vec<String> {
+    let reported = estimate_as(sent, Dialect::Responses) * 3 / 2;
+    vec![
+        "event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hi\"}\n\n".to_string(),
+        format!("event: response.completed\ndata: {{\"type\":\"response.completed\",\"response\":{{\"usage\":{{\"input_tokens\":{reported},\"output_tokens\":3}}}}}}\n\n"),
+    ]
+}
+
+#[test]
+fn openai_dialects_calibrate_from_json_and_streamed_usage() {
+    let threshold = 8_000u64;
+    let warm = chat_session(4);
+
+    // Chat Completions: the JSON reply's `usage.prompt_tokens`.
+    let chat_warm = chat_body(&warm);
+    assert!(estimate_as(&chat_warm, Dialect::ChatCompletions) >= 1_000);
+    let chat_target = (4..40)
+        .map(|turns| chat_body(&chat_session(turns)))
+        .find(|sent| (5_600..7_800).contains(&estimate_as(sent, Dialect::ChatCompletions)))
+        .expect("a session sized between the thresholds");
+    let chat = Fake::start(|recorded| {
+        Reply::Json(
+            200,
+            json!({"usage": {"prompt_tokens":
+                estimate_as(&recorded.body, Dialect::ChatCompletions) * 3 / 2}}),
+        )
+    });
+    let proxy = start_proxy(&chat.url(), &["--threshold", "8000", "--keep-recent", "1"]);
+    for i in 0..5 {
+        let response = request(
+            proxy.port,
+            "POST",
+            "/v1/chat/completions",
+            OPENAI,
+            &chat_warm,
+        );
+        assert_eq!(response.status, 200);
+        status_after_samples(proxy.port, i + 1);
+    }
+    let response = request(
+        proxy.port,
+        "POST",
+        "/v1/chat/completions",
+        OPENAI,
+        &chat_target,
+    );
+    assert_eq!(response.status, 200);
+    let sent = chat.seen().last().unwrap().body.clone();
+    assert_ne!(sent, chat_target, "the calibrated proxy compacts");
+    assert!(estimate_as(&sent, Dialect::ChatCompletions) <= threshold * 1000 / 1500 + 1);
+    let status = status_after_samples(proxy.port, 6);
+    let row = &status["calibrations"][0];
+    assert_eq!(row["model"], "gpt-test");
+    assert_eq!(row["samples"], 6);
+    assert!(
+        (1.49..=1.5).contains(&row["ratio"].as_f64().unwrap()),
+        "{row}"
+    );
+    drop(proxy);
+
+    // Responses: the terminal stream event's `response.usage.input_tokens`.
+    let responses_warm = responses_body(&warm);
+    assert!(estimate_as(&responses_warm, Dialect::Responses) >= 1_000);
+    let responses_target = (4..40)
+        .map(|turns| responses_body(&chat_session(turns)))
+        .find(|sent| (5_600..7_800).contains(&estimate_as(sent, Dialect::Responses)))
+        .expect("a session sized between the thresholds");
+    let responses = Fake::start(|recorded| Reply::Sse(responses_usage_events(&recorded.body)));
+    let proxy = start_proxy(
+        &responses.url(),
+        &["--threshold", "8000", "--keep-recent", "1"],
+    );
+    for i in 0..5 {
+        let response = request(proxy.port, "POST", "/v1/responses", OPENAI, &responses_warm);
+        assert_eq!(response.status, 200);
+        // The client receives the provider's bytes unchanged.
+        assert_eq!(
+            String::from_utf8(response.body).unwrap(),
+            responses_usage_events(&responses_warm).concat()
+        );
+        status_after_samples(proxy.port, i + 1);
+    }
+    let response = request(
+        proxy.port,
+        "POST",
+        "/v1/responses",
+        OPENAI,
+        &responses_target,
+    );
+    assert_eq!(response.status, 200);
+    let sent = responses.seen().last().unwrap().body.clone();
+    assert_ne!(sent, responses_target, "the calibrated proxy compacts");
+    let status = status_after_samples(proxy.port, 6);
+    let row = &status["calibrations"][0];
+    assert_eq!(row["samples"], 6);
+    assert!(
+        (1.49..=1.5).contains(&row["ratio"].as_f64().unwrap()),
+        "{row}"
+    );
 }
