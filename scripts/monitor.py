@@ -31,7 +31,12 @@ CAPTURE_BYTES = 8 * 1024 * 1024
 EVENTS_LOG_BYTES = 16 * 1024 * 1024
 EVENT_RECORD_BYTES = 16 * 1024
 WATCH_STATE_BYTES = 4 * 1024 * 1024
-TIMEOUT_SECONDS = 45
+# Each child gets this full wall-clock budget, not a CPU-time budget: under
+# heavy foreign host load a read-bound report that takes seconds idle can sit
+# unscheduled for tens of seconds, and 45s produced false timeout noise.
+# Passes are serialized under .monitor.lock, so the worst case of a longer
+# budget is a skipped pass, never overlapping children.
+TIMEOUT_SECONDS = 120
 SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}\Z")
 PLAN_LINE = re.compile(rb"^\[dry-run\] codex ([A-Za-z0-9_-]{1,12}): ")
 WATCH_FAILURE = re.compile(rb"^(?:load|plan) [A-Za-z0-9_.-]{1,256} failed:")
