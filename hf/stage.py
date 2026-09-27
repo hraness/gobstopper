@@ -19,7 +19,7 @@ def checked_path(root, name):
     if not name or path.is_absolute() or any(x in ('.', '..') for x in name.split('/')) or '\\' in name:
         raise ValueError('unsafe relative path')
     target = root.joinpath(*path.parts)
-    if any(p.is_symlink() for p in [target, *target.parents] if p != root.parent):
+    if any(root.joinpath(*path.parts[:n]).is_symlink() for n in range(1, len(path.parts) + 1)):
         raise ValueError('symlinks are not exportable')
     if not target.is_file() or not target.resolve().is_relative_to(root.resolve()):
         raise ValueError('missing or escaped artifact')

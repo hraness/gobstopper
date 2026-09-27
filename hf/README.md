@@ -18,6 +18,8 @@ Public aggregate results and protocols from [Gobstopper's compaction studies](ht
 
 The private studies came from one person's machine. Their published aggregates cannot establish performance across other users or independently reproduce the private corpus. Literal string retention does not establish semantic importance or task quality. Historical results describe their recorded implementations, not every later Gobstopper release or request-time proxy strategy.
 
+These downloads form an artifact archive with several JSON schemas. Read individual files using their recorded schema; a combined `datasets.load_dataset` table is not provided.
+
 ## Privacy and provenance
 
 Only the explicitly selected public reports and protocols are included. Private transcript text, session identifiers, local paths, vault snapshots, per-session hashes, and per-session results are excluded. Do not add those files when extending this collection.
