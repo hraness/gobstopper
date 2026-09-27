@@ -2,7 +2,7 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
-## Unreleased
+## v0.6.0 - 2026-09-26
 
 The request proxy carries the conversation's words forward from one compaction to the next.
 
