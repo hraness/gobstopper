@@ -2,6 +2,14 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## v0.7.1 - 2026-09-27
+
+Help, errors, and permission notices now follow the shared Hraness CLI contract, for people at a terminal and agents calling the binary.
+
+- `gobstopper --help` is a short grouped list of the everyday commands, and `gobstopper help advanced` shows the full surface. Help wraps within 100 columns and drops symbols and color under `NO_COLOR` or `TERM=dumb`.
+- A usage error is one sentence naming the input and the help to read next; a mistyped `stauts` suggests `proxy status`. With `--json`, or when the caller is an agent, the same error is a single JSON object on stdout.
+- Login-item permission notices and their recovery wording come from the shared kit.
+
 ## v0.7.0 - 2026-09-27
 
 The request proxy corrects its token estimate with the input counts the provider reports, so it compacts before a 200,000-token window fills.
