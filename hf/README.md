@@ -1,4 +1,5 @@
 ---
+license: cc-by-4.0
 pretty_name: Gobstopper benchmark reports
 tags:
   - benchmark
@@ -26,6 +27,8 @@ Only the explicitly selected public reports and protocols are included. Private 
 
 `export-manifest.json` records the source commit and SHA-256 of every exported artifact. New completed studies receive new dated folders. Published study files remain frozen; corrections receive a new version with an explanation of the change. See [Gobstopper](https://gobstopper.sh/) for current product behavior.
 
-## Rights
+## License and attribution
 
-The source code is available under its repository's MIT or Apache-2.0 terms. This card does not extend that license to private source transcripts. Publication of this candidate requires the owner to confirm the license for the aggregate dataset.
+The selected aggregate reports and protocols in this archive are by Hraness and licensed under [Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/). Attribute Hraness and link to the [original benchmark page](https://gobstopper.sh/benchmarks) and the source revision recorded in `export-manifest.json`.
+
+This license covers the selected files listed in `export-manifest.json` and this card. It does not cover source code, private transcripts, or raw provider responses. Source code retains its original terms.

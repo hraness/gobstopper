@@ -2,7 +2,7 @@
   "schema": "hraness-hf-export-v1",
   "repo_type": "dataset",
   "repo_id": "hranesscom/gobstopper-benchmarks",
-  "rights_status": "pending-owner-review",
+  "rights_status": "approved-owner-cc-by-4.0",
   "files": [
     {
       "source": "site/public/benchmarks/2026-09-19/aggregates.json",
