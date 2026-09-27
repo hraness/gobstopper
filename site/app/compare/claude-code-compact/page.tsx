@@ -13,10 +13,10 @@ import {
   comparisonRows,
 } from "./comparison";
 
-const title = "Compared with Claude Code /compact";
+const title = "Gobstopper vs Claude Code /compact";
 const socialTitle = "Gobstopper compared with Claude Code /compact";
 const description =
-  "Claude Code's /compact replaces session history with a model-written summary. Gobstopper previews the cut and keeps every original byte. How they compare.";
+  "Claude Code's /compact swaps history for a model-written summary with no preview. Gobstopper previews the cut, archives the original, and can undo it.";
 
 export const metadata: Metadata = {
   title,
@@ -65,17 +65,20 @@ export default function CompareClaudeCodeCompact() {
           <h1>Gobstopper compared with Claude Code /compact</h1>
           <p>
             Claude Code&apos;s <code>/compact</code> command and Gobstopper both
-            make a long session&apos;s context smaller, and both are free. They
-            differ in what happens to the history. <code>/compact</code>{" "}
-            replaces the running session&apos;s messages with a summary the
-            model writes at that moment. Gobstopper shows the cut first, writes
-            a separate compacted copy, and keeps the exact source bytes in a
-            local vault you can search later. For a session still running,{" "}
-            <code>gobstopper proxy</code> keeps each request small enough that
-            Claude Code&apos;s auto-compaction does not reach its trigger.
+            make a long session&apos;s context smaller. They differ in what
+            happens to the history. <code>/compact</code> replaces the running
+            session&apos;s messages with a summary the model writes at that
+            moment, and you see what it kept only afterward. Gobstopper shows
+            the cut first, writes a separate compacted copy, and keeps the
+            source bytes in a local vault you can search later. For a session
+            that is still running, <code>gobstopper proxy</code> keeps each
+            request small enough that Claude Code&apos;s auto-compaction does
+            not reach its trigger. If a model-chosen summary is good enough
+            and you want nothing to install, <code>/compact</code> is the
+            simpler choice.
           </p>
 
-          <h2>What /compact does</h2>
+          <h2>/compact replaces the history with a model-written summary</h2>
           <p>
             <code>/compact</code> is built into Claude Code. To produce the
             summary, Claude Code sends a separate request carrying the same
@@ -86,16 +89,16 @@ export default function CompareClaudeCodeCompact() {
             summary keeps; there is no preview of what it will keep or drop.
             Claude Code also compacts automatically as the context approaches
             the model&apos;s limit, and <code>/autocompact</code> sets how full
-            the window gets first. After a compaction, the startup content
-            reloads: CLAUDE.md files, unscoped rules, and auto memory come back
+            the window gets first. After a compaction, Claude Code reloads its
+            startup content: CLAUDE.md files, unscoped rules, and auto memory come back
             from disk, up to five of the files most recently modified are
             re-read, and invoked skill bodies are re-injected.
           </p>
           <p>
             The original messages stay in the session transcript file, and{" "}
             <code>/rewind</code> can restore the conversation to an earlier
-            checkpoint while that checkpoint&apos;s snapshots remain. What
-            changes is the context every later request carries: whatever the
+            checkpoint while that checkpoint&apos;s snapshots remain. The loss
+            is in the context every later request carries: whatever the
             summary left out is no longer in it. Anthropic&apos;s{" "}
             <a href={CLAUDE_BLOG}>session-management guide</a> calls the trade
             &ldquo;lossy&rdquo; and notes that the model is at its least
@@ -104,7 +107,7 @@ export default function CompareClaudeCodeCompact() {
             it in the transcript yourself and pasting it back.
           </p>
 
-          <h2>What Gobstopper does</h2>
+          <h2>Gobstopper previews the cut and archives the original</h2>
           <p>
             Gobstopper inspects saved Claude Code and Codex session files and
             prepares compacted copies. <code>gobstopper plan</code> shows what a
@@ -112,14 +115,14 @@ export default function CompareClaudeCodeCompact() {
             <code>gobstopper eval</code> compares strategies on the same frozen
             bytes, and <code>gobstopper diff</code> compares two archived
             snapshots. <code>gobstopper apply</code> writes the copy as a new
-            fork under a fresh session ID; the source file is never changed.
-            Before a copy publishes, a content-addressed local vault stores the
-            exact source and candidate bytes, so <code>gobstopper undo</code>{" "}
-            can restore a snapshot into a new fork, and{" "}
+            fork under a fresh session ID and never changes the source file.
+            Before a copy is published, a local vault stores the source and
+            candidate bytes by content hash. <code>gobstopper undo</code> can
+            then restore a snapshot into a new fork, and{" "}
             <code>search-snapshot</code> and <code>read-snapshot</code> can
             return a record a strategy left out. The built-in strategies are
-            local rules and make no model calls. Resuming a copy with a live
-            provider requires separate compatibility testing.
+            local rules and make no model calls. Test that Claude Code or Codex
+            resumes a copy before you rely on it.
           </p>
           <p>
             For a running session, <code>gobstopper proxy</code> listens on
@@ -134,7 +137,7 @@ gobstopper plan <session>         # preview the cut under each strategy
 gobstopper apply <session>        # write the compacted copy as a new fork
 gobstopper undo <session>         # restore a vaulted snapshot into a new fork`}</code></pre>
 
-          <h2>How they compare</h2>
+          <h2>Side-by-side comparison</h2>
           <table>
             <caption>Checked against Anthropic&apos;s Claude Code documentation and blog and Gobstopper&apos;s README and source on September 26, 2026</caption>
             <thead>
@@ -155,17 +158,17 @@ gobstopper undo <session>         # restore a vaulted snapshot into a new fork`}
             </tbody>
           </table>
 
-          <h2>Which one fits</h2>
+          <h2>When to use each</h2>
           <p>
             Run <code>/compact</code> when a live session is bloated and a
-            model-chosen summary is the right trade: it is already installed,
-            it keeps working in place, and focus instructions steer it. Run{" "}
+            model-chosen summary is an acceptable trade: it is already
+            installed, it works in place, and focus instructions steer it. Run{" "}
             <code>gobstopper proxy</code> to keep a running Claude Code or Codex
             session under a threshold so auto-compaction does not fire mid-task.
             Use Gobstopper&apos;s file commands when you want to see the cut
-            before it happens, keep the exact source bytes, and be able to undo
-            into a new fork. For the request-time proxy comparison with the
-            CliffCompaction research proxy, see{" "}
+            before it happens, keep the source bytes, and be able to undo into
+            a new fork. To compare the proxy with the CliffCompaction research
+            proxy, see{" "}
             <a href="/compare/cliffcompaction">Gobstopper compared with CliffCompaction</a>.
           </p>
 
