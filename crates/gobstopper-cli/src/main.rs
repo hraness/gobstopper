@@ -523,6 +523,9 @@ enum PluginCmd {
         manifest: PathBuf,
     },
     /// Run a trusted plugin against one transcript and print its findings.
+    #[command(
+        override_usage = "gobstopper plugin inspect <MANIFEST> --trusted-sha256 <SHA256> \\\n           --provider <PROVIDER> --source <SOURCE>"
+    )]
     Inspect {
         /// Path to the plugin's manifest.
         manifest: PathBuf,
@@ -5365,10 +5368,15 @@ fn main() -> std::process::ExitCode {
         ux::write_stdout(ux::ADVANCED);
         return std::process::ExitCode::SUCCESS;
     }
-    let cli = match Cli::try_parse_from(&args) {
+    let root = ux::command();
+    let parsed = root
+        .clone()
+        .try_get_matches_from(&args)
+        .and_then(|matches| <Cli as clap::FromArgMatches>::from_arg_matches(&matches));
+    let cli = match parsed {
         Ok(cli) => cli,
         Err(error) => {
-            let code = ux::clap_failure(error, &<Cli as clap::CommandFactory>::command(), &args);
+            let code = ux::clap_failure(error, &root, &args);
             return std::process::ExitCode::from(code as u8);
         }
     };

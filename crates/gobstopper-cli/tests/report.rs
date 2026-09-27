@@ -42,6 +42,8 @@ impl Fixture {
 
     fn run_raw(&self, args: &[&str]) -> Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_gobstopper"));
+        // Read as a pipe would, even from an agent session.
+        command.env("HRANESS_AUDIENCE", "quiet");
         for (name, _) in std::env::vars_os() {
             if name.to_string_lossy().starts_with("GOBSTOPPER_") {
                 command.env_remove(name);
@@ -389,7 +391,11 @@ fn lossy_event_history_cannot_qualify_report_cohort_retention_or_adaptive_input(
                     !output.status.success(),
                     "{args:?} qualified incomplete history"
                 );
-                assert!(output.stdout.is_empty());
+                // With --json the failure is one error document on stdout,
+                // and it never echoes the invalid record.
+                let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+                assert_eq!(error["ok"], false);
+                assert!(!String::from_utf8_lossy(&output.stdout).contains(&invalid));
                 assert!(!String::from_utf8_lossy(&output.stderr).contains(&invalid));
             }
             assert_eq!(

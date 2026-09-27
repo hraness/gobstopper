@@ -43,6 +43,8 @@ impl Fixture {
 
     fn command(&self, operation: &[&str]) -> Command {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_gobstopper"));
+        // Read as a pipe would, even from an agent session.
+        cmd.env("HRANESS_AUDIENCE", "quiet");
         for (name, _) in std::env::vars_os() {
             if name.to_string_lossy().starts_with("GOBSTOPPER_") {
                 cmd.env_remove(name);
@@ -411,9 +413,9 @@ fn unreadable_telemetry_does_not_become_a_zero_count_report() {
     assert!(unreadable.stdout.is_empty());
     let events = f.command(&["events", "--json"]).output().unwrap();
     assert!(!events.status.success());
-    assert!(events.stdout.is_empty());
-    // With --json the failure is one error object on stderr.
-    let error: serde_json::Value = serde_json::from_slice(&events.stderr).unwrap();
+    assert!(events.stderr.is_empty());
+    // With --json the failure is one error object on stdout.
+    let error: serde_json::Value = serde_json::from_slice(&events.stdout).unwrap();
     assert_eq!(error["ok"], false);
     assert!(error["error"]["message"]
         .as_str()

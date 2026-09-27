@@ -64,6 +64,8 @@ impl Fixture {
 
     fn plan(&self, json: bool) -> Output {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_gobstopper"));
+        // Read as a pipe would, even from an agent session.
+        cmd.env("HRANESS_AUDIENCE", "quiet");
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("GOBSTOPPER_") {
                 cmd.env_remove(key);

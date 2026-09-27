@@ -1,130 +1,15 @@
-//! The Hraness CLI style contract for gobstopper: who is reading, status
-//! symbols with ASCII fallbacks, `Next:` hints, one-sentence errors, usage
-//! errors, closed pipes, and the grouped root help.
-//!
-//! TODO(df-0.8): use detectAudience — replace `detect_audience`, `Style` and
-//! the error renderer with the `hraness-cli-kit` crate from desktop-foundation
-//! 0.8.0 once it ships. The rules below are copied from that contract.
+//! The Hraness CLI style contract for gobstopper, on top of
+//! `hraness-cli-kit` from desktop-foundation: who is reading, status symbols
+//! with ASCII fallbacks, `Next:` hints, one-sentence errors, usage errors,
+//! closed pipes, and the grouped root help.
 
+use hraness_cli_kit::style::CliError;
+pub(crate) use hraness_cli_kit::{Audience, Style, Symbol};
 use std::fmt;
-use std::io::IsTerminal as _;
 
-/// Who reads this process's output.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Audience {
-    Human,
-    Agent,
-    Quiet,
-}
-
-/// Exact agent markers. Prefixes never count: `CODEX_HOME` is human
-/// configuration.
-const AGENT_MARKERS: [&str; 6] = [
-    "AI_AGENT",
-    "CLAUDECODE",
-    "CODEX_SANDBOX",
-    "CODEX_SANDBOX_NETWORK_DISABLED",
-    "CURSOR_AGENT",
-    "GEMINI_CLI",
-];
-
-pub(crate) fn detect_audience(
-    env: &dyn Fn(&str) -> Option<String>,
-    stderr_is_tty: bool,
-) -> Audience {
-    match env("HRANESS_AUDIENCE").as_deref() {
-        Some("human") => return Audience::Human,
-        Some("agent") => return Audience::Agent,
-        Some("quiet" | "off") => return Audience::Quiet,
-        _ => {}
-    }
-    if AGENT_MARKERS
-        .iter()
-        .any(|name| env(name).is_some_and(|value| !value.is_empty()))
-    {
-        return Audience::Agent;
-    }
-    if stderr_is_tty {
-        Audience::Human
-    } else {
-        Audience::Quiet
-    }
-}
-
-fn process_env(name: &str) -> Option<String> {
-    std::env::var(name).ok()
-}
-
+/// Who is reading this process's output.
 pub(crate) fn audience() -> Audience {
-    detect_audience(&process_env, std::io::stderr().is_terminal())
-}
-
-/// The shared CLI symbol set.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Symbol {
-    Ok,
-    Fail,
-    Warn,
-    Next,
-    On,
-    Off,
-    Skip,
-}
-
-/// How one stream renders symbols.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Style {
-    color: bool,
-    ascii: bool,
-}
-
-impl Style {
-    pub(crate) fn detect(env: &dyn Fn(&str) -> Option<String>, is_tty: bool) -> Self {
-        let set = |name: &str| env(name).is_some_and(|value| !value.is_empty());
-        let dumb = env("TERM").as_deref() == Some("dumb");
-        let color = if env("FORCE_COLOR").as_deref() == Some("1") {
-            true
-        } else {
-            is_tty && !dumb && !set("NO_COLOR")
-        };
-        let utf8 = ["LC_ALL", "LC_CTYPE", "LANG"].iter().any(|name| {
-            env(name).is_some_and(|value| {
-                let value = value.to_ascii_lowercase();
-                value.contains("utf-8") || value.contains("utf8")
-            })
-        });
-        let ascii = dumb || !utf8 || env("HRANESS_ASCII").as_deref() == Some("1");
-        Self { color, ascii }
-    }
-    pub(crate) fn stdout() -> Self {
-        Self::detect(&process_env, std::io::stdout().is_terminal())
-    }
-    pub(crate) fn stderr() -> Self {
-        Self::detect(&process_env, std::io::stderr().is_terminal())
-    }
-    /// Whether this stream uses the ASCII fallbacks.
-    pub(crate) fn is_ascii(self) -> bool {
-        self.ascii
-    }
-    /// The symbol, colored when this stream allows it. Only the symbol is
-    /// ever colored, never the sentence.
-    pub(crate) fn sym(self, symbol: Symbol) -> String {
-        let (glyph, ascii, color) = match symbol {
-            Symbol::Ok => ("✓", "OK", Some("32")),
-            Symbol::Fail => ("✗", "FAIL", Some("31")),
-            Symbol::Warn => ("⚠", "WARN", Some("33")),
-            Symbol::Next => ("→", "->", Some("2")),
-            Symbol::On => ("●", "*", Some("32")),
-            Symbol::Off => ("○", "o", None),
-            Symbol::Skip => ("–", "-", Some("2")),
-        };
-        let text = if self.ascii { ascii } else { glyph };
-        match color {
-            Some(code) if self.color => format!("\x1b[{code}m{text}\x1b[0m"),
-            _ => text.to_owned(),
-        }
-    }
+    hraness_cli_kit::audience::detect_current()
 }
 
 /// An error that knows the one command to run next. The message is a full
@@ -194,24 +79,10 @@ pub(crate) fn next_hint(command: &str) {
     }
 }
 
-/// First letter up, ending in a period; the product name and commands keep
-/// their case.
+/// First letter up, ending in a period; the product name, commands and
+/// options keep their case.
 fn sentence(text: &str) -> String {
-    let text = text.trim();
-    let mut out = String::with_capacity(text.len() + 1);
-    if text.starts_with("gobstopper ") || text.starts_with('`') || text.starts_with('-') {
-        out.push_str(text);
-    } else {
-        let mut chars = text.chars();
-        if let Some(first) = chars.next() {
-            out.extend(first.to_uppercase());
-            out.push_str(chars.as_str());
-        }
-    }
-    if !out.ends_with(['.', '?', '!']) {
-        out.push('.');
-    }
-    out
+    hraness_cli_kit::style::sentence(text, &["gobstopper ", "-"])
 }
 
 struct Parts {
@@ -248,58 +119,49 @@ fn parts(error: &anyhow::Error) -> Parts {
     }
 }
 
-/// The human rendering: `✗ sentence` and, when known, `→ next command`.
-pub(crate) fn render_error(error: &anyhow::Error, style: Style) -> String {
-    let Parts {
-        message,
-        detail,
-        next,
-        ..
-    } = parts(error);
-    let mut out = format!("{} {message}", style.sym(Symbol::Fail));
-    if let Some(detail) = detail {
-        out.push_str(&format!("\n  {detail}"));
-    }
-    if let Some(next) = next {
-        out.push_str(&format!("\n{} {next}", style.sym(Symbol::Next)));
-    }
-    out
-}
-
-pub(crate) fn render_json_error(error: &anyhow::Error) -> serde_json::Value {
+fn cli_error(error: &anyhow::Error) -> CliError {
     let Parts {
         message,
         detail,
         next,
         code,
     } = parts(error);
-    let message = match detail {
-        Some(detail) => format!("{message} {detail}"),
-        None => message,
-    };
-    serde_json::json!({"ok": false, "error": {"code": code, "message": message, "next": next}})
+    let mut cli = CliError::new(code, message);
+    cli.detail = detail;
+    cli.next = next;
+    cli
 }
 
-/// Report a failed command on stderr. A failed command never writes to
-/// stdout, so a `--json` reader never mistakes an error for a result.
-/// `--json` or an agent reader gets the error as one JSON object; everyone
-/// else, and every command whose output belongs to a protocol peer (`mcp`,
-/// `hook`, `watch`, `proxy serve|run`), gets the human lines.
+/// The human rendering: `✗ sentence` and, when known, `→ next command`.
+#[cfg(test)]
+fn render_error(error: &anyhow::Error, style: Style) -> String {
+    cli_error(error).render_human(style).trim_end().to_owned()
+}
+
+/// `{"ok":false,"error":{"code","message","next"}}` on one line.
+#[cfg(test)]
+fn render_json_error(error: &anyhow::Error) -> String {
+    cli_error(error).render_json()
+}
+
+/// Report a failed command. `--json` or an agent reader gets one
+/// `{"ok":false,"error":{…}}` object on stdout, so a JSON reader always has
+/// one document to parse. Everyone else, and every command whose stdout
+/// belongs to a protocol peer (`mcp`, `hook`, `watch`, `proxy serve|run`),
+/// gets the human lines on stderr.
 pub(crate) fn report_error(error: &anyhow::Error, json: bool, protocol: bool) {
-    if !protocol && (json || audience() == Audience::Agent) {
-        eprintln!("{}", render_json_error(error));
+    let audience = if protocol {
+        Audience::Quiet
     } else {
-        eprintln!("{}", render_error(error, Style::stderr()));
-    }
+        audience()
+    };
+    cli_error(error).report(json && !protocol, audience);
 }
 
 /// Write to stdout, ignoring a closed pipe: help and usage text may be
 /// piped to `head` before gobstopper knows which command runs.
 pub(crate) fn write_stdout(text: &str) {
-    use std::io::Write as _;
-    let mut stdout = std::io::stdout().lock();
-    let _ = stdout.write_all(text.as_bytes());
-    let _ = stdout.flush();
+    hraness_cli_kit::style::write_stdout(text);
 }
 
 /// `gobstopper detect | head -1` ends quietly: restore the default SIGPIPE
@@ -308,116 +170,24 @@ pub(crate) fn write_stdout(text: &str) {
 /// commands that talk to child processes keep Rust's ignored SIGPIPE, so a
 /// peer that hangs up is an error they handle, not a silent exit.
 pub(crate) fn restore_sigpipe() {
-    #[cfg(unix)]
-    // SAFETY: called once at the top of `main`, before any thread starts;
-    // SIG_DFL is a valid disposition for SIGPIPE.
-    unsafe {
-        libc::signal(libc::SIGPIPE, libc::SIG_DFL);
-    }
+    hraness_cli_kit::style::restore_default_sigpipe();
 }
 
-/// The command path a usage error belongs to (`proxy serve`), read from the
-/// arguments as far as they name known subcommands.
-fn command_path(root: &clap::Command, args: &[String]) -> Vec<String> {
-    let mut path = Vec::new();
-    let mut current = root;
-    for arg in args.iter().skip(1) {
-        if arg.starts_with('-') {
-            continue;
-        }
-        match current.find_subcommand(arg) {
-            Some(sub) => {
-                path.push(sub.get_name().to_owned());
-                current = sub;
-            }
-            None => break,
-        }
-    }
-    path
-}
-
-fn quoted(value: Option<&clap::error::ContextValue>) -> Option<String> {
-    use clap::error::ContextValue;
-    match value? {
-        ContextValue::String(text) => Some(text.clone()),
-        ContextValue::Strings(list) => list.first().cloned(),
-        _ => None,
-    }
+/// The command line, with help wrapped at 100 columns at every level.
+pub(crate) fn command() -> clap::Command {
+    hraness_cli_kit::clap::cap_help_width(<crate::Cli as clap::CommandFactory>::command(), 100)
 }
 
 /// Handle a clap parse failure: help and version print to stdout and exit 0;
 /// usage errors print one sentence and the per-command help to run, and
-/// exit 2. Returns the exit code.
+/// exit 2, or the JSON error on stdout for `--json` and agents. `status` is
+/// a `proxy` command, so a misspelled `status` suggests it.
 pub(crate) fn clap_failure(error: clap::Error, root: &clap::Command, args: &[String]) -> i32 {
-    use clap::error::{ContextKind, ErrorKind};
-    match error.kind() {
-        ErrorKind::DisplayHelp
-        | ErrorKind::DisplayVersion
-        | ErrorKind::DisplayHelpOnMissingArgumentOrSubcommand => {
-            // A group such as `gobstopper proxy` with no subcommand shows
-            // its help as an answer, not an error.
-            write_stdout(&error.render().to_string());
-            return 0;
-        }
-        _ => {}
-    }
-    let path = command_path(root, args);
-    let help = if path.is_empty() {
-        "gobstopper --help".to_owned()
-    } else {
-        format!("gobstopper {} --help", path.join(" "))
-    };
-    let message = match error.kind() {
-        ErrorKind::InvalidSubcommand => {
-            let name = quoted(error.get(ContextKind::InvalidSubcommand)).unwrap_or_default();
-            match quoted(error.get(ContextKind::SuggestedSubcommand)) {
-                Some(suggestion) => {
-                    format!("Unknown command \"{name}\". Did you mean \"{suggestion}\"?")
-                }
-                None => format!("Unknown command \"{name}\"."),
-            }
-        }
-        ErrorKind::UnknownArgument => {
-            let name = quoted(error.get(ContextKind::InvalidArg)).unwrap_or_default();
-            match quoted(error.get(ContextKind::SuggestedArg)) {
-                Some(suggestion) => {
-                    format!("Unknown option \"{name}\". Did you mean \"{suggestion}\"?")
-                }
-                None => format!("Unknown option \"{name}\"."),
-            }
-        }
-        ErrorKind::MissingRequiredArgument => {
-            let names = match error.get(ContextKind::InvalidArg) {
-                Some(clap::error::ContextValue::Strings(list)) => list.join(", "),
-                other => quoted(other).unwrap_or_default(),
-            };
-            format!("Missing {names}.")
-        }
-        _ => {
-            let rendered = error.render().to_string();
-            let first = rendered
-                .lines()
-                .next()
-                .unwrap_or_default()
-                .trim_start_matches("error: ")
-                .to_owned();
-            sentence(&first)
-        }
-    };
-    if audience() == Audience::Agent {
-        eprintln!(
-            "{}",
-            serde_json::json!({"ok": false, "error": {"code": "usage", "message": message, "next": help}})
-        );
-    } else {
-        let style = Style::stderr();
-        eprintln!(
-            "{} {message}\n{} {help}",
-            style.sym(Symbol::Fail),
-            style.sym(Symbol::Next)
-        );
-    }
-    2
+    let options = hraness_cli_kit::clap::UsageOptions::default()
+        .cli("gobstopper")
+        .alias("status", "proxy status")
+        .alias("install", "proxy install");
+    hraness_cli_kit::clap::exit_on_parse_error(error, root, args, &options)
 }
 
 /// What bare `gobstopper` prints: at most 25 lines, stdout, exit 0.
@@ -518,71 +288,9 @@ Run `gobstopper <command> --help` for details.
 mod tests {
     use super::*;
 
-    fn env_of(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
-        move |name| {
-            pairs
-                .iter()
-                .find(|(key, _)| *key == name)
-                .map(|(_, value)| (*value).to_owned())
-        }
-    }
-
-    #[test]
-    fn audience_follows_the_shared_rule() {
-        assert_eq!(detect_audience(&env_of(&[]), true), Audience::Human);
-        assert_eq!(detect_audience(&env_of(&[]), false), Audience::Quiet);
-        assert_eq!(
-            detect_audience(&env_of(&[("CLAUDECODE", "1")]), true),
-            Audience::Agent
-        );
-        assert_eq!(
-            detect_audience(&env_of(&[("CLAUDECODE", "")]), true),
-            Audience::Human
-        );
-        assert_eq!(
-            detect_audience(&env_of(&[("CODEX_HOME", "/x")]), false),
-            Audience::Quiet
-        );
-        assert_eq!(
-            detect_audience(
-                &env_of(&[("HRANESS_AUDIENCE", "human"), ("AI_AGENT", "1")]),
-                false
-            ),
-            Audience::Human
-        );
-        assert_eq!(
-            detect_audience(&env_of(&[("HRANESS_AUDIENCE", "off")]), true),
-            Audience::Quiet
-        );
-    }
-
-    #[test]
-    fn style_respects_no_color_term_and_locale() {
-        let utf8 = Style::detect(&env_of(&[("LANG", "en_US.UTF-8")]), true);
-        assert_eq!(utf8.sym(Symbol::Ok), "\x1b[32m✓\x1b[0m");
-        let no_color = Style::detect(&env_of(&[("LANG", "en_US.UTF-8"), ("NO_COLOR", "1")]), true);
-        assert_eq!(no_color.sym(Symbol::Fail), "✗");
-        let piped = Style::detect(&env_of(&[("LANG", "en_US.UTF-8")]), false);
-        assert_eq!(piped.sym(Symbol::Warn), "⚠");
-        let dumb = Style::detect(&env_of(&[("LANG", "en_US.UTF-8"), ("TERM", "dumb")]), true);
-        assert_eq!(dumb.sym(Symbol::Fail), "FAIL");
-        assert_eq!(dumb.sym(Symbol::Next), "->");
-        let c_locale = Style::detect(&env_of(&[("LANG", "C")]), false);
-        assert_eq!(c_locale.sym(Symbol::On), "*");
-        let forced = Style::detect(
-            &env_of(&[("LANG", "en_US.UTF-8"), ("FORCE_COLOR", "1")]),
-            false,
-        );
-        assert_eq!(forced.sym(Symbol::Off), "○");
-        assert_eq!(forced.sym(Symbol::On), "\x1b[32m●\x1b[0m");
-    }
-
     #[test]
     fn errors_render_one_sentence_and_one_next_step() {
-        let plain = Style {
-            color: false,
-            ascii: false,
-        };
+        let plain = Style::PLAIN;
         let error = guided(
             "The proxy isn't running on port 8260",
             "gobstopper proxy serve",
@@ -616,9 +324,21 @@ mod tests {
                 "proxy-down",
                 "Proxy down.",
                 "gobstopper proxy serve"
-            ))
-            .to_string(),
+            )),
             r#"{"ok":false,"error":{"code":"proxy-down","message":"Proxy down.","next":"gobstopper proxy serve"}}"#
+        );
+    }
+
+    #[test]
+    fn every_help_line_fits_100_columns() {
+        let over = hraness_cli_kit::clap::help_lines_over(&command(), 100);
+        assert!(
+            over.is_empty(),
+            "help lines over 100 columns:\n{}",
+            over.iter()
+                .map(|(path, line)| format!("{path}: {line}"))
+                .collect::<Vec<_>>()
+                .join("\n")
         );
     }
 

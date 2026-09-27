@@ -195,6 +195,8 @@ fn start_proxy_inner(
     stderr: Stdio,
 ) -> ProxyProcess {
     let mut command = Command::new(env!("CARGO_BIN_EXE_gobstopper"));
+    // Read as a pipe would, even from an agent session.
+    command.env("HRANESS_AUDIENCE", "quiet");
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("GOBSTOPPER_") {
             command.env_remove(key);
@@ -703,6 +705,8 @@ fn the_stats_ledger_records_each_request_and_survives_a_restart() {
 /// a scratch directory.
 fn gobstopper(args: &[&str], home: &std::path::Path) -> std::process::Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_gobstopper"));
+    // Read as a pipe would, even from an agent session.
+    command.env("HRANESS_AUDIENCE", "quiet");
     for (key, _) in std::env::vars_os() {
         if key.to_string_lossy().starts_with("GOBSTOPPER_") {
             command.env_remove(key);

@@ -7,15 +7,15 @@
 //! label `sh.gobstopper.proxy` that `docs/proxy.md` has always used, so a
 //! hand-written agent is found and never silently replaced.
 
-use crate::ux::{self, Audience, Style, Symbol};
+use crate::ux::{self, Style, Symbol};
 use anyhow::{Context, Result};
+use hraness_cli_kit::permissions::{self, presets, PermissionNeed, ProductRef};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub const LABEL: &str = "sh.gobstopper.proxy";
 /// Test hook: the `launchctl` to run. Never set outside tests.
 const LAUNCHCTL_ENV: &str = "GOBSTOPPER_TEST_LAUNCHCTL";
-const LOGIN_ITEMS_PATH: &str = "System Settings › General › Login Items & Extensions";
 
 fn home() -> Result<PathBuf> {
     std::env::var_os("HOME")
@@ -72,41 +72,30 @@ pub fn plist(executable: &Path, serve_args: &[String], log: &Path) -> String {
     )
 }
 
-/// The Background Items notice (SPEC LOGIN_ITEM, notifies: no confirm
-/// line). The requester is the `gobstopper` executable itself.
-///
-/// TODO(df-0.8): use hraness-cli-kit `permissions::render_pre_prompt`.
-pub fn login_item_notice(port: u16, ascii: bool) -> [String; 2] {
-    [
-        format!(
-            "{} macOS will show a notice that gobstopper can open at login.",
-            if ascii { "NOTE" } else { "🔐" }
-        ),
-        format!(
-            "   It keeps the request proxy on 127.0.0.1:{port} running so Claude Code and Codex requests stay small. Turn it off any time in {LOGIN_ITEMS_PATH}."
-        ),
-    ]
+/// The Background Items notice: the kit's login-item preset (notifies, so
+/// no confirm line). Login Items names the `gobstopper` executable itself.
+fn login_item_need(port: u16) -> PermissionNeed {
+    let mut need = presets::login_item(ProductRef::new("gobstopper", "gobstopper"));
+    need.why = format!(
+        "It keeps the request proxy on 127.0.0.1:{port} running so Claude Code and Codex requests stay small."
+    );
+    need
 }
 
+/// The notice as a person reads it.
+#[cfg(test)]
+fn login_item_notice(port: u16, style: Style) -> String {
+    use hraness_cli_kit::permissions::{NoticeKind, Surface};
+    let need = login_item_need(port);
+    let env = hraness_cli_kit::audience::process_env;
+    let notice = permissions::render_pre_prompt(&need, Surface::Cli, &env);
+    permissions::format_notice(&notice, NoticeKind::PrePrompt, false, style)
+}
+
+/// Say the notice for the audience: text for a person, one JSON line for an
+/// agent, nothing for a quiet reader. It never waits for input.
 fn say_notice(port: u16) {
-    let [first, second] = login_item_notice(port, ascii_output());
-    match ux::audience() {
-        Audience::Human => eprintln!("{first}\n{second}"),
-        Audience::Agent => eprintln!(
-            "{}",
-            serde_json::json!({
-                "type": "permission-notice",
-                "product": "gobstopper",
-                "kind": "login-item",
-                "message": format!("{} {}", first.trim_start_matches("🔐 ").trim_start_matches("NOTE "), second.trim()),
-            })
-        ),
-        Audience::Quiet => {}
-    }
-}
-
-fn ascii_output() -> bool {
-    Style::stderr().is_ascii()
+    let _ = permissions::pre_prompt(&login_item_need(port), None, &mut permissions::ProcessIo);
 }
 
 fn launchctl() -> Command {
@@ -200,12 +189,12 @@ pub fn install(serve_args: &[String], port: u16, replace: bool, print: bool) -> 
     if answering {
         println!(
             "{} The proxy is running on http://127.0.0.1:{port} and starts at login.",
-            style.sym(Symbol::Ok)
+            style.symbol(Symbol::Ok)
         );
     } else {
         println!(
             "{} The proxy starts at login. It isn't answering yet; its log is {}.",
-            style.sym(Symbol::Ok),
+            style.symbol(Symbol::Ok),
             log.display()
         );
     }
@@ -242,7 +231,7 @@ pub fn uninstall() -> Result<()> {
     if existed || loaded {
         println!(
             "{} Removed the proxy LaunchAgent. The proxy no longer starts at login.",
-            style.sym(Symbol::Ok)
+            style.symbol(Symbol::Ok)
         );
     } else {
         println!("The proxy LaunchAgent wasn't installed.");
@@ -284,12 +273,9 @@ mod tests {
     #[test]
     fn notice_follows_the_login_item_template() {
         assert_eq!(
-            login_item_notice(8260, false),
-            [
-                "🔐 macOS will show a notice that gobstopper can open at login.".to_owned(),
-                "   It keeps the request proxy on 127.0.0.1:8260 running so Claude Code and Codex requests stay small. Turn it off any time in System Settings › General › Login Items & Extensions.".to_owned(),
-            ]
+            login_item_notice(8260, Style::PLAIN),
+            "🔐 macOS will show a notice that gobstopper can open at login.\n   It keeps the request proxy on 127.0.0.1:8260 running so Claude Code and Codex requests stay small. Turn it off any time in System Settings › General › Login Items & Extensions.\n"
         );
-        assert!(login_item_notice(8260, true)[0].starts_with("NOTE macOS will show"));
+        assert!(login_item_notice(8260, Style::ASCII).starts_with("NOTE macOS will show"));
     }
 }
