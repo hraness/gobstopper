@@ -13,7 +13,7 @@ When to use this site:
 - Use /benchmarks for dated results, cohort sizes, limitations, and aggregate downloads.
 - Use /compare/cliffcompaction to see how Gobstopper and its proxy compare with CliffCompaction, the API-proxy compactor, and what the cliff strategy does.
 - Use /compare/claude-code-compact to see how Gobstopper compares with Claude Code's built-in /compact, which replaces session history with a model-written summary.
-- Use /blog for longer posts on what Gobstopper does and how its archive and edit limits are checked.
+- Use /blog for longer posts on how Gobstopper compacts Claude Code and Codex sessions and how its archive and edit limits are model-checked and proved.
 
 ## Pages
 
@@ -28,8 +28,8 @@ When to use this site:
 
 - [Gobstopper blog](https://gobstopper.sh/blog): every post, newest first. Atom feed at https://gobstopper.sh/blog/feed.xml.
 - [Introducing Gobstopper](https://gobstopper.sh/blog/introducing-gobstopper): what Gobstopper does, who it is for, and how to try it.
-- [How Gobstopper proves its compaction arithmetic and transcript laws](https://gobstopper.sh/blog/proofs-for-the-admission-math): what the Kani and Lean proofs cover and leave out.
-- [How Gobstopper checks its archive against crashes at every step](https://gobstopper.sh/blog/vault-models-that-fail-on-purpose): the TLA+ models, their broken copies, and the Hegel tests.
+- [What Kani and Lean prove about Gobstopper's compaction](https://gobstopper.sh/blog/proofs-for-the-admission-math): what the Kani and Lean proofs cover and leave out.
+- [How Gobstopper model-checks its archive against crashes](https://gobstopper.sh/blog/vault-models-that-fail-on-purpose): the TLA+ models, their broken copies, and the Hegel tests.
 
 ## Optional
 
