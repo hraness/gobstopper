@@ -50,6 +50,11 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+.hraness-marketing-header .hraness-design-palette-menu > summary {
+  min-inline-size: max(2.75rem, var(--interactive-target-compact, 2.75rem));
+  min-block-size: max(2.75rem, var(--interactive-target-compact, 2.75rem));
+}
+
 code,
 kbd,
 samp,
@@ -220,4 +225,3 @@ a { text-underline-offset: 0.2em; }
 
 .document-page { font-size: 1rem; line-height: 1.75; }
 .document-page :is(h1, h2, h3) { letter-spacing: -.025em; }
-

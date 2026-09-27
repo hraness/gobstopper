@@ -33,3 +33,6 @@ yarn-error.log*
 next-env.d.ts
 *.tsbuildinfo
 /public/theme-bootstrap.js
+
+# Local browser verification evidence
+/.impeccable/
