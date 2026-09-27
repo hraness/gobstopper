@@ -35,6 +35,10 @@ jobs:
       - run: cargo test --workspace --all-targets --all-features --locked
       - run: cargo test --workspace --doc --all-features --locked
       - run: python3 scripts/check_assurance.py
+      - name: Validate public benchmark export
+        run: |
+          python3 hf/stage.py
+          python3 -m unittest discover -s hf -p 'test_*.py'
       - run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
       - run: python3 -m unittest discover -s verify -p 'test_tools.py' -v
       - run: python3 -m unittest discover -s verify/vault -p 'test_*.py' -v
