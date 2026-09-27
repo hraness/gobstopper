@@ -24,7 +24,9 @@ custom provider address can use it:
 The proxy has shipped in tagged releases since v0.3.1, and the Chat
 Completions dialect since v0.4.0. This page describes the current `main`
 source build: the tail budget (`--keep-tail-percent`) and the separate 1M
-threshold (`--threshold-1m`) are not yet in a release. The proxy needs the
+threshold (`--threshold-1m`) shipped in v0.5.0, carrying the conversation
+across compactions (`--carry-max-chars`) in v0.6.0, and estimate calibration
+(`--no-calibrate`) is not yet in a release. The proxy needs the
 system `curl`, version 8.3 or later (`curl --version`).
 
 ## What you get

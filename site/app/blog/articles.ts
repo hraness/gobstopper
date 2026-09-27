@@ -16,7 +16,7 @@ export const BLOG_DESCRIPTION =
   "How Gobstopper compacts Claude Code and Codex sessions, and how its archive and edit limits are model-checked and proved, with what each check leaves out.";
 
 const REVIEWER = "Claude Opus 5.5 (claude-opus-5-5) editorial review";
-const REVIEWED_ON: ArticleIsoDate = "2026-09-26";
+const REVIEWED_ON: ArticleIsoDate = "2026-09-27";
 const REASSESS_ON: ArticleIsoDate = "2026-11-05";
 
 function repo(path: string, name = "gobstopper"): string {
@@ -151,7 +151,7 @@ const proofs: BlogPost = {
 const vault: BlogPost = {
   slug: "vault-models-that-fail-on-purpose",
   title: "How Gobstopper model-checks its archive against crashes",
-  dek: "Gobstopper model-checks its archive design with a crash allowed at every step, and each safety rule has a broken copy that must reproduce the loss it prevents.",
+  dek: "Gobstopper model-checks its archive design with a crash allowed at every step, and each model has broken copies, each with one safety rule switched off, that must reproduce the loss that rule prevents.",
   eyebrow: "Technique",
   published: "2026-09-24",
   keywords: ["Gobstopper", "TLA+", "model checking", "property testing", "crash recovery", "transcripts"],
@@ -159,7 +159,7 @@ const vault: BlogPost = {
     href: "/blog/vault-models-that-fail-on-purpose",
     lifecycle: "indexable",
     readerJob: "Decide whether Gobstopper's local archive can be trusted to keep an original transcript intact through crashes and concurrent cleanup, and see how that is checked.",
-    nonObviousAnswer: "A clean model-check pass is trusted only because each safety rule has a broken copy that must fail on that exact rule; removing the lock loses indexed data even when cleanup rechecks the index atomically, which is why saves and cleanup share a lock.",
+    nonObviousAnswer: "A clean model-check pass is trusted only because broken copies of the model, each with one safety rule switched off, must fail on that exact rule; removing the lock loses indexed data even when cleanup rechecks the index atomically, which is why saves and cleanup share a lock.",
     originalContribution: "Walks through the archive's save order, the rules the TLA+ models check, the broken copies that must fail, the Hegel tests against the real code, and the recorded state counts, with the limits of each.",
     hostFit: "A product-specific technique post about Gobstopper's own archive, on Gobstopper's host.",
     nearestUrls: [
@@ -182,6 +182,7 @@ const vault: BlogPost = {
     ],
     observations: [
       "The TLA+ models were added on September 23, 2026, after the v0.2.1 tag of September 18; v0.3.0 was the first release to include them.",
+      "The September 26 edit said each safety rule has a broken copy; the archive model checks four rules with two broken copies (verify/vault/README.md), so the September 27 fact review changed the dek and opening to say each model has broken copies.",
       "Cleanup does not keep every indexed snapshot: it keeps the ones its retention setting selects plus pinned ones, and the CLI's prune keeps the newest 10 per session by default.",
     ],
     scores: { readerUtility: 1, originalEvidence: 2, factualConfidence: 2, hostFit: 2, voiceIntegrity: 2, maintenanceValue: 1 },

@@ -73,8 +73,8 @@ export default function CompareCliffCompaction() {
             that prepare compacted copies of saved sessions for you to inspect
             and then resume. The proxy has shipped since v0.3.1 and the Chat
             Completions dialect since v0.4.0. Carrying the conversation&apos;s
-            words across compactions, described in the table below, is on the
-            main branch until the next release.
+            words across compactions, described in the table below, shipped
+            in v0.6.0.
           </p>
 
           <h2>CliffCompaction summarizes older turns mechanically</h2>
