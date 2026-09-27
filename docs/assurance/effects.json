@@ -5059,13 +5059,6 @@
     },
     {
       "path": "crates/gobstopper-cli/src/proxy_agent.rs",
-      "symbol": "login_item_notice",
-      "effects": [
-        "pure"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
       "symbol": "plist",
       "effects": [
         "pure"
@@ -5122,14 +5115,7 @@
     },
     {
       "path": "crates/gobstopper-cli/src/ux.rs",
-      "symbol": "detect",
-      "effects": [
-        "pure"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-cli/src/ux.rs",
-      "symbol": "detect_audience",
+      "symbol": "command",
       "effects": [
         "pure"
       ]
@@ -5157,30 +5143,9 @@
     },
     {
       "path": "crates/gobstopper-cli/src/ux.rs",
-      "symbol": "is_ascii",
-      "effects": [
-        "pure"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-cli/src/ux.rs",
       "symbol": "next_hint",
       "effects": [
         "output"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-cli/src/ux.rs",
-      "symbol": "render_error",
-      "effects": [
-        "pure"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-cli/src/ux.rs",
-      "symbol": "render_json_error",
-      "effects": [
-        "pure"
       ]
     },
     {
@@ -5195,27 +5160,6 @@
       "symbol": "restore_sigpipe",
       "effects": [
         "memory"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-cli/src/ux.rs",
-      "symbol": "stderr",
-      "effects": [
-        "pure"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-cli/src/ux.rs",
-      "symbol": "stdout",
-      "effects": [
-        "pure"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-cli/src/ux.rs",
-      "symbol": "sym",
-      "effects": [
-        "pure"
       ]
     },
     {

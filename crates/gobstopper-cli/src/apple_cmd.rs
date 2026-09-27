@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 
 use apple_foundation::{Availability, Error as AppleError, Reason, ToolsProblem};
 use clap::Subcommand;
+use hraness_cli_kit::audience::{detect as detect_audience, process_env as env_var};
+use hraness_cli_kit::{Audience, Style, Symbol};
 
 #[derive(Subcommand, Debug, Clone)]
 pub enum AppleCmd {
@@ -109,114 +111,6 @@ fn advice(reason: Reason, feature: Option<Feature>) -> Advice {
         next,
         settings_url: explained.settings_url,
     }
-}
-
-// TODO(df-0.8): use hraness_cli_kit's audience and style helpers once
-// desktop-foundation 0.8.0 ships them. These copy the SPEC § C and § D6
-// rules verbatim.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Audience {
-    Human,
-    Agent,
-    Quiet,
-}
-
-const AGENT_MARKERS: [&str; 6] = [
-    "AI_AGENT",
-    "CLAUDECODE",
-    "CODEX_SANDBOX",
-    "CODEX_SANDBOX_NETWORK_DISABLED",
-    "CURSOR_AGENT",
-    "GEMINI_CLI",
-];
-
-fn detect_audience(env: &dyn Fn(&str) -> Option<String>, stderr_tty: bool) -> Audience {
-    match env("HRANESS_AUDIENCE").as_deref() {
-        Some("human") => return Audience::Human,
-        Some("agent") => return Audience::Agent,
-        Some("quiet" | "off") => return Audience::Quiet,
-        _ => {}
-    }
-    if AGENT_MARKERS
-        .iter()
-        .any(|key| env(key).is_some_and(|v| !v.is_empty()))
-    {
-        return Audience::Agent;
-    }
-    if stderr_tty {
-        Audience::Human
-    } else {
-        Audience::Quiet
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Symbol {
-    Ok,
-    Fail,
-    Warn,
-    Next,
-    Progress,
-}
-
-/// How one stream renders symbols.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct Style {
-    pub color: bool,
-    pub ascii: bool,
-}
-
-impl Style {
-    #[cfg(test)]
-    fn plain() -> Self {
-        Self {
-            color: false,
-            ascii: false,
-        }
-    }
-
-    fn detect(env: &dyn Fn(&str) -> Option<String>, is_tty: bool) -> Self {
-        let term_dumb = env("TERM").as_deref() == Some("dumb");
-        let utf8 = ["LC_ALL", "LC_CTYPE", "LANG"].iter().any(|key| {
-            env(key).is_some_and(|v| {
-                let v = v.to_ascii_lowercase();
-                v.contains("utf-8") || v.contains("utf8")
-            })
-        });
-        let ascii = term_dumb || !utf8 || env("HRANESS_ASCII").as_deref() == Some("1");
-        let no_color = env("NO_COLOR").is_some_and(|v| !v.is_empty());
-        let force = env("FORCE_COLOR").as_deref() == Some("1");
-        let color = force || (is_tty && !term_dumb && !no_color);
-        Self { color, ascii }
-    }
-
-    fn stderr() -> Self {
-        Self::detect(&env_var, std::io::stderr().is_terminal())
-    }
-
-    fn stdout() -> Self {
-        Self::detect(&env_var, std::io::stdout().is_terminal())
-    }
-
-    fn symbol(self, symbol: Symbol) -> String {
-        let (glyph, ascii, color) = match symbol {
-            Symbol::Ok => ("✓", "OK", "32"),
-            Symbol::Fail => ("✗", "FAIL", "31"),
-            Symbol::Warn => ("⚠", "WARN", "33"),
-            Symbol::Next => ("→", "->", "2"),
-            Symbol::Progress => ("↻", "...", ""),
-        };
-        let text = if self.ascii { ascii } else { glyph };
-        if self.color && !color.is_empty() {
-            format!("\x1b[{color}m{text}\x1b[0m")
-        } else {
-            text.to_owned()
-        }
-    }
-}
-
-fn env_var(key: &str) -> Option<String> {
-    std::env::var(key).ok()
 }
 
 /// Lines for a problem: `symbol headline`, the rest of the summary and the
@@ -746,15 +640,6 @@ mod tests {
     use super::*;
     use std::cell::{Cell, RefCell};
 
-    fn env_of(pairs: &'static [(&'static str, &'static str)]) -> impl Fn(&str) -> Option<String> {
-        move |key| {
-            pairs
-                .iter()
-                .find(|(k, _)| *k == key)
-                .map(|(_, v)| (*v).to_owned())
-        }
-    }
-
     /// Compare with `tests/golden/<name>`; `GOBSTOPPER_BLESS=1` rewrites it.
     fn assert_golden(name: &str, rendered: &str) {
         let path = Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -771,8 +656,8 @@ mod tests {
         Render {
             json: false,
             audience: Audience::Human,
-            out: Style::plain(),
-            err: Style::plain(),
+            out: Style::PLAIN,
+            err: Style::PLAIN,
         }
     }
 
@@ -803,18 +688,14 @@ mod tests {
                 rendered.push_str(&fallback_notice(
                     feature,
                     reason,
-                    Style::plain(),
+                    Style::PLAIN,
                     Audience::Human,
                 ));
             }
         }
         for feature in [Feature::Scorer, Feature::Digest] {
             rendered.push_str(&format!("[{feature:?} not macOS]\n"));
-            rendered.push_str(&unsupported_notice(
-                feature,
-                Style::plain(),
-                Audience::Human,
-            ));
+            rendered.push_str(&unsupported_notice(feature, Style::PLAIN, Audience::Human));
         }
         assert_golden("apple_fallback.txt", &rendered);
     }
@@ -837,81 +718,11 @@ mod tests {
     }
 
     #[test]
-    fn style_follows_the_cli_contract() {
-        let utf8 = env_of(&[("LANG", "en_US.UTF-8")]);
-        assert_eq!(
-            Style::detect(&utf8, true),
-            Style {
-                color: true,
-                ascii: false
-            }
-        );
-        assert_eq!(
-            Style::detect(&utf8, false),
-            Style {
-                color: false,
-                ascii: false
-            }
-        );
-        let no_color = env_of(&[("LANG", "en_US.UTF-8"), ("NO_COLOR", "1")]);
-        assert_eq!(
-            Style::detect(&no_color, true),
-            Style {
-                color: false,
-                ascii: false
-            }
-        );
-        let dumb = env_of(&[("LANG", "en_US.UTF-8"), ("TERM", "dumb")]);
-        assert_eq!(
-            Style::detect(&dumb, true),
-            Style {
-                color: false,
-                ascii: true
-            }
-        );
-        let c_locale = env_of(&[("LANG", "C")]);
-        assert!(Style::detect(&c_locale, false).ascii);
-        let forced = env_of(&[("LANG", "en_US.UTF-8"), ("FORCE_COLOR", "1")]);
-        assert!(Style::detect(&forced, false).color);
-        let colored = Style {
-            color: true,
-            ascii: false,
-        };
-        assert_eq!(colored.symbol(Symbol::Warn), "\x1b[33m⚠\x1b[0m");
-        assert_eq!(colored.symbol(Symbol::Progress), "↻");
-    }
-
-    #[test]
-    fn audience_follows_the_shared_rule() {
-        assert_eq!(detect_audience(&env_of(&[]), true), Audience::Human);
-        assert_eq!(detect_audience(&env_of(&[]), false), Audience::Quiet);
-        assert_eq!(
-            detect_audience(&env_of(&[("CLAUDECODE", "1")]), true),
-            Audience::Agent
-        );
-        assert_eq!(
-            detect_audience(&env_of(&[("CLAUDECODE", "")]), true),
-            Audience::Human
-        );
-        assert_eq!(
-            detect_audience(&env_of(&[("CODEX_HOME", "/x")]), false),
-            Audience::Quiet
-        );
-        assert_eq!(
-            detect_audience(
-                &env_of(&[("HRANESS_AUDIENCE", "off"), ("CLAUDECODE", "1")]),
-                true
-            ),
-            Audience::Quiet
-        );
-    }
-
-    #[test]
     fn request_failures_say_what_happened_without_codes() {
         let line = request_failed_line(
             Feature::Scorer,
             &anyhow::anyhow!("inference_deadline"),
-            Style::plain(),
+            Style::PLAIN,
         );
         assert_eq!(
             line,
@@ -920,7 +731,7 @@ mod tests {
         let line = request_failed_line(
             Feature::Digest,
             &anyhow::anyhow!("inference_response_invalid"),
-            Style::plain(),
+            Style::PLAIN,
         );
         assert_eq!(
             line,

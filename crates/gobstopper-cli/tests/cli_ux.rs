@@ -121,6 +121,42 @@ fn help_is_grouped_and_every_command_help_exits_zero() {
 }
 
 #[test]
+fn help_fits_100_columns_in_a_wide_terminal() {
+    let sandbox = Sandbox::new("width");
+    let commands: &[&[&str]] = &[
+        &[],
+        &["detect"],
+        &["plan"],
+        &["apply"],
+        &["verify"],
+        &["report"],
+        &["events"],
+        &["recall"],
+        &["mcp"],
+        &["watch"],
+        &["export"],
+        &["policy-check"],
+        &["proxy", "serve"],
+        &["proxy", "run"],
+        &["proxy", "replay"],
+        &["proxy", "install"],
+        &["plugin", "inspect"],
+        &["apple", "install"],
+    ];
+    for command in commands {
+        let args: Vec<&str> = command.iter().copied().chain(["--help"]).collect();
+        let output = sandbox.run(&args, &[("COLUMNS", "200")]);
+        assert_eq!(output.status.code(), Some(0), "{args:?}");
+        let stdout = text(&output.stdout);
+        let wide: Vec<&str> = stdout
+            .lines()
+            .filter(|line| line.chars().count() > 100)
+            .collect();
+        assert!(wide.is_empty(), "{args:?}: {wide:#?}");
+    }
+}
+
+#[test]
 fn version_prints_name_and_version() {
     let sandbox = Sandbox::new("version");
     let output = sandbox.run(&["--version"], &[]);
@@ -158,15 +194,33 @@ fn usage_errors_name_the_input_and_the_help_to_read() {
     assert_eq!(missing.status.code(), Some(2));
     assert_eq!(
         text(&missing.stderr),
-        "✗ Missing <SESSION>.\n→ gobstopper plan --help\n"
+        "✗ Missing <session>.\n→ gobstopper plan --help\n"
     );
-    let agent = sandbox.run(&["detcet"], &[("CLAUDECODE", "1")]);
-    assert_eq!(agent.status.code(), Some(2));
-    assert!(agent.stdout.is_empty());
-    let value: serde_json::Value = serde_json::from_slice(&agent.stderr).unwrap();
-    assert_eq!(value["ok"], false);
-    assert_eq!(value["error"]["code"], "usage");
-    assert_eq!(value["error"]["next"], "gobstopper --help");
+    // `status` lives under `proxy`; a misspelling finds it there.
+    let status = sandbox.run(&["stauts"], &[]);
+    assert_eq!(status.status.code(), Some(2));
+    assert_eq!(
+        text(&status.stderr),
+        "✗ Unknown command \"stauts\". Did you mean \"proxy status\"?\n→ gobstopper --help\n"
+    );
+    // An agent, or --json, gets one JSON document on stdout and nothing on
+    // stderr, with the same exit code.
+    for (args, env) in [
+        (&["detcet"][..], &[("CLAUDECODE", "1")][..]),
+        (&["detcet", "--json"], &[]),
+    ] {
+        let agent = sandbox.run(args, env);
+        assert_eq!(agent.status.code(), Some(2), "{args:?}");
+        assert!(agent.stderr.is_empty(), "{args:?}");
+        let value: serde_json::Value = serde_json::from_slice(&agent.stdout).unwrap();
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["error"]["code"], "usage");
+        assert_eq!(
+            value["error"]["message"],
+            "Unknown command \"detcet\". Did you mean \"detect\"?"
+        );
+        assert_eq!(value["error"]["next"], "gobstopper --help");
+    }
 }
 
 #[test]
@@ -230,8 +284,15 @@ fn proxy_status_says_how_to_start_the_proxy() {
         format!("✗ No proxy is running on 127.0.0.1:{port}.\n→ gobstopper proxy install\n")
     );
     let json = sandbox.run(&["proxy", "status", "--port", &port, "--json"], &[]);
-    assert!(json.stdout.is_empty());
-    let value: serde_json::Value = serde_json::from_slice(&json.stderr).unwrap();
+    assert_eq!(json.status.code(), Some(1));
+    assert!(json.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&json.stdout).unwrap();
+    assert_eq!(value["ok"], false);
+    assert_eq!(value["error"]["code"], "proxy-not-running");
+    assert_eq!(value["error"]["next"], "gobstopper proxy install");
+    let agent = sandbox.run(&["proxy", "status", "--port", &port], &[("AI_AGENT", "1")]);
+    assert!(agent.stderr.is_empty());
+    let value: serde_json::Value = serde_json::from_slice(&agent.stdout).unwrap();
     assert_eq!(value["error"]["code"], "proxy-not-running");
     // Installed but not answering: point at the log and a restart.
     let agents = sandbox.home().join("Library/LaunchAgents");

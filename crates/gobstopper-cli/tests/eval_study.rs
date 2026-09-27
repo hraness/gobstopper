@@ -68,6 +68,8 @@ impl Fixture {
         fs::write(&path, serde_json::to_vec(manifest).unwrap()).unwrap();
         let before = fs::read(&self.source).unwrap();
         let mut command = Command::new(env!("CARGO_BIN_EXE_gobstopper"));
+        // Read as a pipe would, even from an agent session.
+        command.env("HRANESS_AUDIENCE", "quiet");
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("GOBSTOPPER_") {
                 command.env_remove(key);
@@ -313,8 +315,13 @@ fn study_rejects_ambiguous_source_even_with_current_annotations_hash() {
     manifest["source_sha256"] = json!(sha(&bytes));
     let output = fixture.run(&manifest, "1");
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("not live textual content"));
+    // With --json the failure is one error document on stdout.
+    let error: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(error["ok"], false);
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("not live textual content"));
 }
 
 #[test]

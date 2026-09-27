@@ -63,6 +63,8 @@ impl Fixture {
 
     fn output(&self, args: &[&str]) -> std::process::Output {
         let mut command = Command::new(env!("CARGO_BIN_EXE_gobstopper"));
+        // Read as a pipe would, even from an agent session.
+        command.env("HRANESS_AUDIENCE", "quiet");
         for (key, _) in std::env::vars_os() {
             if key.to_string_lossy().starts_with("GOBSTOPPER_") {
                 command.env_remove(key);
@@ -238,7 +240,10 @@ fn evaluation_overrides_must_remain_in_the_admitted_policy_domain() {
         "--json",
     ]);
     assert!(!output.status.success());
-    assert!(output.stdout.is_empty());
+    // With --json the failure is one error document on stdout.
+    let error: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(error["ok"], false);
+    assert!(output.stderr.is_empty());
     let csv = fixture.run(&["bench", "--all", "--trigger", "1", "--floor", "2"]);
     let row = csv.lines().nth(1).unwrap();
     assert!(row.ends_with(",policy_resolution_failed"));

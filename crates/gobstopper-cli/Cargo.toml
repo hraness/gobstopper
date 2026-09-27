@@ -23,5 +23,6 @@ toml = { workspace = true }
 sha2 = { workspace = true }
 keyring = { version = "3.6.2", default-features = false, features = ["apple-native", "windows-native", "linux-native"] }
 libc = "0.2"
+hraness-cli-kit = { git = "https://github.com/hraness/desktop-foundation", tag = "v0.8.1", features = ["clap"] }
 
 [dev-dependencies]
