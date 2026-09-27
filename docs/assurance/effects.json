@@ -1788,10 +1788,10 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Loopback bind with a host check; 64 KiB request heads, 256 MiB bodies, 256 connections; curl connect 30 s, stall 900 s, total 7200 s. Parse, engine and non-length provider failures forward the original bytes. Estimate calibration reads Anthropic usage from a copy of at most 4 MiB of a JSON response or 64 KiB of an event stream, taken after each chunk reaches the client, and keeps at most 64 per-upstream, per-model ratios in memory.",
+      "bounds": "Loopback bind with a host check; 64 KiB request heads, 256 MiB bodies, 256 connections; curl connect 30 s, stall 900 s, total 7200 s. Parse, engine and non-length provider failures forward the original bytes. Estimate calibration reads provider usage from a copy of at most 4 MiB of a JSON response or 64 KiB of an event stream (the start for an Anthropic stream, the tail for an OpenAI stream), taken after each chunk reaches the client, and keeps at most 64 per-upstream, per-model ratios in memory.",
       "exclusions": [
         "No live task-quality or billing claim",
-        "Estimates use four characters per token, divided into the threshold by a ratio from 1.0 to 2.0 learned from Anthropic usage unless --no-calibrate; provider counts can differ"
+        "Estimates use four characters per token, divided into the threshold by a ratio from 1.0 to 2.0 learned from provider-reported usage unless --no-calibrate; provider counts can differ"
       ],
       "evidence": [
         "E-FOUNDATION-SOURCE"

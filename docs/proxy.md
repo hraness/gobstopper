@@ -259,7 +259,7 @@ declares a 1M-token window, pass `--threshold 256000`.
 | `--result-max-chars` | 500 | Older tool results longer than this are dropped from the summary; shorter ones stay verbatim. |
 | `--carry-max-chars` | 24000 | Characters of the human's words and the assistant's visible replies that each summary carries forward from the turns earlier compactions summarized. The oldest text drops out first, and the carried text takes at most a quarter of the room under the threshold after the fixed request fields and the head. `0` turns carrying off. |
 | `--drop-thinking` | off | Leave thinking and reasoning text out of summaries. |
-| `--no-calibrate` | off | Compare the plain four-characters-per-token estimate with the threshold. By default the threshold for Anthropic requests is divided by the ratio of provider-reported to estimated input, learned per upstream and model (see [Estimate calibration](#estimate-calibration)). Also a `replay` flag. |
+| `--no-calibrate` | off | Compare the plain four-characters-per-token estimate with the threshold. By default the threshold is divided by the ratio of provider-reported to estimated input, learned per upstream and model (see [Estimate calibration](#estimate-calibration)). Also a `replay` flag. |
 | `--shadow` | off | Log what would change and forward every request unchanged. |
 | `--strict` | off | Refuse (HTTP 400) a request still over the threshold after every step, instead of sending it. |
 | `--anthropic-upstream` | `https://api.anthropic.com` | Where Anthropic requests go. |
@@ -372,13 +372,19 @@ input ran 13% to 38% above the estimate, so the 128,000-token threshold
 fired at 144,000 to 176,000 reported tokens, too late for a client with a
 200,000-token window.
 
-- After relaying an Anthropic Messages response, the proxy reads its
-  `usage`: `input_tokens` plus `cache_creation_input_tokens` and
-  `cache_read_input_tokens`, from a JSON body or from the `message_start`
-  event of a stream. It reads a copy of the body after each chunk reached
-  the client, so the response is neither changed nor delayed. A missing,
-  malformed, or oversized usage record (a JSON body over 4 MiB, or no
-  `message_start` in the first 64 KiB of a stream) is skipped.
+- After relaying a response, the proxy reads its `usage`: for Anthropic
+  Messages, `input_tokens` plus `cache_creation_input_tokens` and
+  `cache_read_input_tokens`, from a JSON body or a stream's
+  `message_start` event; for OpenAI Responses, `input_tokens` from a JSON
+  body or a stream's last event carrying `response.usage` (normally
+  `response.completed`); for OpenAI Chat Completions, `prompt_tokens` from
+  a JSON body or a stream's last chunk carrying `usage` (sent when the
+  client asks for usage in the stream). The OpenAI counts already include
+  cached input. It reads a copy of the body after each chunk reached the
+  client, so the response is neither changed nor delayed. A missing,
+  malformed, or oversized usage record (a JSON body over 4 MiB, no
+  `message_start` in the first 64 KiB of an Anthropic stream, or no usage
+  event in the last 64 KiB of an OpenAI stream) is skipped.
 - Each response adds one sample: reported input divided by the proxy's
   estimate of the request it forwarded. Requests estimated under 1,000
   tokens and samples outside 0.25 to 4.0 are skipped. The proxy keeps a
@@ -390,7 +396,6 @@ fired at 144,000 to 176,000 reported tokens, too late for a client with a
   compact earlier, never later, and never below half the threshold. Stored
   compactions stay keyed by the configured threshold, so a changing ratio
   keeps reusing them.
-- OpenAI Responses and Chat Completions requests are not calibrated.
 - `gobstopper proxy status` shows the ratio applied and measured, and the
   sample count, for each upstream and model (`calibrate`, `calibrations`).
   Compaction log lines name a ratio other than 1.0 after the window

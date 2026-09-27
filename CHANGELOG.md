@@ -4,9 +4,9 @@ Each version section is the text of that version's release page: a summary parag
 
 ## Unreleased
 
-The request proxy corrects its token estimate with the input counts Claude reports, so it compacts before a 200,000-token window fills.
+The request proxy corrects its token estimate with the input counts the provider reports, so it compacts before a 200,000-token window fills.
 
-- `proxy serve` and `proxy run` read the input tokens each Anthropic response reports (`input_tokens` plus the two cache fields, from a JSON body or a stream's `message_start` event) after relaying it unchanged. After five responses from one upstream and model, the threshold for that pair is divided by the running ratio of reported to estimated input, between 1.0 and 2.0, so compaction starts earlier and never later. `--no-calibrate` restores the plain four-characters-per-token estimate. OpenAI-dialect requests are not calibrated.
+- `proxy serve` and `proxy run` read the input tokens each response reports (`input_tokens` plus the two cache fields for Anthropic, `input_tokens` for OpenAI Responses, `prompt_tokens` for OpenAI Chat Completions; a JSON body's `usage`, an Anthropic stream's `message_start` event, or an OpenAI stream's last usage event) after relaying it unchanged. After five responses from one upstream and model, the threshold for that pair is divided by the running ratio of reported to estimated input, between 1.0 and 2.0, so compaction starts earlier and never later. `--no-calibrate` restores the plain four-characters-per-token estimate.
 - `proxy status` shows `calibrate` and, for each upstream and model, the applied and measured ratio and the sample count. Compaction log lines show a ratio other than 1.0, and each ledger row records `ratio_permille`.
 - `proxy replay` calibrates from the usage a Claude Code transcript records, unless given `--no-calibrate`, and reports the reported-to-estimated ratio, the largest request in reported tokens, and the requests over the threshold in reported tokens.
 

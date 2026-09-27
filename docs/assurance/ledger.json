@@ -448,8 +448,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-26-transcript-calibrate.json",
-        "sha256": "f7154df01d738b7e246289d5ba8cb76a9f85321bc26ea705d78810da6c8f8665"
+        "path": "docs/assurance/receipts/2026-09-27-transcript-calibrate-openai.json",
+        "sha256": "40657e95347b050e8aa7d714e394e13c63bc2b40149019d37f4e69161efd084b"
       }
     },
     {
@@ -469,8 +469,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-26-stress-calibrate.json",
-        "sha256": "cd629fc7a4685e414aca97b489cd65d6c019afa3f63e8389bac649ed515d0c77"
+        "path": "docs/assurance/receipts/2026-09-27-stress-calibrate-openai.json",
+        "sha256": "28f8e8f832bd017865fc9af0a57be5110a21b1ec3fba54522f637c235e115652"
       }
     }
   ],
