@@ -5,7 +5,7 @@ import { SiteHeader, SiteFooter } from "../_components/site-chrome";
 const title = "Benchmarks";
 const socialTitle = "Gobstopper benchmarks";
 const description =
-  "Results from offline replays of 729 archived agent sessions, a synthetic snapshot-recovery study, and single-session resume trials, each dated and scoped.";
+  "Results from offline replays of 729 archived agent sessions, request-proxy replays and live counters, a synthetic snapshot-recovery study, and single-session resume trials, each dated and scoped.";
 
 export const metadata: Metadata = {
   title,
@@ -362,7 +362,38 @@ export default function Benchmarks() {
             </p>
           </section>
 
-          <h2>Offline proxy benchmark</h2>
+          <h2>Request proxy · recorded September 25 and 26, 2026</h2>
+          <p>
+            On September 25, <code>gobstopper proxy replay</code>, built from
+            the main branch that day, ran nine recorded sessions from one Mac
+            through the proxy engine with three kept turns, the default on
+            that date. Six Claude Code sessions whose
+            requests peaked at 273k to 652k estimated tokens stayed at or under
+            about 127k, and one Codex session that peaked at 242k stayed under
+            about 127k. Two Codex sessions that Codex had already compacted
+            itself began with heads near 160k and stayed under about 243k. No
+            replayed request was left with an unpaired tool call.
+          </p>
+          <p>
+            On September 26, the same Mac sent about 77 minutes of Claude Code
+            traffic through <code>gobstopper proxy serve</code> from the v0.4.1
+            release at its defaults. Of 3,136 requests, most were small (median
+            about 6,300 estimated tokens). 89 passed the 128,000-token
+            threshold; the proxy sent 78 of them smaller, 12.2 million
+            estimated tokens in total down to 7.5 million (38% less). The other
+            11 went out unchanged; v0.4.1 does not record why, and the likely
+            cause is a threshold raised by a large verbatim head. The current
+            build records the threshold applied to each request. There were no provider errors and no length retries.
+          </p>
+          <p>
+            Both are estimates at four characters per token from one machine,
+            not billed tokens, cache hit rates, or task results.
+            CliffCompaction&apos;s authors report cost and benchmark results
+            for their proxy on the <a href="/compare/cliffcompaction">comparison
+            page</a>; Gobstopper has not rerun them.
+          </p>
+
+          <h2>Synthetic strategy benchmark</h2>
           <p>
             <code>cargo run --example bench_strategies --release</code> generates
             synthetic Codex transcripts with varying tool-output history and

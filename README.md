@@ -2,22 +2,27 @@
 # Gobstopper
 
 Gobstopper is a free, open-source command-line tool that makes long coding
-sessions smaller. Preview a compaction, write a smaller copy, and keep the
-original byte for byte in a local vault. It reads Claude Code and Codex
-session files.
+sessions smaller. Its main tool, `gobstopper proxy`, runs on your machine
+between a coding agent and its model provider. When a request passes a token
+threshold, the proxy replaces the older turns with one mechanical summary and
+sends the newest turns word for word, so the provider sees a smaller context
+and the agent's own auto-compaction does not reach its trigger.
 
-To keep a running session small, run `gobstopper proxy` and point the client
-at it. The proxy compacts each outgoing request that passes a token
-threshold, so the client's own auto-compaction does not reach its trigger.
-It speaks the three dialects coding agents use: Anthropic Messages (Claude
-Code, opencode, Crush), OpenAI Responses (Codex), and OpenAI Chat
-Completions (opencode, Crush, Aider, Goose, and other OpenAI-compatible
-clients); see
+The summary rule comes from CliffCompaction, an open-source proxy described
+in a September 2026 paper by Trang Nguyen, Eulrang Cho, Bingqing Chen, and
+Tim Dettmers. `gobstopper proxy` is a Rust port of it for the three dialects
+coding agents use: Anthropic Messages (Claude Code, opencode, Crush), OpenAI
+Responses (Codex), and OpenAI Chat Completions (opencode, Crush, Aider,
+Goose, and other OpenAI-compatible clients). Run `gobstopper proxy run --
+claude` to try it on one session, `gobstopper proxy install` to start it at
+login, or see
 [Compact live coding-agent requests](#compact-live-coding-agent-requests).
 
-Preview compaction at a context size you choose, then prepare a separate Codex
-or Claude Code copy. Gobstopper archives the exact source and candidate bytes
-and checks supported structural properties and protected recent output.
+Gobstopper also works on saved Claude Code and Codex session files. Preview a
+compaction at a context size you choose, prepare a separate smaller copy, and
+keep the original byte for byte in a local vault. It archives the exact source
+and candidate bytes and checks supported structural properties and protected
+recent output.
 
 Use `gobstopper watch --dry-run` to inspect threshold decisions, or prepare a
 copy with a file strategy. Released CLI builds cannot ask providers to compact,
@@ -32,57 +37,93 @@ and providers when you explicitly trust them.
 
 ## Why
 
-Long coding sessions mix stale tool output with details the next turn may
-need: an exact error, a constraint, or unfinished work. A smaller context
-helps only if the agent can still do the job.
+A coding agent resends its whole history with every request. In a long
+session that history fills with old file reads and command output the next
+step rarely needs, and every request pays to send it again. When the history
+nears the model's window, the agent asks a model to summarize it. That call
+is itself a large request, the summary can leave out an exact error or
+constraint, and each later summary summarizes the one before.
 
-Gobstopper lets you check that tradeoff. You can preview a compaction, keep
-the exact source in a local vault, and recover a specific archived record when
-a summary leaves it out. The built-in strategies use local rules and need no
-model. Optional model scorers change what gets selected; they do not skip the
-snapshot or the verification step.
+`gobstopper proxy` keeps each request under a threshold you choose, without
+a model call:
 
-A running session's context belongs to the provider process that loaded it.
-Gobstopper can suggest `/compact`, or tell the program that runs the session
-which provider control to call. File compaction prepares a separate copy.
-A smaller context is not the same as a successful continuation or a lower bill.
-The [published studies](https://gobstopper.sh/benchmarks) report context reduction,
+- **Recent work stays word for word.** The system prompt, the first task,
+  and the newest turns (at least three, and more while they fit its tail
+  budget) are sent unchanged. Older turns become one summary that keeps human
+  and assistant text, keeps tool results of at most 500 characters, and
+  reduces each tool call to a one-line signature. Longer tool results are
+  dropped, because the agent can read the file or rerun the command.
+- **A summary is never summarized.** Each compaction starts again from the
+  original history the client resends and discards the previous summary.
+- **The prompt cache keeps matching.** Between compactions, every request
+  reuses the same compacted prefix byte for byte, so the provider's prompt
+  cache stays valid until the next compaction.
+- **The agent's own compaction stays idle.** The provider reports the
+  compacted size, so Claude Code or Codex does not reach its auto-compaction
+  trigger, and your transcript keeps the full history.
+- **A failure sends the original request.** If the body cannot be parsed,
+  the engine fails, or the provider rejects the rewritten request for a
+  reason other than length, the proxy forwards the client's original bytes.
+  A length rejection gets a further compaction and a retry.
+
+### What CliffCompaction's authors report
+
+The [CliffCompaction paper](https://arxiv.org/abs/2609.26779) reports up to
+50% lower cost at a bounded context, with Terminal-Bench 2.0 scores held or
+improved, on the Kimi K2.6 and GLM 5.1 models its authors tested. In one run
+through Claude Code (GLM 5.3 Flash on Terminal-Bench 2.1, at about 45,000
+tokens of mean peak context), the rule scored 76.69%, against 70.97% for
+Claude Code's own auto-compaction and 73.03% for its default 200,000-token
+setting. The paper's costs come from a model of perfect prompt caching, not
+metered bills. The authors also report that the benefit depends on the agent
+and the task, and that it matters only for medium-to-long tasks.
+
+These are the authors' measurements of their own proxy. `gobstopper proxy`
+shares its summary rule and departs from it in five places, listed in [How
+Gobstopper compares with
+CliffCompaction](#how-gobstopper-compares-with-cliffcompaction). Gobstopper
+has not rerun those benchmarks, and it has not measured task quality or
+billed cost under the proxy.
+
+### What Gobstopper has measured
+
+Replays of nine recorded sessions through the proxy engine, built from
+`main` on September 25, 2026, kept Claude Code sessions whose requests peaked at 273k to 652k
+estimated tokens at or under about 127k; see [Compact live coding-agent
+requests](#compact-live-coding-agent-requests). On September 26, 2026, one
+Mac sent about 77 minutes of Claude Code traffic through `gobstopper proxy
+serve` from the v0.4.1 release at its defaults. Of 3,136 requests, most were
+small (median about 6,300 estimated tokens). 89 passed the 128,000-token
+threshold; the proxy sent 78 of them smaller, 12.2 million estimated tokens
+in total down to 7.5 million (38% less). The other 11 went out unchanged.
+v0.4.1 does not record why; the likely cause is a threshold raised by a
+large verbatim head (see [How it works](docs/proxy.md#how-it-works)), and
+the current build records the threshold applied to each request. There were no provider errors and no
+length retries. These are estimates from one machine over one afternoon, not
+billed tokens or task results.
+
+### Saved sessions
+
+For session files, Gobstopper lets you check the tradeoff before you commit
+to it. You can preview a compaction, compare strategies on the same frozen
+bytes, keep the exact source in a local vault, and recover a specific
+archived record when a copy leaves it out. The built-in strategies use local
+rules and need no model. Optional model scorers change what gets selected;
+they do not skip the snapshot or the verification step. A running session's
+context belongs to the provider process that loaded it, so file compaction
+prepares a separate copy. The [published
+studies](https://gobstopper.sh/benchmarks) report context reduction,
 retention, no-op cases, and limitations separately.
-
-Why pick it:
-
-- **It deletes instead of paraphrasing.** Summarizers rewrite history through
-  a model, drift on each pass, and cost a large input call. Gobstopper's rule
-  keeps the recent turns byte-for-byte and mechanically summarizes the rest;
-  every later compaction rebuilds from the original history, so a summary is
-  never summarized again. This is the approach the strongest published result
-  for the problem converged on: CliffCompaction's authors report up to 50%
-  lower cost at a bounded context with maintained or improved Terminal-Bench
-  2.0 results on the models they tested; their figures, measured on their
-  proxy, not Gobstopper's.
-- **It covers the agent, not just the provider.** One proxy handles all three
-  wire dialects coding agents use, so the same tool follows you across
-  clients. One CLI also works on saved Claude Code and Codex transcripts:
-  preview a compaction, prepare a copy, diff it, undo it.
-- **It keeps the evidence.** Before any write, the exact source lands in a
-  content-addressed vault. Compacted-away detail is searchable and readable
-  again, and every operation emits a receipt. Compaction becomes an
-  inspectable edit, not a silent loss.
-- **It is cheap to run.** A mechanical rule needs no model: one local binary,
-  one JSON rewrite per request, hash-chained prefix reuse so the provider's
-  prompt cache keeps matching, and fail-open forwarding when anything goes
-  wrong: an error in Gobstopper never breaks the agent.
-- **It is honest about evidence.** Replays, retention probes, and dated live
-  trials are published with their scope; the [activation
-  matrix](docs/assurance/qualification.json) records exactly which cells are
-  qualified. What isn't measured stays labeled unmeasured.
 
 Gobstopper keeps the exact source in a local vault before any compaction changes it, so a compaction is a recorded edit you can recover from rather than a silent loss: the design every Hraness project shares. [The thread through hraness](https://hraness.com/writing/the-thread-through-hraness) follows that design across the projects, and the [ALGAL vision](https://algal.computer/docs/vision/) states the bet behind it.
 
 ## Compact live coding-agent requests
 
 `gobstopper proxy` is a local HTTP proxy that sits between a coding agent
-and its model provider, in the current `main` source build. Each time the
+and its model provider. It has shipped in tagged releases since v0.3.1 and
+gained the Chat Completions dialect in v0.4.0; the tail budget and the
+separate 1M-token threshold described here are in the current `main` source
+build and not yet in a release. Each time the
 client resends its history, the proxy estimates the request size. Past the
 threshold (128,000 tokens by default), it sends the system prompt and the
 first task verbatim, one mechanical summary of the older turns, and the
@@ -116,38 +157,46 @@ The summary keeps human and assistant text, keeps tool results of at most 500
 characters, and reduces each tool call to a one-line signature; longer tool
 results are dropped because the agent can read the file or rerun the command.
 The next compaction starts again from the history the client resends and
-discards the previous summary. Between compactions, requests reuse the same
-compacted prefix, so the provider's prompt cache can match it.
+discards the previous summary, but the human's words and the assistant's
+visible replies carry forward: each later summary opens with them, oldest
+first, up to 24,000 characters, and the oldest text drops out when they no
+longer fit. Between compactions, requests reuse the same compacted prefix,
+so the provider's prompt cache can match it.
 
-The kept turns carry the files and command output the agent read most
+The kept turns hold the files and command output the agent read most
 recently, which the summary drops once they pass 500 characters. Unless the
-newest `--keep-recent` turns alone need more, the summary and the kept turns
-fill at most 40% of that room, and the other 60% is left for new turns
-before the next compaction. `--keep-tail-percent` sets the share, from 0 to
-60, and `0` keeps exactly `--keep-recent` turns. Anthropic Messages requests
-that declare a 1M-token context window use a separate threshold,
+summary, with its carried text, and the newest `--keep-recent` turns need
+more, the summary and the kept turns fill at most 40% of that room, and the
+other 60% is left for new turns before the next compaction.
+`--keep-tail-percent` sets the share, from 0 to 60, and `0` keeps exactly
+`--keep-recent` turns. The carried words keep earlier instructions in view
+after the summary that held them is discarded; they use at most a quarter of
+that room, and `--carry-max-chars 0` turns carrying off. Anthropic Messages
+requests that declare a 1M-token context window use a separate threshold,
 `--threshold-1m`: 256,000 estimated tokens by default, or `--threshold` if
 that is higher. The proxy reads the window from the `anthropic-beta` header,
 where Claude Code sends a token starting with `context-1m` for a model such
 as `opus[1m]`, and never from the model name. Setting `--threshold-1m` equal
 to `--threshold` applies one threshold to every request. Keep each threshold
-below the point where the client compacts on its own, including any `claude
---autocompact` value.
+below the point where the client compacts on its own, including any
+`claude --autocompact` value.
 
 ```sh
 gobstopper proxy run -- claude            # one session through a temporary proxy
 gobstopper proxy serve                    # background proxy on http://127.0.0.1:8260
+gobstopper proxy install                  # macOS: start that proxy at login (LaunchAgent)
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8260
 gobstopper proxy replay <session>         # what the proxy would have sent; calls no provider
 gobstopper proxy status                   # counters and estimated-token totals, this run and all time
 ```
 
 See [docs/proxy.md](docs/proxy.md) for per-agent setup (Claude Code, Codex,
-opencode, Crush, Aider, Goose), a macOS LaunchAgent, and every setting.
+opencode, Crush, Aider, Goose), `proxy install` and `proxy uninstall`, and
+every setting.
 Flags: `--threshold` (keep it below the client's auto-compaction point),
 `--threshold-1m`, `--keep-recent`, `--keep-tail-percent`,
-`--result-max-chars`, `--drop-thinking`, `--shadow` (log what would change
-and forward everything unchanged), and `--strict`.
+`--result-max-chars`, `--carry-max-chars`, `--drop-thinking`, `--shadow`
+(log what would change and forward everything unchanged), and `--strict`.
 
 - The proxy listens on 127.0.0.1 and refuses requests addressed to other
   host names. It forwards through the system `curl` (8.3 or later) and hands
@@ -282,12 +331,18 @@ cover edit structure and size, not semantic preservation or provider acceptance.
 ## Install & use
 
 This builds the current `main` branch, which the commands below describe.
-Check the [release notes](https://github.com/hraness/gobstopper/releases) for
-what a tagged release includes.
+The proxy is in every release since v0.3.1; the tail budget and the 1M-window
+threshold are on `main` only until the next release. Check the [release
+notes](https://github.com/hraness/gobstopper/releases) for what a tagged
+release includes.
 
 ```sh
 cargo install --git https://github.com/hraness/gobstopper gobstopper
 # or from a checkout: cargo build --release
+
+gobstopper proxy run -- claude     # one Claude Code session through the proxy
+gobstopper proxy serve             # background proxy on http://127.0.0.1:8260
+gobstopper proxy status            # requests compacted, estimated tokens saved
 
 gobstopper detect                  # sessions, context sizes, lifetime burn
 gobstopper plan <session>          # what would happen, under which strategy
@@ -718,8 +773,31 @@ the TTL maximum is 3,600 seconds.
 
 `GOBSTOPPER_SCORER=apple` (macOS 26+, Apple Silicon) scores on-device with
 Apple Intelligence Foundation Models via the shared `apple-foundation`
-bridge with no remote API key. Inference requires an already installed bridge
-(or an explicit `GOBSTOPPER_APPLE_BRIDGE`); it never builds Swift code on demand.
+bridge with no remote API key. It needs a small helper program, built once on
+your Mac:
+
+```bash
+gobstopper apple install   # builds ~/.local/share/gobstopper/apple-bridge (about 10 seconds)
+gobstopper apple status    # says whether Apple's model is ready, and what to do if not
+```
+
+`apple install` needs Xcode 26 or Apple's command line tools. It checks for
+them first: when they are missing it prints `xcode-select --install` and stops,
+so the macOS install dialog never appears unannounced. Compiler output goes to
+`apple-bridge-build.log` next to the helper instead of your terminal. Set
+`GOBSTOPPER_APPLE_BRIDGE` to install to, or use, a different path. A helper
+named `apple-bridge` next to the `gobstopper` binary is used before the one in
+`~/.local/share`, and `apple install` rebuilds that one when it exists. Scoring
+and `plan` never build the helper themselves.
+
+When Apple's model can't be used, the scorer says why once and uses the
+built-in scorer: Apple Intelligence is off, the model is still downloading,
+this Mac can't run it, macOS is older than 26, or the helper isn't installed.
+Each message names the fix and, where there is one, the System Settings pane
+(for example `open x-apple.systempreferences:com.apple.Siri-Settings.extension`
+for Apple Intelligence & Siri). `gobstopper apple status` prints the same
+message on demand and exits 1 until the model is ready; `--json` gives the
+reason code.
 Uncached requests are serialized, each using one bounded `--once` process with
 guided JSON output and owned process cleanup. Failure retains heuristic scores.
 `GOBSTOPPER_APPLE_TIMEOUT_MS`, `_MAX_CANDIDATES`, `_BATCH_SIZE`, and
@@ -739,7 +817,8 @@ by the on-device model instead of keyword extraction. Because inference is
 local, it may read bounded excerpts of the records being elided without a
 remote request. Each field still
 lands in the same `DigestBlock` shape via guided output, capped to a small
-token overhead, and falls back to the mechanical card on any failure.
+token overhead, and falls back to the mechanical card on any failure, saying
+why on stderr the same way the scorer does.
 `GOBSTOPPER_APPLE_DIGEST_ITEMS`, `_ITEM_BYTES`, and `_TOTAL_BYTES` tune the
 excerpt budget, hard-capped at 32 records, 2,048 bytes per record, and 16,000
 bytes total; zero disables the model digest and preserves the mechanical card.
@@ -790,7 +869,8 @@ Kimi and GLM models they tested; those are the authors' benchmark figures, not
 measurements of Gobstopper.
 
 Gobstopper runs the same summary rule in its own proxy, keeps a larger recent
-tail by default, and also works on saved session files:
+tail and, by default, the conversation's words from the turns earlier
+compactions summarized, and also works on saved session files:
 
 | | CliffCompaction | Gobstopper |
 |---|---|---|
@@ -798,16 +878,16 @@ tail by default, and also works on saved session files:
 | Clients | Any client of the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses API | Any client of the same three dialects that accepts a custom provider address: Claude Code, Codex, opencode, Crush, Aider, Goose, and more |
 | What it changes | Each outgoing request, transparently, while the session runs | The proxy rewrites outgoing requests over the threshold; file commands publish a separate compacted copy and leave the source unchanged |
 | How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy applies the same summary rule and keeps at least the last three turns verbatim, plus older whole turns that fit in 40% of the room under the threshold; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
-| Recompaction | Rebuilt from the original history; the prior summary is discarded | The proxy rebuilds from the original history; `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy |
+| Recompaction | Rebuilt from the original history; the prior summary is discarded | The proxy rebuilds from the original history, and each summary keeps the human's words and the assistant's visible replies from the turns earlier compactions summarized, up to 24,000 characters (on the main branch, not yet released); `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy |
 | What holds the originals | The agent's own history and the files on disk; the proxy keeps only an in-memory cache of compacted prefixes | For proxied requests, the agent's own transcript and an in-memory cache; for copies, a content-addressed vault with `search-snapshot` and `read-snapshot` |
-| Evidence published | Terminal-Bench 2.0, SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models | Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, literal retention probes, and dated single-session trials; no task-success or billing claims |
+| Evidence published | Terminal-Bench 2.0 and 2.1 (including a run through Claude Code), SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models | Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, one dated afternoon of live proxy counters, literal retention probes, and dated single-session trials; no task-success or billing claims |
 | Model needed | None; the summary is mechanical | None for the proxy or the built-in strategies; optional model scorers |
 
 `gobstopper proxy` is a Rust port of CliffCompaction's request engine: the
 same summary format and header, prefix reuse between compactions, harsher
 settings when one pass leaves a request over the threshold, and a retry when
 the provider rejects a request for length. It departs from the reference in
-five ways. It keeps older whole turns verbatim beyond the last three while
+six ways. It keeps older whole turns verbatim beyond the last three while
 they fit its tail budget; `--keep-tail-percent 0` keeps the reference tail,
 except for the next rule. It counts a run of consecutive assistant messages
 as one turn in every dialect, where the reference does so only for
@@ -817,8 +897,12 @@ would separate the calls from their results. Anthropic requests that declare
 a 1M-token window use a separate threshold, `--threshold-1m`. When the
 provider rejects a rewritten request for another reason, it resends the
 original. When the verbatim head alone approaches the threshold, it raises
-the threshold instead of compacting every request. The port's MIT notice is
-in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+the threshold instead of compacting every request. Each summary also carries
+the human's words and the assistant's visible replies from the turns earlier
+compactions summarized, up to 24,000 characters, where the reference keeps
+only the turns since the previous compaction; `--carry-max-chars 0` restores
+the reference rule. The port's MIT notice is in
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 The `cliff` strategy applies the drop rule to a transcript copy instead:
 the head and the newest `keep_recent_turns` assistant steps stay
@@ -845,6 +929,45 @@ one proxy per client: chaining CliffCompaction and `gobstopper proxy` would
 compact each other's output, and the two have not been tested together. The
 comparison page at
 [gobstopper.sh/compare/cliffcompaction](https://gobstopper.sh/compare/cliffcompaction)
+carries the same table.
+
+## How Gobstopper compares with Claude Code /compact
+
+Claude Code ships its own compaction. `/compact` sends the conversation in a
+summarization request carrying the same system prompt, tools, and history,
+then replaces the in-context history with the summary the model writes;
+optional focus instructions steer it. Claude Code also compacts automatically
+as the context nears the model's limit, and `/autocompact` sets how full the
+window gets first. The session transcript file keeps the original messages,
+and `/rewind` can restore the conversation to an earlier checkpoint while its
+snapshots remain, but nothing previews what the summary will keep or lists
+what it dropped. Anthropic's [session-management
+guide](https://claude.com/blog/using-claude-code-session-management-and-1m-context)
+calls the trade "lossy".
+
+Gobstopper previews the cut on frozen bytes, writes a separate compacted copy
+under a fresh session ID, and keeps the exact source and candidate bytes in a
+content-addressed local vault:
+
+| | Claude Code /compact | Gobstopper |
+|---|---|---|
+| What it changes | The running session's in-context history, replaced by a summary the model writes | A separate copy of a saved Claude Code or Codex session file; the source is never changed. `gobstopper proxy` compacts each outgoing request and leaves session files alone |
+| Who writes the summary | The model, in a request carrying the same system prompt, tools, and history plus a summarization instruction; `/compact` focus text steers it | No model by default: built-in strategies drop or stub stale tool results by local rules, and `structured` and `compacted` add a metadata state card |
+| Seeing the cut first | No preview; the summary is written and applied in one step, and you read what it kept afterward | `gobstopper plan`, `eval`, and `diff` show each strategy's cut on the same frozen bytes before `apply` writes anything |
+| When it runs | On demand, or automatically as the context nears the model's limit; `/autocompact` sets how full the window gets first | On demand over saved sessions; `gobstopper proxy` compacts each request over a threshold you choose, so Claude Code's own auto-compaction does not reach its trigger |
+| Undo | `/rewind` returns the conversation to an earlier checkpoint; file snapshots cover the 100 most recent checkpoints and are swept about 30 days after the session last saved one | `gobstopper undo` restores a vaulted snapshot into a new fork; the source file is never rewritten |
+| What holds the originals | The session's own transcript file; Claude Code documents that summarizing leaves the original messages in the transcript | A content-addressed local vault stores the exact source and candidate bytes before a copy publishes; `search-snapshot` and `read-snapshot` return archived records |
+| Providers covered | Claude Code | Claude Code and Codex session files; the proxy covers any client that speaks Anthropic Messages, OpenAI Responses, or OpenAI Chat Completions with a custom provider address |
+| Price | Built into Claude Code; the summarization request consumes usage like any other model call | Free and open-source (MIT or Apache-2.0); the built-in strategies and the proxy make no model calls |
+
+The two work at different layers. `/compact` shrinks the live session's
+context in place. `gobstopper apply` writes the compacted copy as a new fork
+and never touches the source, and resuming a copy with a live provider
+requires separate compatibility testing. For a running session, `gobstopper
+proxy` compacts each request over the threshold so Claude Code's
+auto-compaction does not reach its trigger; `/compact` stays available either
+way. The comparison page at
+[gobstopper.sh/compare/claude-code-compact](https://gobstopper.sh/compare/claude-code-compact)
 carries the same table.
 
 ## Integrating with a session runtime

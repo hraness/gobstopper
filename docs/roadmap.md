@@ -328,6 +328,37 @@ consumers need the same interface — is met.
   on consecutive requests, and 25 times with none consecutive at 256,000. Open: a selector for such
   requests, and what to keep when the newest `--keep-recent` turns alone
   fill the room under the threshold.
+- Harness text in Responses and Chat Completions histories. The proxy
+  carries user-role text in those dialects across compactions. Codex sends
+  its `# AGENTS.md instructions` and `<environment_context>` items again
+  after the first reply (in 18 and 23 of the 300 newest local Codex
+  sessions), and the proxy skips text that opens with them or with
+  `<user_instructions>`. No capture of opencode, Crush,
+  Aider, or Goose shows whether they send harness text as user items after
+  the head; if they do, it is carried like the human's words, each part cut
+  at 4,000 characters. Open: a capture of each client's later user items.
+- Queued messages the carry does not read. The proxy reads a message queued
+  while Claude Code works from a system message, as Claude Code 2.1.283
+  sends it, or from a human turn's text block that is wholly the message.
+  It never reads one from a tool result or from the other text of a
+  message that carries tool results, because files and command output can
+  quote the same markers. Messages sent there are not carried: a verified
+  Slack human's message in a bound thread, which Claude Code sends as plain
+  user text and which can share the message of a tool result, and a queued
+  message in a system-reminder block beside a tool result, as older and
+  future versions may send it. Open: a capture of each placement.
+- How the carry rules are checked. `gobstopper proxy replay` rebuilds only
+  the user and assistant records of a Claude Code transcript, not the
+  system-role messages that bring in text typed while the agent works, so
+  the human-text rules are checked against request shapes captured from
+  Claude Code 2.1.283 rather than against recorded sessions. Open:
+  rebuilding those messages in replay, and a new capture when Claude Code
+  changes how it sends them.
+- Whether carried text helps. Replay measures what the carry costs
+  ([design](design.md#why-a-24000-character-carry)), not whether a model
+  follows an instruction it would otherwise have lost, or is misled by an
+  earlier instruction the human later changed. Open: a live comparison of
+  sessions with and without the carry.
 
 ## 10. Correctness and qualification remediation
 

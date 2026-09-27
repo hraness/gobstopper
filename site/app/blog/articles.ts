@@ -13,10 +13,10 @@ export const BLOG_PATH = "/blog";
 export const BLOG_FEED_PATH = "/blog/feed.xml";
 export const BLOG_TITLE = "Gobstopper blog";
 export const BLOG_DESCRIPTION =
-  "Posts about Gobstopper: what it does, how its archive and edit limits are checked, and what those checks leave out.";
+  "How Gobstopper compacts Claude Code and Codex sessions, and how its archive and edit limits are model-checked and proved, with what each check leaves out.";
 
 const REVIEWER = "Claude Opus 5.5 (claude-opus-5-5) editorial review";
-const REVIEWED_ON: ArticleIsoDate = "2026-09-24";
+const REVIEWED_ON: ArticleIsoDate = "2026-09-26";
 const REASSESS_ON: ArticleIsoDate = "2026-11-05";
 
 function repo(path: string, name = "gobstopper"): string {
@@ -42,7 +42,7 @@ export type BlogPost = Readonly<{
 const introducing: BlogPost = {
   slug: "introducing-gobstopper",
   title: "Introducing Gobstopper",
-  dek: "Gobstopper stubs out stale tool output in Claude Code and Codex sessions by a rule you set, after archiving the original so you can search it or restore it.",
+  dek: "Gobstopper replaces stale tool output in saved Claude Code and Codex sessions by a rule you set, after archiving the original so you can search or restore it.",
   eyebrow: "Introducing",
   published: "2026-09-24",
   keywords: ["context compaction", "coding agents", "Claude Code", "Codex", "transcripts", "recovery"],
@@ -50,7 +50,7 @@ const introducing: BlogPost = {
     href: "/blog/introducing-gobstopper",
     lifecycle: "indexable",
     readerJob: "Decide whether to use Gobstopper to shrink long Claude Code or Codex sessions without losing details the next turn needs, and learn how to try it.",
-    nonObviousAnswer: "Gobstopper does not shrink a live session; it writes a separate compacted copy after archiving the original bytes, and a detail dropped by compaction comes back only when you or your agent search the hash-checked archive for it.",
+    nonObviousAnswer: "Gobstopper's file commands do not shrink a live session (its proxy handles running sessions); they write a separate compacted copy after archiving the original bytes, and a detail dropped by compaction comes back only when you or your agent search the hash-checked archive for it.",
     originalContribution: "Explains the separate-copy and archive model from the source, with the commands, the default stub text, the no-plan reason codes, and the dated benchmark figures including the sessions that produced no plan.",
     hostFit: "The product's own introduction on its own host.",
     nearestUrls: [
@@ -67,9 +67,11 @@ const introducing: BlogPost = {
       source("Vault concurrency models and their failing variants", repo("verify/vault/README.md")),
       source("September 19, 2026 offline retrospective", "https://gobstopper.sh/benchmarks#retrospective-2026-09-19"),
       source("Registered xcb relation sentence", repo("src/portfolio.generated.json", "design-kit")),
+      source("Loopback request proxy for running sessions", repo("crates/gobstopper-cli/src/proxy.rs"), "2026-09-26"),
     ],
     observations: [
       "The current release includes the safeguards the post describes, so the tagged release and the main branch install paths now agree.",
+      "The earlier draft told readers that wanted a running session shrunk to use something else, while its status line announced the request proxy; the September 26 edit points those readers to gobstopper proxy, which the v0.5.0 release ships.",
       "In the September 19, 2026 replay, 637 of 729 sessions produced no plan, so the all-session median reduction was 0% while the 73 high-context Codex root tasks had a 36.4% median.",
     ],
     scores: { readerUtility: 2, originalEvidence: 2, factualConfidence: 1, hostFit: 2, voiceIntegrity: 2, maintenanceValue: 1 },
@@ -93,7 +95,7 @@ const introducing: BlogPost = {
 
 const proofs: BlogPost = {
   slug: "proofs-for-the-admission-math",
-  title: "How Gobstopper proves its compaction arithmetic and transcript laws",
+  title: "What Kani and Lean prove about Gobstopper's compaction",
   dek: "Gobstopper uses Kani to check its edit limits and token sums for every value of their numeric inputs, and Lean to prove that masking keeps each record's ID, order, and tool links.",
   eyebrow: "Technique",
   published: "2026-09-24",
@@ -124,7 +126,7 @@ const proofs: BlogPost = {
       source("Public wording rule for verification claims", repo("STYLE.md")),
     ],
     observations: [
-      "The v0.2.1 release tag contains neither the limit module nor the verify directory, so every proof in the post exists only on the main branch.",
+      "The v0.2.1 release tag contains neither the limit module nor the verify directory; both first shipped in v0.3.0, and the proof files are unchanged between the v0.5.0 tag and the main branch of September 26, 2026.",
       "The working title claimed the proofs bound the context budget; reading the harnesses showed they bound edit-plan limits and token arithmetic instead, and the title was changed to say so.",
       "On September 24, 2026 the source hashes in the Kani and Lean run records still matched the main branch the post was checked against.",
     ],
@@ -136,7 +138,7 @@ const proofs: BlogPost = {
     reassessOn: REASSESS_ON,
     harmIfWrong: "A reader could believe Gobstopper proves more than it does, such as staying under a context budget or recovering the original transcript.",
     refreshTriggers: [
-      "Release tag bump past v0.2.1 (the status sentence says the proofs are not yet in a tagged release)",
+      "A new gobstopper release tag (the status sentence says the release includes the proofs)",
       "Change to crates/gobstopper-core/src/admission.rs or estimate.rs (limits, constants, Kani harnesses)",
       "Change to verify/transcript/Transcript.lean theorem count or names, or to the correspondence case and step counts",
       "New run record or status change for CLAIM-CORE or CLAIM-TRANSCRIPT in docs/assurance/claims.json",
@@ -148,7 +150,7 @@ const proofs: BlogPost = {
 
 const vault: BlogPost = {
   slug: "vault-models-that-fail-on-purpose",
-  title: "How Gobstopper checks its archive against crashes at every step",
+  title: "How Gobstopper model-checks its archive against crashes",
   dek: "Gobstopper model-checks its archive design with a crash allowed at every step, and each safety rule has a broken copy that must reproduce the loss it prevents.",
   eyebrow: "Technique",
   published: "2026-09-24",
@@ -179,7 +181,7 @@ const vault: BlogPost = {
       source("CI workflow: ledger check on every run and a job that reruns both models", repo(".github/workflows/ci.yml")),
     ],
     observations: [
-      "The TLA+ models were added on September 23, 2026, after the v0.2.1 tag of September 18, so no release includes them.",
+      "The TLA+ models were added on September 23, 2026, after the v0.2.1 tag of September 18; v0.3.0 was the first release to include them.",
       "Cleanup does not keep every indexed snapshot: it keeps the ones its retention setting selects plus pinned ones, and the CLI's prune keeps the newest 10 per session by default.",
     ],
     scores: { readerUtility: 1, originalEvidence: 2, factualConfidence: 2, hostFit: 2, voiceIntegrity: 2, maintenanceValue: 1 },
@@ -190,7 +192,7 @@ const vault: BlogPost = {
     reassessOn: REASSESS_ON,
     harmIfWrong: "A reader could trust the archive through failures the models do not cover, such as a power cut that loses unsynced writes.",
     refreshTriggers: [
-      "A new gobstopper release tag (the status sentence says the release does not include the TLA+ models)",
+      "A new gobstopper release tag (the status sentence says the release includes the models and tests)",
       "Any change to verify/vault/Vault.tla, Publication.tla, verify/watch/Watch.tla or their configs, or a new receipt in docs/assurance/receipts (state counts 25,810 / 28,082 / 32,251, variant and witness counts)",
       "Change to the save order, lock scheme, pin rule or prune retention default (newest 10 per session) in the vault code",
       "Change to surgery_hegel.rs command range (1 to 12), case count (64) or the two regression tests",

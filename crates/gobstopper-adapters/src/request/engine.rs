@@ -9,7 +9,7 @@
 
 use super::{
     billable_chars, chain_hashes, compact_within, CliffConfig, CompactResult, Dialect, Entry,
-    PrefixStore, MAX_KEEP_TAIL_PERCENT, PART_SEPARATOR, SUMMARY_HEADER,
+    PrefixStore, CARRY_LABEL, MAX_KEEP_TAIL_PERCENT, PART_SEPARATOR, SUMMARY_HEADER,
 };
 use serde_json::{Map, Value};
 use std::sync::{Mutex, MutexGuard};
@@ -67,6 +67,15 @@ pub struct RequestCtx {
     /// `Engine::prepare_at`. Stored entries record it, and only entries
     /// with the same value are substituted.
     pub base_threshold_tokens: u64,
+    /// The words the next compaction carries into its summary, oldest
+    /// first: restored from a substituted entry and replaced by each
+    /// compaction. Content, so it never leaves the request module: the
+    /// shared test fixtures there compare it between chains.
+    pub(super) carry: Vec<String>,
+    /// Characters of the carried section in the outgoing summary, label
+    /// included; 0 without a summary or without a section. A size only;
+    /// set with `est_tokens_out`.
+    pub carry_chars: usize,
 }
 
 impl RequestCtx {
@@ -125,10 +134,18 @@ impl RequestCtx {
             ),
             _ => (0, 0, tokens(sizes)),
         };
+        let carry_chars = match self.substituted {
+            Some(_) => self
+                .messages()
+                .get(self.base_head)
+                .map_or(0, |summary| section_chars(summary_str(summary))),
+            None => 0,
+        };
         self.est_tokens_out = est_out;
         self.est_head_tokens = head;
         self.est_summary_tokens = summary;
         self.est_tail_tokens = tail;
+        self.carry_chars = carry_chars;
     }
 }
 
@@ -142,6 +159,8 @@ struct Replay {
     have_summary: bool,
     last_summary: Option<Value>,
     steps: usize,
+    /// The carry the next step renders and extends.
+    carry: Vec<String>,
 }
 
 impl Replay {
@@ -169,6 +188,7 @@ impl Replay {
         self.orig_cut = new_cut;
         self.have_summary = true;
         self.last_summary = Some(result.summary);
+        self.carry = result.carry;
         self.steps += 1;
         true
     }
@@ -203,7 +223,8 @@ impl Engine {
         self.store.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// `(entries, summary characters)` held by the prefix store.
+    /// `(entries, characters)` held by the prefix store: summary
+    /// characters plus carried characters.
     pub fn store_stats(&self) -> (usize, usize) {
         let store = self.store();
         (store.len(), store.bytes())
@@ -264,6 +285,8 @@ impl Engine {
             est_summary_tokens: 0,
             est_tail_tokens: 0,
             base_threshold_tokens: threshold_tokens,
+            carry: Vec::new(),
+            carry_chars: 0,
         };
         ctx.est_tokens_in = ctx.tokens_of(&ctx.msg_chars);
         // The head (everything before the first model turn) is always sent
@@ -372,6 +395,7 @@ impl Engine {
             ctx.base_cut = entry.cut;
             ctx.base_head = entry.head_len;
             ctx.substituted = Some((messages, sizes));
+            ctx.carry = entry.carry;
             ctx.matched = true;
             ctx.modified = true;
             return;
@@ -380,10 +404,16 @@ impl Engine {
 
     /// Compact by replaying threshold crossings over the history: messages
     /// are fed in order and compacted whenever the running size crosses the
-    /// threshold, each step dropping the previous summary. A long history
-    /// arriving at once (fresh proxy, evicted store) therefore yields the
-    /// same recent-only summary an incrementally built chain would. With
-    /// `force`, a history that never crosses is compacted once at the end.
+    /// threshold, each step dropping the previous summary and passing its
+    /// carried words to the next. A long history arriving at once (fresh
+    /// proxy, evicted store) therefore yields the same summary an
+    /// incrementally built chain would, and the same carry while the carry
+    /// budget is unchanged, which always holds when `carry_max_chars` is
+    /// less than half the base threshold, rounded down (at the default,
+    /// above 48,001 tokens).
+    /// Otherwise, and after a lossy `truncate_summary`, the two carries
+    /// agree again once newer words fill the budget. With `force`, a
+    /// history that never crosses is compacted once at the end.
     fn compact_chain(
         &self,
         ctx: &mut RequestCtx,
@@ -394,6 +424,7 @@ impl Engine {
         let threshold_chars = ctx.threshold_tokens.saturating_mul(4) as usize;
         // Constant for the request, so every replayed crossing uses it.
         let budget = ctx.tail_budget_chars(knobs);
+        let carry_budget = self.carry_budget(ctx);
         let mut replay = if ctx.base_cut > 0 {
             Replay {
                 working: ctx.messages()[..=ctx.base_head].to_vec(),
@@ -403,6 +434,7 @@ impl Engine {
                 have_summary: true,
                 last_summary: None,
                 steps: 0,
+                carry: ctx.carry.clone(),
             }
         } else {
             Replay {
@@ -413,6 +445,7 @@ impl Engine {
                 have_summary: false,
                 last_summary: None,
                 steps: 0,
+                carry: Vec::new(),
             }
         };
         let original_len = ctx.msgs.len();
@@ -423,8 +456,14 @@ impl Engine {
             chars += ctx.msg_chars[i];
             if chars > threshold_chars {
                 // Not enough turns yet: keep feeding.
-                let Some(result) = compact_within(&replay.working, ctx.dialect, knobs, budget)
-                else {
+                let Some(result) = compact_within(
+                    &replay.working,
+                    ctx.dialect,
+                    knobs,
+                    budget,
+                    &replay.carry,
+                    carry_budget,
+                ) else {
                     continue;
                 };
                 if !replay.adopt(result, original_len) {
@@ -434,7 +473,14 @@ impl Engine {
             }
         }
         if replay.steps == 0 && force {
-            if let Some(result) = compact_within(&replay.working, ctx.dialect, knobs, budget) {
+            if let Some(result) = compact_within(
+                &replay.working,
+                ctx.dialect,
+                knobs,
+                budget,
+                &replay.carry,
+                carry_budget,
+            ) {
                 if !replay.adopt(result, original_len) {
                     return false;
                 }
@@ -448,6 +494,7 @@ impl Engine {
         ctx.base_head = replay.head_len;
         ctx.chain_steps = replay.steps;
         ctx.substituted = Some((replay.working, replay.sizes));
+        ctx.carry = replay.carry;
         ctx.modified = true;
         ctx.compacted = true;
         ctx.refresh_estimate();
@@ -458,14 +505,26 @@ impl Engine {
                 summary,
                 cut: ctx.base_cut,
                 base_threshold_tokens: ctx.base_threshold_tokens,
+                carry: ctx.carry.clone(),
             },
         );
         true
     }
 
+    /// Characters of carried words a summary may show for this request:
+    /// the configured maximum, capped at a quarter of the headroom. It
+    /// depends only on the config and the request, never on a step's
+    /// knobs, so the base step, the reactive first step and every rung
+    /// bound the carry alike and their chains reconverge.
+    fn carry_budget(&self, ctx: &RequestCtx) -> usize {
+        self.cfg.carry_max_chars.min(ctx.headroom_chars() / 4)
+    }
+
     /// Last rung: shrink the current summary to fit the budget, keeping its
     /// newest parts; degenerates to a header-only summary. Never touches the
-    /// head or the kept tail. Reactive only, except under strict mode.
+    /// head or the kept tail. The carried section is the oldest part, so it
+    /// goes first, and dropping any part empties the carry. Reactive only,
+    /// except under strict mode.
     fn truncate_summary(&self, ctx: &mut RequestCtx) -> bool {
         if !ctx.compacted || ctx.base_cut == 0 {
             return false;
@@ -499,6 +558,7 @@ impl Engine {
             // Separator overhead, rounded up as in the reference implementation.
             used += len + 9;
         }
+        let dropped = kept.len() < parts.len();
         kept.reverse();
         let new_text = if kept.is_empty() {
             SUMMARY_HEADER.to_string()
@@ -515,6 +575,12 @@ impl Engine {
         };
         messages[index] = summary.clone();
         sizes[index] = size;
+        if dropped {
+            // The newest cycle's words sit in merged summary parts that map
+            // back to no carried part, so the only carry that never re-adds
+            // text this truncation removed is an empty one.
+            ctx.carry.clear();
+        }
         ctx.modified = true;
         ctx.refresh_estimate();
         let key = ctx.chain[ctx.base_cut - 1].clone();
@@ -525,6 +591,7 @@ impl Engine {
                 summary,
                 cut: ctx.base_cut,
                 base_threshold_tokens: ctx.base_threshold_tokens,
+                carry: ctx.carry.clone(),
             },
         );
         true
@@ -532,15 +599,41 @@ impl Engine {
 }
 
 fn summary_text(message: &Value) -> String {
+    summary_str(message).to_string()
+}
+
+fn summary_str(message: &Value) -> &str {
     match message.get("content") {
-        Some(Value::String(text)) => text.clone(),
+        Some(Value::String(text)) => text,
         Some(Value::Array(blocks)) => blocks
             .iter()
             .find_map(|block| block.get("text").and_then(Value::as_str))
-            .unwrap_or("")
-            .to_string(),
-        _ => String::new(),
+            .unwrap_or(""),
+        _ => "",
     }
+}
+
+/// Characters of the carried section in a summary's text, label included:
+/// the first part after the header when it starts with the label line, up
+/// to the next part separator. Carried parts hold no `---` line and no
+/// summary part of a new cycle starts with the label line, so this is
+/// exact. 0 for any other text.
+fn section_chars(text: &str) -> usize {
+    let Some(rest) = text
+        .strip_prefix(SUMMARY_HEADER)
+        .and_then(|rest| rest.strip_prefix("\n\n"))
+    else {
+        return 0;
+    };
+    let label_line = rest
+        .strip_prefix(CARRY_LABEL)
+        .is_some_and(|after| after.starts_with('\n'));
+    if !label_line {
+        return 0;
+    }
+    rest.split(PART_SEPARATOR)
+        .next()
+        .map_or(0, |section| section.chars().count())
 }
 
 #[cfg(test)]
@@ -727,7 +820,11 @@ mod tests {
         let ctx = fresh.prepare(a_body(messages), Dialect::Anthropic).unwrap();
         assert!(ctx.compacted && ctx.chain_steps > 1);
         let fresh_summary = summaries(ctx.messages())[0].clone();
-        assert!(!fresh_summary.contains("Step 2") && !fresh_summary.contains("Step 10"));
+        // Each pass dropped the previous summary instead of nesting it. The
+        // old steps' words may still be carried, but their tool calls are
+        // not.
+        assert_eq!(fresh_summary.matches(SUMMARY_HEADER).count(), 1);
+        assert!(!fresh_summary.contains("\"cmd 2\"") && !fresh_summary.contains("\"cmd 10\""));
         assert!(fresh_summary.len() < 3 * live_summary.len().max(1_000));
         assert!(ctx.est_tokens_out <= cfg.threshold_tokens * 2);
     }
@@ -1087,8 +1184,10 @@ mod tests {
 
     #[test]
     fn a_rung_one_burst_reconverges_with_a_fresh_prepare() {
+        // Without a carry; `a_rung_one_burst_with_a_carry_reconverges_with_a_fresh_prepare`
+        // covers the carried chain.
         let steps = chain_against_fresh(
-            &tail_cfg(6_000),
+            &uncarried_cfg(6_000),
             Dialect::Anthropic,
             &stepped_bodies(90, burst_results),
         );
@@ -1102,7 +1201,11 @@ mod tests {
 
     #[test]
     fn small_requests_after_a_compaction_reuse_the_prefix_until_the_margin_is_used() {
-        let engine = tail_engine(10_000, 3, 40);
+        // Without a carry, so the summary and tail fill at most the 40%
+        // target. A carried section takes up to a quarter of the headroom
+        // on top; `at_16000_tokens_a_full_carry_leaves_the_prefix_reused_until_the_margin_is_used`
+        // covers that case.
+        let engine = Engine::new(uncarried_cfg(10_000));
         let bodies = stepped_bodies(130, |_| 700);
         let step_chars = bodies
             .iter()
@@ -1141,8 +1244,17 @@ mod tests {
 
     #[test]
     fn a_minimum_tail_over_the_target_is_kept_as_the_reference_keeps_it() {
-        let tail = tail_engine(6_000, 3, 40);
-        let reference = tail_engine(6_000, 3, 0);
+        // Without a carry: at 6,000 tokens a carried section would push
+        // three 6,000-character turns over the threshold, and the request
+        // would escalate to rung 1 instead of keeping the minimum tail.
+        let uncarried = |keep_tail_percent| {
+            Engine::new(CliffConfig {
+                keep_tail_percent,
+                ..uncarried_cfg(6_000)
+            })
+        };
+        let tail = uncarried(40);
+        let reference = uncarried(0);
         let mut compactions = 0;
         for (i, body) in stepped_bodies(40, |_| 6_000).into_iter().enumerate() {
             let a = tail.prepare(body.clone(), Dialect::Anthropic).unwrap();
@@ -1277,5 +1389,543 @@ mod tests {
             (again.base_cut, again.base_head),
             (fresh_wide.base_cut, fresh_wide.base_head)
         );
+    }
+
+    // C3: carried words across compactions.
+
+    use super::super::CARRY_PART_MAX_CHARS;
+
+    /// `stepped_bodies` with conversation: every fifth step is a text-only
+    /// reply followed by a human instruction, so a carry holds both.
+    fn talk_bodies(steps: usize, size: impl Fn(usize) -> usize) -> Vec<Map<String, Value>> {
+        let mut messages = vec![a_user("the task")];
+        (0..steps)
+            .map(|i| {
+                if i % 5 == 4 {
+                    messages.push(a_assistant(&format!("Reply {i}: part {i} is done."), None));
+                    messages.push(a_user(&format!(
+                        "Instruction {i}: now take part {}.",
+                        i + 1
+                    )));
+                } else {
+                    let id = format!("tu_{i}");
+                    messages.push(a_assistant(
+                        &format!("Step {i} {}", "t".repeat(200)),
+                        Some((&id, "bash", json!({"command": format!("cmd {i}")}))),
+                    ));
+                    messages.push(a_result(&id, &"R".repeat(size(i))));
+                }
+                a_body(messages.clone())
+            })
+            .collect()
+    }
+
+    fn carry_engine(threshold_tokens: u64, carry_max_chars: usize) -> Engine {
+        Engine::new(CliffConfig {
+            carry_max_chars,
+            ..tail_cfg(threshold_tokens)
+        })
+    }
+
+    /// What the bound charges for `parts`: characters plus 2 each.
+    fn carry_cost(parts: &[String]) -> usize {
+        parts.iter().map(|part| part.chars().count() + 2).sum()
+    }
+
+    #[test]
+    fn a_later_compaction_shows_the_words_of_the_earlier_cycles() {
+        let bodies = talk_bodies(60, mixed_results);
+        let on = carry_engine(6_000, 24_000);
+        let off = carry_engine(6_000, 0);
+        let mut first_carry: Option<Vec<String>> = None;
+        let mut later = 0;
+        for (i, body) in bodies.iter().enumerate() {
+            let a = on.prepare(body.clone(), Dialect::Anthropic).unwrap();
+            if a.compacted {
+                let text = summaries(a.messages())[0].clone();
+                match &first_carry {
+                    None => {
+                        // Nothing to carry yet: the summary is the one
+                        // without carrying, and the carry starts here.
+                        let b = off.prepare(body.clone(), Dialect::Anthropic).unwrap();
+                        assert_eq!(a.messages(), b.messages(), "request {i}");
+                        assert!(!text.contains(CARRY_LABEL), "request {i}");
+                        let carry = a.carry.clone();
+                        assert!(carry.iter().any(|p| p.starts_with("assistant: Step 0 ")));
+                        assert!(carry.iter().any(|p| p.starts_with("user: Instruction 4:")));
+                        assert!(carry_cost(&carry) <= on.carry_budget(&a));
+                        first_carry = Some(carry);
+                    }
+                    Some(carry) if later == 0 => {
+                        // The first cycle's summary is gone, its words are not.
+                        let section = format!("{CARRY_LABEL}\n{}", carry.join("\n\n"));
+                        let expected = format!("{SUMMARY_HEADER}\n\n{section}{PART_SEPARATOR}");
+                        assert!(text.starts_with(&expected), "request {i}");
+                        assert!(text.contains("Step 0 "), "request {i}");
+                        later += 1;
+                    }
+                    Some(_) => later += 1,
+                }
+            }
+        }
+        assert!(later >= 2);
+
+        // Carrying off: after the first compaction the first cycle is gone.
+        let fresh = carry_engine(6_000, 0);
+        let texts: Vec<String> = bodies
+            .iter()
+            .map(|body| fresh.prepare(body.clone(), Dialect::Anthropic).unwrap())
+            .filter(|ctx| ctx.compacted)
+            .map(|ctx| summaries(ctx.messages())[0].clone())
+            .collect();
+        assert!(texts.len() >= 3);
+        assert!(texts[0].contains("Step 0 "));
+        assert!(texts[1..].iter().all(|text| !text.contains("Step 0 ")));
+        assert!(texts.iter().all(|text| !text.contains(CARRY_LABEL)));
+    }
+
+    #[test]
+    fn a_substituted_entry_restores_its_carry() {
+        let engine = carry_engine(6_000, 24_000);
+        let mut last: Option<Vec<String>> = None;
+        let mut restored = 0;
+        for (i, body) in talk_bodies(40, mixed_results).into_iter().enumerate() {
+            let ctx = engine.prepare(body, Dialect::Anthropic).unwrap();
+            if ctx.compacted {
+                let entry = engine.store().get(&ctx.chain[ctx.base_cut - 1]).unwrap();
+                assert_eq!(entry.carry, ctx.carry, "request {i}");
+                assert!(!ctx.carry.is_empty(), "request {i}");
+                last = Some(ctx.carry.clone());
+            } else if let Some(carry) = &last {
+                assert!(ctx.matched, "request {i}");
+                assert_eq!(&ctx.carry, carry, "request {i}");
+                restored += 1;
+            } else {
+                assert!(ctx.carry.is_empty(), "request {i}");
+            }
+        }
+        assert!(restored >= 5);
+    }
+
+    #[test]
+    fn the_carry_budget_comes_from_the_config_and_never_from_a_steps_knobs() {
+        let body = talk_bodies(40, mixed_results).pop().unwrap();
+        let engine = carry_engine(6_000, 400);
+        let base = engine.prepare(body.clone(), Dialect::Anthropic).unwrap();
+        assert!(base.compacted);
+        assert_eq!(engine.carry_budget(&base), 400, "the maximum binds");
+        assert!(!base.carry.is_empty() && carry_cost(&base.carry) <= 400);
+
+        // Rungs 1-2 and the reactive first step, with knobs that ask for
+        // other budgets, bound the carry with the request's budget.
+        let first = CliffConfig {
+            keep_tail_percent: 0,
+            ..engine.config().clone()
+        };
+        for knobs in [engine.rung_cfg(1), engine.rung_cfg(2), first] {
+            let run = |carry_max_chars| {
+                let mut ctx = base.clone();
+                let knobs = CliffConfig {
+                    carry_max_chars,
+                    ..knobs.clone()
+                };
+                assert!(engine.compact_chain(&mut ctx, true, Some(&knobs)));
+                (ctx.messages().to_vec(), ctx.carry)
+            };
+            let (none, carry) = run(0);
+            assert_eq!((none, carry.clone()), run(1_000_000));
+            assert!(!carry.is_empty() && carry_cost(&carry) <= 400);
+            assert!(summaries(&run(0).0)[0].contains(CARRY_LABEL));
+        }
+
+        // A quarter of the headroom caps a large maximum.
+        let capped = carry_engine(2_000, 1_000_000);
+        let ctx = capped.prepare(body, Dialect::Anthropic).unwrap();
+        assert!(ctx.compacted);
+        let budget = capped.carry_budget(&ctx);
+        assert_eq!(budget, ctx.headroom_chars() / 4);
+        assert!(budget < 4_000);
+        assert!(!ctx.carry.is_empty() && carry_cost(&ctx.carry) <= budget);
+    }
+
+    #[test]
+    fn a_lossy_truncation_empties_the_carry_and_a_no_op_keeps_it() {
+        let engine = carry_engine(6_000, 24_000);
+        let mut ctx = talk_bodies(60, mixed_results)
+            .into_iter()
+            .map(|body| engine.prepare(body, Dialect::Anthropic).unwrap())
+            .filter(|ctx| ctx.compacted && summaries(ctx.messages())[0].contains(CARRY_LABEL))
+            .last()
+            .unwrap();
+        let key = ctx.chain[ctx.base_cut - 1].clone();
+        let carry = ctx.carry.clone();
+        assert!(!carry.is_empty());
+
+        // The summary already fits: nothing is dropped and nothing changes.
+        let threshold = ctx.threshold_tokens;
+        ctx.threshold_tokens = 10_000_000;
+        assert!(!engine.truncate_summary(&mut ctx));
+        assert_eq!(ctx.carry, carry);
+        assert_eq!(engine.store().get(&key).map(|e| e.carry), Some(carry));
+        ctx.threshold_tokens = threshold;
+
+        // A budget that fits every part but the oldest drops exactly the
+        // carried section, and with it the carry.
+        let before = summaries(ctx.messages())[0].clone();
+        let parts: Vec<&str> = before
+            .strip_prefix(SUMMARY_HEADER)
+            .unwrap()
+            .trim()
+            .split(PART_SEPARATOR)
+            .collect();
+        assert!(parts[0].starts_with(CARRY_LABEL) && parts.len() > 1);
+        let index = ctx.base_head;
+        let others: usize = ctx
+            .sizes()
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != index)
+            .map(|(_, size)| size)
+            .sum();
+        let keep: usize = parts[1..].iter().map(|p| p.chars().count() + 9).sum();
+        let chars = ctx.fixed_chars + others + SUMMARY_HEADER.len() + 64 + keep;
+        ctx.threshold_tokens = (chars / 4 + 1) as u64;
+        assert!(engine.truncate_summary(&mut ctx));
+        let after = summaries(ctx.messages())[0].clone();
+        let expected = format!("{SUMMARY_HEADER}\n\n{}", parts[1..].join(PART_SEPARATOR));
+        assert_eq!(after, expected);
+        assert!(ctx.carry.is_empty());
+        assert_eq!(engine.store().get(&key).map(|e| e.carry), Some(Vec::new()));
+    }
+
+    #[test]
+    fn a_long_chain_never_carries_a_summary_and_keeps_the_newest_words() {
+        let engine = carry_engine(4_000, 24_000);
+        let mut sections = 0;
+        let mut oldest_dropped = false;
+        for (i, body) in talk_bodies(100, mixed_results).into_iter().enumerate() {
+            let ctx = engine.prepare(body, Dialect::Anthropic).unwrap();
+            assert!(
+                ctx.carry.iter().all(|part| !part.contains(SUMMARY_HEADER)),
+                "request {i}"
+            );
+            assert!(
+                carry_cost(&ctx.carry) <= engine.carry_budget(&ctx),
+                "request {i}"
+            );
+            if let Some(text) = summaries(ctx.messages()).first() {
+                assert_eq!(text.matches(SUMMARY_HEADER).count(), 1, "request {i}");
+                assert!(text.matches(CARRY_LABEL).count() <= 1, "request {i}");
+                sections += usize::from(text.contains(CARRY_LABEL));
+            }
+            oldest_dropped |=
+                !ctx.carry.is_empty() && ctx.carry.iter().all(|part| !part.contains("Step 0 "));
+        }
+        assert!(sections > 10);
+        assert!(oldest_dropped, "a full carry drops its oldest words first");
+    }
+
+    #[test]
+    fn a_hostile_carry_through_the_reactive_path_terminates() {
+        let engine = carry_engine(1_000_000, 24_000);
+        // Oversized words with separators and unclosed reminder tags.
+        let mut messages = vec![a_user("task")];
+        for i in 0..12 {
+            messages.push(a_assistant(
+                &format!(
+                    "{i} {}\n\n---\n\n<system-reminder> never closed",
+                    "a".repeat(5_000)
+                ),
+                None,
+            ));
+            messages.push(a_user(&format!(
+                "<system-reminder>The user sent a new message while you were working:\n\
+                 q{i}\n\n---\n\n</system-reminder>{}\n---\n<system-reminder>open",
+                "u".repeat(4_500)
+            )));
+        }
+        let mut ctx = engine
+            .prepare(a_body(messages), Dialect::Anthropic)
+            .unwrap();
+        assert!(engine.reactive(&mut ctx));
+        assert!(!ctx.carry.is_empty());
+        // The closed spans are stripped and never carried as queued
+        // messages; an unclosed tag after other text stays, as typed.
+        assert!(ctx.carry.iter().all(|part| {
+            part.chars().count() <= CARRY_PART_MAX_CHARS
+                && !part.contains(PART_SEPARATOR)
+                && !part.contains("</system-reminder>")
+                && !part.starts_with("user: q")
+        }));
+
+        // A carry no extraction produces: one huge part, 10,000 tiny ones,
+        // a part holding a separator and the header, and a tag run.
+        let mut hostile = vec!["z".repeat(100_000)];
+        hostile.extend((0..10_000).map(|i| format!("user: {i}")));
+        hostile.push(format!("assistant: x{PART_SEPARATOR}{SUMMARY_HEADER}"));
+        hostile.push("<system-reminder>".repeat(100));
+        hostile.extend((0..3).map(|i| format!("user: last {i}")));
+        ctx.carry = hostile;
+        let mut attempts = 0;
+        while engine.reactive(&mut ctx) && attempts < 10 {
+            attempts += 1;
+        }
+        assert!(attempts < 10);
+        assert_eq!(ctx.rung, 3);
+        assert!(carry_cost(&ctx.carry) <= engine.carry_budget(&ctx));
+    }
+
+    #[test]
+    fn section_chars_reads_only_a_leading_carried_section() {
+        let label = CARRY_LABEL.chars().count();
+        let with = |body: &str| format!("{SUMMARY_HEADER}\n\n{body}");
+        assert_eq!(section_chars(SUMMARY_HEADER), 0);
+        assert_eq!(section_chars(&with("user: a")), 0);
+        assert_eq!(
+            section_chars(&with(&format!("{CARRY_LABEL}\nuser: é"))),
+            label + 8
+        );
+        let two = format!("{CARRY_LABEL}\nuser: a\n\nassistant: b{PART_SEPARATOR}user: c");
+        assert_eq!(section_chars(&with(&two)), label + 1 + 7 + 2 + 12);
+        // The label must be the first part and a line of its own.
+        let later = format!("user: a{PART_SEPARATOR}{CARRY_LABEL}\nuser: b");
+        assert_eq!(section_chars(&with(&later)), 0);
+        let glued = format!("{CARRY_LABEL} user: a");
+        assert_eq!(section_chars(&with(&glued)), 0);
+        assert_eq!(section_chars(&format!("{CARRY_LABEL}\nuser: a")), 0);
+    }
+
+    /// Characters of a section showing `parts`: the label line, then the
+    /// parts joined by blank lines. 0 for no parts.
+    fn shown_chars(parts: &[String]) -> usize {
+        match parts.len() {
+            0 => 0,
+            n => {
+                CARRY_LABEL.chars().count()
+                    + 1
+                    + parts.iter().map(|p| p.chars().count()).sum::<usize>()
+                    + 2 * (n - 1)
+            }
+        }
+    }
+
+    #[test]
+    fn carry_chars_is_the_section_after_compaction_substitution_and_truncation() {
+        let engine = carry_engine(6_000, 24_000);
+        let off = carry_engine(6_000, 0);
+        // What the summary being sent shows: the carry before the request
+        // that compacted it (one crossing per request here).
+        let mut before: Vec<String> = Vec::new();
+        let mut shown: Vec<String> = Vec::new();
+        let (mut compacted, mut substituted) = (0, 0);
+        let mut last = None;
+        for (i, body) in talk_bodies(60, mixed_results).into_iter().enumerate() {
+            let ctx = engine.prepare(body.clone(), Dialect::Anthropic).unwrap();
+            if ctx.compacted {
+                assert_eq!((ctx.chain_steps, ctx.rung), (1, 0), "request {i}");
+                shown = before.clone();
+            }
+            let expected = if ctx.base_cut == 0 {
+                0
+            } else {
+                shown_chars(&shown)
+            };
+            assert_eq!(ctx.carry_chars, expected, "request {i}");
+            compacted += usize::from(ctx.compacted && expected > 0);
+            substituted += usize::from(!ctx.compacted && ctx.matched && expected > 0);
+            before = ctx.carry.clone();
+            let plain = off.prepare(body, Dialect::Anthropic).unwrap();
+            assert_eq!(plain.carry_chars, 0, "request {i}");
+            if ctx.compacted && expected > 0 {
+                last = Some(ctx);
+            }
+        }
+        assert!(compacted >= 2 && substituted >= 5);
+
+        // Rung 3 (a compacting request's last rung) drops the section
+        // first: no section, no carried characters.
+        let mut ctx = last.unwrap();
+        assert!(ctx.carry_chars > 0);
+        ctx.threshold_tokens = 1;
+        assert!(engine.truncate_summary(&mut ctx));
+        assert_eq!(ctx.carry_chars, 0);
+        assert!(!summaries(ctx.messages())[0].contains(CARRY_LABEL));
+    }
+
+    // C3-7: determinism and prefix reuse with a nonempty carry.
+
+    #[test]
+    fn a_live_chain_with_a_carry_equals_a_fresh_prepare() {
+        let steps = chain_against_fresh(
+            &carry_cfg(12_000),
+            Dialect::Anthropic,
+            &talk_bodies(100, mixed_results),
+        );
+        let unequal: Vec<usize> = (0..steps.len()).filter(|&i| !steps[i].equal).collect();
+        assert!(unequal.is_empty(), "requests {unequal:?} differ");
+        assert!(steps.iter().filter(|s| s.compacted).count() >= 4);
+        assert!(steps.iter().all(|s| s.rung == 0));
+        // Nonempty carries and carried sections were compared.
+        assert!(carried(&steps) >= 20, "{}", carried(&steps));
+    }
+
+    /// `stepped_bodies` with Claude Code's captured and binary-derived shapes
+    /// mixed in: a mid-turn message as a system message after a tool result
+    /// (layout 1), text typed after an interrupt (layout 2), a coordinator
+    /// system message (layout 7) and feedback typed when rejecting a call.
+    fn shaped_bodies(steps: usize, size: impl Fn(usize) -> usize) -> Vec<Map<String, Value>> {
+        let system =
+            |text: String| json!({"role": "system", "content": [{"type": "text", "text": text}]});
+        let mut messages = vec![a_user("the task")];
+        (0..steps)
+            .map(|i| {
+                let id = format!("tu_{i}");
+                messages.push(a_assistant(
+                    &format!("Step {i} {}", "t".repeat(200)),
+                    Some((&id, "bash", json!({"command": format!("cmd {i}")}))),
+                ));
+                let result = a_result(&id, &"R".repeat(size(i)));
+                match i % 5 {
+                    1 => messages.extend([
+                        result,
+                        system(format!(
+                            "The user sent a new message while you were working:\n\
+                             Mid-turn {i}: check part {i}."
+                        )),
+                    ]),
+                    2 => messages.push(json!({"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": id, "is_error": true,
+                         "content": "The user doesn't want to proceed with this tool use."},
+                        {"type": "text", "text": "[Request interrupted by user for tool use]\n"},
+                        {"type": "text", "text": format!("Typed {i}: skip part {i}.")}
+                    ]})),
+                    3 => messages.extend([
+                        result,
+                        system(format!(
+                            "The coordinator sent a message while you were working:\n\
+                             Coordinator {i}: rebase part {i}."
+                        )),
+                    ]),
+                    4 => messages.push(json!({"role": "user", "content": [
+                        {"type": "tool_result", "tool_use_id": id, "is_error": true,
+                         "content": format!("The user doesn't want to proceed with this tool use. \
+                            The tool use was rejected (eg. if it was a file edit, the new_string \
+                            was NOT written to the file). To tell you how to proceed, the user \
+                            said:\nRejected {i}: use part {i}.")}
+                    ]})),
+                    _ => messages.push(result),
+                }
+                a_body(messages.clone())
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_live_chain_with_captured_shapes_equals_a_fresh_prepare() {
+        let bodies = shaped_bodies(100, mixed_results);
+        let steps = chain_against_fresh(&carry_cfg(12_000), Dialect::Anthropic, &bodies);
+        let unequal: Vec<usize> = (0..steps.len()).filter(|&i| !steps[i].equal).collect();
+        assert!(unequal.is_empty(), "requests {unequal:?} differ");
+        assert!(steps.iter().filter(|s| s.compacted).count() >= 4);
+        assert!(carried(&steps) >= 20, "{}", carried(&steps));
+        // The live carry holds every shape's words.
+        let engine = Engine::new(carry_cfg(12_000));
+        let mut carry = Vec::new();
+        for body in &bodies {
+            carry = engine
+                .prepare(body.clone(), Dialect::Anthropic)
+                .unwrap()
+                .carry;
+        }
+        for shape in [
+            "user: Mid-turn",
+            "user: Typed",
+            "user: Coordinator",
+            "user: Rejected",
+        ] {
+            assert!(carry.iter().any(|part| part.starts_with(shape)), "{shape}");
+        }
+        // Extraction splits at every turn start: the parts of a history are
+        // the parts of its halves.
+        let messages = bodies.last().unwrap()["messages"].as_array().unwrap();
+        let whole = super::super::anthropic::carry_parts(messages);
+        for start in (1..messages.len()).filter(|&k| messages[k]["role"] == "assistant") {
+            let mut halves = super::super::anthropic::carry_parts(&messages[..start]);
+            halves.extend(super::super::anthropic::carry_parts(&messages[start..]));
+            assert_eq!(halves, whole, "split at {start}");
+        }
+    }
+
+    #[test]
+    fn a_rung_one_burst_with_a_carry_reconverges_with_a_fresh_prepare() {
+        let steps = chain_against_fresh(
+            &carry_cfg(6_000),
+            Dialect::Anthropic,
+            &talk_bodies(90, burst_results),
+        );
+        assert!(steps.iter().any(|s| s.rung == 1));
+        // The first burst's rung-1 cut makes the chains differ; they agree
+        // again with a nonempty carry, so the carries reconverged too. Later
+        // bursts here happen not to split them.
+        assert!(reconvergences(&steps) >= 1);
+        let again = (1..steps.len())
+            .find(|&i| !steps[i - 1].equal && steps[i].equal)
+            .unwrap();
+        assert!(steps[again].carry_parts > 0, "request {again}");
+        // After the last burst the chains agree for good, carry included.
+        assert!(steps[60..].iter().all(|s| s.equal));
+        assert!(carried(&steps[60..]) >= 10, "{}", carried(&steps[60..]));
+    }
+
+    #[test]
+    fn at_16000_tokens_a_full_carry_leaves_the_prefix_reused_until_the_margin_is_used() {
+        let engine = carry_engine(16_000, 24_000);
+        let bodies = talk_bodies(260, |_| 700);
+        let step_chars = bodies
+            .iter()
+            .map(|body| {
+                let messages = body["messages"].as_array().unwrap();
+                messages[messages.len() - 2..]
+                    .iter()
+                    .map(|m| billable_chars(m) + 2)
+                    .sum::<usize>()
+            })
+            .max()
+            .unwrap();
+        // The carry the summary being sent shows (one crossing per request).
+        let mut before: Vec<String> = Vec::new();
+        let mut compactions: Vec<(usize, usize)> = Vec::new();
+        let mut full = 0;
+        for (i, body) in bodies.into_iter().enumerate() {
+            let ctx = engine.prepare(body, Dialect::Anthropic).unwrap();
+            if ctx.compacted {
+                assert_eq!((ctx.chain_steps, ctx.rung), (1, 0), "request {i}");
+                let budget = engine.carry_budget(&ctx);
+                // A quarter of the headroom binds below 48,000 tokens.
+                assert!((8_000..24_000).contains(&budget), "request {i}: {budget}");
+                // Full: no further step reply would fit, and the oldest
+                // cycle's words are gone.
+                if carry_cost(&before) + 250 > budget {
+                    assert!(carry_cost(&before) <= budget, "request {i}");
+                    assert!(!summaries(ctx.messages())[0].contains("Step 0 "));
+                    full += 1;
+                }
+                // What stays free for the requests after it: at least half
+                // of the headroom, since the carry takes at most a quarter.
+                let free = (ctx.threshold_tokens as usize * 4).saturating_sub(out_chars(&ctx));
+                assert!(free >= ctx.headroom_chars() / 2, "request {i}: {free}");
+                compactions.push((i, free));
+            } else if !compactions.is_empty() {
+                // The request after a compaction and the ones after it
+                // reuse the stored prefix and stay under the threshold.
+                assert!(ctx.matched && !ctx.over_budget, "request {i}");
+            }
+            before = ctx.carry.clone();
+        }
+        assert!(full >= 2, "{full} compactions with a full carry");
+        for pair in compactions.windows(2) {
+            let ((a, free), (b, _)) = (pair[0], pair[1]);
+            assert!(b - a >= free / step_chars - 1, "{pair:?} step {step_chars}");
+        }
     }
 }

@@ -412,7 +412,17 @@ fn unreadable_telemetry_does_not_become_a_zero_count_report() {
     let events = f.command(&["events", "--json"]).output().unwrap();
     assert!(!events.status.success());
     assert!(events.stdout.is_empty());
-    assert!(String::from_utf8_lossy(&events.stderr).contains("compaction telemetry unavailable"));
+    // With --json the failure is one error object on stderr.
+    let error: serde_json::Value = serde_json::from_slice(&events.stderr).unwrap();
+    assert_eq!(error["ok"], false);
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .starts_with("Can't read the compaction log "));
+    assert!(error["error"]["next"]
+        .as_str()
+        .unwrap()
+        .contains("events.jsonl aside"));
 }
 
 #[test]
@@ -750,7 +760,7 @@ fn failed_watch_state_write_aborts_before_native_dispatch() {
     let output = f.native_codex("noop").output().unwrap();
     assert!(!output.status.success());
     assert!(String::from_utf8_lossy(&output.stderr)
-        .contains("watch state must be a bounded regular file"));
+        .contains("atch state must be a bounded regular file"));
     assert!(!f.0.join("codex/requests.log").exists());
 }
 

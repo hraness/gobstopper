@@ -348,9 +348,9 @@ fn call_tool(cli: &Cli, cfg: &config::Config, id: &Value, params: Option<&Value>
 fn content_enabled(cli: &Cli) -> bool {
     matches!(
         cli.command,
-        crate::Cmd::Mcp {
+        Some(crate::Cmd::Mcp {
             allow_transcript_content: true
-        }
+        })
     )
 }
 
@@ -726,9 +726,9 @@ mod tests {
             codex_home: None,
             claude_home: None,
             codex_bin: None,
-            command: crate::Cmd::Mcp {
+            command: Some(crate::Cmd::Mcp {
                 allow_transcript_content: false,
-            },
+            }),
         }
     }
 
@@ -930,9 +930,9 @@ mod tests {
             assert!(err.to_string().contains("--allow-transcript-content"));
         }
         let mut opted_in = cli();
-        opted_in.command = crate::Cmd::Mcp {
+        opted_in.command = Some(crate::Cmd::Mcp {
             allow_transcript_content: true,
-        };
+        });
         let advertised = tools(&opted_in);
         for name in ["search_snapshot", "read_snapshot"] {
             assert!(advertised

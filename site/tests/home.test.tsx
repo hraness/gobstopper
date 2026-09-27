@@ -42,13 +42,12 @@ test("the homepage shares the README identity and installs the guarded source bu
   } else {
     expect(html).toContain(`href="https://github.com/hraness/gobstopper/releases/tag/v${publishedRelease.version}"`);
     expect(html).toContain(publishedRelease.verificationRun);
-    if (publishedRelease.version === "0.2.1") {
-      expect(html).toMatch(/predates the proxy and the source build's safeguards/u);
-    }
   }
   expect(html).toMatch(/automatic provider compaction is disabled/iu);
   expect(html).toMatch(/refuses automatic provider compaction[^.]+auto_compact_closed/u);
   expect(html).not.toContain("hraness.com/gobstopper");
+  expect(html).toContain("gobstopper proxy serve");
+  expect(html).not.toContain("Source preview");
 });
 
 test("the docs page renders the README with its installation anchor", () => {

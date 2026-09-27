@@ -9,8 +9,8 @@
 //! digests: some clients strip ids, and status is lifecycle metadata.
 
 use super::{
-    canonical_json, digest_value, str_field, strip_task_notifications, truncate, CliffConfig,
-    SUMMARY_HEADER,
+    canonical_json, carry_assistant, carry_human, digest_value, str_field,
+    strip_task_notifications, truncate, CliffConfig, SUMMARY_HEADER,
 };
 use serde_json::{json, Value};
 
@@ -215,6 +215,51 @@ pub fn summarize_message(item: &Value, cfg: &CliffConfig) -> Vec<String> {
     }
 }
 
+/// Text parts of a message's content, in order; images, files and audio
+/// are payloads, not words.
+fn text_parts(content: Option<&Value>) -> Vec<&str> {
+    match content {
+        Some(Value::String(text)) => vec![text.as_str()],
+        Some(Value::Array(parts)) => parts
+            .iter()
+            .filter(|part| {
+                matches!(
+                    str_field(part, "type"),
+                    "input_text" | "output_text" | "text"
+                )
+            })
+            .map(|part| str_field(part, "text"))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// The conversation's words in `items`, oldest first, for the carried
+/// section of later summaries: the text of user-role messages and the
+/// assistant's visible text. System and developer messages, reasoning,
+/// tool calls, tool outputs and prior summaries are never carried. Tool
+/// outputs are separate items, so no harness text rides in a user message
+/// the way a skill body does in Anthropic's tool-result messages; the
+/// context items Codex sends again as user messages (`<environment_context>`,
+/// `<user_instructions>`, `# AGENTS.md instructions`) are skipped. Each
+/// message yields at most one text part, followed by one part per text part
+/// that is wholly a queued message.
+pub fn carry_parts(items: &[Value]) -> Vec<String> {
+    let mut parts = Vec::new();
+    for item in items {
+        if item_type(item) != "message" || is_summary_message(item) {
+            continue;
+        }
+        let texts = text_parts(item.get("content"));
+        match str_field(item, "role") {
+            "user" => parts.extend(carry_human(&texts)),
+            "assistant" => parts.extend(carry_assistant(&texts)),
+            _ => {}
+        }
+    }
+    parts
+}
+
 pub fn user_message(text: String) -> Value {
     json!({
         "type": "message",
@@ -226,7 +271,8 @@ pub fn user_message(text: String) -> Value {
 #[cfg(test)]
 mod tests {
     use super::super::fixtures::{
-        burst_results, chain_against_fresh, mixed_results, reconvergences, tail_cfg,
+        burst_results, carried, carry_cfg, chain_against_fresh, mixed_results, reconvergences,
+        tail_cfg,
     };
     use super::super::{compact, Dialect};
     use super::*;
@@ -366,5 +412,210 @@ mod tests {
         assert!(reconvergences(&steps) >= 3);
         // After the last burst the chains agree for good.
         assert!(steps[60..].iter().all(|s| s.equal));
+    }
+
+    fn message(role: &str, kind: &str, text: &str) -> Value {
+        json!({"type": "message", "role": role, "content": [{"type": kind, "text": text}]})
+    }
+
+    #[test]
+    fn carry_keeps_user_and_visible_assistant_text_of_a_codex_history() {
+        let items = vec![
+            user_message(format!("{SUMMARY_HEADER}\n\nuser: old instruction")),
+            message(
+                "developer",
+                "input_text",
+                "<permissions>sandboxed</permissions>",
+            ),
+            json!({"type": "message", "role": "system", "content": "system directive"}),
+            json!({"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "Fix the build."},
+                {"type": "input_image", "image_url": "data:image/png;base64,AAAA"},
+                {"type": "input_text", "text": "Then run the tests."}
+            ]}),
+            reasoning(0),
+            call(0),
+            output(0, "error: missing semicolon"),
+            json!({"type": "custom_tool_call", "call_id": "c1", "name": "apply_patch", "input": "*** Begin Patch"}),
+            json!({"type": "custom_tool_call_output", "call_id": "c1", "output": "patched ok"}),
+            json!({"type": "message", "role": "assistant", "content": [
+                {"type": "output_text", "text": "Fixed the semicolon."},
+                {"type": "output_text", "text": "Tests pass."}
+            ]}),
+            json!({"type": "message", "role": "user", "content": "Now ship it."}),
+        ];
+        assert_eq!(
+            carry_parts(&items),
+            vec![
+                "user: Fix the build.\nThen run the tests.",
+                "assistant: Fixed the semicolon.\nTests pass.",
+                "user: Now ship it.",
+            ]
+        );
+        let joined = carry_parts(&items).join("\n");
+        for hidden in [
+            "old instruction",
+            "permissions",
+            "system directive",
+            "plan 0",
+            "enc0",
+            "make",
+            "missing semicolon",
+            "Begin Patch",
+            "patched ok",
+            "base64",
+        ] {
+            assert!(!joined.contains(hidden), "{hidden} leaked");
+        }
+    }
+
+    #[test]
+    fn carry_strips_reminders_and_notifications_and_keeps_queued_messages() {
+        let items = vec![
+            message(
+                "user",
+                "input_text",
+                "<system-reminder>harness context</system-reminder>Check the logs.\n\
+                 <task-notification>agent done</task-notification>",
+            ),
+            message(
+                "user",
+                "input_text",
+                "<system-reminder>The user sent a new message while you were working:\n\
+                 Stop after the first failure.</system-reminder>",
+            ),
+            message(
+                "assistant",
+                "output_text",
+                "Reading the logs.\n---\nDone.<system-reminder>",
+            ),
+            message(
+                "user",
+                "input_text",
+                "Also <system-reminder>The user sent a new message while you were working:\n\
+                 INLINE-SPAN</system-reminder>continue.",
+            ),
+        ];
+        assert_eq!(
+            carry_parts(&items),
+            vec![
+                "user: Check the logs.",
+                "user: Stop after the first failure.",
+                "assistant: Reading the logs.\n- - -\nDone.<system-reminder>",
+                "user: Also continue.",
+            ]
+        );
+    }
+
+    #[test]
+    fn carry_skips_the_context_items_codex_sends_again_later() {
+        // Codex re-sends these as user messages after the first reply
+        // (18 and 23 of the 300 newest local sessions).
+        let items = vec![
+            message("assistant", "output_text", "First reply."),
+            message(
+                "user",
+                "input_text",
+                "# AGENTS.md instructions for /work\n\n<INSTRUCTIONS>\nAGENTS-BODY\n</INSTRUCTIONS>",
+            ),
+            message(
+                "user",
+                "input_text",
+                "<environment_context>\n  <cwd>/work</cwd>\n  ENV-BODY\n</environment_context>",
+            ),
+            json!({"type": "message", "role": "user", "content": [
+                {"type": "input_text", "text": "<user_instructions>\nUSER-INSTRUCTIONS\n</user_instructions>"},
+                {"type": "input_text", "text": "Keep going."}
+            ]}),
+        ];
+        assert_eq!(
+            carry_parts(&items),
+            vec!["assistant: First reply.", "user: Keep going."]
+        );
+    }
+
+    #[test]
+    fn carry_of_a_compacted_codex_history_skips_the_summary() {
+        let cfg = CliffConfig {
+            keep_recent: 2,
+            ..CliffConfig::default()
+        };
+        let mut items = compact(&codex_history(6), Dialect::Responses, &cfg)
+            .unwrap()
+            .messages;
+        assert!(items.iter().any(is_summary_message));
+        items.push(message("assistant", "output_text", "Build fixed."));
+        let parts = carry_parts(&items);
+        assert!(parts.iter().all(|part| !part.contains(SUMMARY_HEADER)));
+        assert_eq!(
+            parts.last().map(String::as_str),
+            Some("assistant: Build fixed.")
+        );
+    }
+
+    /// `stepped_bodies` with conversation: every fifth step is an assistant
+    /// reply and a user instruction instead of a tool call, so a carry holds
+    /// both.
+    fn talk_bodies(steps: usize, size: impl Fn(usize) -> usize) -> Vec<Map<String, Value>> {
+        let mut input = codex_history(0);
+        (0..steps)
+            .map(|n| {
+                if n % 5 == 4 {
+                    let reply = format!("Reply {n}: part {n} is done.");
+                    input.push(message("assistant", "output_text", &reply));
+                    let next = format!("Instruction {n}: now take part {}.", n + 1);
+                    input.push(message("user", "input_text", &next));
+                } else {
+                    input.push(json!({"type": "reasoning", "id": format!("rs_{n}"),
+                        "encrypted_content": format!("enc{n}"),
+                        "summary": [{"type": "summary_text", "text": format!("plan {n} {}", "t".repeat(200))}]}));
+                    input.push(call(n));
+                    input.push(output(n, &"O".repeat(size(n))));
+                }
+                let Value::Object(body) = json!({
+                    "model": "gpt-x",
+                    "instructions": "You are a coding agent.",
+                    "input": input.clone(),
+                }) else {
+                    unreachable!()
+                };
+                body
+            })
+            .collect()
+    }
+
+    // C3-7: determinism with a nonempty carry.
+
+    #[test]
+    fn a_live_chain_with_a_carry_equals_a_fresh_prepare() {
+        let steps = chain_against_fresh(
+            &carry_cfg(12_000),
+            Dialect::Responses,
+            &talk_bodies(100, mixed_results),
+        );
+        let unequal: Vec<usize> = (0..steps.len()).filter(|&i| !steps[i].equal).collect();
+        assert!(unequal.is_empty(), "requests {unequal:?} differ");
+        assert!(steps.iter().filter(|s| s.compacted).count() >= 4);
+        assert!(steps.iter().all(|s| s.rung == 0));
+        // Nonempty carries and carried sections were compared.
+        assert!(carried(&steps) >= 20, "{}", carried(&steps));
+    }
+
+    #[test]
+    fn a_rung_one_burst_with_a_carry_reconverges_with_a_fresh_prepare() {
+        let steps = chain_against_fresh(
+            &carry_cfg(6_000),
+            Dialect::Responses,
+            &talk_bodies(90, burst_results),
+        );
+        assert!(steps.iter().any(|s| s.rung == 1));
+        assert!(reconvergences(&steps) >= 1);
+        let again = (1..steps.len())
+            .find(|&i| !steps[i - 1].equal && steps[i].equal)
+            .unwrap();
+        assert!(steps[again].carry_parts > 0, "request {again}");
+        // After the last burst the chains agree for good, carry included.
+        assert!(steps[60..].iter().all(|s| s.equal));
+        assert!(carried(&steps[60..]) >= 10, "{}", carried(&steps[60..]));
     }
 }

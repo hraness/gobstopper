@@ -34,7 +34,7 @@ export const comparisonRows: readonly ComparisonRow[] = [
   {
     aspect: "Recompaction",
     cliff: "Rebuilt from the original history; the prior summary is discarded",
-    gobstopper: "The proxy rebuilds from the original history; `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy",
+    gobstopper: "The proxy rebuilds from the original history, and each summary keeps the human's words and the assistant's visible replies from the turns earlier compactions summarized, up to 24,000 characters (on the main branch, not yet released); `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy",
   },
   {
     aspect: "What holds the originals",
@@ -43,8 +43,8 @@ export const comparisonRows: readonly ComparisonRow[] = [
   },
   {
     aspect: "Evidence published",
-    cliff: "Terminal-Bench 2.0, SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models",
-    gobstopper: "Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, literal retention probes, and dated single-session trials; no task-success or billing claims",
+    cliff: "Terminal-Bench 2.0 and 2.1 (including a run through Claude Code), SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models",
+    gobstopper: "Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, one dated afternoon of live proxy counters, literal retention probes, and dated single-session trials; no task-success or billing claims",
   },
   {
     aspect: "Model needed",
@@ -72,6 +72,6 @@ export const comparisonQuestions = [
   {
     question: "Why does auto not pick cliff?",
     answer:
-      "The default strategy for saved sessions compares file strategies by projected savings and preserved prefix against a floor. Cliff has no floor: its yield is whatever the size rule removes. Choose it with `--strategy cliff` or a preset so the trade is explicit. For running sessions, use `gobstopper proxy`.",
+      "The default strategy for saved sessions compares file strategies by projected savings and preserved prefix against a floor. Cliff has no floor: its yield is whatever the size rule removes. Choose it with `--strategy cliff` or a preset, so you make that trade yourself. For running sessions, use `gobstopper proxy`.",
   },
 ] as const;

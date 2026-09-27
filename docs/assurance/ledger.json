@@ -94,6 +94,18 @@
       "meaning": "Version 1 durable native target registry, stable locks and append-only operation records",
       "owner": "CLI native_operations",
       "boundary": "Registered missing/damaged journals refuse; unresolved work blocks replay indefinitely. Provider custody and qualification remain separate."
+    },
+    {
+      "id": "installed_helper",
+      "meaning": "The Apple model helper executable, its source stamp and its build log",
+      "owner": "explicit `gobstopper apple install`",
+      "boundary": "Only the resolved install path and its siblings; planning, scoring and state-card writing never build or install it."
+    },
+    {
+      "id": "launch_agent",
+      "meaning": "The user's sh.gobstopper.proxy LaunchAgent file and its launchd registration",
+      "owner": "CLI proxy install/uninstall",
+      "boundary": "Only the one fixed label in the current user's gui domain; never a system daemon."
     }
   ],
   "assumptions": [
@@ -373,8 +385,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-25-core-r20.json",
-        "sha256": "d00cba7980496ec1d36ede8cccce10e94b0f2375518e54be405d139cdee67d03"
+        "path": "docs/assurance/receipts/2026-09-26-core-050.json",
+        "sha256": "9b2b206f68cc0f1d1a8a383684bb3ab13efd7122b75f383b13a068e80c4b7808"
       }
     },
     {
@@ -436,8 +448,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-26-transcript.json",
-        "sha256": "87d2f35c6b3e9472539e4b77f72bbc01191594a9cf90482eb7d565cb8279304d"
+        "path": "docs/assurance/receipts/2026-09-26-transcript-carry.json",
+        "sha256": "4f595956cb204dad96c25a0be295b0dca7b057ea9d624f8d255df1fe7a0e1ae9"
       }
     },
     {
@@ -457,8 +469,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-26-stress.json",
-        "sha256": "b46b489b670216bb463b0fdb03a5678171d41c389b9ea09fc0b4ca234daf4505"
+        "path": "docs/assurance/receipts/2026-09-26-stress-carry.json",
+        "sha256": "bf17c3de8fd54cbd0a5cd47aceeb64de6aed157ccdb67f92e8f2f67a73f6bac9"
       }
     }
   ],

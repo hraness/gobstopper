@@ -1,7 +1,7 @@
 //! `gobstopper proxy` end to end: the real binary between a raw HTTP client
 //! and a fake upstream, over real sockets and the system curl.
 
-use gobstopper_adapters::request::SUMMARY_HEADER;
+use gobstopper_adapters::request::{CliffConfig, SUMMARY_HEADER};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
@@ -407,8 +407,10 @@ fn over_threshold_requests_are_compacted_streamed_and_reused() {
         "tool calls become signatures"
     );
     // Several threshold crossings were replayed; each pass dropped the
-    // previous summary, so the oldest steps are gone rather than nested.
-    assert!(!found[0].contains("Step 0:"));
+    // previous summary instead of nesting it. The oldest steps' words may
+    // be carried forward, but their tool calls are gone.
+    assert_eq!(found[0].matches(SUMMARY_HEADER).count(), 1);
+    assert!(!found[0].contains("\"pytest -x 0\""));
     assert_eq!(
         first["messages"][0], messages[0],
         "the head is kept verbatim"
@@ -853,6 +855,100 @@ fn a_1m_request_is_compacted_at_the_1m_threshold_without_a_raise() {
 }
 
 #[test]
+fn a_request_under_a_raised_threshold_is_logged_and_recorded() {
+    let dir = scratch_dir("raised-threshold-log");
+    let (log, stats) = (dir.join("proxy.log"), dir.join("proxy-stats.jsonl"));
+    let fake = Fake::start(|_| Reply::Sse(sse_events()));
+    let url = fake.url();
+    let proxy = start_proxy_inner(
+        &url,
+        &url,
+        &url,
+        &["--threshold", "2000"],
+        &[("GOBSTOPPER_STATS_FILE", stats.to_str().unwrap())],
+        Stdio::from(std::fs::File::create(&log).unwrap()),
+    );
+    // A head of about 3,000 estimated tokens raises the threshold to about
+    // 4,000, so a request of about 3,500 is over 2,000 but sent unchanged.
+    let mut messages = session(1);
+    messages[0] = json!({"role": "user", "content": "Y".repeat(12_000)});
+    let sent = body(&messages);
+    let response = request(proxy.port, "POST", "/v1/messages", ANTHROPIC, &sent);
+    assert_eq!(response.status, 200);
+    assert_eq!(fake.seen()[0].body, sent);
+    drop(proxy);
+
+    let lines = std::fs::read_to_string(&log).unwrap();
+    let unchanged: Vec<&str> = lines
+        .lines()
+        .filter(|l| l.contains("sent unchanged at ~"))
+        .collect();
+    assert_eq!(unchanged.len(), 1, "{lines}");
+    assert!(
+        unchanged[0].contains("under the threshold raised to ~4k by a large verbatim head"),
+        "{lines}"
+    );
+    assert!(!lines.contains("YYYY"), "content is never logged: {lines}");
+    let record: Value = serde_json::from_str(
+        std::fs::read_to_string(&stats)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(record["compacted"], false, "{record}");
+    let threshold = record["threshold_tokens"].as_u64().unwrap();
+    assert!(
+        threshold > record["est_tokens_in"].as_u64().unwrap(),
+        "{record}"
+    );
+    assert!(threshold > 2000, "{record}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn a_request_with_nothing_to_compact_is_logged_as_such() {
+    let dir = scratch_dir("nothing-to-compact-log");
+    let log = dir.join("proxy.log");
+    let fake = Fake::start(|_| Reply::Sse(sse_events()));
+    let url = fake.url();
+    let proxy = start_proxy_inner(
+        &url,
+        &url,
+        &url,
+        &["--threshold", "2000"],
+        &[],
+        Stdio::from(std::fs::File::create(&log).unwrap()),
+    );
+    // A short head and one long recent turn: over 2,000 with no older turn to
+    // summarize, so the request goes out unchanged over an unraised threshold.
+    let messages = vec![
+        json!({"role": "user", "content": "task"}),
+        json!({"role": "assistant", "content": "Z".repeat(12_000)}),
+        json!({"role": "user", "content": "continue"}),
+    ];
+    let sent = body(&messages);
+    let response = request(proxy.port, "POST", "/v1/messages", ANTHROPIC, &sent);
+    assert_eq!(response.status, 200);
+    assert_eq!(fake.seen()[0].body, sent);
+    drop(proxy);
+
+    let lines = std::fs::read_to_string(&log).unwrap();
+    let unchanged: Vec<&str> = lines
+        .lines()
+        .filter(|l| l.contains("sent unchanged at ~"))
+        .collect();
+    assert_eq!(unchanged.len(), 1, "{lines}");
+    assert!(
+        unchanged[0].contains("over the ~2k threshold with nothing to compact"),
+        "{lines}"
+    );
+    assert!(!lines.contains("ZZZZ"), "content is never logged: {lines}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn the_strict_refusal_names_the_selected_threshold() {
     let fake = Fake::start(|_| Reply::Json(200, json!({"ok": true})));
     let proxy = start_proxy(
@@ -945,11 +1041,13 @@ fn log_lines_and_ledger_records_carry_sizes_and_the_window_but_no_content() {
     drop(proxy);
 
     let lines = std::fs::read_to_string(&log).unwrap();
+    let startup = format!(
+        "threshold 2000 tokens, threshold_1m 8000 tokens, keep_recent 1, keep_tail_percent 40, carry_max_chars {}, result_max_chars",
+        CliffConfig::default().carry_max_chars
+    );
     assert!(
-        lines.contains(
-            "threshold 2000 tokens, threshold_1m 8000 tokens, keep_recent 1, keep_tail_percent 40, result_max_chars"
-        ),
-        "the startup line shows both thresholds and the tail percent: {lines}"
+        lines.contains(&startup),
+        "the startup line shows both thresholds, the tail percent and the carry: {lines}"
     );
     let tagged: Vec<&str> = lines.lines().filter(|l| l.contains("window=")).collect();
     assert_eq!(tagged.len(), 3, "{lines}");
@@ -960,7 +1058,10 @@ fn log_lines_and_ledger_records_carry_sizes_and_the_window_but_no_content() {
     ]) {
         assert!(line.contains(kind) && line.contains(window), "{line}");
         assert!(
-            line.contains("(head ~") && line.contains(", summary ~") && line.contains(", tail ~"),
+            line.contains("(head ~")
+                && line.contains(", summary ~")
+                && line.contains(", tail ~")
+                && line.contains(" chars)"),
             "{line}"
         );
     }
@@ -1042,12 +1143,15 @@ fn proxy_status_prints_no_null_for_an_older_server() {
     assert_eq!(server.join().unwrap(), "GET /gobstopper/status HTTP/1.1");
 
     let fake = Fake::start(|_| Reply::Json(200, json!({"ok": true})));
-    let current = start_proxy(&fake.url(), &["--threshold-1m", "300000"]);
+    let current = start_proxy(
+        &fake.url(),
+        &["--threshold-1m", "300000", "--carry-max-chars", "7000"],
+    );
     let port = current.port.to_string();
     let output = gobstopper(&["proxy", "status", "--port", &port], &dir);
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(
-        text.contains(": threshold 128000 tokens, threshold_1m 300000 tokens, keep_recent 3, keep_tail_percent 40\nrequests 0 (0 with a 1M window), compacted 0,"),
+        text.contains(": threshold 128000 tokens, threshold_1m 300000 tokens, keep_recent 3, keep_tail_percent 40, carry_max_chars 7000\nrequests 0 (0 with a 1M window), compacted 0,"),
         "{text}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1057,7 +1161,7 @@ fn proxy_status_prints_no_null_for_an_older_server() {
 fn replay_at_zero_tail_percent_matches_the_reference_report() {
     let dir = scratch_dir("tail-replay");
     let transcript = tail_transcript(&dir);
-    let replay = |percent: &str| -> Value {
+    let replay = |percent: &str, carry: &str| -> Value {
         let output = gobstopper(
             &[
                 "proxy",
@@ -1069,6 +1173,8 @@ fn replay_at_zero_tail_percent_matches_the_reference_report() {
                 "1000",
                 "--keep-tail-percent",
                 percent,
+                "--carry-max-chars",
+                carry,
                 "--json",
             ],
             &dir,
@@ -1080,8 +1186,9 @@ fn replay_at_zero_tail_percent_matches_the_reference_report() {
         );
         serde_json::from_slice(&output.stdout).unwrap()
     };
-    // Recorded with gobstopper 0.4.0, before the tail budget existed.
-    let reference = replay("0");
+    // Recorded with gobstopper 0.4.0, before the tail budget and the carry
+    // existed.
+    let reference = replay("0", "0");
     for (field, value) in [
         ("requests", 61),
         ("compacted", 8),
@@ -1107,9 +1214,179 @@ fn replay_at_zero_tail_percent_matches_the_reference_report() {
     }
     // The flag reaches the engine: a 60% budget keeps more and compacts
     // more often on the same transcript.
-    let tail = replay("60");
+    let tail = replay("60", "0");
     assert_eq!(tail["compacted"], 10);
     assert_eq!(tail["pairing_violations"], 0);
     assert!(tail["total_est_tokens_out"].as_u64() > reference["total_est_tokens_out"].as_u64());
+    let carry_chars = |report: &Value| -> Vec<u64> {
+        report["compactions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| c["carry_chars"].as_u64().unwrap())
+            .collect()
+    };
+    assert!(carry_chars(&reference).iter().all(|&chars| chars == 0));
+    // The carry flag reaches the engine too: from the second compaction on,
+    // each summary shows the earlier steps' visible text.
+    let carried = replay("0", "24000");
+    let shown = carry_chars(&carried);
+    assert_eq!(shown[0], 0);
+    assert!(
+        shown.len() >= 2 && shown[1..].iter().all(|&chars| chars > 0),
+        "{shown:?}"
+    );
+    let text = gobstopper(
+        &[
+            "proxy",
+            "replay",
+            transcript.to_str().unwrap(),
+            "--threshold",
+            "6000",
+            "--carry-max-chars",
+            "24000",
+        ],
+        &dir,
+    );
+    let text = String::from_utf8(text.stdout).unwrap();
+    assert!(
+        text.contains(", keep_tail_percent 40, carry_max_chars 24000, "),
+        "{text}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A session of tool steps and, every fourth step, a visible reply and a
+/// human instruction; every carried word holds `CARRYMARK`.
+fn talk_session(turns: usize) -> Vec<Value> {
+    let mut messages = vec![json!({"role": "user", "content": "Fix the failing test."})];
+    for i in 0..turns {
+        if i % 4 == 3 {
+            messages.push(json!({"role": "assistant", "content": [
+                {"type": "text", "text": format!("CARRYMARK reply {i}: part {i} is done.")}
+            ]}));
+            messages.push(json!({"role": "user", "content": format!("CARRYMARK instruction {i}: take part {} next.", i + 1)}));
+            continue;
+        }
+        messages.push(json!({"role": "assistant", "content": [
+            {"type": "text", "text": format!("CARRYMARK step {i}: running the tests.")},
+            {"type": "tool_use", "id": format!("tu_{i}"), "name": "bash", "input": {"command": format!("pytest -x {i}")}}
+        ]}));
+        messages.push(json!({"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": format!("tu_{i}"), "content": "X".repeat(1500)}
+        ]}));
+    }
+    messages
+}
+
+#[test]
+fn a_carry_is_sent_upstream_and_only_its_size_is_logged() {
+    const LABEL: &str = "Earlier in this session (oldest first; older text omitted):";
+    let dir = scratch_dir("carry-log");
+    let fake = Fake::start(|_| Reply::Sse(sse_events()));
+    let url = fake.url();
+    let messages = talk_session(40);
+    let mut grown = messages.clone();
+    grown.push(
+        json!({"role": "assistant", "content": [{"type": "text", "text": "CARRYMARK done."}]}),
+    );
+    grown.push(json!({"role": "user", "content": "CARRYMARK thanks"}));
+    let mut shown = Vec::new();
+    for carry in ["24000", "0"] {
+        let (log, stats) = (
+            dir.join(format!("proxy-{carry}.log")),
+            dir.join(format!("proxy-stats-{carry}.jsonl")),
+        );
+        let proxy = start_proxy_inner(
+            &url,
+            &url,
+            &url,
+            &[
+                "--threshold",
+                "3000",
+                "--keep-recent",
+                "1",
+                "--carry-max-chars",
+                carry,
+            ],
+            &[("GOBSTOPPER_STATS_FILE", stats.to_str().unwrap())],
+            Stdio::from(std::fs::File::create(&log).unwrap()),
+        );
+        for messages in [&messages, &grown] {
+            let response = request(
+                proxy.port,
+                "POST",
+                "/v1/messages",
+                ANTHROPIC,
+                &body(messages),
+            );
+            assert_eq!(response.status, 200);
+        }
+        let status = request(proxy.port, "GET", "/gobstopper/status", &[], b"").json();
+        assert_eq!(status["carry_max_chars"], carry.parse::<u64>().unwrap());
+        assert_eq!(
+            (&status["compacted"], &status["matched"]),
+            (&json!(1), &json!(1))
+        );
+        let port = proxy.port.to_string();
+        let text = gobstopper(&["proxy", "status", "--port", &port], &dir).stdout;
+        let text = String::from_utf8(text).unwrap();
+        assert!(
+            text.contains(&format!(
+                ", keep_tail_percent 40, carry_max_chars {carry}\n"
+            )),
+            "{text}"
+        );
+        drop(proxy);
+
+        // The provider gets the carried words; the log and the ledger get
+        // their size only.
+        let sent = fake.seen().last().unwrap().json();
+        let summary = summaries(&sent).pop().unwrap();
+        assert_eq!(summary.contains(LABEL), carry != "0", "{summary}");
+        let lines = std::fs::read_to_string(&log).unwrap();
+        assert!(
+            lines.contains(&format!("carry_max_chars {carry}")),
+            "{lines}"
+        );
+        let tagged: Vec<&str> = lines.lines().filter(|l| l.contains("window=")).collect();
+        assert_eq!(tagged.len(), 2, "{lines}");
+        let logged: Vec<u64> = tagged
+            .iter()
+            .map(|line| {
+                let (_, rest) = line.split_once(", carry ").unwrap();
+                rest.split_once(" chars)").unwrap().0.parse().unwrap()
+            })
+            .collect();
+        let ledger = std::fs::read_to_string(&stats).unwrap();
+        let recorded: Vec<u64> = ledger
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .map(|record| record["carry_chars"].as_u64().unwrap())
+            .collect();
+        assert_eq!(logged, recorded);
+        for content in [
+            "CARRYMARK",
+            "Earlier in this session",
+            "Fix the failing",
+            "XXXX",
+        ] {
+            assert!(!lines.contains(content), "{content} logged: {lines}");
+            assert!(!ledger.contains(content), "{content} recorded: {ledger}");
+        }
+        shown.push(logged);
+    }
+    // With the carry on, both requests send a carried section; with it at
+    // 0 neither does.
+    assert!(shown[0].iter().all(|&chars| chars > 0), "{shown:?}");
+    assert_eq!(shown[1], [0, 0]);
+
+    // 0 is accepted and a negative size is not.
+    let output = gobstopper(
+        &["proxy", "serve", "--port", "0", "--carry-max-chars", "-1"],
+        &dir,
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -76,6 +76,18 @@ pub struct CliffConfig {
     pub keep_thinking: bool,
     /// Cap on thinking text per summarized turn; 0 = unlimited.
     pub thinking_max_chars: usize,
+    /// Characters of the conversation's words carried across compactions:
+    /// the human's instructions (including messages queued while the agent
+    /// worked, text typed after an interrupt and feedback typed when
+    /// rejecting a tool call) and the assistant's visible replies, from
+    /// every summarized turn. Each later summary shows them as one section,
+    /// oldest first; when they exceed the budget, the oldest text drops out
+    /// first. Tool calls, other tool output, thinking, skill bodies, shell
+    /// output, system reminders and task notifications are never carried.
+    /// The engine also caps the budget at a quarter of the request's
+    /// headroom. 0 turns carrying off, and each summary then covers only
+    /// the turns since the previous compaction.
+    pub carry_max_chars: usize,
     /// Refuse a request still over budget after the escalation ladder
     /// instead of sending it anyway.
     pub strict: bool,
@@ -93,6 +105,7 @@ impl Default for CliffConfig {
             human_max_chars: 20_000,
             keep_thinking: true,
             thinking_max_chars: 0,
+            carry_max_chars: 24_000,
             strict: false,
         }
     }
@@ -178,6 +191,16 @@ impl Dialect {
         }
     }
 
+    /// The conversation's words in `messages`, oldest first, for the
+    /// carried section of later summaries.
+    fn carry_parts(self, messages: &[Value]) -> Vec<String> {
+        match self {
+            Self::Anthropic => anthropic::carry_parts(messages),
+            Self::Responses => responses::carry_parts(messages),
+            Self::ChatCompletions => chat::carry_parts(messages),
+        }
+    }
+
     fn user_message(self, text: String) -> Value {
         match self {
             Self::Anthropic => anthropic::user_message(text),
@@ -233,13 +256,17 @@ pub struct CompactResult {
     pub summary: Value,
     /// Index into the input: `input[cut..]` was kept verbatim.
     pub cut: usize,
+    /// The conversation's words to carry into the next summary, oldest
+    /// first: the carry this step rendered plus the words of the turns it
+    /// summarized, bounded. Empty when carrying is off.
+    pub carry: Vec<String>,
 }
 
 /// One cliff step: `[head] + [summary of older turns] + [newest turns]`.
 /// `None` when there is no assistant turn yet, too few turns, or no
 /// reduction in message count.
 pub fn compact(messages: &[Value], dialect: Dialect, cfg: &CliffConfig) -> Option<CompactResult> {
-    compact_within(messages, dialect, cfg, 0)
+    compact_within(messages, dialect, cfg, 0, &[], 0)
 }
 
 /// [`compact`] with a kept tail that grows past `keep_recent` turns, one
@@ -249,11 +276,20 @@ pub fn compact(messages: &[Value], dialect: Dialect, cfg: &CliffConfig) -> Optio
 /// assistant-started turn stays summarized, and only splits that still
 /// reduce the message count are considered, so a budget never turns a
 /// `Some` into `None`. Budget 0 is exactly [`compact`].
+///
+/// `carry` is the previous step's carried words. The summary shows
+/// `bound_carry(carry, carry_budget)` as its first part, after the header,
+/// and the result's carry adds the words of the turns this step
+/// summarizes. With an empty carry the summary is exactly the one without
+/// carrying, and with `carry_budget` 0 the result is exactly the one
+/// without carrying.
 fn compact_within(
     messages: &[Value],
     dialect: Dialect,
     cfg: &CliffConfig,
     budget_chars: usize,
+    carry: &[String],
+    carry_budget: usize,
 ) -> Option<CompactResult> {
     let first_assistant = messages.iter().position(|m| dialect.is_assistant(m))?;
     let mut head_len = first_assistant;
@@ -279,15 +315,24 @@ fn compact_within(
                 .collect()
         })
         .collect();
+    let carried = bound_carry(carry, carry_budget);
+    let section = carry_section(carried);
     let split = if budget_chars == 0 {
         min_split
     } else {
-        extend_split(body, dialect, &turns, &turn_parts, budget_chars)
+        extend_split(
+            body,
+            dialect,
+            &turns,
+            &turn_parts,
+            section.as_deref(),
+            budget_chars,
+        )
     };
-    let parts: Vec<&str> = turn_parts[..split]
+    let parts: Vec<&str> = section
         .iter()
-        .flatten()
         .map(String::as_str)
+        .chain(turn_parts[..split].iter().flatten().map(String::as_str))
         .collect();
     let text = if parts.is_empty() {
         SUMMARY_HEADER.to_string()
@@ -300,6 +345,13 @@ fn compact_within(
     if head_len + 1 + kept.len() >= messages.len() {
         return None;
     }
+    let carry = if carry_budget == 0 {
+        Vec::new()
+    } else {
+        let mut all = carried.to_vec();
+        all.extend(dialect.carry_parts(&messages[head_len..kept_start]));
+        bound_carry(&all, carry_budget).to_vec()
+    };
     let mut out = Vec::with_capacity(head_len + 1 + kept.len());
     out.extend_from_slice(&messages[..head_len]);
     out.push(summary.clone());
@@ -309,7 +361,36 @@ fn compact_within(
         head_len,
         summary,
         cut: kept_start,
+        carry,
     })
+}
+
+/// The carried parts to keep under `budget`: the longest suffix of whole
+/// parts whose cost fits, each part costing its characters plus 2 for the
+/// blank line that joins it. The walk stops at the first part that does not
+/// fit, which gives `bound(bound(a) ++ b) == bound(a ++ b)`: a chain that
+/// carries its words forward step by step keeps the same parts as one step
+/// over the same turns. Skipping a part that does not fit and taking older
+/// ones would break that.
+fn bound_carry(parts: &[String], budget: usize) -> &[String] {
+    let mut used = 0usize;
+    let mut start = parts.len();
+    while start > 0 {
+        let cost = parts[start - 1].chars().count() + 2;
+        if cost > budget - used {
+            break;
+        }
+        used += cost;
+        start -= 1;
+    }
+    &parts[start..]
+}
+
+/// The carried section of a summary: the label line, then the parts joined
+/// by blank lines. `None` for no parts. Carried parts hold no `---` line,
+/// so the section is exactly one summary part.
+fn carry_section(parts: &[String]) -> Option<String> {
+    (!parts.is_empty()).then(|| format!("{CARRY_LABEL}\n{}", parts.join("\n\n")))
 }
 
 /// The split for [`compact_within`]: start at the minimum (`keep_recent`
@@ -321,6 +402,7 @@ fn extend_split(
     dialect: Dialect,
     turns: &[Range<usize>],
     turn_parts: &[Vec<String>],
+    section: Option<&str>,
     budget_chars: usize,
 ) -> usize {
     let min_split = turn_parts.len();
@@ -352,12 +434,15 @@ fn extend_split(
             .map(|message| billable_chars(message) + 2)
             .sum()
     };
+    // The carried section is one more part, the same at every split.
     let mut part_chars: usize = turn_parts
         .iter()
         .flatten()
         .map(|part| escaped_chars(part))
-        .sum();
-    let mut part_count: usize = turn_parts.iter().map(Vec::len).sum();
+        .sum::<usize>()
+        + section.map_or(0, escaped_chars);
+    let mut part_count: usize =
+        turn_parts.iter().map(Vec::len).sum::<usize>() + usize::from(section.is_some());
     let mut tail_chars: usize = turns[min_split..].iter().map(turn_chars).sum();
     if summary_chars(part_chars, part_count) + tail_chars > budget_chars {
         return min_split;
@@ -533,6 +618,228 @@ fn strip_task_notifications(text: &str) -> String {
     }
     out.push_str(rest);
     out
+}
+
+// Carried conversation text (C3): the human's words and the assistant's
+// visible replies, kept across compaction cycles. Extraction uses these
+// fixed constants and never a step's `CliffConfig`, so every rung of a
+// compaction chain extracts the same parts.
+
+/// Cap on one carried part, its `user: ` or `assistant: ` prefix and any
+/// ellipsis included.
+const CARRY_PART_MAX_CHARS: usize = 4_000;
+/// First line of the carried section in a summary.
+const CARRY_LABEL: &str = "Earlier in this session (oldest first; older text omitted):";
+/// Openings of a message the human (or a coordinating agent) queued while
+/// the agent worked, as Claude Code 2.1.283 renders them: the human's and
+/// the coordinator's (sent as a role "system" message, or in older and
+/// future versions as a whole system-reminder block) and a verified Slack
+/// human's in a bound thread, one message or a batch.
+const QUEUED_MARKERS: [&str; 4] = [
+    "The user sent a new message while you were working:",
+    "The coordinator sent a message",
+    "A message arrived in the bound thread while you were working:",
+    "Messages arrived in the bound thread while you were working:",
+];
+/// Harness text Claude Code 2.1.283 appends to a queued message: after the
+/// human's (and an auto-continuation's) and after the coordinator's.
+const QUEUED_TRAILERS: [&str; 2] = [
+    "\n\nThis is how Claude Code surfaces messages the user sends mid-turn \u{2014} within \
+     the running turn, often alongside the next tool result, rather than as a separate \
+     conversation turn. Address the message above as you continue this turn.",
+    "\n\nAddress this before completing your current task.",
+];
+/// The token-count note Claude Code sends after tool results; it can share
+/// the queued message's system message.
+const TOKENS_OPEN: &str = "<total_tokens>";
+const TOKENS_CLOSE: &str = " tokens left</total_tokens>";
+/// Openings of harness text that can arrive as a whole block of a human
+/// turn: shell and local-command output, the caveat Claude Code sends
+/// before a local command's messages, a skill a slash command loaded, and
+/// the context items Codex re-sends as user messages.
+const HARNESS_BLOCKS: [&str; 9] = [
+    "<bash-stdout>",
+    "<bash-stderr>",
+    "<local-command-stdout>",
+    "<local-command-stderr>",
+    "<local-command-caveat>",
+    "Base directory for this skill:",
+    "<environment_context>",
+    "<user_instructions>",
+    "# AGENTS.md instructions",
+];
+/// Opening of the harness text block that follows an interrupted tool call.
+const INTERRUPT_MARKER: &str = "[Request interrupted by user";
+const REMINDER_OPEN: &str = "<system-reminder>";
+const REMINDER_CLOSE: &str = "</system-reminder>";
+
+/// The queued message in `text` with its marker removed: everything
+/// through the first colon on the marker's line, or that whole line when it
+/// has no colon. `None` when `text` does not start with a marker.
+fn strip_queued_marker(text: &str) -> Option<&str> {
+    let text = text.trim();
+    if !QUEUED_MARKERS.iter().any(|marker| text.starts_with(marker)) {
+        return None;
+    }
+    let line_end = text.find('\n').unwrap_or(text.len());
+    let rest = match text[..line_end].find(':') {
+        Some(colon) => &text[colon + 1..],
+        None => &text[line_end..],
+    };
+    Some(rest.trim())
+}
+
+/// `text` without a closing token-count note, when it ends with one.
+fn strip_tokens_note(text: &str) -> &str {
+    let text = text.trim_end();
+    let Some(open) = text.rfind(TOKENS_OPEN) else {
+        return text;
+    };
+    let count = text
+        .strip_suffix(TOKENS_CLOSE)
+        .and_then(|head| head.get(open + TOKENS_OPEN.len()..));
+    match count {
+        Some(count) if !count.is_empty() && count.chars().all(|c| c.is_ascii_alphanumeric()) => {
+            text[..open].trim_end()
+        }
+        _ => text,
+    }
+}
+
+/// The words of a queued message in `text`, which starts with a marker:
+/// the marker removed, then a closing token-count note and one of Claude
+/// Code's trailers, each only on an exact match (anything else stays), and
+/// reminder spans and task notifications stripped as in `strip_spans`.
+fn queued_message(text: &str) -> Option<String> {
+    let rest = strip_tokens_note(strip_queued_marker(text)?);
+    let rest = QUEUED_TRAILERS
+        .iter()
+        .find_map(|trailer| {
+            rest.strip_suffix(trailer)
+                .or_else(|| (rest == trailer.trim_start()).then_some(""))
+        })
+        .unwrap_or(rest);
+    Some(strip_spans(rest).trim().to_string())
+}
+
+/// The queued message a whole human text block holds: the block, trimmed,
+/// is one closed system-reminder span, or plain text, that opens with a
+/// marker. A span elsewhere in a block is stripped, never carried.
+fn queued_block(text: &str) -> Option<String> {
+    let text = text.trim();
+    let inner = text
+        .strip_prefix(REMINDER_OPEN)
+        .and_then(|inner| inner.strip_suffix(REMINDER_CLOSE))
+        .filter(|inner| !inner.contains(REMINDER_OPEN) && !inner.contains(REMINDER_CLOSE))
+        .unwrap_or(text);
+    queued_message(inner)
+}
+
+/// `text` without the closed `open`..`close` spans in it. Text that opens
+/// with an unclosed span is harness text and yields nothing; an unclosed
+/// opening tag after other text stays, as typed.
+fn strip_closed(text: &str, open: &str, close: &str) -> String {
+    let mut kept = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(open) {
+        let inner = start + open.len();
+        let Some(end) = rest[inner..].find(close) else {
+            if kept.trim().is_empty() && rest[..start].trim().is_empty() {
+                return String::new();
+            }
+            break;
+        };
+        kept.push_str(&rest[..start]);
+        rest = rest[inner + end + close.len()..].trim_start();
+    }
+    kept.push_str(rest);
+    kept
+}
+
+/// Carried text without system-reminder spans and task notifications, as
+/// `strip_closed` removes them.
+fn strip_spans(text: &str) -> String {
+    let kept = strip_closed(text, REMINDER_OPEN, REMINDER_CLOSE);
+    strip_closed(&kept, TASK_OPEN, TASK_CLOSE)
+}
+
+/// One human text block as carried: its typed text with spans stripped,
+/// or the queued message when the whole block is one. Harness blocks and
+/// summary text yield neither.
+fn human_block(text: &str) -> (String, Option<String>) {
+    if let Some(queued) = queued_block(text) {
+        return (String::new(), Some(queued));
+    }
+    let opening = text.trim_start();
+    if opening.starts_with(SUMMARY_HEADER)
+        || HARNESS_BLOCKS
+            .iter()
+            .any(|prefix| opening.starts_with(prefix))
+    {
+        return (String::new(), None);
+    }
+    (strip_spans(text).trim().to_string(), None)
+}
+
+/// True for the harness's marker block after an interrupted tool call.
+fn is_interrupt_marker(text: &str) -> bool {
+    text.trim_start().starts_with(INTERRUPT_MARKER)
+}
+
+/// One carried part: trimmed, every line that is `---` after trimming
+/// rewritten as `- - -` (so no part, and no join of parts, can hold a
+/// PART_SEPARATOR), prefixed, and cut to `CARRY_PART_MAX_CHARS` with the
+/// prefix and ellipsis counted. `None` for empty text and for text that
+/// starts with the summary header.
+fn carry_part(prefix: &str, text: &str) -> Option<String> {
+    let text = text.trim();
+    if text.is_empty() || text.starts_with(SUMMARY_HEADER) {
+        return None;
+    }
+    let text = text
+        .split('\n')
+        .map(|line| if line.trim() == "---" { "- - -" } else { line })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let part = format!("{prefix}{text}");
+    Some(if part.chars().count() > CARRY_PART_MAX_CHARS {
+        truncate(&part, CARRY_PART_MAX_CHARS - "...".len())
+    } else {
+        part
+    })
+}
+
+/// Visible assistant text as one carried part: each text with reminder
+/// spans and task notifications stripped (a queued span there is dropped,
+/// not carried), trimmed, summary-header text skipped, joined by newlines.
+fn carry_assistant(texts: &[&str]) -> Option<String> {
+    let visible: Vec<String> = texts
+        .iter()
+        .filter(|text| !text.trim_start().starts_with(SUMMARY_HEADER))
+        .map(|text| strip_spans(text).trim().to_string())
+        .filter(|text| !text.is_empty())
+        .collect();
+    carry_part("assistant: ", &visible.join("\n"))
+}
+
+/// Human text blocks as carried parts: their typed text, as `human_block`
+/// keeps it, joined into one `user: ` part, then one part per block that
+/// is a queued message.
+fn carry_human<S: AsRef<str>>(texts: &[S]) -> Vec<String> {
+    let mut typed = Vec::new();
+    let mut queued = Vec::new();
+    for text in texts {
+        let (kept, found) = human_block(text.as_ref());
+        queued.extend(found);
+        if !kept.is_empty() {
+            typed.push(kept);
+        }
+    }
+    let mut parts: Vec<String> = carry_part("user: ", &typed.join("\n"))
+        .into_iter()
+        .collect();
+    parts.extend(queued.iter().filter_map(|text| carry_part("user: ", text)));
+    parts
 }
 
 fn str_field<'a>(value: &'a Value, key: &str) -> &'a str {
@@ -812,7 +1119,7 @@ mod tests {
                     let minimum = reference.as_ref().map_or(1, step_chars);
                     for budget in [0, 1, minimum - 1] {
                         let budgeted =
-                            compact_within(&messages, dialect, &cfg(keep_recent), budget);
+                            compact_within(&messages, dialect, &cfg(keep_recent), budget, &[], 0);
                         assert_eq!(
                             budgeted.map(|r| (r.messages, r.head_len, r.cut)),
                             reference.clone().map(|r| (r.messages, r.head_len, r.cut)),
@@ -833,7 +1140,7 @@ mod tests {
                     let reference = compact(&messages, dialect, &cfg(keep_recent));
                     for budget in [100, 2_000, 8_000, 20_000, 60_000, usize::MAX / 2] {
                         let budgeted =
-                            compact_within(&messages, dialect, &cfg(keep_recent), budget);
+                            compact_within(&messages, dialect, &cfg(keep_recent), budget, &[], 0);
                         let (Some(reference), Some(budgeted)) = (&reference, &budgeted) else {
                             assert_eq!(reference.is_some(), budgeted.is_some());
                             continue;
@@ -874,13 +1181,15 @@ mod tests {
                 };
                 let mut budget = step_chars(&reference);
                 while budget < 400_000 {
-                    let reached = compact_within(&messages, dialect, &cfg(1), budget).unwrap();
+                    let reached =
+                        compact_within(&messages, dialect, &cfg(1), budget, &[], 0).unwrap();
                     let size = step_chars(&reached);
-                    let exact = compact_within(&messages, dialect, &cfg(1), size).unwrap();
+                    let exact = compact_within(&messages, dialect, &cfg(1), size, &[], 0).unwrap();
                     assert_eq!(exact.cut, reached.cut, "{dialect:?} budget {size}");
                     if reached.cut < reference.cut {
                         assert!(size <= budget);
-                        let short = compact_within(&messages, dialect, &cfg(1), size - 1).unwrap();
+                        let short =
+                            compact_within(&messages, dialect, &cfg(1), size - 1, &[], 0).unwrap();
                         assert!(short.cut > reached.cut, "{dialect:?} budget {}", size - 1);
                         extended += 1;
                     }
@@ -906,6 +1215,8 @@ mod tests {
                 Dialect::Anthropic,
                 &cfg(keep_recent),
                 usize::MAX / 2,
+                &[],
+                0,
             )
             .unwrap();
             // The prior summary and the first turn are summarized.
@@ -916,7 +1227,15 @@ mod tests {
             assert!(!summary.contains("prior-notes"));
         }
         // Without a prior summary the first turn is still summarized.
-        let result = compact_within(&session, Dialect::Anthropic, &cfg(1), usize::MAX / 2).unwrap();
+        let result = compact_within(
+            &session,
+            Dialect::Anthropic,
+            &cfg(1),
+            usize::MAX / 2,
+            &[],
+            0,
+        )
+        .unwrap();
         assert_eq!(result.cut, 3);
         // A two-message leading group (a trimmed system message and the
         // prior summary) could be dropped alone and still shrink the list;
@@ -927,7 +1246,8 @@ mod tests {
             prior,
         ];
         led.extend_from_slice(&session[1..]);
-        let result = compact_within(&led, Dialect::Anthropic, &cfg(1), usize::MAX / 2).unwrap();
+        let result =
+            compact_within(&led, Dialect::Anthropic, &cfg(1), usize::MAX / 2, &[], 0).unwrap();
         assert_eq!(result.head_len, 1);
         assert_eq!(result.cut, 5);
         assert!(summaries(&result.messages)[0].contains("Step 0"));
@@ -989,7 +1309,8 @@ mod tests {
         let mut split_boundaries = 0;
         for keep_recent in 1..6 {
             for budget in [0, 2_000, 8_000, 20_000, usize::MAX / 2] {
-                let result = compact_within(&messages, dialect, &cfg(keep_recent), budget).unwrap();
+                let result =
+                    compact_within(&messages, dialect, &cfg(keep_recent), budget, &[], 0).unwrap();
                 assert!(
                     pairing_intact(&result.messages, dialect),
                     "keep_recent {keep_recent} budget {budget}"
@@ -1048,6 +1369,445 @@ mod tests {
             }
         }
         assert!(compactions > 100);
+    }
+
+    #[test]
+    fn span_stripping_removes_closed_spans_and_blocks_that_open_unclosed() {
+        assert_eq!(
+            strip_spans(
+                "before <system-reminder>harness</system-reminder><system-reminder>more</system-reminder>after"
+            ),
+            "before after"
+        );
+        // A block that opens with an unclosed span is harness text.
+        assert_eq!(strip_spans("<system-reminder>harness never closed"), "");
+        assert_eq!(strip_spans("  \n<system-reminder>harness"), "");
+        assert_eq!(
+            strip_spans("<system-reminder>a</system-reminder><system-reminder>b"),
+            ""
+        );
+        // A tag the human typed after their words stays, and so does the
+        // rest of the block.
+        let typed = "Grep for\n<system-reminder> in the fixtures, then fix them";
+        assert_eq!(strip_spans(typed), typed);
+        // Task notifications follow the same rule.
+        assert_eq!(
+            strip_spans("<task-notification>done</task-notification>\nplease"),
+            "please"
+        );
+        assert_eq!(
+            strip_spans("<task-notification>\n<task-id>b1</task-id> TASK-BODY"),
+            ""
+        );
+        let typed = "Why does <task-notification> appear here?";
+        assert_eq!(strip_spans(typed), typed);
+    }
+
+    #[test]
+    fn only_a_whole_block_is_read_as_a_queued_message() {
+        let user = QUEUED_MARKERS[0];
+        assert_eq!(
+            queued_block(&format!(
+                "<system-reminder>\n{user}\nfix the tests\n</system-reminder>"
+            )),
+            Some("fix the tests".to_string())
+        );
+        assert_eq!(
+            queued_block(&format!("{user}\nplain block")),
+            Some("plain block".to_string())
+        );
+        // A span inside other text is stripped, never carried.
+        let inside = format!("a<system-reminder>{user}\nfix the tests</system-reminder>b");
+        assert_eq!(queued_block(&inside), None);
+        assert_eq!(human_block(&inside), ("ab".to_string(), None));
+        // Two spans, or one left open, are not one queued message.
+        let two = format!(
+            "<system-reminder>{user}\nx</system-reminder><system-reminder>y</system-reminder>"
+        );
+        assert_eq!(queued_block(&two), None);
+        assert_eq!(human_block(&two), (String::new(), None));
+        let open = format!("<system-reminder>{user}\nx");
+        assert_eq!(queued_block(&open), None);
+        assert_eq!(human_block(&open), (String::new(), None));
+    }
+
+    #[test]
+    fn queued_messages_lose_claude_codes_trailers_only_on_an_exact_match() {
+        let human = format!(
+            "The user sent a new message while you were working:\nTYPED words{}",
+            QUEUED_TRAILERS[0]
+        );
+        assert_eq!(queued_message(&human).as_deref(), Some("TYPED words"));
+        // The token-count note that shares the system message goes first.
+        let noted = format!("{human}\n\n<total_tokens>14999985 tokens left</total_tokens>");
+        assert_eq!(noted.chars().count(), 52 + 11 + 230 + 2 + 49);
+        assert_eq!(queued_message(&noted).as_deref(), Some("TYPED words"));
+        let coordinator = format!(
+            "The coordinator sent a message while you were working:\nrebase first{}",
+            QUEUED_TRAILERS[1]
+        );
+        assert_eq!(
+            queued_message(&coordinator).as_deref(),
+            Some("rebase first")
+        );
+        assert_eq!(
+            queued_message(&format!("{}{}", QUEUED_MARKERS[0], QUEUED_TRAILERS[0])).as_deref(),
+            Some("")
+        );
+        // Anything but the exact trailer stays.
+        let near = human.replace("Address the message above", "Address the message");
+        assert!(queued_message(&near)
+            .unwrap()
+            .ends_with("as you continue this turn."));
+        assert_eq!(
+            strip_tokens_note("x\n\n<total_tokens>Infinite tokens left</total_tokens>"),
+            "x"
+        );
+        for kept in [
+            "x <total_tokens>5 tokens</total_tokens>",
+            "x <total_tokens> tokens left</total_tokens>",
+            "x <total_tokens>5 6 tokens left</total_tokens>",
+        ] {
+            assert_eq!(strip_tokens_note(kept), kept);
+        }
+        // Bound-thread messages have no trailer.
+        for marker in &QUEUED_MARKERS[2..] {
+            assert_eq!(
+                queued_message(&format!("{marker}\nfrom Slack")).as_deref(),
+                Some("from Slack")
+            );
+        }
+    }
+
+    #[test]
+    fn harness_blocks_in_a_human_turn_are_not_carried() {
+        for block in [
+            "<bash-stdout>BUILD-OUTPUT</bash-stdout><bash-stderr></bash-stderr>",
+            "<bash-stderr>ERR</bash-stderr>",
+            "<local-command-stdout>COMMAND-OUTPUT</local-command-stdout>",
+            "<local-command-stderr>COMMAND-ERR</local-command-stderr>",
+            "<local-command-caveat>Caveat: CAVEAT-TEXT DO NOT respond to these messages.</local-command-caveat>",
+            "Base directory for this skill: /skills/x\n\n# Skill\n\nSKILL-BODY",
+            "<environment_context>\n  <cwd>/w</cwd>\n</environment_context>",
+            "<user_instructions>\nUSER-INSTRUCTIONS\n</user_instructions>",
+            "# AGENTS.md instructions for /w\n\n<INSTRUCTIONS>AGENTS</INSTRUCTIONS>",
+        ] {
+            assert_eq!(human_block(block), (String::new(), None), "{block}");
+        }
+        // The human's own command is their words.
+        assert_eq!(
+            human_block("<bash-input>cargo test</bash-input>").0,
+            "<bash-input>cargo test</bash-input>"
+        );
+    }
+
+    #[test]
+    fn queued_marker_removal_runs_through_the_first_colon_of_its_line() {
+        let user = QUEUED_MARKERS[0];
+        let coordinator = QUEUED_MARKERS[1];
+        assert_eq!(
+            strip_queued_marker(&format!("{user} same line")),
+            Some("same line")
+        );
+        assert_eq!(
+            strip_queued_marker(&format!("  {user}\nnext line\n")),
+            Some("next line")
+        );
+        assert_eq!(
+            strip_queued_marker(&format!("{coordinator} from lead: a: b\nc")),
+            Some("a: b\nc")
+        );
+        // No colon on the marker's line: the whole line goes.
+        assert_eq!(
+            strip_queued_marker(&format!("{coordinator}\nx: y")),
+            Some("x: y")
+        );
+        assert_eq!(strip_queued_marker(coordinator), Some(""));
+        assert_eq!(strip_queued_marker("not queued: text"), None);
+    }
+
+    #[test]
+    fn carry_parts_never_hold_or_form_a_part_separator() {
+        let doubled = carry_part("user: ", "a\n\n---\n\n---\n\nb").unwrap();
+        assert!(!doubled.contains(PART_SEPARATOR), "{doubled:?}");
+        assert_eq!(doubled, "user: a\n\n- - -\n\n- - -\n\nb");
+        let tail = carry_part("assistant: ", "done\n\n---").unwrap();
+        let head = carry_part("user: ", " ---\r\n\nnext").unwrap();
+        let joined = [CARRY_LABEL, tail.as_str(), head.as_str()].join("\n\n");
+        assert!(!joined.contains(PART_SEPARATOR), "{joined:?}");
+        assert!(joined.split(PART_SEPARATOR).count() == 1);
+        // Only whole `---` lines change.
+        assert_eq!(
+            carry_part("user: ", "a --- b\n----").unwrap(),
+            "user: a --- b\n----"
+        );
+    }
+
+    #[test]
+    fn carry_part_trims_prefixes_caps_and_drops_empty_text() {
+        assert_eq!(carry_part("user: ", "  hi \n").unwrap(), "user: hi");
+        assert_eq!(carry_part("user: ", " \n\t"), None);
+        assert_eq!(carry_part("user: ", ""), None);
+        assert_eq!(
+            carry_part("user: ", &format!("{SUMMARY_HEADER}\n\nuser: old")),
+            None
+        );
+        // The cap counts the prefix and the ellipsis.
+        let long = carry_part("assistant: ", &"x".repeat(CARRY_PART_MAX_CHARS)).unwrap();
+        assert_eq!(long.chars().count(), CARRY_PART_MAX_CHARS);
+        assert!(long.starts_with("assistant: xxx") && long.ends_with("x..."));
+        let exact = "y".repeat(CARRY_PART_MAX_CHARS - "user: ".len());
+        assert_eq!(
+            carry_part("user: ", &exact).unwrap(),
+            format!("user: {exact}")
+        );
+        let over = carry_part("user: ", &format!("{exact}z")).unwrap();
+        assert_eq!(over.chars().count(), CARRY_PART_MAX_CHARS);
+        assert!(over.ends_with("y..."));
+        // Human text loses task notifications and reminder spans.
+        assert_eq!(
+            human_block(
+                "<task-notification>done</task-notification>\nplease <system-reminder>x</system-reminder>continue",
+            ),
+            ("please continue".to_string(), None)
+        );
+        assert!(is_interrupt_marker(
+            "[Request interrupted by user for tool use]\n"
+        ));
+        assert!(!is_interrupt_marker("I was [Request interrupted by user"));
+    }
+
+    /// A distinct part of `cost` (characters plus 2).
+    fn part_of_cost(label: u32, cost: usize) -> String {
+        let letter = char::from_u32(0x4E00 + label % 20_000).unwrap();
+        std::iter::repeat_n(letter, cost - 2).collect()
+    }
+
+    fn parts_of_cost(first_label: u32, costs: &[usize]) -> Vec<String> {
+        costs
+            .iter()
+            .zip(first_label..)
+            .map(|(&cost, label)| part_of_cost(label, cost))
+            .collect()
+    }
+
+    fn carry_cost(parts: &[String]) -> usize {
+        parts.iter().map(|part| part.chars().count() + 2).sum()
+    }
+
+    #[test]
+    fn the_carry_bound_keeps_the_longest_fitting_suffix() {
+        let a = parts_of_cost(0, &[2, 9]);
+        let b = parts_of_cost(10, &[5]);
+        let ab = [a.clone(), b.clone()].concat();
+        assert_eq!(bound_carry(&a, 10), &a[1..]);
+        assert_eq!(bound_carry(&ab, 10), &b[..]);
+        // A greedy bound that skipped the 9 and took the older 2 would keep
+        // [2, 5] from a ++ b but only [5] from bound(a) ++ b.
+        let rebound = [bound_carry(&a, 10).to_vec(), b.clone()].concat();
+        assert_eq!(bound_carry(&rebound, 10), bound_carry(&ab, 10));
+        assert!(bound_carry(&ab, 0).is_empty());
+        assert!(bound_carry(&[], 10).is_empty());
+        assert_eq!(bound_carry(&ab, 16), &ab[..]);
+        assert_eq!(bound_carry(&ab, 15), &ab[1..]);
+    }
+
+    #[test]
+    fn the_carry_bound_has_the_suffix_property_on_random_vectors() {
+        let mut state: u64 = 0x2545_F491_4F6C_DD1D;
+        let mut next = move |n: usize| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            (state >> 33) as usize % n
+        };
+        let mut label = 0u32;
+        for _ in 0..4_000 {
+            let budget = next(48);
+            let mut draw = |count: usize, next: &mut dyn FnMut(usize) -> usize| -> Vec<String> {
+                (0..count)
+                    .map(|_| {
+                        label += 1;
+                        part_of_cost(label, 2 + next(16))
+                    })
+                    .collect()
+            };
+            let (a_len, b_len) = (next(7), next(5));
+            let a = draw(a_len, &mut next);
+            let b = draw(b_len, &mut next);
+            let bound_a = bound_carry(&a, budget);
+            assert_eq!(bound_carry(bound_a, budget), bound_a);
+            let ab = [a.clone(), b.clone()].concat();
+            let rebound = [bound_a.to_vec(), b].concat();
+            let kept = bound_carry(&ab, budget);
+            assert_eq!(bound_carry(&rebound, budget), kept);
+            // A suffix that fits, and the next older part does not.
+            assert_eq!(kept, &ab[ab.len() - kept.len()..]);
+            assert!(carry_cost(kept) <= budget);
+            if kept.len() < ab.len() {
+                assert!(carry_cost(&ab[ab.len() - kept.len() - 1..]) > budget);
+            }
+        }
+    }
+
+    fn text_of(summary: &Value) -> String {
+        match summary.get("content") {
+            Some(Value::String(text)) => text.clone(),
+            Some(Value::Array(parts)) => str_field(&parts[0], "text").to_string(),
+            _ => String::new(),
+        }
+    }
+
+    fn sample_carry() -> Vec<String> {
+        [
+            carry_part("user: ", "Keep the public API.\n---\nNo new dependencies."),
+            carry_part("assistant: ", "Understood.\n\n  ---  \n\nWorking on it."),
+            carry_part("user: ", "Also run the benchmarks."),
+        ]
+        .into_iter()
+        .flatten()
+        .collect()
+    }
+
+    #[test]
+    fn the_carried_section_is_one_part_after_the_byte_identical_header() {
+        let carry = sample_carry();
+        let section = format!("{CARRY_LABEL}\n{}", carry.join("\n\n"));
+        assert_eq!(section.split(PART_SEPARATOR).count(), 1);
+        let mut checked = 0;
+        for dialect in DIALECTS {
+            for messages in tail_fixtures(dialect) {
+                let Some(plain) = compact(&messages, dialect, &cfg(1)) else {
+                    continue;
+                };
+                let step = compact_within(&messages, dialect, &cfg(1), 0, &carry, 24_000).unwrap();
+                assert_eq!((step.head_len, step.cut), (plain.head_len, plain.cut));
+                assert!(dialect.is_summary(&step.summary));
+                let text = text_of(&step.summary);
+                let plain_text = text_of(&plain.summary);
+                let expected = match plain_text.strip_prefix(&format!("{SUMMARY_HEADER}\n\n")) {
+                    Some(rest) => format!("{SUMMARY_HEADER}\n\n{section}{PART_SEPARATOR}{rest}"),
+                    None => format!("{SUMMARY_HEADER}\n\n{section}"),
+                };
+                assert_eq!(text, expected, "{dialect:?}");
+                let body = &text[SUMMARY_HEADER.len() + 2..];
+                assert_eq!(body.split(PART_SEPARATOR).next(), Some(section.as_str()));
+                // The rest of the message is the step without carrying.
+                let mut stripped = step.messages.clone();
+                stripped[step.head_len] = plain.summary.clone();
+                assert_eq!(stripped, plain.messages);
+                checked += 1;
+            }
+        }
+        assert!(checked >= 6);
+    }
+
+    #[test]
+    fn an_empty_carry_or_a_zero_budget_is_the_step_without_carrying() {
+        let carry = sample_carry();
+        let key = |result: Option<CompactResult>| {
+            result.map(|r| (r.messages, r.head_len, r.summary, r.cut, r.carry))
+        };
+        for dialect in DIALECTS {
+            for messages in tail_fixtures(dialect) {
+                for keep_recent in 0..4 {
+                    let config = cfg(keep_recent);
+                    for budget in [0, 8_000, usize::MAX / 2] {
+                        let plain = compact_within(&messages, dialect, &config, budget, &[], 0);
+                        if budget == 0 {
+                            assert_eq!(
+                                key(compact(&messages, dialect, &config)),
+                                key(plain.clone())
+                            );
+                        }
+                        let off = compact_within(&messages, dialect, &config, budget, &carry, 0);
+                        assert_eq!(key(off), key(plain.clone()));
+                        // An empty carry renders no section; only the
+                        // returned carry can differ.
+                        let started =
+                            compact_within(&messages, dialect, &config, budget, &[], 24_000);
+                        assert_eq!(
+                            started.map(|r| (r.messages, r.head_len, r.summary, r.cut)),
+                            plain.map(|r| (r.messages, r.head_len, r.summary, r.cut)),
+                            "{dialect:?} keep_recent {keep_recent} budget {budget}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_second_step_renders_the_first_steps_words_newest_kept() {
+        for dialect in [Dialect::Anthropic, Dialect::ChatCompletions] {
+            let mut messages = vec![dialect.user_message("Fix the failing test.".to_string())];
+            messages.extend(dialect_steps(dialect, 0..6, 1, 1500));
+            let first = compact_within(&messages, dialect, &cfg(1), 0, &[], 24_000).unwrap();
+            let words = |range: Range<usize>| -> Vec<String> {
+                range.map(|i| format!("assistant: Step {i}.")).collect()
+            };
+            // The first step has no carry to render, and the task prompt
+            // stays in the verbatim head.
+            assert_eq!(
+                first.summary,
+                compact(&messages, dialect, &cfg(1)).unwrap().summary
+            );
+            assert_eq!(first.carry, words(0..5));
+            let mut grown = first.messages.clone();
+            grown.extend(dialect_steps(dialect, 6..10, 1, 1500));
+            let second = compact_within(&grown, dialect, &cfg(1), 0, &first.carry, 24_000).unwrap();
+            let text = text_of(&second.summary);
+            let section = format!("{CARRY_LABEL}\n{}", words(0..5).join("\n\n"));
+            assert!(text.starts_with(&format!("{SUMMARY_HEADER}\n\n{section}{PART_SEPARATOR}")));
+            assert_eq!(text.matches(SUMMARY_HEADER).count(), 1);
+            assert_eq!(second.carry, words(0..9));
+            assert!(second
+                .carry
+                .iter()
+                .all(|part| !part.contains(SUMMARY_HEADER)));
+            // Under a smaller budget the oldest words drop out first, in
+            // the section and in the new carry.
+            let budget = carry_cost(&words(0..3));
+            let tight = compact_within(&grown, dialect, &cfg(1), 0, &first.carry, budget).unwrap();
+            let section = format!("{CARRY_LABEL}\n{}", words(2..5).join("\n\n"));
+            assert!(text_of(&tight.summary).contains(&section));
+            assert!(!text_of(&tight.summary).contains("assistant: Step 1."));
+            assert_eq!(tight.carry, words(6..9));
+        }
+    }
+
+    #[test]
+    fn the_tail_extension_leaves_exact_room_for_the_carried_section() {
+        let carry: Vec<String> = (0..20)
+            .map(|i| format!("user: instruction {i} {}", "w".repeat(300)))
+            .collect();
+        for dialect in DIALECTS {
+            let mut extended = 0;
+            for messages in tail_fixtures(dialect) {
+                let Some(reference) = compact(&messages, dialect, &cfg(1)) else {
+                    continue;
+                };
+                let mut budget = step_chars(&reference);
+                while budget < 400_000 {
+                    let step = |budget| {
+                        compact_within(&messages, dialect, &cfg(1), budget, &carry, 24_000).unwrap()
+                    };
+                    let plain =
+                        compact_within(&messages, dialect, &cfg(1), budget, &[], 0).unwrap();
+                    let reached = step(budget);
+                    assert!(reached.cut >= plain.cut);
+                    let size = step_chars(&reached);
+                    assert_eq!(step(size).cut, reached.cut, "{dialect:?} budget {size}");
+                    if reached.cut < reference.cut {
+                        assert!(size <= budget);
+                        assert!(step(size - 1).cut > reached.cut);
+                        extended += 1;
+                    }
+                    budget = budget * 5 / 4;
+                }
+            }
+            assert!(extended > 0, "{dialect:?}");
+        }
     }
 }
 
@@ -1131,6 +1891,34 @@ pub(crate) mod fixtures {
         }
     }
 
+    /// `tail_cfg` with a 24,000-character carry, pinned rather than read
+    /// from the default; at these small thresholds a quarter of the
+    /// headroom binds instead.
+    pub fn carry_cfg(threshold_tokens: u64) -> super::CliffConfig {
+        super::CliffConfig {
+            carry_max_chars: 24_000,
+            ..tail_cfg(threshold_tokens)
+        }
+    }
+
+    /// `tail_cfg` with the carry off: each summary covers only the turns
+    /// since the previous compaction, as in the reference.
+    pub fn uncarried_cfg(threshold_tokens: u64) -> super::CliffConfig {
+        super::CliffConfig {
+            carry_max_chars: 0,
+            ..tail_cfg(threshold_tokens)
+        }
+    }
+
+    /// Requests after which the live chain held a nonempty carry and sent a
+    /// carried section, compared with the fresh ones.
+    pub fn carried(steps: &[ChainStep]) -> usize {
+        steps
+            .iter()
+            .filter(|s| s.carry_parts > 0 && s.carry_chars > 0)
+            .count()
+    }
+
     /// `mixed_results` with three 10,000-character results every 20 steps
     /// before step 60, and none after. At a 6,000-token threshold the kept
     /// turns alone then exceed it, so those requests escalate to rung 1.
@@ -1159,7 +1947,12 @@ pub(crate) mod fixtures {
         pub rung: u8,
         /// Turns after the summary; 0 without one.
         pub tail_turns: usize,
-        /// The outgoing list, `base_cut` and `base_head` equal the fresh ones.
+        /// Parts of the live carry after this request; 0 with carrying off.
+        pub carry_parts: usize,
+        /// Characters of the carried section in the live outgoing summary.
+        pub carry_chars: usize,
+        /// The outgoing list, `base_cut`, `base_head` and the carry equal
+        /// the fresh ones.
         pub equal: bool,
     }
 
@@ -1186,8 +1979,11 @@ pub(crate) mod fixtures {
                     compacted: l.compacted,
                     rung: l.rung,
                     tail_turns,
+                    carry_parts: l.carry.len(),
+                    carry_chars: l.carry_chars,
                     equal: l.messages() == f.messages()
-                        && (l.base_cut, l.base_head) == (f.base_cut, f.base_head),
+                        && (l.base_cut, l.base_head) == (f.base_cut, f.base_head)
+                        && l.carry == f.carry,
                 }
             })
             .collect()

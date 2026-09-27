@@ -98,6 +98,13 @@ pub enum ProxyCmd {
         keep_tail_percent: u8,
         #[arg(long, default_value_t = 500)]
         result_max_chars: usize,
+        /// Characters of the human's words and the assistant's visible
+        /// replies each summary carries from the turns earlier compactions
+        /// summarized, newest kept, never tool output or thinking. At most a
+        /// quarter of the room above the verbatim head. 0 turns carrying off.
+        #[arg(long, value_name = "CHARS",
+              default_value_t = CliffConfig::default().carry_max_chars)]
+        carry_max_chars: usize,
         /// Tokens assumed for the system prompt and tool definitions, which
         /// transcripts do not record.
         #[arg(long, default_value_t = 20_000)]
@@ -106,6 +113,24 @@ pub enum ProxyCmd {
         #[arg(long)]
         json: bool,
     },
+    /// Start the proxy at login on macOS (a LaunchAgent that runs
+    /// `proxy serve` with these settings) and start it now.
+    Install {
+        #[command(flatten)]
+        opts: ProxyOpts,
+        /// Loopback port.
+        #[arg(long, default_value_t = DEFAULT_PORT)]
+        port: u16,
+        /// Replace an existing proxy LaunchAgent.
+        #[arg(long)]
+        replace: bool,
+        /// Print the LaunchAgent file and change nothing.
+        #[arg(long)]
+        print: bool,
+    },
+    /// Stop the proxy LaunchAgent and remove it, so the proxy no longer
+    /// starts at login.
+    Uninstall,
     /// Show a running proxy's settings and counters.
     Status {
         #[arg(long, default_value_t = DEFAULT_PORT)]
@@ -143,6 +168,13 @@ pub struct ProxyOpts {
     /// the summary; shorter ones are kept verbatim.
     #[arg(long, default_value_t = 500)]
     result_max_chars: usize,
+    /// Characters of the human's words and the assistant's visible replies
+    /// each summary carries from the turns earlier compactions summarized,
+    /// newest kept, never tool output or thinking. At most a quarter of the
+    /// room above the verbatim head. 0 turns carrying off.
+    #[arg(long, value_name = "CHARS",
+          default_value_t = CliffConfig::default().carry_max_chars)]
+    carry_max_chars: usize,
     /// Leave thinking and reasoning text out of summaries.
     #[arg(long)]
     drop_thinking: bool,
@@ -226,6 +258,7 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             keep_recent,
             keep_tail_percent,
             result_max_chars,
+            carry_max_chars,
             fixed_tokens,
             json,
         } => {
@@ -236,6 +269,7 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
                 keep_recent: *keep_recent,
                 keep_tail_percent: *keep_tail_percent,
                 result_max_chars: *result_max_chars,
+                carry_max_chars: *carry_max_chars,
                 ..CliffConfig::default()
             };
             let report = replay::replay(&history, dialect, cfg, *fixed_tokens);
@@ -245,13 +279,14 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             }
             let k = |tokens: u64| format!("~{}k", tokens / 1000);
             println!(
-                "replayed {} requests from {} ({} messages); threshold {} tokens, keep_recent {}, keep_tail_percent {}, {} fixed tokens assumed",
+                "replayed {} requests from {} ({} messages); threshold {} tokens, keep_recent {}, keep_tail_percent {}, carry_max_chars {}, {} fixed tokens assumed",
                 report.requests,
                 path.display(),
                 history.len(),
                 threshold,
                 keep_recent,
                 keep_tail_percent,
+                carry_max_chars,
                 fixed_tokens
             );
             println!(
@@ -292,6 +327,9 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             let proxy = Arc::new(Proxy::new(opts, port)?);
             println!("gobstopper proxy listening on http://127.0.0.1:{port}");
             std::io::stdout().flush()?;
+            crate::ux::next_hint(&format!(
+                "export ANTHROPIC_BASE_URL=http://127.0.0.1:{port} in the shell that starts Claude Code"
+            ));
             log(&format!(
                 "{}, result_max_chars {}{}{}",
                 proxy.settings(),
@@ -319,8 +357,22 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             log(&proxy.summary());
             std::process::exit(status.code().unwrap_or(1));
         }
+        ProxyCmd::Install {
+            opts,
+            port,
+            replace,
+            print,
+        } => {
+            threshold_1m(opts.threshold, opts.threshold_1m)?;
+            crate::proxy_agent::install(&install_serve_args(), *port, *replace, *print)
+        }
+        ProxyCmd::Uninstall => crate::proxy_agent::uninstall(),
         ProxyCmd::Status { port, json } => {
-            let status = fetch_status(*port)?;
+            let status = match fetch_status(*port) {
+                Ok(status) => status,
+                Err(error) if is_refused(&error) => return Err(proxy_down(*port)),
+                Err(error) => return Err(error),
+            };
             if *json {
                 println!("{}", serde_json::to_string_pretty(&status)?);
             } else {
@@ -347,7 +399,7 @@ fn status_text(port: u16, status: &Value) -> String {
             .unwrap_or_default()
     };
     let mut text = format!(
-        "gobstopper proxy on 127.0.0.1:{port}: threshold {} tokens{}, keep_recent {}{}{}\n",
+        "gobstopper proxy on 127.0.0.1:{port}: threshold {} tokens{}, keep_recent {}{}{}{}\n",
         status["threshold_tokens"],
         present("threshold_1m_tokens", &|value| format!(
             ", threshold_1m {value} tokens"
@@ -355,6 +407,9 @@ fn status_text(port: u16, status: &Value) -> String {
         status["keep_recent"],
         present("keep_tail_percent", &|value| format!(
             ", keep_tail_percent {value}"
+        )),
+        present("carry_max_chars", &|value| format!(
+            ", carry_max_chars {value}"
         )),
         if status["shadow"] == true {
             ", shadow"
@@ -511,7 +566,9 @@ impl StatsLog {
             "est_head_tokens": ctx.est_head_tokens,
             "est_summary_tokens": ctx.est_summary_tokens,
             "est_tail_tokens": ctx.est_tail_tokens,
+            "carry_chars": ctx.carry_chars,
             "window": window_name(request, ctx.dialect),
+            "threshold_tokens": ctx.threshold_tokens,
             "compacted": ctx.compacted,
             "reused_prefix": ctx.matched,
             "over_budget": ctx.over_budget,
@@ -565,6 +622,7 @@ impl Proxy {
             keep_recent: opts.keep_recent,
             keep_tail_percent: opts.keep_tail_percent,
             result_max_chars: opts.result_max_chars,
+            carry_max_chars: opts.carry_max_chars,
             keep_thinking: !opts.drop_thinking,
             strict: opts.strict,
             ..CliffConfig::default()
@@ -600,6 +658,7 @@ impl Proxy {
             "threshold_1m_tokens": self.threshold_1m,
             "keep_recent": cfg.keep_recent,
             "keep_tail_percent": cfg.keep_tail_percent,
+            "carry_max_chars": cfg.carry_max_chars,
             "result_max_chars": cfg.result_max_chars,
             "keep_thinking": cfg.keep_thinking,
             "shadow": self.shadow,
@@ -627,8 +686,12 @@ impl Proxy {
     fn settings(&self) -> String {
         let cfg = self.engine.config();
         format!(
-            "threshold {} tokens, threshold_1m {} tokens, keep_recent {}, keep_tail_percent {}",
-            cfg.threshold_tokens, self.threshold_1m, cfg.keep_recent, cfg.keep_tail_percent
+            "threshold {} tokens, threshold_1m {} tokens, keep_recent {}, keep_tail_percent {}, carry_max_chars {}",
+            cfg.threshold_tokens,
+            self.threshold_1m,
+            cfg.keep_recent,
+            cfg.keep_tail_percent,
+            cfg.carry_max_chars
         )
     }
 
@@ -732,12 +795,14 @@ impl Proxy {
         self.stats_log.record(ctx, request, self.shadow);
         let kind = ctx.dialect.name();
         let path = request.path();
-        // Sizes and the window only, never content or header values.
+        // Sizes and the window only, never content or header values: the
+        // carried section is conversation text, so only its length appears.
         let sizes = format!(
-            "(head ~{}k, summary ~{}k, tail ~{}k)",
+            "(head ~{}k, summary ~{}k, tail ~{}k, carry {} chars)",
             ctx.est_head_tokens / 1000,
             ctx.est_summary_tokens / 1000,
             ctx.est_tail_tokens / 1000,
+            ctx.carry_chars,
         );
         let window = window_name(request, ctx.dialect);
         let shadow = if self.shadow {
@@ -773,6 +838,24 @@ impl Proxy {
                 "{kind} {path}: reused compacted prefix, ~{}k -> ~{}k est tokens {sizes}, window={window}{shadow}",
                 ctx.est_tokens_in / 1000,
                 ctx.est_tokens_out / 1000,
+            ));
+        } else if ctx.est_tokens_in > ctx.base_threshold_tokens {
+            // Over the selected threshold but sent unchanged. Say why, or the
+            // request looks missed.
+            let why = if ctx.est_tokens_in <= ctx.threshold_tokens {
+                format!(
+                    "under the threshold raised to ~{}k by a large verbatim head",
+                    ctx.threshold_tokens / 1000
+                )
+            } else {
+                format!(
+                    "over the ~{}k threshold with nothing to compact",
+                    ctx.threshold_tokens / 1000
+                )
+            };
+            log(&format!(
+                "{kind} {path}: sent unchanged at ~{}k est tokens, {why}, window={window}",
+                ctx.est_tokens_in / 1000,
             ));
         }
     }
@@ -1461,6 +1544,78 @@ fn relay(client: &mut TcpStream, mut upstream: Upstream, method: &str) -> Result
     Ok(())
 }
 
+/// The `serve` settings given to `proxy install`, as typed: everything after
+/// `install` except the flags that only `install` reads.
+fn install_serve_args() -> Vec<String> {
+    serve_args_after_install(&std::env::args().collect::<Vec<_>>())
+}
+
+/// Everything after `proxy install` except `--replace`, `--print`, and the
+/// global session-folder options, which `serve` never reads and which could
+/// hold paths relative to this shell rather than launchd's `/`.
+fn serve_args_after_install(args: &[String]) -> Vec<String> {
+    const GLOBAL: [&str; 3] = ["--codex-home", "--claude-home", "--codex-bin"];
+    let Some(at) = args
+        .windows(2)
+        .position(|pair| pair[0] == "proxy" && pair[1] == "install")
+    else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut rest = args[at + 2..].iter();
+    while let Some(arg) = rest.next() {
+        if matches!(arg.as_str(), "--replace" | "--print") {
+            continue;
+        }
+        if GLOBAL.contains(&arg.as_str()) {
+            rest.next();
+            continue;
+        }
+        if GLOBAL
+            .iter()
+            .any(|flag| arg.starts_with(&format!("{flag}=")))
+        {
+            continue;
+        }
+        out.push(arg.clone());
+    }
+    out
+}
+
+fn is_refused(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
+        .any(|error| error.kind() == std::io::ErrorKind::ConnectionRefused)
+}
+
+/// What to do when nothing answers on the status port.
+fn proxy_down(port: u16) -> anyhow::Error {
+    if crate::proxy_agent::installed() {
+        let log = crate::proxy_agent::log_path()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|_| "~/Library/Logs/gobstopper-proxy.log".into());
+        crate::ux::guided_code(
+            "proxy-not-running",
+            format!(
+                "The proxy is installed but isn't answering on 127.0.0.1:{port}. Its log is {log}"
+            ),
+            crate::proxy_agent::restart_command(),
+        )
+    } else {
+        crate::ux::guided_code(
+            "proxy-not-running",
+            format!("No proxy is running on 127.0.0.1:{port}"),
+            "gobstopper proxy install",
+        )
+    }
+}
+
+/// Whether a gobstopper proxy answers its status request on `port`.
+pub fn is_answering(port: u16) -> bool {
+    fetch_status(port).is_ok()
+}
+
 fn fetch_status(port: u16) -> Result<Value> {
     let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
         .with_context(|| format!("no gobstopper proxy on 127.0.0.1:{port}"))?;
@@ -1480,6 +1635,31 @@ fn fetch_status(port: u16) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn install_keeps_serve_settings_and_drops_install_and_global_options() {
+        let args: Vec<String> = [
+            "gobstopper",
+            "--codex-home",
+            "./codex",
+            "proxy",
+            "install",
+            "--threshold",
+            "256000",
+            "--replace",
+            "--claude-home",
+            "rel/claude",
+            "--codex-bin=./codex",
+            "--port",
+            "8261",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            serve_args_after_install(&args),
+            ["--threshold", "256000", "--port", "8261"]
+        );
+    }
 
     #[test]
     fn recognizes_provider_length_errors_only() {
@@ -1737,10 +1917,14 @@ mod tests {
             tagged("/v1/chat/completions", &one_m, Dialect::ChatCompletions),
             "base"
         );
-        // Both startup lines show both thresholds and the tail percent.
+        // Both startup lines show both thresholds, the tail percent and the
+        // carry.
         assert_eq!(
             test_proxy(128_000, 128_000).settings(),
-            "threshold 128000 tokens, threshold_1m 128000 tokens, keep_recent 3, keep_tail_percent 40"
+            format!(
+                "threshold 128000 tokens, threshold_1m 128000 tokens, keep_recent 3, keep_tail_percent 40, carry_max_chars {}",
+                CliffConfig::default().carry_max_chars
+            )
         );
     }
 
@@ -1773,10 +1957,11 @@ mod tests {
         current["threshold_1m_tokens"] = json!(256_000);
         current["keep_tail_percent"] = json!(40);
         current["requests_1m"] = json!(4);
+        current["carry_max_chars"] = json!(24_000);
         let text = status_text(8260, &current);
         assert_eq!(
             text.lines().next(),
-            Some("gobstopper proxy on 127.0.0.1:8260: threshold 128000 tokens, threshold_1m 256000 tokens, keep_recent 3, keep_tail_percent 40")
+            Some("gobstopper proxy on 127.0.0.1:8260: threshold 128000 tokens, threshold_1m 256000 tokens, keep_recent 3, keep_tail_percent 40, carry_max_chars 24000")
         );
         assert!(
             text.contains("\nrequests 10 (4 with a 1M window), compacted 2,"),
@@ -1785,6 +1970,7 @@ mod tests {
 
         // An explicit null is treated as absent.
         current["requests_1m"] = Value::Null;
+        current["carry_max_chars"] = Value::Null;
         assert!(!status_text(8260, &current).contains("null"));
     }
 }
