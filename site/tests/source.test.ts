@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { parsePublishedRelease } from "../app/publication";
+import { BENCHMARK_STUDIES, benchmarkDatasetsJsonLd } from "../app/benchmarks/datasets";
 
 const site = join(import.meta.dir, "..");
 const read = async (path: string): Promise<string> => await readFile(join(site, path), "utf8");
@@ -102,6 +103,17 @@ describe("Gobstopper site source contract", () => {
     }
     expect(urls.every((url) => url.startsWith("https://gobstopper.sh/"))).toBe(true);
     expect(robots().sitemap).toBe("https://gobstopper.sh/sitemap.xml");
+  });
+
+  test("dates every fixed page by its last content change, not the build time", async () => {
+    const [{ SITE_PAGES }, { default: sitemap }] = await Promise.all([import("../app/_lib/pages"), import("../app/sitemap")]);
+    for (const page of SITE_PAGES) {
+      expect(page.lastModified).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
+      expect(Number.isNaN(Date.parse(page.lastModified))).toBe(false);
+    }
+    const first = sitemap().map((entry) => [entry.url, String(entry.lastModified)]);
+    const second = sitemap().map((entry) => [entry.url, String(entry.lastModified)]);
+    expect(second).toEqual(first);
   });
 
   test("keeps social previews and the agent map on the canonical origin", async () => {
@@ -453,4 +465,41 @@ describe("published September 20 synthetic recovery study", () => {
       expect(text).not.toMatch(/"(?:samples|rows|sample|session_id|path|snapshot|source_sha256|snapshot_sha256|manifest|manifest_sha256|missed_probes|argv|environment)"\s*:/u);
     }
   });
+});
+
+describe("benchmark Dataset structured data", () => {
+  test("every study download exists and is valid JSON", async () => {
+    for (const study of BENCHMARK_STUDIES) {
+      expect(study.date).toMatch(/^\d{4}-\d{2}-\d{2}$/u);
+      for (const file of study.files) {
+        JSON.parse(await read(`public/benchmarks/${study.date}/${file}`));
+      }
+    }
+  });
+
+  test("each Dataset names Hraness, the study date, the mirror, and absolute JSON downloads", () => {
+    const graph = benchmarkDatasetsJsonLd()["@graph"];
+    expect(graph.map((node) => node.temporalCoverage)).toEqual(["2026-09-19", "2026-09-20"]);
+    for (const node of graph) {
+      expect(node["@type"]).toBe("Dataset");
+      expect(node.creator["@id"]).toBe("https://hraness.com/#organization");
+      expect(node.sameAs).toBe("https://huggingface.co/datasets/hranesscom/gobstopper-benchmarks");
+      expect(node.description.length).toBeGreaterThanOrEqual(50);
+      for (const download of node.distribution) {
+        expect(download.contentUrl).toMatch(/^https:\/\/gobstopper\.sh\/benchmarks\/\d{4}-\d{2}-\d{2}\/[a-z0-9-]+\.json$/u);
+        expect(download.encodingFormat).toBe("application/json");
+      }
+    }
+  });
+
+  test("the benchmarks page emits the Dataset nodes", async () => {
+    expect(await read("app/benchmarks/page.tsx")).toContain("benchmarkDatasetsJsonLd()");
+  });
+});
+
+test("the site serves a favicon.ico", async () => {
+  const bytes = await readFile(join(site, "app/favicon.ico"));
+  // ICO header: reserved 0, type 1 (icon), then the image count.
+  expect([...bytes.subarray(0, 4)]).toEqual([0, 0, 1, 0]);
+  expect(bytes.readUInt16LE(4)).toBeGreaterThanOrEqual(2);
 });

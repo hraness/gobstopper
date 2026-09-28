@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 
 import { SiteDocument } from "../_components/site-document";
 import { SiteHeader, SiteFooter } from "../_components/site-chrome";
+import { serializeJsonLd } from "../_lib/site";
+import { benchmarkDatasetsJsonLd } from "./datasets";
 
 const title = "Benchmarks";
 const socialTitle = "Gobstopper benchmarks";
@@ -31,6 +33,10 @@ export const metadata: Metadata = {
 export default function Benchmarks() {
   return (
     <>
+      <script
+        dangerouslySetInnerHTML={{ __html: serializeJsonLd(benchmarkDatasetsJsonLd()) }}
+        type="application/ld+json"
+      />
       <SiteHeader path="/benchmarks" />
       <main id="main" tabIndex={-1}>
         <SiteDocument
