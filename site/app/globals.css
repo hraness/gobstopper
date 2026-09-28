@@ -653,6 +653,7 @@ main:has(> .plain-publication--embedded) {
   border-radius: var(--hraness-marketing-frame-radius);
   background: #1a1b26;
 }
+.gob-film__scope { margin: 0.75rem 0 0; color: var(--muted); font-size: 0.875rem; }
 .gob-film__reduced { display: none; color: var(--muted); font-size: 0.875rem; }
 @media (prefers-reduced-motion: reduce) {
   .gob-film__reduced { display: block; }

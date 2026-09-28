@@ -9,6 +9,12 @@ import type { GobFilm } from "../_data/gob-film";
 const escape = (text: string): string =>
   text.replace(/&/gu, "&amp;").replace(/</gu, "&lt;").replace(/>/gu, "&gt;").replace(/"/gu, "&quot;").replace(/'/gu, "&#x27;");
 
+/** The film's lower-third, word for word (media/shots.json), and what it leaves unsaid. */
+export const GOB_FILM_SCOPE =
+  "Terminal-Bench 2.1 · 89 tasks · 1 trial per arm · GLM 5.3 Flash · 45K threshold (default 128K) · Sept 27–28, 2026";
+export const GOB_FILM_QUALIFIER =
+  "Resolution is within single-trial noise. Cost is provider-reported, metered through Vercel AI Gateway, for this model, at a 45K threshold (default 128K).";
+
 export function gobFilmHtml(film: GobFilm | null): string {
   if (film === null) return "";
   const beats = film.beats.map((beat) => `<li>${escape(beat.text)}</li>`).join("");
@@ -19,7 +25,8 @@ export function gobFilmHtml(film: GobFilm | null): string {
     `<track default="" kind="captions" label="English" src="${escape(film.captions)}" srcLang="en"/>` +
     `</video>` +
     `<p class="gob-film__reduced">The film is also available as text below.</p>` +
-    `<details id="film-text"><summary>Read the film&#x27;s text</summary><ol>${beats}</ol></details>` +
+    `<details id="film-text"><summary>Read the film&#x27;s text</summary><ol>${beats}</ol>` +
+    `<p class="gob-film__scope">${escape(GOB_FILM_SCOPE)}. ${escape(GOB_FILM_QUALIFIER)}</p></details>` +
     `</figure>`
   );
 }

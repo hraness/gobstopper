@@ -180,7 +180,7 @@ const alternatives = [
   },
   {
     label: "CliffCompaction",
-    summary: "The Python research proxy that Gobstopper's summary rule comes from. Its authors publish task-success benchmarks that Gobstopper has not rerun.",
+    summary: "The Python research proxy that Gobstopper's summary rule comes from. Its authors publish task-success benchmarks that Gobstopper has not rerun; Gobstopper's own Terminal-Bench 2.1 run is on the benchmarks page.",
     link: { href: "/compare/cliffcompaction", label: "Gobstopper vs CliffCompaction" },
   },
   {

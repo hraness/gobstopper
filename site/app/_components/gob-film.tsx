@@ -1,8 +1,9 @@
 import type { GobFilm as GobFilmManifest } from "../_data/gob-film";
+import { GOB_FILM_QUALIFIER, GOB_FILM_SCOPE } from "../_lib/gobbench-film-html";
 
 /**
  * The film embed: native controls, nothing loads but the poster and captions until the
- * viewer presses play, never autoplay, muted or loop. The beats are the text alternative.
+ * viewer presses play, never autoplay, muted or loop. The beats, with the film's scope line, are the text alternative.
  */
 export function GobFilm({ film }: { readonly film: GobFilmManifest | null }) {
   if (film === null) return null;
@@ -16,6 +17,7 @@ export function GobFilm({ film }: { readonly film: GobFilmManifest | null }) {
       <details id="film-text">
         <summary>Read the film&apos;s text</summary>
         <ol>{film.beats.map((beat) => <li key={`${beat.start}-${beat.text}`}>{beat.text}</li>)}</ol>
+        <p className="gob-film__scope">{`${GOB_FILM_SCOPE}. ${GOB_FILM_QUALIFIER}`}</p>
       </details>
     </figure>
   );

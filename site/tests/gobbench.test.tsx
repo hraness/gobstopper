@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { existsSync, readFileSync } from "node:fs";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { ReactElement } from "react";
@@ -10,7 +11,7 @@ import {
   ANATOMY, FUSE, RING, SLAB, TAIL, type SlabKind, areaPath, linePath, linear, resendColumns, stackHeight, stepPath, ticks,
 } from "../app/_lib/gob-geometry";
 import { type GobFilm as GobFilmManifest, gobFilm } from "../app/_data/gob-film";
-import { gobFilmHtml } from "../app/_lib/gobbench-film-html";
+import { GOB_FILM_SCOPE, gobFilmHtml } from "../app/_lib/gobbench-film-html";
 import { GobAnatomy } from "../app/_components/gob-anatomy";
 import { GobChurn } from "../app/_components/gob-churn";
 import { GobFilm } from "../app/_components/gob-film";
@@ -311,6 +312,18 @@ describe("launch figures render", () => {
     expect(html).toContain('aria-describedby="film-text"');
     expect(html).toContain('id="film-text"');
     expect(html.match(/<li>/gu)).toHaveLength(FILM_FIXTURE.beats.length);
+  });
+
+  test("the film's text alternative ends with its scope and the qualifiers the pictures carry", () => {
+    const html = renderToStaticMarkup(<GobFilm film={FILM_FIXTURE} />);
+    const details = /<details id="film-text">[\s\S]*<\/details>/u.exec(html)?.[0] ?? "";
+    const scope = /<p class="gob-film__scope">([^<]*)<\/p><\/details>$/u.exec(details)?.[1] ?? "";
+    for (const fact of ["89 tasks", "1 trial per arm", "GLM 5.3 Flash", "45K threshold (default 128K)", "within single-trial noise", "provider-reported", "Vercel AI Gateway"]) {
+      expect(scope).toContain(fact);
+    }
+    // Once the film's shot list is in the repository, the scope line is its lower-third word for word.
+    const shots = new URL("../../media/shots.json", import.meta.url);
+    if (existsSync(shots)) expect(readFileSync(shots, "utf8")).toContain(JSON.stringify(GOB_FILM_SCOPE));
   });
 
   test("the blog's film string is byte for byte the React embed", () => {
