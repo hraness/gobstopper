@@ -1,0 +1,218 @@
+{
+  "kind": "gobstopper.media-render",
+  "renders": [
+    {
+      "job": "shot-s5-results-draft",
+      "id": "s5-results",
+      "draft": true,
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T21:19:36.972Z",
+      "seconds": 71,
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1
+      },
+      "durationSeconds": 15.4,
+      "sceneHtmlSha256": "97f9a71595c66a48c39b788c23e4e23fe2af32a4a08978bde95ddb0d1318d56d",
+      "sceneSource": "scenes/film/s5-results.html",
+      "sceneSourceSha256": "8b083a5959e5bcec35071631715b7b66c3d2e27bc6a0790b44d98f01acdc0774",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "path": "media/out/shots/s5-results.draft.mp4",
+        "bytes": 468202,
+        "sha256": "42f66eba074b3798b926658b4f30944b1650d0d1e497d53cdf9118a4ad4da307"
+      }
+    },
+    {
+      "job": "shot-s5-results-draft",
+      "id": "s5-results",
+      "draft": true,
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T21:28:18.952Z",
+      "seconds": 90,
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1
+      },
+      "durationSeconds": 15.4,
+      "sceneHtmlSha256": "ac67f60d16818ecd7f1bebc24fb43344914c6f90ba7e6032d27f0a304665d4ce",
+      "sceneSource": "scenes/film/s5-results.html",
+      "sceneSourceSha256": "76aac7fd7e52328fe2c9423e0d541c02884bdfd66fde5d191396d8a2d500eacd",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "path": "media/out/shots/s5-results.draft.mp4",
+        "bytes": 468156,
+        "sha256": "fe3d742fe5368ce0de96df57b09ed756057fc557e118a475a3d089d38ad63f32"
+      }
+    },
+    {
+      "job": "shot-s5-results-draft",
+      "id": "s5-results",
+      "draft": true,
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T21:34:42.116Z",
+      "seconds": 79,
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1
+      },
+      "durationSeconds": 15.4,
+      "sceneHtmlSha256": "af91b6fa55459d1d482c66b08add965d164453c5a68bee1bcdc160899656c64a",
+      "sceneSource": "scenes/film/s5-results.html",
+      "sceneSourceSha256": "f99738d082c0ece5e2df40cb568221763c7b236ed0c8da808ae2e9b30069dbdd",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "path": "media/out/shots/s5-results.draft.mp4",
+        "bytes": 468271,
+        "sha256": "72c9bb5853a472d21ef23fdb51730a8b4a9a2492d0ace88f3ef9de654d7e87b7"
+      }
+    },
+    {
+      "job": "shot-s5-results",
+      "id": "s5-results",
+      "draft": false,
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T21:56:31.841Z",
+      "seconds": 136,
+      "canvas": {
+        "width": 3840,
+        "height": 2160,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1920,
+        "layoutHeight": 1080,
+        "layoutZoom": 2
+      },
+      "durationSeconds": 15.4,
+      "sceneHtmlSha256": "0299bfb056dfe19e0d3be21a0a4c044fcf03b7580258c2dec4d5056340848d32",
+      "sceneSource": "scenes/film/s5-results.html",
+      "sceneSourceSha256": "e3269400e4b9d8242c92f03718db030370ae618cd93ec873770790e0b94f403c",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "path": "media/out/shots/s5-results.mp4",
+        "bytes": 1079498,
+        "sha256": "9d693e3551fd39ee490ae88d399db765d11a94b268c71cff6f64624822cf8dc0"
+      }
+    },
+    {
+      "job": "shot-s5-results-draft",
+      "id": "s5-results",
+      "draft": true,
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T23:12:34.473Z",
+      "seconds": 78,
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1920,
+        "layoutHeight": 1080,
+        "layoutZoom": 1
+      },
+      "durationSeconds": 15.4,
+      "sceneHtmlSha256": "f9b5200a2dbc51719c76fe8d82a5575c9e98a87e0a14819448662a64a92d3e0d",
+      "sceneSource": "scenes/film/s5-results.html",
+      "sceneSourceSha256": "78a8648461329a9e2c6ec2562919181ef5921e2f662c9b0218475e03aba52709",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "path": "media/out/shots/s5-results.draft.mp4",
+        "bytes": 621720,
+        "sha256": "6c1fe7adc4d1eba7a2bc6a0480d0808e5c2f73030659c4f3af5dac985f9190d3"
+      }
+    },
+    {
+      "job": "shot-s5-results",
+      "id": "s5-results",
+      "draft": false,
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T23:26:43.277Z",
+      "seconds": 136,
+      "canvas": {
+        "width": 3840,
+        "height": 2160,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1920,
+        "layoutHeight": 1080,
+        "layoutZoom": 2
+      },
+      "durationSeconds": 15.4,
+      "sceneHtmlSha256": "f9b5200a2dbc51719c76fe8d82a5575c9e98a87e0a14819448662a64a92d3e0d",
+      "sceneSource": "scenes/film/s5-results.html",
+      "sceneSourceSha256": "78a8648461329a9e2c6ec2562919181ef5921e2f662c9b0218475e03aba52709",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "path": "media/out/shots/s5-results.mp4",
+        "bytes": 1446178,
+        "sha256": "00f1cee2047c2eef49d08e8b4b05ef4a3a0ece354d337804f167fe82c90f6873"
+      }
+    }
+  ]
+}

@@ -1,0 +1,163 @@
+{
+  "assembledAt": "2026-09-28T23:31:08.756Z",
+  "inputs": {
+    "shots": [
+      {
+        "id": "s1-resend",
+        "path": "media/out/shots/s1-resend.mp4",
+        "sha256": "a67e9b68f6108ac321e78f8c1df64d0da36180b8ed6e10f2e8368b010ff0bf86",
+        "duration": 12.4
+      },
+      {
+        "id": "s2-route-fuse",
+        "path": "media/out/shots/s2-route-fuse.mp4",
+        "sha256": "6c55e1f396f539fa4513252cb9cd1469e0d9822fed1d862ca38629b29984b6dc",
+        "duration": 9.4
+      },
+      {
+        "id": "s3-printouts",
+        "path": "media/out/shots/s3-printouts.mp4",
+        "sha256": "d787b13266f009822599cdd8a50be67df0ba4539bd1138d9b748c8141c9c6c3e",
+        "duration": 10.4
+      },
+      {
+        "id": "s4-sawtooth",
+        "path": "media/out/shots/s4-sawtooth.mp4",
+        "sha256": "0bd50a22802287277d489637b2d092a04bf903bb9f638d85170ec5ee2be04cc5",
+        "duration": 5.4
+      },
+      {
+        "id": "s5-results",
+        "path": "media/out/shots/s5-results.mp4",
+        "sha256": "00f1cee2047c2eef49d08e8b4b05ef4a3a0ece354d337804f167fe82c90f6873",
+        "duration": 15.4
+      },
+      {
+        "id": "s6-default",
+        "path": "media/out/shots/s6-default.mp4",
+        "sha256": "a7aee14a651379b870ad06b41d663a9c48218f2358f991e9605df753f2c84a11",
+        "duration": 10.4
+      },
+      {
+        "id": "s7-close",
+        "path": "media/out/shots/s7-close.mp4",
+        "sha256": "92a5fc7883a9b6e39db52774657e3a60daaec6c066e392c95e66790ab2e87456",
+        "duration": 14
+      }
+    ],
+    "score": {
+      "path": "media/out/score.wav",
+      "sha256": "604566146de138fb65797c28f41e72d0e1fa5feb754a997481584bbe95ec3b24"
+    },
+    "shotsJson": {
+      "path": "media/shots.json",
+      "sha256": "9b124de9620b3f8d85005f5ce0e5e48b9c77c5c9e152eb47dba945a4ab4a255a"
+    }
+  },
+  "offsets": [
+    12,
+    21,
+    31,
+    36,
+    51,
+    61
+  ],
+  "loudnorm": {
+    "measured": {
+      "input_i": "-33.84",
+      "input_tp": "-20.36",
+      "input_lra": "10.00",
+      "input_thresh": "-44.13",
+      "output_i": "-15.12",
+      "output_tp": "-1.50",
+      "output_lra": "5.30",
+      "output_thresh": "-25.22",
+      "normalization_type": "dynamic",
+      "target_offset": "-0.88"
+    },
+    "result": {
+      "input_i": "-34.06",
+      "input_tp": "-20.50",
+      "input_lra": "10.00",
+      "input_thresh": "-44.32",
+      "output_i": "-16.22",
+      "output_tp": "-2.66",
+      "output_lra": "10.00",
+      "output_thresh": "-26.48",
+      "normalization_type": "linear",
+      "target_offset": "0.22"
+    },
+    "normalizationType": "linear"
+  },
+  "commands": [
+    "ffprobe -v error -show_entries stream=codec_type,width,height,nb_read_frames,sample_rate,channels,r_frame_rate:format=duration -of json media/out/shots/s1-resend.mp4",
+    "ffprobe -v error -show_entries stream=codec_type,width,height,nb_read_frames,sample_rate,channels,r_frame_rate:format=duration -of json media/out/shots/s2-route-fuse.mp4",
+    "ffprobe -v error -show_entries stream=codec_type,width,height,nb_read_frames,sample_rate,channels,r_frame_rate:format=duration -of json media/out/shots/s3-printouts.mp4",
+    "ffprobe -v error -show_entries stream=codec_type,width,height,nb_read_frames,sample_rate,channels,r_frame_rate:format=duration -of json media/out/shots/s4-sawtooth.mp4",
+    "ffprobe -v error -show_entries stream=codec_type,width,height,nb_read_frames,sample_rate,channels,r_frame_rate:format=duration -of json media/out/shots/s5-results.mp4",
+    "ffprobe -v error -show_entries stream=codec_type,width,height,nb_read_frames,sample_rate,channels,r_frame_rate:format=duration -of json media/out/shots/s6-default.mp4",
+    "ffprobe -v error -show_entries stream=codec_type,width,height,nb_read_frames,sample_rate,channels,r_frame_rate:format=duration -of json media/out/shots/s7-close.mp4",
+    "ffmpeg -hide_banner -nostats -i media/out/score.wav -af loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json -f null -",
+    "ffmpeg -hide_banner -nostats -y -i media/out/score.wav -af loudnorm=I=-16:TP=-1.5:LRA=11:measured_I=-33.84:measured_TP=-20.36:measured_LRA=10.00:measured_thresh=-44.13:offset=-0.88:linear=true:print_format=json,aresample=48000,alimiter=limit=-5dB:level=false:attack=1:release=40 -t 75 -c:a pcm_s24le -ar 48000 -ac 2 media/out/score-loudnorm.wav",
+    "ffmpeg -hide_banner -nostats -y -i media/out/shots/s1-resend.mp4 -i media/out/shots/s2-route-fuse.mp4 -i media/out/shots/s3-printouts.mp4 -i media/out/shots/s4-sawtooth.mp4 -i media/out/shots/s5-results.mp4 -i media/out/shots/s6-default.mp4 -i media/out/shots/s7-close.mp4 -filter_complex [0:v]settb=AVTB,fps=30,format=yuv420p[s0];[1:v]settb=AVTB,fps=30,format=yuv420p[s1];[2:v]settb=AVTB,fps=30,format=yuv420p[s2];[3:v]settb=AVTB,fps=30,format=yuv420p[s3];[4:v]settb=AVTB,fps=30,format=yuv420p[s4];[5:v]settb=AVTB,fps=30,format=yuv420p[s5];[6:v]settb=AVTB,fps=30,format=yuv420p[s6];[s0][s1]xfade=transition=fade:duration=0.4:offset=12.000[x1];[x1][s2]xfade=transition=fade:duration=0.4:offset=21.000[x2];[x2][s3]xfade=transition=fade:duration=0.4:offset=31.000[x3];[x3][s4]xfade=transition=fade:duration=0.4:offset=36.000[x4];[x4][s5]xfade=transition=fade:duration=0.4:offset=51.000[x5];[x5][s6]xfade=transition=fade:duration=0.4:offset=61.000[vout] -map [vout] -t 75 -c:v libx264 -preset slow -crf 17 -profile:v high -level 5.2 -pix_fmt yuv420p -r 30 media/out/film-2160p-video.mp4",
+    "ffmpeg -hide_banner -nostats -y -i media/out/film-2160p-video.mp4 -i media/out/score-loudnorm.wav -map 0:v -map 1:a -t 75 -c:v copy -c:a aac -b:a 192k -ar 48000 -ac 2 -movflags +faststart media/out/gobstopper-film-2160p.mp4",
+    "ffmpeg -hide_banner -nostats -y -i media/out/film-2160p-video.mp4 -i media/out/score-loudnorm.wav -map 0:v -map 1:a -t 75 -vf scale=1920:1080:flags=lanczos -c:v libx264 -preset slow -tune animation -crf 23 -maxrate 900k -bufsize 1800k -profile:v high -level 4.0 -pix_fmt yuv420p -r 30 -c:a aac -b:a 96k -ar 48000 -ac 2 -movflags +faststart site/public/media/gobstopper-film-1080p.mp4",
+    "ffmpeg -hide_banner -nostats -y -ss 50.0 -i site/public/media/gobstopper-film-1080p.mp4 -frames:v 1 -q:v 3 site/public/media/gobstopper-film-poster.jpg",
+    "ffprobe -v error -count_frames -show_entries stream=codec_type,width,height,nb_read_frames,sample_rate,channels,r_frame_rate:format=duration -of json media/out/gobstopper-film-2160p.mp4",
+    "ffprobe -v error -count_frames -show_entries stream=codec_type,width,height,nb_read_frames,sample_rate,channels,r_frame_rate:format=duration -of json site/public/media/gobstopper-film-1080p.mp4",
+    "ffmpeg -hide_banner -nostats -i media/out/gobstopper-film-2160p.mp4 -map 0:a -af ebur128=peak=true -f null -",
+    "ffmpeg -hide_banner -nostats -i site/public/media/gobstopper-film-1080p.mp4 -map 0:a -af ebur128=peak=true -f null -"
+  ],
+  "probe": {
+    "2160p": {
+      "width": 3840,
+      "height": 2160,
+      "frames": 2250,
+      "rate": "30/1",
+      "duration": 75,
+      "audio": {
+        "sampleRate": 48000,
+        "channels": 2
+      }
+    },
+    "1080p": {
+      "width": 1920,
+      "height": 1080,
+      "frames": 2250,
+      "rate": "30/1",
+      "duration": 75,
+      "audio": {
+        "sampleRate": 48000,
+        "channels": 2
+      }
+    }
+  },
+  "loudness": {
+    "2160p": {
+      "I": -16.5,
+      "peak": -4.8
+    },
+    "1080p": {
+      "I": -16.5,
+      "peak": -1.9
+    }
+  },
+  "outputs": {
+    "media/out/gobstopper-film-2160p.mp4": {
+      "bytes": 8529369,
+      "sha256": "4890fbb689b09a7bd5a2cec644c32529372d6fd2b6ac73fcabdaaf6f6148f6cd"
+    },
+    "site/public/media/gobstopper-film-1080p.mp4": {
+      "bytes": 2716873,
+      "sha256": "5e9d9873f2b9867c49819df0ebd4a4184159b129c03f803fdad551483abd3b17"
+    },
+    "site/public/media/gobstopper-film-poster.jpg": {
+      "bytes": 148781,
+      "sha256": "14edf237cbeaed295de95902ee2ff4db6ce9b9348d595fe6584ecd9098171b12"
+    },
+    "site/public/media/gobstopper-film.en.vtt": {
+      "bytes": 1078,
+      "sha256": "a3bd0455f2ed5c5907657408e7bb584cdac7b497dba4ba337596405c0157fc5a"
+    }
+  }
+}

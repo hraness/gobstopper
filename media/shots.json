@@ -1,0 +1,567 @@
+{
+  "fps": 30,
+  "handle": 0.4,
+  "lowerThird": {
+    "text": "Terminal-Bench 2.1 · 89 tasks · 1 trial per arm · GLM 5.3 Flash · 45K threshold (default 128K) · Sept 27–28, 2026",
+    "from": 26.0,
+    "to": 70.0,
+    "hidden": [[31.0, 36.0]]
+  },
+  "shots": [
+    {
+      "id": "s1-resend",
+      "scene": "scenes/film/s1-resend.html",
+      "start": 0.0,
+      "end": 12.0,
+      "data": [
+        "solved"
+      ],
+      "beats": [
+        {
+          "n": 1,
+          "start": 0.0,
+          "end": 4.0,
+          "text": "Your coding agent resends everything."
+        },
+        {
+          "n": 2,
+          "start": 4.0,
+          "end": 8.0,
+          "text": "Every step. The whole session."
+        },
+        {
+          "n": 3,
+          "start": 8.0,
+          "end": 12.0,
+          "text": "Long sessions pay for it again."
+        }
+      ],
+      "cues": [
+        {
+          "t": 0.6,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 1.1,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 1.6,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 2.1,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 2.6,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 3.1,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 4.2,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 4.267,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 4.333,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 4.4,
+          "type": "tick",
+          "slab": true,
+          "accent": true
+        },
+        {
+          "t": 4.833,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 4.9,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 4.967,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 5.033,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 5.1,
+          "type": "tick",
+          "slab": true,
+          "accent": true
+        },
+        {
+          "t": 5.433,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 5.5,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 5.567,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 5.667,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 5.733,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 5.8,
+          "type": "tick",
+          "slab": true,
+          "accent": true
+        },
+        {
+          "t": 6.067,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 6.133,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 6.2,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 6.267,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 6.333,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 6.4,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 6.467,
+          "type": "tick",
+          "slab": true,
+          "accent": true
+        },
+        {
+          "t": 6.667,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 6.733,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 6.833,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 6.9,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 6.967,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 7.033,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 7.1,
+          "type": "tick",
+          "slab": true
+        },
+        {
+          "t": 7.167,
+          "type": "tick",
+          "slab": true,
+          "accent": true
+        },
+        {
+          "t": 4.0,
+          "type": "swell",
+          "end": 12.0,
+          "peak": 11.6
+        }
+      ]
+    },
+    {
+      "id": "s2-route-fuse",
+      "scene": "scenes/film/s2-route-fuse.html",
+      "start": 12.0,
+      "end": 21.0,
+      "beats": [
+        {
+          "n": 4,
+          "start": 12.0,
+          "end": 16.0,
+          "text": "Gobstopper sits in between."
+        },
+        {
+          "n": 5,
+          "start": 16.0,
+          "end": 21.0,
+          "text": "Keep the start. Keep the last three."
+        }
+      ],
+      "cues": [
+        {
+          "t": 12.0,
+          "type": "bed"
+        },
+        {
+          "t": 12.8,
+          "type": "place"
+        },
+        {
+          "t": 18.0,
+          "type": "chime"
+        }
+      ]
+    },
+    {
+      "id": "s3-printouts",
+      "scene": "scenes/film/s3-printouts.html",
+      "start": 21.0,
+      "end": 31.0,
+      "beats": [
+        {
+          "n": 6,
+          "start": 21.0,
+          "end": 26.0,
+          "text": "Long printouts out. Files stay on disk."
+        },
+        {
+          "n": 7,
+          "start": 26.0,
+          "end": 31.0,
+          "text": "No model writes the summary."
+        }
+      ],
+      "cues": [
+        {
+          "t": 22.0,
+          "type": "whoosh"
+        },
+        {
+          "t": 26.6,
+          "type": "key"
+        },
+        {
+          "t": 26.733,
+          "type": "key"
+        },
+        {
+          "t": 26.833,
+          "type": "key"
+        },
+        {
+          "t": 26.967,
+          "type": "key"
+        },
+        {
+          "t": 27.067,
+          "type": "key"
+        },
+        {
+          "t": 27.2,
+          "type": "key"
+        },
+        {
+          "t": 27.333,
+          "type": "key"
+        },
+        {
+          "t": 27.433,
+          "type": "key"
+        },
+        {
+          "t": 27.567,
+          "type": "key"
+        },
+        {
+          "t": 27.667,
+          "type": "key"
+        },
+        {
+          "t": 27.8,
+          "type": "key"
+        },
+        {
+          "t": 27.933,
+          "type": "key"
+        },
+        {
+          "t": 28.033,
+          "type": "key"
+        },
+        {
+          "t": 28.167,
+          "type": "key"
+        },
+        {
+          "t": 28.267,
+          "type": "key"
+        },
+        {
+          "t": 28.4,
+          "type": "key"
+        },
+        {
+          "t": 28.533,
+          "type": "key"
+        },
+        {
+          "t": 28.633,
+          "type": "key"
+        },
+        {
+          "t": 28.767,
+          "type": "key"
+        },
+        {
+          "t": 28.867,
+          "type": "key"
+        },
+        {
+          "t": 29.0,
+          "type": "key"
+        },
+        {
+          "t": 29.133,
+          "type": "key"
+        },
+        {
+          "t": 29.233,
+          "type": "key"
+        },
+        {
+          "t": 29.367,
+          "type": "key"
+        },
+        {
+          "t": 29.467,
+          "type": "key"
+        },
+        {
+          "t": 29.6,
+          "type": "key"
+        },
+        {
+          "t": 29.733,
+          "type": "key"
+        }
+      ]
+    },
+    {
+      "id": "s4-sawtooth",
+      "scene": "scenes/film/s4-sawtooth.html",
+      "start": 31.0,
+      "end": 36.0,
+      "data": [
+        "sawtooth"
+      ],
+      "beats": [
+        {
+          "n": 8,
+          "start": 31.0,
+          "end": 36.0,
+          "text": "Same prefix, so the cache keeps matching."
+        }
+      ],
+      "cues": [
+        {
+          "t": 33.067,
+          "type": "glass",
+          "request": 12
+        },
+        {
+          "t": 33.233,
+          "type": "glass",
+          "request": 47
+        },
+        {
+          "t": 33.5,
+          "type": "glass",
+          "request": 95
+        },
+        {
+          "t": 33.867,
+          "type": "glass",
+          "request": 166
+        },
+        {
+          "t": 34.4,
+          "type": "glass",
+          "request": 266
+        },
+        {
+          "t": 34.967,
+          "type": "glass",
+          "request": 378
+        }
+      ]
+    },
+    {
+      "id": "s5-results",
+      "scene": "scenes/film/s5-results.html",
+      "start": 36.0,
+      "end": 51.0,
+      "data": [
+        "tokens",
+        "solved"
+      ],
+      "beats": [
+        {
+          "n": 9,
+          "start": 36.0,
+          "end": 41.0,
+          "text": "Tasks solved: 61 vs 60."
+        },
+        {
+          "n": 10,
+          "start": 41.0,
+          "end": 46.0,
+          "text": "Input tokens sent: 29% fewer."
+        },
+        {
+          "n": 11,
+          "start": 46.0,
+          "end": 51.0,
+          "text": "Almost all of it: cache reads."
+        }
+      ],
+      "cues": [
+        {
+          "t": 42.0,
+          "type": "twonote-rise"
+        }
+      ]
+    },
+    {
+      "id": "s6-default",
+      "scene": "scenes/film/s6-default.html",
+      "start": 51.0,
+      "end": 61.0,
+      "beats": [
+        {
+          "n": 12,
+          "start": 51.0,
+          "end": 56.0,
+          "text": "Our old default cost more."
+        },
+        {
+          "n": 13,
+          "start": 56.0,
+          "end": 61.0,
+          "text": "So v0.7.3 changed the default."
+        }
+      ],
+      "cues": [
+        {
+          "t": 51.6,
+          "type": "thud"
+        },
+        {
+          "t": 57.0,
+          "type": "resolve"
+        }
+      ]
+    },
+    {
+      "id": "s7-close",
+      "scene": "scenes/film/s7-close.html",
+      "start": 61.0,
+      "end": 75.0,
+      "beats": [
+        {
+          "n": 14,
+          "start": 61.0,
+          "end": 65.0,
+          "text": "Your session files are never edited."
+        },
+        {
+          "n": 15,
+          "start": 65.0,
+          "end": 70.0,
+          "text": "One trial. One model. Read the limits."
+        },
+        {
+          "n": 16,
+          "start": 70.0,
+          "end": 75.0,
+          "text": "gobstopper proxy run -- claude",
+          "cue": "line:10%"
+        }
+      ],
+      "cues": [
+        {
+          "t": 65.2,
+          "type": "tick"
+        },
+        {
+          "t": 66.6,
+          "type": "tick"
+        },
+        {
+          "t": 68.0,
+          "type": "tick"
+        },
+        {
+          "t": 71.8,
+          "type": "twonote-resolve"
+        },
+        {
+          "t": 74.0,
+          "type": "fadeout",
+          "end": 75.0
+        }
+      ]
+    }
+  ]
+}

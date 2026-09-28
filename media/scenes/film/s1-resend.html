@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Film shot 1: your agent resends everything</title>
+</head>
+<body>
+<script>
+// film:begin (generated from _film.js by sync.ts; do not edit here)
+// Shared film runtime, inlined into every scenes/film/*.html between the generated-block
+// marker lines by `bun media/scenes/film/sync.ts` (run it after editing this file;
+// `--check` fails when a scene is out of date). render.ts copies a scene's HTML as is, so
+// each shot must be self-contained.
+//
+// Every time in scene code is ABSOLUTE film time in seconds (0–75), the same clock as
+// shots.json. Film.run converts to the shot's local scene clock. Visual state is a pure
+// function of time: tweens go through stage.timeline() (one ease per segment) and
+// per-frame text (counters, typing, carets) goes through ctx.frame().
+const Film = (() => {
+  const api = SlopcameraOverlay;
+  const P = api.parameters;
+  const shot = P.data.shot;
+  const offset = typeof P.timeOffsetSeconds === "number" ? P.timeOffsetSeconds : 0;
+  const frames = [];
+  // Registered synchronously, before the first frame (registration closes there).
+  api.onFrame((f) => {
+    const t = shot.start + f.timeMs / 1000 + offset;
+    for (const fn of frames) fn(t);
+  });
+
+  const W = 1920;
+  const H = 1080;
+  const X = 120; // left and right margin
+  const BEAT = { x: 120, y: 144, w: 1680 };
+  const LID_Y = 432;
+  const SLAB = { h: 44, gap: 6, pitch: 50, r: 12 };
+  const EASE = {
+    enter: "cubic-bezier(.2,.8,.2,1)",
+    exit: "cubic-bezier(.4,0,1,1)",
+    fuse: "cubic-bezier(.65,0,.35,1)",
+    drop: "cubic-bezier(.55,0,.85,.35)",
+    linear: "linear",
+  };
+
+  const ARM_VAR = { tail0: "var(--tail0)", tail40: "var(--tail40)", no_proxy: "var(--noproxy)" };
+  // Arm colours are slab fills. Text set in an arm colour uses a lighter tint of it, so it
+  // reaches at least 6.5:1 on the night background (the tail 0 fill alone is 3.9:1); the
+  // tints are matched in lightness so no arm's label reads dimmer than another's.
+  const ARM_TEXT = { tail0: "#7c9bff", tail40: "#e3924d", no_proxy: "#2fbf98" };
+  for (const [id, v] of Object.entries(ARM_TEXT)) document.documentElement.style.setProperty(`--${id === "no_proxy" ? "noproxy" : id}-text`, v);
+
+  // timing:begin (film.test.ts evaluates this block)
+  const XFADE = 0.4;
+  /**
+   * When beat i of a shot is visible, in absolute film seconds. Headings share one position,
+   * so a cut never dissolves two of them: the last beat of a shot is gone by the shot's end
+   * (before its handle and the cross-fade), and the first beat of the next shot starts
+   * halfway through the cross-fade. Beats inside a shot hand over at the beat boundary.
+   * The final beat of the film never fades.
+   */
+  function beatWindow(shot, i, lastShot) {
+    const b = shot.beats[i];
+    const first = i === 0;
+    const last = i === shot.beats.length - 1;
+    const inAt = first && shot.start > 0 ? b.start + XFADE / 2 : b.start;
+    return {
+      in: { at: inAt, dur: first && shot.start > 0 ? 0.3 : 0.4, dy: first && shot.start > 0 ? 0 : 16 },
+      out: last && lastShot ? null : { end: last ? shot.end : b.end, dur: 0.25 },
+    };
+  }
+  // timing:end
+
+  function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+  function easeOutCubic(x) { return 1 - Math.pow(1 - x, 3); }
+
+  function run(build) {
+    Gob.scene({ palette: "night", scale: "film" }, async (st) => {
+      const segs = [];
+      const local = (a) => Math.round((a - shot.start) * 1000) / 1000;
+      const ctx = {
+        st, shot, W, H, X, BEAT, LID_Y, SLAB, EASE, F: Gob.F, data: st.params.data,
+        /** One tween on absolute film time. */
+        seg(el, from, to, a0, a1, ease) {
+          segs.push({ el, from, to, t0: local(a0), t1: local(a1), ease: ease || EASE.enter });
+          return el;
+        },
+        fadeIn(el, a0, o = {}) {
+          const d = o.dur ?? 0.4;
+          const dy = o.dy ?? 16;
+          const dx = o.dx ?? 0;
+          return ctx.seg(el, { opacity: 0, transform: `translate(${dx}px, ${dy}px)` },
+            { opacity: 1, transform: "translate(0px, 0px)" }, a0, a0 + d, o.ease || EASE.enter);
+        },
+        fadeOut(el, aEnd, o = {}) {
+          const d = o.dur ?? 0.25;
+          const dy = o.dy ?? -8;
+          return ctx.seg(el, { opacity: 1, transform: "translate(0px, 0px)" },
+            { opacity: 0, transform: `translate(0px, ${dy}px)` }, aEnd - d, aEnd, EASE.exit);
+        },
+        frame(fn) { frames.push(fn); },
+        div(css, parent) { return st.el("div", css, parent); },
+        svg(css, parent) {
+          const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+          s.setAttribute("width", String(W));
+          s.setAttribute("height", String(H));
+          s.setAttribute("viewBox", `0 0 ${W} ${H}`);
+          s.style.cssText = `position:absolute;left:0;top:0;overflow:visible;${css || ""}`;
+          (parent || st.root).appendChild(s);
+          return s;
+        },
+        path(svg, d, attrs) {
+          const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          p.setAttribute("d", d);
+          for (const [k, v] of Object.entries(attrs || {})) p.setAttribute(k, String(v));
+          svg.appendChild(p);
+          return p;
+        },
+        /** Stroke-draw a path (pathLength 1) between a0 and a1. */
+        draw(p, a0, a1, ease) {
+          p.setAttribute("pathLength", "1");
+          p.style.strokeDasharray = "1 1";
+          return ctx.seg(p, { strokeDashoffset: 1 }, { strokeDashoffset: 0 }, a0, a1, ease || EASE.linear);
+        },
+        /** Reveal an element left to right with clip-path. */
+        wipe(el, a0, a1, ease, bleed = 0) {
+          const b = `${-bleed}px`;
+          return ctx.seg(el, { clipPath: `inset(${b} 100% ${b} ${b})` }, { clipPath: `inset(${b} 0% ${b} ${b})` }, a0, a1, ease || EASE.linear);
+        },
+        /** Count a number up with an ease-out; fmt(value) returns the string; final is exact. */
+        count(el, a0, a1, to, fmt, final) {
+          ctx.frame((t) => {
+            const p = clamp01((t - a0) / (a1 - a0));
+            el.textContent = p >= 1 ? final : fmt(to * easeOutCubic(p));
+          });
+        },
+        /** Type text between a0 and a1 (linear), with a caret that blinks once typing stops. */
+        type(el, text, a0, a1, caret) {
+          ctx.frame((t) => {
+            const n = Math.floor(clamp01((t - a0) / (a1 - a0)) * text.length + 1e-9);
+            el.textContent = text.slice(0, n);
+            if (caret) {
+              const typing = t >= a0 && t < a1;
+              const on = t >= a0 - 0.6 && (typing || Math.floor((t - a1) * 2) % 2 === 0);
+              caret.style.opacity = on ? "1" : "0";
+            }
+          });
+        },
+        /** Standard beat text for this shot; `skip` lists beat numbers the scene draws itself. */
+        beats(skip = []) {
+          const nodes = {};
+          shot.beats.forEach((b, i) => {
+            if (skip.includes(b.n)) return;
+            const el = st.text("beat", b.text, { x: BEAT.x, y: BEAT.y, w: BEAT.w });
+            const w = beatWindow(shot, i, shot.end >= 75);
+            ctx.fadeIn(el, w.in.at, { dy: w.in.dy, dur: w.in.dur });
+            if (w.out) ctx.fadeOut(el, w.out.end, { dur: w.out.dur });
+            nodes[b.n] = el;
+          });
+          return nodes;
+        },
+        /** The persistent lower-third, drawn identically in every shot that overlaps its window. */
+        lowerThird() {
+          const lt = P.data.lowerThird;
+          const end = shot.end + (shot.handle || 0);
+          if (!lt || end <= lt.from || shot.start >= lt.to) return null;
+          // `hidden` lists [from, to] windows (shot boundaries) where the benchmark scope line
+          // does not apply, such as the replayed session in s4: it leaves before that cut.
+          const gaps = lt.hidden || [];
+          if (gaps.some(([a, b]) => shot.start >= a && shot.end <= b)) return null;
+          const el = st.lowerThird(lt.text);
+          const outAt = Math.min(lt.to, ...gaps.map(([a]) => a).filter((a) => a > shot.start && a <= end));
+          if (lt.from >= shot.start) ctx.seg(el, { opacity: 0 }, { opacity: 1 }, lt.from, lt.from + 0.4, EASE.enter);
+          else if (outAt <= end) ctx.seg(el, { opacity: 1 }, { opacity: 1 }, shot.start, shot.start + 0.01, EASE.linear);
+          if (outAt <= end) ctx.seg(el, { opacity: 1 }, { opacity: 0 }, outAt - 0.25, outAt, EASE.exit);
+          return el;
+        },
+        /** The threshold lid, always at y = 432 and x 120–1800. */
+        lid(label = "threshold") {
+          return st.lid(LID_Y, label, { x0: X, x1: W - X });
+        },
+        /** Wipe the lid in left to right; the bleed keeps its label (above the 2px line) unclipped. */
+        drawLid(lid, a0, a1, ease) {
+          return ctx.wipe(lid, a0, a1, ease || EASE.enter, 56);
+        },
+        /** A stack of slabs from `baseline` upward; returns the slab elements, bottom first. */
+        stack(kinds, x, w, baseline, o = {}) {
+          return kinds.map((kind, i) => {
+            const y = baseline - (i + 1) * SLAB.h - i * SLAB.gap;
+            return st.slab(kind, { x, y, w, h: SLAB.h }, undefined, { tone: o.tone, radius: SLAB.r, parent: o.parent });
+          });
+        },
+        /** An arm's CSS colour. */
+        arm(id) { return ARM_VAR[id]; },
+        /** The text tint of an arm's colour (for labels; fills keep arm()). */
+        armText(id) { return `var(--${id === "no_proxy" ? "noproxy" : id}-text)`; },
+        /** The arm marker (SPEC §1.1): circle r5, square 8, diamond 9, scaled by k. */
+        marker(id, cx, cy, k = 2, parent) {
+          const size = id === "tail0" ? 10 : id === "tail40" ? 8 : 9;
+          const s = size * k;
+          const m = st.el("div", `position:absolute;left:${cx - s / 2}px;top:${cy - s / 2}px;width:${s}px;height:${s}px;background:${ARM_VAR[id]}`, parent);
+          if (id === "tail0") m.style.borderRadius = "50%";
+          if (id === "no_proxy") m.style.rotate = "45deg";
+          return m;
+        },
+        slabY(baseline, i) { return baseline - (i + 1) * SLAB.h - i * SLAB.gap; },
+        label(role, s, box, o) { return st.text(role, s, box, o); },
+      };
+      await build(ctx);
+      st.timeline(segs);
+    });
+  }
+  return { run, W, H, X, BEAT, LID_Y, SLAB, EASE };
+})();
+// film:end
+
+// s1 (0.0–12.0): step columns 1–8 build (ticks), a brace over step 8, then the columns
+// compress left and the no-proxy input total counts up.
+Film.run((c) => {
+  const { st, shot, F, EASE, SLAB } = c;
+  c.beats();
+  st.mark(120, 48, 48);
+
+  // Centred in the band between the headline and the lower third.
+  const BASE = 800;
+  const COLS = 8;
+  const slot = 1680 / COLS;
+  const w = 150;
+  const colX = (i) => Math.round(120 + slot * i + (slot - w) / 2);
+  const MID = BASE - 170;
+  const group = c.div(`position:absolute;left:0;top:0;width:1920px;height:1080px;transform-origin:120px ${MID}px`);
+
+  // Every slab lands on a tick cue in shots.json, column by column and bottom up, so
+  // the score and the picture share one clock and no stack ever overtakes its left
+  // neighbour.
+  const ticks = shot.cues.filter((q) => q.slab).map((q) => q.t);
+  const slabTimes = [];
+  let k = 0;
+  for (let col = 0; col < COLS; col++) for (let j = 0; j <= col; j++) slabTimes.push({ col, j, t: ticks[k++] });
+  if (k !== ticks.length) throw new Error(`s1 expects ${k} slab cues, shots.json has ${ticks.length}.`);
+  const labels = [];
+
+  for (let col = 0; col < COLS; col++) {
+    const x = colX(col);
+    const n = col + 1;
+    const top = c.slabY(BASE, n - 1);
+    const wash = c.div(`position:absolute;left:${x - 12}px;top:${top - 12}px;width:${w + 24}px;height:${BASE - top + 12}px;border-radius:16px 16px 0 0;background:color-mix(in oklab, var(--ink) 6%, transparent);transform-origin:50% 100%`, group);
+    const first = slabTimes.find((s) => s.col === col && s.j === 0).t;
+    const last = slabTimes.find((s) => s.col === col && s.j === col).t;
+    c.seg(wash, { opacity: 0, transform: "scaleY(0)" }, { opacity: 1, transform: "scaleY(1)" }, first - 0.3, last, EASE.linear);
+    const lab = c.label("small", `Step ${n}`, { x: x - 20, y: BASE + 18, w: w + 40 }, { align: "center", color: "var(--ink-2)", parent: group });
+    c.fadeIn(lab, first - 0.3, { dy: 0, dur: 0.3 });
+    labels.push(lab);
+  }
+  for (const s of slabTimes) {
+    const [el] = [st.slab(s.j === 0 ? "task" : "turn", { x: colX(s.col), y: c.slabY(BASE, s.j), w, h: SLAB.h }, undefined, { radius: SLAB.r, parent: group })];
+    const fall = s.col < 3 ? 0.3 : 0.18;
+    c.seg(el, { opacity: 0, transform: `translateY(${s.col < 3 ? -56 : -32}px)` }, { opacity: 1, transform: "translateY(0px)" }, s.t - fall, s.t, EASE.drop);
+  }
+  const rule = c.div(`position:absolute;left:120px;top:${BASE + 6}px;width:1680px;height:1.5px;background:var(--rule)`, group);
+  c.fadeIn(rule, 0.2, { dy: 0 });
+
+  // Brace over step 8: "step 8 carries all 7 before it".
+  const x8 = colX(7);
+  const top8 = c.slabY(BASE, 7) - 12;
+  const svg = c.svg("", group);
+  const m = x8 + w / 2;
+  const by = top8 - 16;
+  const brace = c.path(svg, `M${x8},${by + 14} Q${x8},${by + 6} ${x8 + 12},${by + 6} H${m - 12} Q${m},${by + 6} ${m},${by - 4} Q${m},${by + 6} ${m + 12},${by + 6} H${x8 + w - 12} Q${x8 + w},${by + 6} ${x8 + w},${by + 14}`,
+    { fill: "none", stroke: "var(--ink)", "stroke-width": 2.5, "stroke-linecap": "round", "stroke-linejoin": "round" });
+  c.draw(brace, 7.3, 7.7, EASE.enter);
+  const braceLabel = c.label("label", "step 8 carries all 7 before it", { x: 1800 - 620, y: by - 52, w: 620 }, { align: "right", weight: 500 });
+  c.fadeIn(braceLabel, 7.4, { dy: 8 });
+  c.fadeOut(braceLabel, 8.25);
+  c.seg(svg, { opacity: 1 }, { opacity: 0 }, 8.0, 8.25, EASE.exit);
+
+  // Beat 3: compress the columns into the left half about their vertical centre, drop
+  // the step labels (too small at half size), then count up the total beside them.
+  c.seg(group, { transform: "scale(1)" }, { transform: "scale(0.5)" }, 8.2, 8.8, EASE.fuse);
+  for (const lab of labels) c.fadeOut(lab, 8.45, { dur: 0.25 });
+  // The half-size baseline sits at MID + (BASE - MID) / 2; the hero's label shares it.
+  const baseline = MID + (BASE - MID) / 2;
+  const heroX = 1000;
+  const hero = c.label("hero", "0", { x: heroX, y: baseline - 212, w: 800 });
+  hero.style.fontVariantNumeric = "tabular-nums";
+  c.fadeIn(hero, 8.6, { dy: 12, dur: 0.3 });
+  const final = F.input.no_proxy;
+  const target = Number.parseFloat(final);
+  c.count(hero, 8.7, 9.9, target, (v) => `${v.toFixed(1)}M`, final);
+  const heroLabel = c.label("label", `input tokens · Claude Code, no proxy · ${c.data.solved.arms.find((a) => a.id === "no_proxy").n} tasks`, { x: heroX + 6, y: baseline - 36, w: 800 }, { color: "var(--ink-2)" });
+  c.fadeIn(heroLabel, 9.6);
+});
+</script>
+</body>
+</html>
