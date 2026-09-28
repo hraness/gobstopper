@@ -8,16 +8,14 @@
 <script>
 // C-tokens: total input per arm, cache reads plus new input, from zero on a linear scale.
 Gob.scene({ palette: "paper" }, (s) => {
-  const { F, ARM_LABEL, ARM_STYLE, hatch } = Gob;
+  const { F, ARM_LABEL, ARM_STYLE, PROV, hatch } = Gob;
   const rows = s.params.data.tokens;
-  const P_TB_FULL = "Terminal-Bench 2.1 · 89 tasks · one trial per arm · Claude Code 2.1.283 with GLM 5.3 Flash via Vercel AI Gateway · Gobstopper v0.7.2, 45,000-token threshold (default 128,000) · September 27–28, 2026 · 21 of 89 tail-0 trials may have run an earlier build";
+  // The two segments are named on the first bar itself, so no legend has to stand in
+  // for three different arm colours.
   const frame = s.still({
     title: `Same tasks solved, ${F.inputFewer} fewer tokens sent`,
-    provenance: P_TB_FULL,
-    legend: Gob.legend([
-      { label: "cache reads (context re-sent)", fill: "var(--ink-2)" },
-      { label: "new input (not cached)", fill: "color-mix(in oklab, var(--ink-2) 35%, var(--bg))", edge: "var(--ink-2)" },
-    ]),
+    subtitle: "Gobstopper at its default tail vs Claude Code, no proxy · same tasks solved within single-trial noise",
+    provenance: PROV.tbFull,
   });
   const p = frame.plot;
   const tipW = 150;
@@ -47,6 +45,11 @@ Gob.scene({ palette: "paper" }, (s) => {
     cache.style.background = style.hatchAngle === null ? style.color : hatch(style.color, "color-mix(in oklab, var(--bg) 42%, transparent)", style.hatchAngle, 2.5, 11);
     s.el("div", `position:absolute;left:${xc + 2}px;top:${top}px;width:${xt - xc - 2}px;height:${barH}px;border-radius:0 6px 6px 0;background:color-mix(in oklab, ${style.color} 35%, var(--bg));box-shadow:inset 0 0 0 1.5px ${style.color}`);
     s.text("label", F.input[row.id], { x: xt + 18, y: top + barH / 2 - 22 }, { nowrap: true, weight: 600 });
+    if (i === 0) {
+      const cy = top + barH / 2 - 19;
+      s.text("small", "cache reads (context re-sent)", { x: x0 + 18, y: cy }, { nowrap: true, weight: 500, color: "var(--on-fill)" });
+      s.text("small", "new input", { x: xc + 2, y: cy, w: xt - xc - 2 }, { nowrap: true, weight: 500, align: "center" });
+    }
   });
 });
 </script>

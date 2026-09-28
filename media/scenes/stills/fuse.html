@@ -22,7 +22,9 @@ Gob.scene({ palette: "paper" }, (s) => {
   const stackW = 440;
   const leftX = p.x + 40;
   const rightX = p.x + 700;
-  const lidY = Math.round(base - FUSE.lidAt * h);
+  // lidAt counts slab heights from the base; add the gaps below that point so the lid
+  // runs through the same place on the slab it names (the middle of the seventh).
+  const lidY = Math.round(base - FUSE.lidAt * h - Math.floor(FUSE.lidAt) * gap);
 
   FUSE.before.forEach((slab, j) => {
     s.slab(slab.kind, { x: leftX, y: slabTop(j), w: stackW, h }, slab.label);

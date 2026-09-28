@@ -10,6 +10,6 @@
   {"id": "grid", "scene": "scenes/stills/grid.html", "palette": "paper", "size": [1600, 900], "hold": 0, "outputs": ["docs", "blog"], "data": ["grid"]},
   {"id": "gap", "scene": "scenes/stills/gap.html", "palette": "paper", "size": [1600, 900], "hold": 0, "outputs": ["blog"], "data": ["gap"]},
   {"id": "churn", "scene": "scenes/stills/churn.html", "palette": "paper", "size": [1600, 900], "hold": 0, "outputs": ["blog"], "data": ["churn"]},
-  {"id": "film-card", "scene": "scenes/stills/film-card.html", "palette": "night", "size": [1600, 900], "hold": 0, "outputs": ["docs", "blog"]},
+  {"id": "film-card", "scene": "scenes/stills/film-card.html", "palette": "night", "size": [1600, 900], "hold": 0, "outputs": ["docs", "blog"], "data": ["film"]},
   {"id": "social", "scene": "scenes/stills/social.html", "palette": "night", "size": [1200, 630], "hold": 0, "outputs": ["social"]}
 ]

@@ -78,6 +78,45 @@
         "source": "captured frame 0",
         "copies": {}
       }
+    },
+    {
+      "job": "still-social",
+      "id": "social",
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T22:16:59.540Z",
+      "seconds": 20,
+      "canvas": {
+        "width": 2400,
+        "height": 1260,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1200,
+        "layoutHeight": 630,
+        "layoutZoom": 2
+      },
+      "holdSeconds": 0,
+      "sceneHtmlSha256": "12fd53b9b71c8c27fd16cd29a5650c06001f870c3fc65e971c050f602a457177",
+      "sceneSource": "scenes/stills/social.html",
+      "sceneSourceSha256": "d26b3893607b3770621e43e332c9ce2f997ef1e026ef44e9051e4cdc8cd7b4b3",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "width": 1200,
+        "height": 630,
+        "bytes": 137694,
+        "sha256": "69f13c5295d18ba1386d6f68fe05f3d60c55254f29b4302679e307d9299d20c1",
+        "source": "captured frame 0, lanczos downscale",
+        "copies": {}
+      }
     }
   ]
 }

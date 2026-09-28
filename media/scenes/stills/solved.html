@@ -8,21 +8,28 @@
 <script>
 // C-solved: share of 89 tasks solved per arm, Wilson 95% intervals, axis from 50%.
 Gob.scene({ palette: "paper" }, (s) => {
-  const { F, ARM_LABEL, ARM_STYLE, wilson, pct } = Gob;
+  const { F, ARM_LABEL, ARM_STYLE, PROV, wilson } = Gob;
   const data = s.params.data.solved;
-  const P_TB_FULL = "Terminal-Bench 2.1 · 89 tasks · one trial per arm · Claude Code 2.1.283 with GLM 5.3 Flash via Vercel AI Gateway · Gobstopper v0.7.2, 45,000-token threshold (default 128,000) · September 27–28, 2026 · 21 of 89 tail-0 trials may have run an earlier build";
-  const frame = s.still({ title: "Solved about as often", provenance: P_TB_FULL });
+  const frame = s.still({ title: "Solved about as often", provenance: PROV.tbFull });
   const p = frame.plot;
-  const sideW = 380;
-  const leftW = p.w - sideW - 56;
-  const labelW = 380;
+
+  // The attributed reference sits under the plot, full width, apart from the axis.
+  const one = (v) => v.toFixed(1);
+  const reported = data.reported
+    .map((r) => `${one(r.resolved_pct)} ± ${one(r.pm)}% for ${r.arm.replace(/ \(authors\)$/, "")}`);
+  const box = s.el("div", `position:absolute;left:${p.x}px;width:${p.w}px;padding:18px 26px;border-radius:12px;background:var(--panel);box-shadow:inset 0 0 0 1.5px var(--rule)`);
+  const body = s.text("small", `For scale only: CliffCompaction’s authors report ${reported[0]}, ${reported[1]} and ${reported[2]} (arXiv:2609.26779). Their model, host and prices differ, and we did not run these: not comparable to the rows above.`, { x: 0, y: 0 }, { parent: box, color: "var(--ink-2)" });
+  body.style.position = "relative";
+  const boxH = s.measure(box).height;
+
+  const labelW = 372;
   const plotX0 = p.x;
-  const plotX1 = p.x + leftW - labelW;
+  const plotX1 = p.x + p.w - labelW - 36;
   const x = (v) => plotX0 + ((v - 0.5) / 0.3) * (plotX1 - plotX0);
   const svg = Gob.svgLayer(s);
 
-  const rowStep = 104;
-  const rowsTop = p.y;
+  const rowStep = 86;
+  const rowsTop = p.y - 12;
   const axisY = rowsTop + rowStep * data.arms.length + 4;
 
   for (const t of [0.5, 0.6, 0.7, 0.8]) {
@@ -32,7 +39,7 @@ Gob.scene({ palette: "paper" }, (s) => {
     s.text("small", `${Math.round(t * 100)}%`, { x: gx - 60, y: axisY + 16, w: 120 }, { align: "center", color: "var(--ink-2)" });
   }
   Gob.svgNode(svg, "line", { x1: plotX0, x2: plotX1, y1: axisY, y2: axisY, stroke: "var(--ink)", "stroke-width": 2 });
-  s.text("small", "share of 89 tasks solved (axis starts at 50%)", { x: plotX0, y: axisY + 58 }, { nowrap: true, color: "var(--ink-2)" });
+  s.text("small", "axis starts at 50%", { x: plotX1 + 36, y: axisY + 16, w: labelW }, { align: "right", nowrap: true, color: "var(--ink-2)" });
 
   data.arms.forEach((row, i) => {
     const style = ARM_STYLE[row.id];
@@ -42,19 +49,16 @@ Gob.scene({ palette: "paper" }, (s) => {
     Gob.svgNode(svg, "line", { x1: x(lo), x2: x(hi), y1: cy, y2: cy, stroke: style.color, "stroke-width": 3.5 });
     for (const v of [lo, hi]) Gob.svgNode(svg, "line", { x1: x(v), x2: x(v), y1: cy - 10, y2: cy + 10, stroke: style.color, "stroke-width": 3.5 });
     Gob.marker(svg, style.marker, x(row.resolved / row.n), cy, style.color, 22);
-    const bg = Gob.svgNode(svg, "circle", { cx: x(row.resolved / row.n), cy, r: 14, fill: "none", stroke: "var(--bg)", "stroke-width": 0 });
-    void bg;
-    s.text("label", `${F.solved[row.id]} of 89 · ${F.ci[row.id]}`, { x: plotX1 + 36, y: cy - 22 }, { nowrap: true, weight: 500 });
+    const direct = s.text("label", `${F.solved[row.id]} of 89 · ${F.ci[row.id]}%`, { x: plotX1 + 36, y: cy - 22 }, { nowrap: true, weight: 500 });
+    if (s.measure(direct).width > labelW) throw new Error(`solved: "${direct.textContent}" is wider than its ${labelW}px column`);
   });
 
-  s.text("small", "The intervals overlap almost completely: no measurable difference (McNemar p = 1.0 against no proxy). 31 of 89 tasks changed outcome between arms, the noise level of one trial.", { x: plotX0, y: axisY + 118, w: leftW });
-
-  // The attributed reference, kept apart from the axis on purpose.
-  const [r0, r1, r2] = data.reported.map((r) => r.resolved_pct.toFixed(2));
-  const box = s.el("div", `position:absolute;left:${p.x + p.w - sideW}px;top:${rowsTop + 8}px;width:${sideW}px;padding:28px 30px;border-radius:12px;background:var(--panel);box-shadow:inset 0 0 0 1.5px var(--rule)`);
-  const body = s.text("small", `CliffCompaction's authors report ${r0}% for their proxy at 45K, ${r1}% for Claude Code's 200K default and ${r2}% for its 45K auto-compaction, on their own setup (arXiv:2609.26779). Not comparable to the rows above.`, { x: 0, y: 0 }, { parent: box, color: "var(--ink-2)" });
-  body.style.position = "relative";
-  void pct;
+  const pValue = data.mcnemarP >= 0.95 ? data.mcnemarP.toFixed(1) : data.mcnemarP.toFixed(2);
+  const noteY = axisY + 62;
+  const note = s.text("small", `The intervals overlap almost completely: no measurable difference (McNemar p = ${pValue}, tail 0 against no proxy). ${F.churn.split} of 89 tasks changed outcome between arms, the noise level of one trial.`, { x: plotX0, y: noteY, w: p.w });
+  const boxY = noteY + s.measure(note).height + 18;
+  if (boxY + boxH > p.y + p.h + 1) throw new Error(`solved: the reference box overflows the plot by ${boxY + boxH - p.y - p.h}px`);
+  box.style.top = `${boxY}px`;
 });
 </script>
 </body>

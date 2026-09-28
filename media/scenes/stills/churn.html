@@ -8,10 +8,9 @@
 <script>
 // C-churn: 89 unit cells in three runs.
 Gob.scene({ palette: "paper" }, (s) => {
-  const { hatch } = Gob;
+  const { PROV, hatch } = Gob;
   const c = s.params.data.churn;
-  const P_TB_FULL = "Terminal-Bench 2.1 · 89 tasks · one trial per arm · Claude Code 2.1.283 with GLM 5.3 Flash via Vercel AI Gateway · Gobstopper v0.7.2, 45,000-token threshold (default 128,000) · September 27–28, 2026 · 21 of 89 tail-0 trials may have run an earlier build";
-  const frame = s.still({ title: `${c.split} of 89 tasks changed outcome between arms`, provenance: P_TB_FULL });
+  const frame = s.still({ title: `${c.split} of 89 tasks changed outcome between arms`, provenance: PROV.tbFull });
   const p = frame.plot;
   const runs = [
     { n: c.resolved_by_all, label: "solved by all three arms", fill: "var(--ink-2)", edge: null },
@@ -23,7 +22,9 @@ Gob.scene({ palette: "paper" }, (s) => {
   const runGap = 14;
   const cellW = (p.w - gap * (total - runs.length) - runGap * (runs.length - 1)) / total;
   const barH = 150;
-  const top = Math.round(p.y + (p.h - barH) / 2 - 60);
+  // Bar, number and label as one block, centred a little above the plot's middle.
+  const blockH = barH + 124 + 44;
+  const top = Math.round(p.y + (p.h - blockH) / 2 - p.h * 0.04);
   let x = p.x;
   runs.forEach((run, index) => {
     const last = index === runs.length - 1;

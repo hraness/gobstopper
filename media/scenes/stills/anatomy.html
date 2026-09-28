@@ -17,15 +17,31 @@ Gob.scene({ palette: "paper" }, (s) => {
   const W = p.w;
   const stripH = 64;
   const gap = 6;
+  const rowH = 40;
+  const leader = "var(--ink-2)";
+
+  // What a summary line looks like: invented examples. Built first so its height is known
+  // and the whole diagram can be centred in the plot.
+  const panel = s.el("div", `position:absolute;padding:22px 28px;border-radius:12px;background:var(--panel);box-shadow:inset 0 0 0 1.5px color-mix(in oklab, var(--summary) 55%, transparent)`);
+  for (const line of [
+    "user: fix the failing test",
+    "[Bash] cargo test -p app (output over 500 characters left out)",
+    "assistant: the test passes now",
+  ]) {
+    const node = s.text("mono", line, { x: 0, y: 0 }, { parent: panel, nowrap: true });
+    node.style.position = "relative";
+  }
+  const panelH = s.measure(panel).height;
+  const contentH = stripH + 44 + rowH + 12 + rowH + 30 + stripH + 38 + panelH;
+  const top = p.y + Math.max(0, Math.round((p.h - contentH) / 2));
 
   // The original request, as a ghost.
-  const ghostY = p.y;
+  const ghostY = top;
   const ghost = s.el("div", `position:absolute;left:${p.x}px;top:${ghostY}px;width:${W}px;height:${stripH}px;border-radius:12px;border:2px dashed color-mix(in oklab, var(--slab-edge) 70%, transparent);display:flex;align-items:center`);
   s.text("small", "original request", { x: 0, y: 0 }, { parent: ghost, color: "var(--ink-2)", weight: 500 }).style.cssText += "position:relative;padding-left:20px";
 
   // The rewrite, with the head and carry labels on two rows above it.
-  const rowH = 40;
-  const row1 = ghostY + stripH + 40;
+  const row1 = ghostY + stripH + 44;
   const row2 = row1 + rowH + 12;
   const stripY = row2 + rowH + 30;
   let x = p.x;
@@ -39,33 +55,25 @@ Gob.scene({ palette: "paper" }, (s) => {
   for (const { block, box } of blocks) {
     s.slab(block.kind, box, block.label === "Summary" ? "Summary" : undefined, { tone: "anatomy" });
   }
-  const tick = (cx, y0, y1, color) => s.el("div", `position:absolute;left:${Math.round(cx) - 1}px;top:${y0}px;width:2px;height:${y1 - y0}px;background:${color}`);
+  // Every leader is the same 1.5 px ink-2 rule, 24 px in from its block's left edge.
+  const tick = (cx, y0, y1) => s.el("div", `position:absolute;left:${Math.round(cx) - 0.75}px;top:${y0}px;width:1.5px;height:${y1 - y0}px;background:${leader}`);
 
   const head = byLabel("Head").box;
   s.text("small", "Head: system prompt and your first message, word for word", { x: head.x, y: row1 }, { nowrap: true });
-  tick(head.x + 24, row1 + rowH, stripY - 6, "var(--ink)");
+  tick(head.x + 24, row1 + rowH + 2, stripY - 6);
 
   const carry = byLabel("Carry").box;
   s.text("small", "Carry: earlier words and replies, up to 24,000 characters", { x: carry.x, y: row2 }, { nowrap: true });
-  tick(carry.x + 24, row2 + rowH, stripY - 6, "var(--summary)");
+  tick(carry.x + 24, row2 + rowH + 2, stripY - 6);
 
   const last = blocks[blocks.length - 1].box;
   s.text("small", "Last 3 turns, word for word", { x: last.x + last.w + 28, y: stripY + stripH / 2 - 19 }, { color: "var(--tail0)", weight: 500, nowrap: true });
 
-  // What a summary line looks like: invented examples.
   const sum = byLabel("Summary");
-  const sc = sum.box.x + 24;
-  const panelY = stripY + stripH + 34;
-  tick(sc, stripY + stripH + 6, panelY, "var(--summary)");
-  const panel = s.el("div", `position:absolute;left:${sum.box.x}px;top:${panelY}px;padding:22px 28px;border-radius:12px;background:var(--panel);box-shadow:inset 0 0 0 1.5px color-mix(in oklab, var(--summary) 55%, transparent)`);
-  for (const line of [
-    "user: fix the failing test",
-    "[Bash] cargo test -p app (output over 500 characters left out)",
-    "assistant: the test passes now",
-  ]) {
-    const node = s.text("mono", line, { x: 0, y: 0 }, { parent: panel, nowrap: true });
-    node.style.position = "relative";
-  }
+  const panelY = stripY + stripH + 38;
+  tick(sum.box.x + 24, stripY + stripH + 6, panelY);
+  panel.style.left = `${sum.box.x}px`;
+  panel.style.top = `${panelY}px`;
 });
 </script>
 </body>

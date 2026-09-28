@@ -299,7 +299,8 @@ export function boot(opts: { palette: PaletteName; scale?: TypeScale }): Promise
       case "summary": fill = "var(--summary)"; ink = "var(--on-fill)"; shadow = "none"; break;
       case "recent": fill = "var(--tail0)"; ink = "var(--on-fill)"; shadow = "none"; break;
       case "kept":
-        if (o.tone === "anatomy") shadow = edge(2, "var(--summary)");
+        // Violet is always the summary, so kept text on the anatomy strip takes the neutral edge.
+        if (o.tone === "anatomy") shadow = edge(2, "var(--slab-edge)");
         else { fill = "var(--tail40)"; ink = "var(--on-fill)"; shadow = "none"; }
         break;
       case "dropped": node.style.opacity = "0.4"; break;

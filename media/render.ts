@@ -15,12 +15,13 @@
  * lives in the repository's shared Git directory, so every worktree sees the same one.
  */
 import { createHash, randomBytes } from "node:crypto";
-import { existsSync, statfsSync } from "node:fs";
+import { existsSync, readFileSync, statfsSync } from "node:fs";
 import { copyFile, mkdir, open, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { gobFilm, type GobFilm } from "../site/app/_data/gob-film";
 import { F, GAP_ROWS } from "../site/app/_lib/gobbench-format";
-import { ARM_ORDER, arm, replayGrid, sawtooth, terminalBench } from "../site/app/_lib/gobbench-data";
+import { ARM_ORDER, arm, pair, replayGrid, sawtooth, terminalBench } from "../site/app/_lib/gobbench-data";
 import { PALETTES, type PaletteName } from "./lib/palette";
 import { RESOURCES } from "./lib/stage";
 
@@ -42,6 +43,10 @@ const LOCK_POLL_MS = 30_000;
 const LOCK_WAIT_MS = 20 * 60_000;
 const RENDER_TIMEOUT_MS = 60 * 60_000;
 const GIB = 1024 ** 3;
+/** The film's length. The type pins it, and `filmSeconds()` checks it against shots.json. */
+export const FILM_SECONDS: GobFilm["durationSeconds"] = 75;
+/** The social card is drawn at 2x and downscaled, so its text is supersampled. */
+const SOCIAL_SUPERSAMPLE = 2;
 
 type Output = "docs" | "blog" | "social";
 
@@ -85,6 +90,7 @@ function dataSlice(name: string): unknown {
       return {
         arms: ARM_ORDER.map((id) => ({ id, resolved: arm(id).resolved, n: arm(id).n_tasks })),
         reported: terminalBench.paper_reference.reported,
+        mcnemarP: pair("tail0", "no_proxy").mcnemar_exact_p,
       };
     case "sawtooth": {
       const run = sawtooth.runs.find((entry) => entry.threshold === 45000 && entry.keep_tail_percent === 0);
@@ -103,14 +109,40 @@ function dataSlice(name: string): unknown {
           .map((row) => ({ threshold: row.threshold, tail: row.keep_tail_percent, cut: row.pooled_input_cut })),
         violations: replayGrid.pairing_violations_total.proxy_introduced,
         cells: replayGrid.pairing_violations_total.cells,
+        corpusTokens: replayGrid.corpus.est_input_tokens,
+        largestThreeTokens: replayGrid.corpus.three_largest_sessions_est_input_tokens,
+        typicalCut32: gridRow(replayGrid.pooled, 32000).median_session_cut,
+        claudeCodeMedian128: gridRow(replayGrid.by_provider.filter((row) => row.provider === "claude_code"), 128000).median_session_cut,
       };
     case "gap":
       return GAP_ROWS;
     case "churn":
       return terminalBench.churn;
+    case "film":
+      return { seconds: filmSeconds() };
     default:
       throw new Error(`Unknown data slice ${name}.`);
   }
+}
+
+function gridRow<T extends { threshold: number; keep_tail_percent: number }>(rows: readonly T[], threshold: number): T {
+  const row = rows.find((entry) => entry.threshold === threshold && entry.keep_tail_percent === 0);
+  if (row === undefined) throw new Error(`replay-grid.json has no ${threshold}-token tail 0 row.`);
+  return row;
+}
+
+/** The film length the card states: fails if shots.json or gob-film.ts disagree with it. */
+function filmSeconds(): number {
+  const shotsPath = join(MEDIA, "shots.json");
+  if (existsSync(shotsPath)) {
+    const list = JSON.parse(readFileSync(shotsPath, "utf8")) as ShotList;
+    const end = list.shots[list.shots.length - 1]?.end;
+    if (end !== FILM_SECONDS) throw new Error(`shots.json ends at ${end} s, but the film card says ${FILM_SECONDS} s.`);
+  }
+  if (gobFilm !== null && gobFilm.durationSeconds !== FILM_SECONDS) {
+    throw new Error(`gob-film.ts says ${gobFilm.durationSeconds} s, but the film card says ${FILM_SECONDS} s.`);
+  }
+  return FILM_SECONDS;
 }
 
 /**
@@ -249,6 +281,30 @@ async function readLock(path: string): Promise<LockRecord | undefined> {
   }
 }
 
+/** True when no process with this pid exists on this host. */
+function pidGone(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ESRCH";
+  }
+}
+
+/**
+ * Removes a run lock whose render process is gone (killed, out of memory, host restart).
+ * A session lock (`held`) outlives its `lock hold` process by design, so it is never
+ * stale. The token is compared on a fresh read, so a lock someone just took survives.
+ */
+async function reclaimStale(path: string, seen: LockRecord, log: (s: string) => void): Promise<boolean> {
+  if (seen.held || !pidGone(seen.pid)) return false;
+  const now = await readLock(path);
+  if (now?.token !== seen.token) return false;
+  await unlink(path).catch((error: NodeJS.ErrnoException) => { if (error.code !== "ENOENT") throw error; });
+  log(JSON.stringify({ state: "reclaimed-stale-lock", lane: seen.lane, job: seen.job, pid: seen.pid, startedAt: seen.startedAt }));
+  return true;
+}
+
 async function createLock(path: string, record: LockRecord): Promise<boolean> {
   try {
     const handle = await open(path, "wx", 0o600);
@@ -262,8 +318,8 @@ async function createLock(path: string, record: LockRecord): Promise<boolean> {
 
 /**
  * Take the lock for one run, or join a session lock this process was handed through
- * GOB_RENDER_TOKEN. Waits up to 20 minutes, polling every 30 s, and never removes a lock
- * it does not own.
+ * GOB_RENDER_TOKEN. Waits up to 20 minutes, polling every 30 s. It removes a lock it does
+ * not own only when that lock's render process no longer exists (`reclaimStale`).
  */
 async function acquire(lane: string, job: string, log: (s: string) => void): Promise<() => Promise<void>> {
   const path = lockPath();
@@ -283,6 +339,7 @@ async function acquire(lane: string, job: string, log: (s: string) => void): Pro
       }
       continue;
     }
+    if (await reclaimStale(path, current, log)) continue;
     if (Date.now() >= deadline) {
       throw new Error(`The render lock is held by lane ${current.lane} (${current.job}) since ${current.startedAt}; gave up after 20 minutes.`);
     }
@@ -309,6 +366,8 @@ async function lockCommand(args: string[]): Promise<void> {
     const token = randomBytes(16).toString("hex");
     const deadline = Date.now() + LOCK_WAIT_MS;
     while (!(await createLock(path, { lane, job: "session", pid: process.pid, token, held: true, startedAt: new Date().toISOString() }))) {
+      const current = await readLock(path);
+      if (current !== undefined && await reclaimStale(path, current, console.log)) continue;
       if (Date.now() >= deadline) throw new Error("The render lock stayed busy for 20 minutes.");
       await Bun.sleep(LOCK_POLL_MS);
     }
@@ -319,6 +378,10 @@ async function lockCommand(args: string[]): Promise<void> {
     const token = option("--token");
     const current = await readLock(path);
     if (current === undefined) { console.log(JSON.stringify({ state: "free" })); return; }
+    if (rest.includes("--force-stale")) {
+      if (!(await reclaimStale(path, current, console.log))) throw new Error("The lock's render process is still running, or it is a session lock; it was not released.");
+      return;
+    }
     if (token === undefined || current.token !== token) throw new Error("The lock belongs to another run; it was not released.");
     await unlink(path);
     console.log(JSON.stringify({ state: "released" }));
@@ -431,7 +494,9 @@ async function renderStill(job: StillJob, dryRun: boolean, log: (s: string) => v
   const name = `still-${job.id}`;
   const [layoutWidth, layoutHeight] = job.size;
   const social = job.outputs.includes("social");
-  const [width, height] = social ? [layoutWidth, layoutHeight] : [2400, 1350];
+  // The social card's final size is its layout; it is captured at 2x and downscaled.
+  const [width, height] = social ? [layoutWidth * SOCIAL_SUPERSAMPLE, layoutHeight * SOCIAL_SUPERSAMPLE] : [2400, 1350];
+  const [outWidth, outHeight] = social ? [layoutWidth, layoutHeight] : [width, height];
   const layoutZoom = width / layoutWidth;
   if (Math.abs(height / layoutHeight - layoutZoom) > 1e-9) throw new Error(`${name}: size ${layoutWidth}×${layoutHeight} does not scale evenly to ${width}×${height}.`);
   const { htmlPath, htmlSha } = await buildScene(name, job.scene);
@@ -465,9 +530,10 @@ async function renderStill(job: StillJob, dryRun: boolean, log: (s: string) => v
     const frame = join(jobDir, "render/frames/frame-00000000.png");
     if (!existsSync(frame)) throw new Error(`${name}: no captured frame at ${relative(REPO, frame)}.`);
     await mkdir(dirname(png), { recursive: true });
-    ffmpeg(["-i", frame, "-frames:v", "1", "-pix_fmt", "rgb24", "-pred", "mixed", png]);
+    const scale = social ? ["-vf", `scale=${outWidth}:${outHeight}:flags=lanczos`] : [];
+    ffmpeg(["-i", frame, "-frames:v", "1", ...scale, "-pix_fmt", "rgb24", "-pred", "mixed", png]);
     const [pw, ph] = pngSize(await readFile(png));
-    if (pw !== width || ph !== height) throw new Error(`${name}: frame is ${pw}×${ph}, expected ${width}×${height}.`);
+    if (pw !== outWidth || ph !== outHeight) throw new Error(`${name}: frame is ${pw}×${ph}, expected ${outWidth}×${outHeight}.`);
     size = (await stat(png)).size;
     if (size > MAX_STILL_BYTES) throw new Error(`${name}: ${size} bytes, over 600 KB.`);
     outputSha = await fileSha(png);
@@ -490,7 +556,7 @@ async function renderStill(job: StillJob, dryRun: boolean, log: (s: string) => v
     canvas: { width, height, deviceScaleFactor: 1, layoutWidth, layoutHeight, layoutZoom }, holdSeconds: job.hold,
     sceneHtmlSha256: htmlSha, sceneSource: job.scene, sceneSourceSha256: await fileSha(join(MEDIA, job.scene)),
     ...(await inputHashes()),
-    output: { width, height, bytes: size, sha256: outputSha, source: "captured frame 0", copies },
+    output: { width: outWidth, height: outHeight, bytes: size, sha256: outputSha, source: social ? "captured frame 0, lanczos downscale" : "captured frame 0", copies },
   });
   log(JSON.stringify({ job: name, state: "rendered", seconds: Math.round((Date.now() - started) / 1000), bytes: size, png: relative(REPO, png) }));
 }
@@ -539,11 +605,16 @@ async function renderShot(list: ShotList, job: ShotJob, draft: boolean, dryRun: 
   }
   const video = videoPath(result);
   const destination = join(OUT, "shots", `${job.id}${draft ? ".draft" : ""}.mp4`);
-  await mkdir(dirname(destination), { recursive: true });
-  await copyFile(video, destination);
-  const outputSha = await fileSha(destination);
+  // The job directory holds gigabytes of 4K frames, so it goes even when collecting fails.
   const jobDir = jobDirectory(video);
-  if (jobDir !== undefined) await rm(jobDir, { recursive: true, force: true });
+  let outputSha: string;
+  try {
+    await mkdir(dirname(destination), { recursive: true });
+    await copyFile(video, destination);
+    outputSha = await fileSha(destination);
+  } finally {
+    if (jobDir !== undefined) await rm(jobDir, { recursive: true, force: true });
+  }
   await appendReceipt(`shot-${job.id}`, {
     job: name, id: job.id, draft, slopcamera: version, renderedAt: new Date().toISOString(),
     seconds: Math.round((Date.now() - started) / 1000),
@@ -557,14 +628,14 @@ async function renderShot(list: ShotList, job: ShotJob, draft: boolean, dryRun: 
 
 export async function main(argv: string[], log: (s: string) => void = console.log): Promise<void> {
   const [command, ...rest] = argv;
+  // `lock` takes its own options (--lane, --token, --force-stale).
+  if (command === "lock") return lockCommand(rest);
   const flags = new Set(rest.filter((a) => a.startsWith("--")));
   const positional = rest.filter((a) => !a.startsWith("--"));
   for (const flag of flags) if (flag !== "--dry-run" && flag !== "--draft") throw new Error(`Unknown flag ${flag}`);
   const dryRun = flags.has("--dry-run");
   const draft = flags.has("--draft");
   switch (command) {
-    case "lock":
-      return lockCommand(rest);
     case "still": {
       const id = positional[0];
       const job = (await loadStills()).find((entry) => entry.id === id);
@@ -587,7 +658,7 @@ export async function main(argv: string[], log: (s: string) => void = console.lo
       return;
     }
     default:
-      throw new Error("Usage: bun media/render.ts still <id> | stills | shot <id> [--draft] | shots [--draft] | lock hold|release|status  [--dry-run]");
+      throw new Error("Usage: bun media/render.ts still <id> | stills | shot <id> [--draft] | shots [--draft] | lock hold --lane <name> | lock release --token <token> | lock release --force-stale | lock status  [--dry-run]");
   }
 }
 

@@ -48,9 +48,9 @@ Each job:
 2. Writes the Slopcamera request to `out/build/<job>.scene.json`. Its `parameters` carry the palette, the formatted number strings and the data series the scene draws.
 3. Validates the request with a dry run.
 4. Waits for the render lock, renders, and releases the lock.
-5. Collects the output. A still becomes a 2400×1350 PNG under 600 KB, copied byte for byte to `docs/assets/gob-<id>.png` and `site/public/blog/introducing-gobstopper/gob-<id>.png` as `stills.json` lists. The social card becomes `out/social/gobstopper-terminal-bench-1200x630.png`. A shot becomes `out/shots/<id>.mp4`.
+5. Collects the output. A still becomes a 2400×1350 PNG under 600 KB, copied byte for byte to `docs/assets/gob-<id>.png` and `site/public/blog/introducing-gobstopper/gob-<id>.png` as `stills.json` lists. The social card is drawn at 2400×1260 and downscaled with a Lanczos filter to `out/social/gobstopper-terminal-bench-1200x630.png`, so its text is supersampled. A shot becomes `out/shots/<id>.mp4`.
 6. Appends a record to `out/receipts/<still|shot>-<id>.json`: the Slopcamera version, the SHA-256 of the scene, data files, fonts and output, and the render time.
-7. Deletes Slopcamera's working directory for the job.
+7. Deletes Slopcamera's working directory for the job, even when collecting the output fails.
 
 Slopcamera captures each frame at the canvas's CSS size, whatever `deviceScaleFactor` says. So the canvas is always the output size: 2400×1350 for a still, 3840×2160 for a final shot. The scene still lays out at 1600×900 or 1920×1080, and `lib/stage.ts` zooms that layout to fill the canvas. Text is set and rasterized at full size, not upscaled. Scenes measure elements with `s.measure(node)`, which returns layout pixels, and never with `getBoundingClientRect()`, which returns zoomed ones.
 
@@ -66,7 +66,7 @@ bun media/render.ts stills && bun media/render.ts shots && uv run --with numpy -
 
 Each render starts its own Chrome. Only one may run on the machine at a time, including renders from other worktrees of this repository.
 
-`render.ts` enforces this with a lock file in the repository's shared Git directory (`git rev-parse --git-common-dir`, file `gob-render.lock`), so every worktree sees the same lock. Set `GOB_RENDER_LOCK` to use another path. A render that finds the lock taken checks again every 30 seconds and gives up after 20 minutes. It never removes a lock it did not create.
+`render.ts` enforces this with a lock file in the repository's shared Git directory (`git rev-parse --git-common-dir`, file `gob-render.lock`), so every worktree sees the same lock. Set `GOB_RENDER_LOCK` to use another path. A render that finds the lock taken checks again every 30 seconds and gives up after 20 minutes. It removes a lock it did not create only when that lock belongs to a single render whose process no longer exists on this machine, for example after the render was killed or the machine restarted. It logs `reclaimed-stale-lock` when it does. A session lock from `lock hold` is never removed this way, because its `hold` process exits by design.
 
 To keep the lock across a series of renders:
 
@@ -75,7 +75,10 @@ bun media/render.ts lock hold --lane <name>     # prints a token
 GOB_RENDER_TOKEN=<token> bun media/render.ts stills
 bun media/render.ts lock release --token <token>
 bun media/render.ts lock status
+bun media/render.ts lock release --force-stale # only if the holding render's process is gone
 ```
+
+If a session holder crashed, the lock stays until its owner releases it with the token. Check `lock status` and ask that lane before deleting the file by hand.
 
 Render sequentially and leave generous timeouts; the machine is shared.
 

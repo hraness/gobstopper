@@ -8,12 +8,12 @@
 <script>
 // C-gap: extra provider-reported cost of tail 40 over tail 0, per task.
 Gob.scene({ palette: "paper" }, (s) => {
+  const { PROV } = Gob;
   const rows = s.params.data.gap;
-  const P_TB_FULL = "Terminal-Bench 2.1 · 89 tasks · one trial per arm · Claude Code 2.1.283 with GLM 5.3 Flash via Vercel AI Gateway · Gobstopper v0.7.2, 45,000-token threshold (default 128,000) · September 27–28, 2026 · 21 of 89 tail-0 trials may have run an earlier build";
   const frame = s.still({
-    title: "Five tasks carried the old default's extra cost",
-    subtitle: "Provider-reported cost, tail 40 minus tail 0, per task",
-    provenance: P_TB_FULL,
+    title: "Five tasks carried the old default’s extra cost",
+    subtitle: "Provider-reported cost (Vercel AI Gateway prices for GLM 5.3 Flash), tail 40 minus tail 0, per task",
+    provenance: PROV.tbFull,
   });
   const p = frame.plot;
   const nameW = 470;

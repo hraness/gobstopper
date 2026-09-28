@@ -7,63 +7,89 @@
 <body>
 <script>
 // C-sawtooth: estimated tokens per request over one recorded session, with and without
-// the proxy, at a 45,000-token threshold. Rings under the plot mark each rewrite.
+// the proxy, at a 45,000-token threshold. Ticks under the axis mark each rewrite; an inset
+// magnifies the first 100 requests so the teeth read at full size.
 Gob.scene({ palette: "paper" }, (s) => {
-  const { F } = Gob;
+  const { F, PROV } = Gob;
   const d = s.params.data.sawtooth;
-  const P_SAW = "Estimated tokens (4 characters per token), not billed · one recorded Claude Code session, 383 requests · replay on the v0.7.2 engine, calibration on";
   const frame = s.still({
     title: "A sawtooth, not a ramp",
-    provenance: P_SAW,
+    provenance: PROV.saw,
     legend: Gob.legend([
-      { label: "Claude Code, no proxy", fill: "3px dotted var(--noproxy)", shape: "line" },
+      { label: "Claude Code, no proxy", fill: "2.5px dashed var(--noproxy)", shape: "line" },
       { label: "Gobstopper, tail 0", fill: "3.5px solid var(--tail0)", shape: "line" },
-      { label: "threshold: 45K set, lowered by calibration", fill: "2px solid var(--ink)", shape: "line" },
+      { label: "threshold: 45K set (default 128K), lowered by calibration", fill: "2px solid var(--ink-2)", shape: "line" },
     ]),
   });
   const p = frame.plot;
   const axisW = 96;
-  const ringStrip = 34;
-  const axisLabels = 40;
+  const tickRow = 40;
+  const rewriteStrip = 26;
+  const captionRow = 34;
   const x0 = p.x + axisW;
   const x1 = p.x + p.w;
-  const y0 = p.y + p.h - ringStrip - axisLabels - 8; // value 0
+  const y0 = p.y + p.h - captionRow - rewriteStrip - tickRow - 4; // value 0
   const y1 = p.y + 6; // value 500K
   const n = d.without.length;
   const X = (i) => x0 + (i / (n - 1)) * (x1 - x0);
   const Y = (v) => y0 - (v / 500000) * (y0 - y1);
   const svg = Gob.svgLayer(s);
+  const noProxyDash = "7 6";
 
   for (let t = 0; t <= 500000; t += 100000) {
     const gy = Math.round(Y(t)) + 0.5;
     Gob.svgNode(svg, "line", { x1: x0, x2: x1, y1: gy, y2: gy, stroke: t === 0 ? "var(--ink)" : "var(--rule)", "stroke-width": t === 0 ? 2 : 1.5 });
     s.text("small", t === 0 ? "0" : `${t / 1000}K`, { x: p.x, y: gy - 19, w: axisW - 18 }, { align: "right", color: "var(--ink-2)" });
   }
-  for (const r of [1, 100, 200, 300, 383]) {
+  for (const r of [1, 100, 200, 300, n]) {
     const gx = X(r - 1);
-    s.text("small", String(r), { x: gx - 60, y: y0 + 10, w: 120 }, { align: r === 383 ? "right" : "center", color: "var(--ink-2)" }).style.cssText += r === 383 ? `;left:${gx - 120}px` : "";
+    const last = r === n;
+    s.text("small", String(r), { x: last ? gx - 120 : gx - 60, y: y0 + 8, w: 120 }, { align: last ? "right" : "center", color: "var(--ink-2)" });
   }
-  s.text("small", "request", { x: x0, y: y0 + 10 }, { color: "var(--ink-2)" }).style.left = `${X(49)}px`;
 
-  const line = (values) => values.map((v, i) => `${i === 0 ? "M" : "L"}${X(i).toFixed(2)},${Y(v).toFixed(2)}`).join("");
+  const line = (values, xf = X, yf = Y) => values.map((v, i) => `${i === 0 ? "M" : "L"}${xf(i).toFixed(2)},${yf(v).toFixed(2)}`).join("");
   const area = (values) => `${line(values)}L${X(n - 1).toFixed(2)},${y0}L${X(0).toFixed(2)},${y0}Z`;
+  const stepPath = (values, xf, yf, end) => values.map((v, i) => (i === 0 ? `M${xf(0).toFixed(2)},${yf(v).toFixed(2)}` : `H${xf(i).toFixed(2)}V${yf(v).toFixed(2)}`)).join("") + `H${end.toFixed(2)}`;
   Gob.svgNode(svg, "path", { d: area(d.without), fill: "color-mix(in oklab, var(--noproxy) 12%, transparent)", stroke: "none" });
-  Gob.svgNode(svg, "path", { d: area(d.with), fill: "color-mix(in oklab, var(--tail0) 16%, transparent)", stroke: "none" });
-  Gob.svgNode(svg, "path", { d: line(d.without), stroke: "var(--noproxy)", "stroke-width": 3, "stroke-dasharray": "0.5 6" });
-  Gob.svgNode(svg, "path", { d: line(d.with), stroke: "var(--tail0)", "stroke-width": 2.5 });
-  const step = d.threshold.map((v, i) => (i === 0 ? `M${X(0)},${Y(v)}` : `H${X(i).toFixed(2)}V${Y(v).toFixed(2)}`)).join("");
-  Gob.svgNode(svg, "path", { d: step + `H${X(n - 1)}`, stroke: "var(--ink)", "stroke-width": 1.75, "stroke-linecap": "butt" });
+  Gob.svgNode(svg, "path", { d: area(d.with), fill: "color-mix(in oklab, var(--tail0) 22%, transparent)", stroke: "none" });
+  Gob.svgNode(svg, "path", { d: line(d.without), stroke: "var(--noproxy)", "stroke-width": 2.5, "stroke-dasharray": noProxyDash, "stroke-linecap": "butt" });
+  Gob.svgNode(svg, "path", { d: stepPath(d.threshold, X, Y, X(n - 1)), stroke: "var(--ink-2)", "stroke-width": 1.5, "stroke-linecap": "butt" });
+  Gob.svgNode(svg, "path", { d: line(d.with), stroke: "var(--tail0)", "stroke-width": 3.5 });
 
-  // Rewrites as rings in a strip under the plot.
-  const ringY = y0 + axisLabels + ringStrip / 2 + 6;
-  for (const i of d.compactions) s.ring(X(i), ringY, 14, { color: "var(--tail0)", stroke: 2.4 });
+  // Rewrites: one tick each under the request numbers (they fall as close as one request apart).
+  const stripY = y0 + tickRow + 2;
+  for (const i of d.compactions) {
+    const gx = Math.round(X(i)) + 0.5;
+    Gob.svgNode(svg, "line", { x1: gx, x2: gx, y1: stripY, y2: stripY + rewriteStrip - 8, stroke: "var(--tail0)", "stroke-width": 2, "stroke-linecap": "butt" });
+  }
+  s.text("small", `request · each blue tick is one of the ${F.saw.compactions} rewrites`, { x: x1 - 900, y: stripY + rewriteStrip - 6, w: 900 }, { align: "right", color: "var(--ink-2)" });
+
+  // The inset: requests 1–100 at 0–50K, marked on the main plot by a dashed box.
+  const zoomN = 100;
+  const zoomMax = 50000;
+  Gob.svgNode(svg, "rect", { x: X(0), y: Y(zoomMax), width: X(zoomN - 1) - X(0), height: y0 - Y(zoomMax), fill: "none", stroke: "var(--ink-2)", "stroke-width": 1.5, "stroke-dasharray": "4 4" });
+  const inset = { x: X(212), y: Y(318000), w: x1 - 12 - X(212), h: Y(56000) - Y(318000) };
+  s.el("div", `position:absolute;left:${inset.x}px;top:${inset.y}px;width:${inset.w}px;height:${inset.h}px;border-radius:10px;background:var(--bg);box-shadow:inset 0 0 0 1.5px var(--rule)`);
+  s.text("small", "requests 1–100, magnified", { x: inset.x + 20, y: inset.y + 12 }, { nowrap: true, weight: 500 });
+  // A layer above the inset's card, so its lines are not hidden under it.
+  const top = Gob.svgLayer(s);
+  const ip = { x: inset.x + 96, y: inset.y + 64, w: inset.w - 96 - 24, h: inset.h - 64 - 20 };
+  const IX = (i) => ip.x + (i / (zoomN - 1)) * ip.w;
+  const IY = (v) => ip.y + ip.h - (v / zoomMax) * ip.h;
+  for (const t of [0, zoomMax / 2, zoomMax]) {
+    const gy = Math.round(IY(t)) + 0.5;
+    Gob.svgNode(top, "line", { x1: ip.x, x2: ip.x + ip.w, y1: gy, y2: gy, stroke: t === 0 ? "var(--ink)" : "var(--rule)", "stroke-width": t === 0 ? 1.5 : 1.25 });
+    s.text("small", t === 0 ? "0" : `${t / 1000}K`, { x: inset.x + 12, y: gy - 19, w: 96 - 12 - 14 }, { align: "right", color: "var(--ink-2)" });
+  }
+  const clip = Gob.svgNode(top, "svg", { x: ip.x - 4, y: ip.y - 6, width: ip.w + 8, height: ip.h + 8, viewBox: `${ip.x - 4} ${ip.y - 6} ${ip.w + 8} ${ip.h + 8}` });
+  const head = (values) => values.slice(0, zoomN);
+  Gob.svgNode(clip, "path", { d: line(head(d.without), IX, IY), stroke: "var(--noproxy)", "stroke-width": 2.5, "stroke-dasharray": noProxyDash, "stroke-linecap": "butt" });
+  Gob.svgNode(clip, "path", { d: stepPath(head(d.threshold), IX, IY, IX(zoomN - 1)), stroke: "var(--ink-2)", "stroke-width": 1.5, "stroke-linecap": "butt" });
+  Gob.svgNode(clip, "path", { d: line(head(d.with), IX, IY), stroke: "var(--tail0)", "stroke-width": 3 });
 
   // Annotations.
   const peakIndex = d.without.indexOf(Math.max(...d.without));
-  // Under the teal line, inside its wash, right-aligned to the peak.
-  s.text("small", `no proxy: up to ${F.saw.peak} per request`, { x: X(peakIndex) - 620, y: Y(330000), w: 600 }, { align: "right", color: "var(--noproxy)", weight: 500 });
-  // Labels the sawtooth itself, just above the blue line; the rings below mark each one.
-  s.text("small", `${F.saw.compactions} rewrites`, { x: X(250), y: Y(42000) - 44 }, { color: "var(--tail0)", weight: 600, nowrap: true });
+  s.text("small", `no proxy: up to ${F.saw.peak} per request`, { x: X(peakIndex) - 620, y: Y(372000), w: 604 }, { align: "right", color: "var(--noproxy)", weight: 500 });
   s.text("label", `total over the session: ${F.saw.cumFrom} to ${F.saw.cumTo} estimated tokens (${F.saw.cut} less)`, { x: x0 + 24, y: Y(470000), w: 620 }, { weight: 500 });
 });
 </script>

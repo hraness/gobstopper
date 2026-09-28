@@ -14,7 +14,7 @@ Gob.scene({ palette: "paper" }, (s) => {
   });
   const p = frame.plot;
   const ns = "http://www.w3.org/2000/svg";
-  const pillH = 84;
+  const pillH = 92;
   const arrowW = 96;
 
   // Pills, measured after layout so the row centres on the plot.
@@ -31,7 +31,11 @@ Gob.scene({ palette: "paper" }, (s) => {
   const provider = pill("model provider", false, false);
   const rowW = s.measure(row).width;
   const rowX = Math.round(p.x + (p.w - rowW) / 2);
-  const rowY = p.y + 24;
+  const firstGap = 118;
+  const stepY = 118;
+  // Pills, trunk and three outcomes as one block, centred a little above the plot's middle.
+  const blockH = pillH + firstGap + stepY * 2 + 24;
+  const rowY = Math.round(p.y + (p.h - blockH) / 2 - p.h * 0.04);
   row.style.left = `${rowX}px`;
   row.style.top = `${rowY}px`;
   const cy = rowY + pillH / 2;
@@ -66,12 +70,11 @@ Gob.scene({ palette: "paper" }, (s) => {
 
   // Three outcomes under the proxy pill, joined by one trunk.
   const trunkX = b.x + 64;
-  const firstY = rowY + pillH + 96;
-  const stepY = 104;
+  const firstY = rowY + pillH + firstGap;
   const outcomes = [
     { text: "under the threshold: sent unchanged", color: "var(--slab-edge)", glyph: "slab" },
     { text: "over the threshold: rewritten", color: "var(--tail0)", glyph: "ring" },
-    { text: "anything goes wrong: your original request is sent", color: "var(--ink)", glyph: "back" },
+    { text: "if the rewrite fails: your original request is sent", color: "var(--ink)", glyph: "back" },
   ];
   const lastY = firstY + stepY * (outcomes.length - 1);
   path(`M${trunkX},${rowY + pillH} V${lastY - 18}`, "var(--ink)");
