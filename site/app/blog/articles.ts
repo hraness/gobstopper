@@ -33,6 +33,8 @@ export type BlogPost = Readonly<{
   slug: PostSlug;
   title: string;
   dek: string;
+  /** The dek shortened to fit two lines on the share card. */
+  shareLine: string;
   eyebrow: string;
   published: ArticleIsoDate;
   keywords: readonly string[];
@@ -43,6 +45,7 @@ const introducing: BlogPost = {
   slug: "introducing-gobstopper",
   title: "Introducing Gobstopper",
   dek: "Gobstopper replaces stale tool output in saved Claude Code and Codex sessions by a rule you set, after archiving the original so you can search or restore it.",
+  shareLine: "Replaces stale tool output in saved sessions, after archiving the original.",
   eyebrow: "Introducing",
   published: "2026-09-24",
   keywords: ["context compaction", "coding agents", "Claude Code", "Codex", "transcripts", "recovery"],
@@ -97,6 +100,7 @@ const proofs: BlogPost = {
   slug: "proofs-for-the-admission-math",
   title: "What Kani and Lean prove about Gobstopper's compaction",
   dek: "Gobstopper uses Kani to check its edit limits and token sums for every value of their numeric inputs, and Lean to prove that masking keeps each record's ID, order, and tool links.",
+  shareLine: "Kani checks the edit limits and token sums; Lean proves masking keeps record links.",
   eyebrow: "Technique",
   published: "2026-09-24",
   keywords: ["Kani", "Lean", "Rust", "formal proofs", "context compaction", "coding agents"],
@@ -152,6 +156,7 @@ const vault: BlogPost = {
   slug: "vault-models-that-fail-on-purpose",
   title: "How Gobstopper model-checks its archive against crashes",
   dek: "Gobstopper model-checks its archive design with a crash allowed at every step, and each model has broken copies, each with one safety rule switched off, that must reproduce the loss that rule prevents.",
+  shareLine: "Every model allows a crash at each step, and broken copies must reproduce the loss.",
   eyebrow: "Technique",
   published: "2026-09-24",
   keywords: ["Gobstopper", "TLA+", "model checking", "property testing", "crash recovery", "transcripts"],
