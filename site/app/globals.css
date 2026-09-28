@@ -55,6 +55,11 @@ body {
   min-block-size: max(2.75rem, var(--interactive-target-compact, 2.75rem));
 }
 
+.hraness-marketing-header nav a {
+  min-inline-size: 2.75rem;
+  justify-content: center;
+}
+
 .hraness-marketing-action[data-emphasis="primary"] {
   background: var(--primary);
   border: 1px solid var(--primary);
