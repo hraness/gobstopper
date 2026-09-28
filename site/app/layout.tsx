@@ -7,6 +7,7 @@ import { FoilController } from "./foil-controller";
 
 import {
   GITHUB_URL,
+  HRANESS_ORGANIZATION,
   SITE_DESCRIPTION,
   SITE_NAME,
   SITE_ORIGIN,
@@ -121,6 +122,8 @@ const structuredData = {
         "Local snapshot vault with search and undo",
         "Plugins for your own strategies",
       ],
+      offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+      publisher: HRANESS_ORGANIZATION,
       isPartOf: { "@id": websiteId },
     },
     {
