@@ -93,7 +93,7 @@ trusted_legacy_command = true`,
 const inside = [
   {
     label: "Strategies",
-    detail: "The default, auto, picks the checked strategy that saves the most while keeping the most of the cached prefix. Elide replaces stale tool output with short stubs. Cliff applies the proxy's drop rule to a saved copy. Structured adds a state card built from session metadata. The docs list the rest.",
+    detail: "For an idle session, the default, auto, scores each checked file strategy by tokens saved and cached prefix kept, and picks the best. Elide replaces stale tool output with short stubs. Cliff applies the proxy's drop rule to a saved copy. Structured adds a state card built from session metadata. The docs list the rest.",
   },
   {
     label: "Undo vault",
