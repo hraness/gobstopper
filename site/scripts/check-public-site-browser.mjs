@@ -73,16 +73,18 @@ try {
       assert.equal(await page.locator('#hraness-site-footer').count(), 1, label);
       assert.equal(await page.locator('iframe').count(), 0, 'Retired embedded preview stays absent');
       await until(() => page.evaluate(() => document.documentElement.dataset.theme).then(value => value === theme), `${label}: resolved theme`);
-      await page.screenshot({ path: resolve(artifacts, `${label}.jpg`), type: 'jpeg', quality: 90, fullPage: true, animations: 'disabled' });
+      const screenshot = await page.screenshot({ path: resolve(artifacts, `${label}.png`), fullPage: true, animations: 'disabled' });
+      assert.equal(screenshot.readUInt32BE(16), width, `${label}: full-page screenshot width`);
       const metrics = await page.evaluate(() => {
         const header = document.querySelector('.hraness-marketing-header');
         const footer = document.querySelector('#hraness-site-footer');
         const inner = footer.querySelector('.hraness-site-footer__inner');
         const main = document.querySelector('main');
         const rect = element => { const r = element.getBoundingClientRect(); return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height, width: r.width }; };
-        return { overflow: document.documentElement.scrollWidth - innerWidth, header: rect(header), headerPosition: getComputedStyle(header).position, footer: rect(footer), footerInner: rect(inner), footerPosition: getComputedStyle(inner).position, main: rect(main), font: getComputedStyle(document.body).fontFamily, targets: [...header.querySelectorAll('a, button, summary')].map(a => ({ label: a.getAttribute('href') ?? a.getAttribute('aria-label'), navigation: Boolean(a.closest('nav')), ...rect(a) })) };
+        return { overflow: document.documentElement.scrollWidth - innerWidth, bodyOverflow: document.body.scrollWidth - innerWidth, bodyWidth: document.body.getBoundingClientRect().width, header: rect(header), headerPosition: getComputedStyle(header).position, footer: rect(footer), footerInner: rect(inner), footerPosition: getComputedStyle(inner).position, main: rect(main), font: getComputedStyle(document.body).fontFamily, targets: [...header.querySelectorAll('a, button, summary')].map(a => ({ label: a.getAttribute('href') ?? a.getAttribute('aria-label'), navigation: Boolean(a.closest('nav')), ...rect(a) })) };
       });
       assert.ok(metrics.overflow <= 1, `${label}: document overflow`);
+      assert.ok(metrics.bodyOverflow <= 1 && metrics.bodyWidth <= width + 1, `${label}: body overflow`);
       assert.match(metrics.font, /Nebula Sans/, label);
       assert.equal(metrics.headerPosition, 'sticky', label);
       assert.ok(metrics.header.height <= (width < 600 ? 140 : 90), `${label}: header height`);

@@ -32,7 +32,7 @@ export function SiteHeader({ path }: Readonly<{ path?: CanonicalPagePath }>) {
         Skip to content
       </a>
       <MarketingSiteHeader
-        action={{ href: "/#install", label: "Install Gobstopper" }}
+        action={{ href: "/#install", label: "Install" }}
         ariaLabel="Primary navigation"
         trailing={<ThemeMenuButton aria-label="Appearance" />}
         brand="Gobstopper"
