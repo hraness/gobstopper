@@ -1,13 +1,16 @@
+import type { CSSProperties } from "react";
+
 import { F, GAP_ROWS } from "../_lib/gobbench-format";
 import { GobRules, GobXAxis, type Tick } from "./gob-axis";
 import { GobFigure, GobTable, P_TB_FULL, at } from "./gob-figure";
 
-const DOMAIN = [-0.25, 1.5] as const;
+// Half a dollar of room left of zero, so the one saving is labelled on its own side.
+const DOMAIN = [-0.5, 1.5] as const;
 const TICKS: readonly Tick[] = [
   { value: 0, label: "$0" },
   { value: 0.5, label: "+$0.50" },
   { value: 1, label: "+$1.00" },
-  { value: 1.5, label: "+$1.50" },
+  { value: 1.5, label: "+$1.50", show: "wide" },
 ];
 
 function money(delta: number): string {
@@ -63,8 +66,12 @@ export function GobGap() {
                 />
                 <span
                   className="gob-gap-row__value"
-                  // A saving is labelled across the zero line, where the track has room at any width.
-                  style={{ left: `calc(${at(negative ? ZERO : end)} + 0.4rem)` }}
+                  data-side={negative ? "start" : undefined}
+                  // A saving is labelled left of its bar; on narrow tracks the room left of zero
+                  // is too small, so it sits right of the zero line instead (see globals.css).
+                  style={negative
+                    ? { "--gob-zero": at(ZERO), "--gob-end": at(end) } as CSSProperties
+                    : { left: `calc(${at(end)} + 0.4rem)` }}
                 >
                   {money(row.deltaUsd)}
                 </span>

@@ -54,7 +54,8 @@ export const ANATOMY = {
 
 /** D-tail: both arms just after a rewrite. Tail 40 also keeps two older turns. */
 export const TAIL = {
-  lidAt: 7,
+  // A fifth of a pitch above the tail-40 stack, so the lid never touches its top slab.
+  lidAt: 7.2,
   tail0: [task(), summary, ...run("recent", 3, "last 3 turns")],
   tail40: [task(), summary, ...run("kept", 2, "older turns kept"), ...run("recent", 3, "last 3 turns")],
 } as const satisfies { lidAt: number; tail0: readonly Slab[]; tail40: readonly Slab[] };

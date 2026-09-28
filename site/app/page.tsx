@@ -22,6 +22,7 @@ import { GobSawtooth } from "./_components/gob-sawtooth";
 import { GobTokens } from "./_components/gob-tokens";
 import { SiteHeader, SiteFooter } from "./_components/site-chrome";
 import { gobFilm } from "./_data/gob-film";
+import { F } from "./_lib/gobbench-format";
 import { plainInline, renderInline } from "./_lib/inline";
 import { publishedRelease } from "./publication";
 
@@ -140,7 +141,7 @@ const trust = [
 const questions = [
   {
     question: "How much does it actually save?",
-    answer: "On Terminal-Bench 2.1 (September 27 and 28, 2026; 89 tasks, one trial per arm; Claude Code with GLM 5.3 Flash; 45,000-token threshold), Gobstopper at its default tail resolved 61 tasks and Claude Code with no proxy 60, within single-trial noise, while Gobstopper sent 29% fewer input tokens. Provider-reported cost for that model was about 16% lower, which one trial cannot separate from noise. Dollars depend on your provider's cache pricing, and subscriptions are not billed per token. Most short sessions never reach the default 128,000-token threshold and pass through unchanged. CliffCompaction's authors report their own results for the rule on the comparison page. The benchmarks page lists every dated measurement.",
+    answer: `On Terminal-Bench 2.1 (September 27 and 28, 2026; 89 tasks, one trial per arm; Claude Code with GLM 5.3 Flash; 45,000-token threshold), Gobstopper at tail 0 resolved ${F.solved.tail0} tasks and Claude Code with no proxy ${F.solved.no_proxy}, within single-trial noise, while Gobstopper sent ${F.inputFewer} fewer input tokens. Provider-reported cost for that model was about ${F.costLower} lower, which one trial cannot separate from noise. Dollars depend on your provider's cache pricing, and subscriptions are not billed per token. Most short sessions never reach the default 128,000-token threshold and pass through unchanged. CliffCompaction's authors report their own results for the rule on the comparison page. The benchmarks page lists every dated measurement.`,
   },
   {
     question: "Does it edit my live session?",
@@ -148,7 +149,7 @@ const questions = [
   },
   {
     question: "What if a compaction loses something important?",
-    answer: "The proxy drops only tool results over 500 characters from the request; the files and commands behind them are still there, and the agent's transcript keeps the full history. Snapshot search can locate an archived record, and snapshot reads retrieve its verified bytes. For Claude Code and Codex, `gobstopper undo` prepares a separate fork with a new session identity. `gobstopper eval` measures literal probe retention and structural findings on copies. Those checks cannot guarantee that every task fact survives or that an agent will retrieve a missing fact.",
+    answer: "A compacted request keeps the system prompt, your first task and the newest turns word for word, and replaces the older turns with a summary. That summary keeps what you and the agent wrote, reduces each tool call to its name, and leaves out older tool results over 500 characters; the files and commands behind them are still there, and the agent's transcript keeps the full history. Snapshot search can locate an archived record, and snapshot reads retrieve its verified bytes. For Claude Code and Codex, `gobstopper undo` prepares a separate fork with a new session identity. `gobstopper eval` measures literal probe retention and structural findings on copies. Those checks cannot guarantee that every task fact survives or that an agent will retrieve a missing fact.",
   },
   {
     question: "Which agents does it support?",
@@ -256,11 +257,11 @@ export default function Home() {
           />
 
           <MarketingSection
-            heading="Same tasks solved, 29% fewer tokens sent."
+            heading={`About as many tasks solved, ${F.inputFewer} fewer tokens sent.`}
             headingId="terminal-bench-title"
             id="terminal-bench"
             label="Terminal-Bench 2.1"
-            summary="On Terminal-Bench 2.1, Claude Code behind Gobstopper at its default tail resolved 61 of 89 tasks, against 60 with no proxy, a difference within single-trial noise, and sent 84.3M input tokens against 118.6M. The old default tail of 40 cost more than no proxy, so v0.7.3 made tail 0 the default. One trial per arm, GLM 5.3 Flash, 45,000-token threshold, September 27 and 28, 2026."
+            summary={`On Terminal-Bench 2.1, Claude Code behind Gobstopper at tail 0 resolved ${F.solved.tail0} of 89 tasks, against ${F.solved.no_proxy} with no proxy, a difference within single-trial noise, and sent ${F.input.tail0} input tokens against ${F.input.no_proxy}. The old default, tail 40, sent about as many tokens as no proxy and cost more in total than tail 0, the one cost gap whose interval excludes zero, so v0.7.3 made tail 0 the default. One trial per arm, GLM 5.3 Flash, 45,000-token threshold, September 27 and 28, 2026.`}
           >
             <GobTokens variant="home" />
             <p className="gob-section-link">

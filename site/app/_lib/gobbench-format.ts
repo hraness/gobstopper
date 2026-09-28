@@ -117,6 +117,11 @@ export const F = {
   // same direction); oldVsNew is the same comparison turned round and has no interval here.
   newVsOld: signed(pair("tail0", "tail40").total_cost_ratio_minus1),
   oldVsNewCI: interval(pair("tail0", "tail40").total_cost_ratio_minus1_boot95, 1),
+  // Unsigned magnitudes for prose such as "cost 39% more" or "cost 28% less", where
+  // the word carries the direction and a sign would read twice.
+  oldVsNewAbs: fewer(cost("tail40") / cost("tail0") - 1),
+  oldVsNoneAbs: fewer(cost("tail40") / cost("no_proxy") - 1),
+  newVsOldAbs: fewer(pair("tail0", "tail40").total_cost_ratio_minus1),
   churn: {
     all: String(terminalBench.churn.resolved_by_all),
     none: String(terminalBench.churn.resolved_by_none),

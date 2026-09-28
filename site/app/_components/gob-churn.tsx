@@ -1,6 +1,6 @@
 import { F } from "../_lib/gobbench-format";
 import { terminalBench } from "../_lib/gobbench-data";
-import { GobFigure, GobTable } from "./gob-figure";
+import { GobFigure, GobTable, P_TB_FULL } from "./gob-figure";
 
 const RUNS = [
   { kind: "all", count: terminalBench.churn.resolved_by_all, label: "solved by all three arms" },
@@ -14,9 +14,10 @@ export function GobChurn() {
   return (
     <GobFigure
       alt={`Bar of ${total} tasks: ${F.churn.all} solved by all three arms, ${F.churn.split} solved by some arms but not others, ${F.churn.none} solved by none.`}
-      caption="With one trial per arm, a third of tasks flip between runs for reasons unrelated to the arm, so a one- or two-task difference in solved counts means nothing."
+      caption={`With one trial per arm, ${F.churn.split} of ${total} tasks were solved by some arms and not others. A single trial of a task can land either way, so a one- or two-task difference in solved counts is within single-trial noise.`}
       id="churn"
       kind="chart"
+      provenance={P_TB_FULL}
       table={
         <GobTable
           caption={`Outcome of each of ${total} tasks across the three arms`}
@@ -33,7 +34,6 @@ export function GobChurn() {
               <div className="gob-churn__cells">
                 {Array.from({ length: run.count }, (_, index) => <span className="gob-churn__cell" key={index} />)}
               </div>
-              <p className="gob-churn__label"><strong>{run.count}</strong> {run.label}</p>
             </div>
           ))}
         </div>

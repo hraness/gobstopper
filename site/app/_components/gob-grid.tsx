@@ -68,7 +68,8 @@ export function GobGrid() {
       <GobPlot
         overlay={
           <>
-            {LINES.flatMap((line) => THRESHOLDS.map((threshold, index) => (
+            {/* Tail 40 first, so tail 0 (haloed) paints on top where the two nearly meet. */}
+            {[...LINES].reverse().flatMap((line) => THRESHOLDS.map((threshold, index) => (
               <span
                 aria-hidden="true"
                 className="gob-marker gob-plot__point"
@@ -77,16 +78,18 @@ export function GobGrid() {
                 style={{ left: at(xAt(index)), bottom: at(cut(threshold, line.tail)) }}
               />
             )))}
-            {THRESHOLDS.map((threshold, index) => (
+            {LINES.flatMap((line) => THRESHOLDS.map((threshold, index) => (
               <span
+                aria-hidden="true"
                 className="gob-plot__value"
-                data-arm="tail0"
-                key={`v-${threshold}`}
-                style={{ left: at(xAt(index)), bottom: `calc(${at(cut(threshold, 0))} + 0.6rem)` }}
+                data-arm={line.arm}
+                key={`v-${line.arm}-${threshold}`}
+                // Tail 0 is labelled above its marker, tail 40 below its own.
+                style={{ left: at(xAt(index)), bottom: `calc(${at(cut(threshold, line.tail))} ${line.tail === 0 ? "+" : "-"} 0.6rem)` }}
               >
-                {pct(cut(threshold, 0), 0)}
+                {pct(cut(threshold, line.tail), 0)}
               </span>
-            ))}
+            )))}
           </>
         }
         xTicks={X_TICKS}

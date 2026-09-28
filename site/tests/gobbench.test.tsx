@@ -9,7 +9,8 @@ import { F, GAP_ROWS, fewer, millions, pct, range, signed, thousands, usd, wilso
 import {
   ANATOMY, FUSE, RING, SLAB, TAIL, type SlabKind, areaPath, linePath, linear, resendColumns, stackHeight, stepPath, ticks,
 } from "../app/_lib/gob-geometry";
-import { gobFilm } from "../app/_data/gob-film";
+import { type GobFilm as GobFilmManifest, gobFilm } from "../app/_data/gob-film";
+import { gobFilmHtml } from "../app/_lib/gobbench-film-html";
 import { GobAnatomy } from "../app/_components/gob-anatomy";
 import { GobChurn } from "../app/_components/gob-churn";
 import { GobFilm } from "../app/_components/gob-film";
@@ -50,6 +51,9 @@ describe("launch formatter", () => {
       oldVsNone: "+17%",
       newVsOld: "−28%",
       oldVsNewCI: "−46.5% to −1.6%",
+      oldVsNewAbs: "39%",
+      oldVsNoneAbs: "17%",
+      newVsOldAbs: "28%",
       churn: { all: "43", none: "15", split: "31" },
       gapTotal: "$2.25",
       gapTopShare: "105%",
@@ -204,8 +208,12 @@ describe("launch data files", () => {
     expect(replayGrid.pairing_violations_total.proxy_introduced).toBe(0);
   });
 
-  test("leaves the film manifest empty until the film files exist", () => {
-    expect(gobFilm).toBeNull();
+  test("the film manifest, when set, names the three fixed media paths", () => {
+    // The files themselves (size, hash) are checked in source.test.ts.
+    if (gobFilm === null) return;
+    expect(gobFilm.src).toBe("/media/gobstopper-film-1080p.mp4");
+    expect(gobFilm.sha256).toMatch(/^[0-9a-f]{64}$/u);
+    expect(gobFilm.beats.length).toBeGreaterThan(0);
   });
 
   const PRIVATE: readonly RegExp[] = [
@@ -279,11 +287,57 @@ describe("launch figures render", () => {
 
   test("the film embed renders nothing while the manifest is empty", () => {
     expect(renderToStaticMarkup(<GobFilm film={null} />)).toBe("");
+    expect(gobFilmHtml(null)).toBe("");
+  });
+
+  const FILM_FIXTURE: GobFilmManifest = {
+    src: "/media/gobstopper-film-1080p.mp4",
+    poster: "/media/gobstopper-film-poster.jpg",
+    captions: "/media/gobstopper-film.en.vtt",
+    width: 1920, height: 1080, durationSeconds: 75,
+    bytes: 1, sha256: "0".repeat(64),
+    beats: [{ start: 0, end: 4, text: "Your agent's \"history\" & <tools>" }, { start: 4, end: 8, text: "Second beat" }],
+  };
+
+  test("the film embed is one accessible video that loads nothing until played", () => {
+    const html = renderToStaticMarkup(<GobFilm film={FILM_FIXTURE} />);
+    expect(html.match(/<video\b/gu)).toHaveLength(1);
+    const video = /<video\b[^>]*>/u.exec(html)?.[0] ?? "";
+    expect(video).toContain('preload="none"');
+    expect(video).toContain('poster="/media/gobstopper-film-poster.jpg"');
+    expect(video).toContain("controls");
+    for (const banned of ["autoplay", "autoPlay", "muted", "loop"]) expect(video).not.toContain(banned);
+    expect(html).toMatch(/<track\b[^>]*kind="captions"[^>]*src="\/media\/gobstopper-film\.en\.vtt"/u);
+    expect(html).toContain('aria-describedby="film-text"');
+    expect(html).toContain('id="film-text"');
+    expect(html.match(/<li>/gu)).toHaveLength(FILM_FIXTURE.beats.length);
+  });
+
+  test("the blog's film string is byte for byte the React embed", () => {
+    expect(gobFilmHtml(FILM_FIXTURE)).toBe(renderToStaticMarkup(<GobFilm film={FILM_FIXTURE} />));
+    if (gobFilm !== null) expect(gobFilmHtml(gobFilm)).toBe(renderToStaticMarkup(<GobFilm film={gobFilm} />));
+  });
+
+  test("each figure's alt text is read once, through aria-labelledby", () => {
+    for (const html of [renderToStaticMarkup(<Home />), renderToStaticMarkup(<Benchmarks />)]) {
+      for (const match of html.matchAll(/aria-labelledby="([^"]+)"[^>]*role="img"/gu)) {
+        const id = match[1] ?? "";
+        const target = new RegExp(`<p[^>]*id="${id}"[^>]*>`, "u").exec(html)?.[0] ?? "";
+        expect(target).toContain('aria-hidden="true"');
+      }
+    }
   });
 });
 
 describe("launch pages", () => {
-  test("the homepage places the Terminal-Bench result before How it works, without dollars or a film", () => {
+  test("never signs a number that a word already gives a direction", () => {
+    // "+39% more" reads the direction twice; prose uses the unsigned F.*Abs values.
+    for (const html of [renderToStaticMarkup(<Home />), renderToStaticMarkup(<Benchmarks />), renderToStaticMarkup(<GobTail />)]) {
+      expect(visible(html)).not.toMatch(/[+\u2212-]\d+(?:\.\d+)?% (?:more|less|fewer|lower|higher|cheaper)/u);
+    }
+  });
+
+  test("the homepage places the Terminal-Bench result before How it works, without dollars, and the film only once it exists", () => {
     const html = renderToStaticMarkup(<Home />);
     // One marketing data table; the figures' own tables sit behind "Show the numbers".
     expect(html.match(/<table\b(?![^>]*gob-table)/gu)).toHaveLength(1);
@@ -297,8 +351,13 @@ describe("launch pages", () => {
     expect(section).toContain(`${F.inputFewer} fewer input tokens`);
     expect(html.slice(how)).toContain('id="fig-fuse"');
     expect(html).toContain('id="fig-sawtooth"');
-    expect(html).not.toContain('id="film"');
-    expect(html).not.toContain("<video");
+    if (gobFilm === null) {
+      expect(html).not.toContain('id="film"');
+      expect(html).not.toContain("<video");
+    } else {
+      expect(html.match(/<video\b/gu)).toHaveLength(1);
+      expect(html).toContain(gobFilmHtml(gobFilm));
+    }
   });
 
   test("the benchmarks page leads with the Terminal-Bench run and keeps the archived anchors", () => {

@@ -1,7 +1,7 @@
 import { ARM_LABEL, ARM_ORDER, arm, type ArmId } from "../_lib/gobbench-data";
 import { F } from "../_lib/gobbench-format";
 import { GobRules, GobXAxis, type Tick } from "./gob-axis";
-import { GobArmName, GobFigure, GobLegend, GobTable, P_TB, P_TB_FULL, at, spoken } from "./gob-figure";
+import { GobArmName, GobFigure, GobLegend, GobTable, P_TB_FULL, at, spoken } from "./gob-figure";
 
 const MAX = 120_000_000;
 const DOMAIN = [0, MAX] as const;
@@ -29,7 +29,7 @@ function Row({ id }: { readonly id: ArmId }) {
     <div className="gob-bar-row" data-arm={id}>
       <p className="gob-bar-row__label">
         <GobArmName arm={id} />
-        <span className="gob-bar-row__meta"><span aria-hidden="true" className="gob-bar-row__sep">· </span>{F.solved[id]} of 89 solved</span>
+        <span className="gob-bar-row__meta">{F.solved[id]} of 89 solved</span>
       </p>
       <div className="gob-bar-row__track">
         <GobRules domain={DOMAIN} ticks={TICKS} />
@@ -67,8 +67,8 @@ export function GobTokens({ variant }: { readonly variant: "home" | "full" }) {
           The {F.costLower} gap to no proxy is not statistically significant (95% interval {F.costLowerCI}).
         </p>
       )}
-      provenance={home ? P_TB : P_TB_FULL}
-      subtitle={home ? "Gobstopper at its default tail vs Claude Code, no proxy · same tasks solved within single-trial noise" : undefined}
+      provenance={P_TB_FULL}
+      subtitle={home ? "Gobstopper, tail 0 vs Claude Code, no proxy · about as many tasks solved, within single-trial noise" : undefined}
       table={
         <GobTable
           caption="Total input tokens over 89 tasks, provider-reported"
@@ -76,7 +76,7 @@ export function GobTokens({ variant }: { readonly variant: "home" | "full" }) {
           rows={ARM_ORDER.map((id) => [ARM_LABEL[id], F.solved[id], F.input[id], F.cache[id], F.uncached[id]])}
         />
       }
-      title={`Same tasks solved, ${F.inputFewer} fewer tokens sent`}
+      title={`About as many tasks solved, ${F.inputFewer} fewer tokens sent`}
       titleHidden={home}
       variant={variant}
     >

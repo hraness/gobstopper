@@ -82,6 +82,41 @@ function cacheRead(threshold: number, tail: number): string {
   return millions(row.est_cache_read_tokens_with_proxy);
 }
 
+const proxy = terminalBench.source.proxy_settings;
+/** "Claude Code 2.1.283 (prebuilt …)" -> "Claude Code 2.1.283": the setup reads the package, not a retyped copy. */
+const lead = (text: string, pattern: RegExp): string => {
+  const match = pattern.exec(text)?.[0];
+  if (match === undefined) throw new Error(`terminal-bench-results.json source has no ${String(pattern)}.`);
+  return match;
+};
+const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+/** "2026-09-27T16:18Z" -> "September 27, 16:18 UTC". */
+function utc(stamp: string): string {
+  const date = new Date(stamp.replace("Z", ":00Z"));
+  return `${MONTHS[date.getUTCMonth()]} ${date.getUTCDate()}, ${stamp.slice(11, 16)} UTC`;
+}
+const dates = terminalBench.source.dates_utc;
+const hours = (span: readonly string[]): string => {
+  const [from = "", to = ""] = span.map((stamp) => Date.parse(stamp.replace("Z", ":00Z")));
+  return ((Number(to) - Number(from)) / 3_600_000).toFixed(1);
+};
+const setup = {
+  harness: lead(terminalBench.source.harness, /^harbor [\d.]+, \d+ concurrent trials, up to \d+ retries/u)
+    .replace(/, (\d+) concurrent/u, " with $1 concurrent")
+    .replace(/, up to/u, " and up to"),
+  agent: lead(terminalBench.source.agent, /^Claude Code [\d.]+/u),
+  build: lead(terminalBench.source.build.live_arms, /v[\d.]+/u),
+  dates,
+  hours: { tail0: hours(dates.tail0), tail40: hours(dates.tail40), no_proxy: hours(dates.no_proxy) },
+};
+/** Agent timeouts per arm, as "18 to 19". */
+const timeouts = (() => {
+  const values = ARM_ORDER.map((id) => arm(id).exceptions.AgentTimeoutError);
+  const lo = Math.min(...values);
+  const hi = Math.max(...values);
+  return lo === hi ? String(lo) : `${lo} to ${hi}`;
+})();
+
 /** The September 27 and 28 Terminal-Bench 2.1 run, first on the page. */
 function TerminalBench() {
   if (activity0 === undefined || activity40 === undefined) {
@@ -95,7 +130,7 @@ function TerminalBench() {
     a === undefined || b === undefined
       ? ""
       : `${Math.min(a.repeated_reads_covered, b.repeated_reads_covered)} to ${Math.max(a.repeated_reads_covered, b.repeated_reads_covered)} of ${a.repeated_reads}`;
-  const [paperProxy, paperNative, paperAuto] = terminalBench.paper_reference.reported.map((row) => `${row.resolved_pct}%`);
+  const paper = terminalBench.paper_reference.reported;
   return (
     <section aria-labelledby="terminal-bench-2026-09-28" className="gob-bench">
       <h2 id="terminal-bench-2026-09-28">Terminal-Bench 2.1 through Claude Code · September 27 and 28, 2026</h2>
@@ -108,26 +143,37 @@ function TerminalBench() {
         Gobstopper at its default tail than for Claude Code with no proxy.
       </p>
       <p>
-        We benchmarked our own default, and it lost. The old default, tail 40,
-        cost {F.oldVsNew} more than tail 0 and {F.oldVsNone} more than no proxy in
-        provider-reported terms, so v0.7.3 makes tail 0 the default. Tail 40
-        against tail 0 is the only comparison whose interval excludes zero
-        (tail 0 was {F.newVsOld}, 95% interval {F.oldVsNewCI}), and only just.
-        Five tasks drive it, and one task accounts for {usd(GAP_ROWS[0]?.deltaUsd ?? 0, 2)} of the{" "}
+        We benchmarked our own default, and it lost. In total, the old default,
+        tail 40, cost {F.oldVsNewAbs} more than tail 0 and {F.oldVsNoneAbs} more than
+        no proxy in provider-reported terms, so v0.7.3 makes tail 0 the default.
+        These are ratios of totals from one trial per task, not per-task effects.
+        Tail 0 against tail 40 is the only cost comparison whose interval excludes
+        zero (tail 0 cost {F.newVsOldAbs} less, 95% interval {F.oldVsNewCI}), and
+        only just. Five tasks drive it, and one task accounts for {usd(GAP_ROWS[0]?.deltaUsd ?? 0, 2)} of the{" "}
         {F.gapTotal} gap. Host load of 58 to 68 during the tail 40 arm is a
         confound.
       </p>
 
       <h3>Setup</h3>
       <ul>
-        <li>Benchmark: Terminal-Bench 2.1, 89 tasks, one trial per task per arm, on harbor 0.23.0 with 3 concurrent trials and up to 2 retries.</li>
-        <li>Agent: Claude Code 2.1.283.</li>
+        <li>Benchmark: Terminal-Bench 2.1, {arm("tail0").n_tasks} tasks, one trial per task per arm, on {setup.harness}.</li>
+        <li>Agent: {setup.agent}.</li>
         <li>Model: GLM 5.3 Flash through Vercel AI Gateway, in the Anthropic Messages format.</li>
-        <li>Proxy: a 45,000-token threshold (estimated; the default is 128,000), calibration on, a 24,000-character carry, and the last 3 turns kept.</li>
+        <li>
+          Proxy: a {count(proxy.threshold_tokens)}-token threshold (estimated; the default is 128,000), calibration on,
+          a {count(proxy.carry_max_chars)}-character carry, and the last {proxy.keep_recent} turns kept.
+        </li>
         <li>Arms, in run order: {ARM_LABEL.tail0}, then {ARM_LABEL.tail40}, then {ARM_LABEL.no_proxy}.</li>
-        <li>Build: Gobstopper v0.7.2. 21 of 89 tail 0 trials started before a proxy restart and may have run an earlier build; their logs were lost in a host reboot. All tail 40 trials ran on v0.7.2.</li>
+        <li>
+          Build: Gobstopper {setup.build}. {arm("tail0").trials_started_before_proxy_restart} of {arm("tail0").n_tasks} tail 0
+          trials started before a proxy restart and may have run an earlier build; their logs were lost in a host reboot.
+          All tail 40 trials ran on {setup.build}.
+        </li>
         <li>Host: one Apple-silicon Mac with a Colima VM of 5 CPUs and 6 GiB, x86 task images under Rosetta emulation, host load 58 to 68 during the tail 40 arm.</li>
-        <li>Dates: September 27, 16:18 UTC, to September 28, 15:53 UTC; 9.2, 8.0 and 6.3 hours of wall time for the three arms in run order.</li>
+        <li>
+          Dates: {utc(setup.dates.tail0[0])} to {utc(setup.dates.no_proxy[1])};{" "}
+          {setup.hours.tail0}, {setup.hours.tail40} and {setup.hours.no_proxy} hours of wall time for the three arms in run order.
+        </li>
       </ul>
 
       <figure>
@@ -171,8 +217,9 @@ function TerminalBench() {
       <p>
         Each pair compares the same 89 tasks: an exact McNemar test on resolved
         tasks, and a 20,000-sample paired bootstrap for the resolve-rate
-        difference and the change in total cost. Only tail 0 against tail 40
-        excludes zero, and only just.
+        difference and the change in total cost. Only the total-cost change for
+        tail 0 against tail 40 excludes zero, and only just; no resolve-rate
+        difference does.
       </p>
       <figure>
         <table>
@@ -244,14 +291,20 @@ function TerminalBench() {
 
       <h3>Against the paper</h3>
       <p>
-        CliffCompaction&apos;s authors report {paperProxy} for their proxy at 45K
-        against {paperNative} for Claude Code&apos;s 200K default on the same model
-        family (GLM 5.3 Flash), their figures. Here, Gobstopper at its default
-        tail resolved {F.rate.tail0} against {F.rate.no_proxy} with no proxy:
-        the same direction, within noise, and about 5 to 8 points lower in
-        absolute terms. The lower rate likely comes from 18 to 19 timeouts per
-        arm under emulation; that is inferred, not measured. This run had no
-        45K native auto-compaction arm, so it has no counterpart to their {paperAuto}.
+        CliffCompaction&apos;s authors report{" "}
+        {paper.map((row, index) => (
+          <span key={row.arm}>
+            {index === 0 ? "" : index === paper.length - 1 ? " and " : ", "}
+            {row.resolved_pct.toFixed(2)} ± {row.pm.toFixed(2)}% for {row.arm.replace(/ \(authors\)$/u, "")}
+          </span>
+        ))}{" "}
+        (arXiv:2609.26779), their figures, not ours. Our run used a different
+        model and host, so compare directions only. Here, Gobstopper at tail 0
+        resolved {F.rate.tail0} against {F.rate.no_proxy} with no proxy, within
+        single-trial noise. Our absolute rates are lower than theirs, likely
+        because of {timeouts} agent timeouts per arm under emulation and host
+        load; that is inferred, not measured. This run had no 45K native
+        auto-compaction arm, so it has no counterpart to their third row.
       </p>
 
       <h3>Replay grid</h3>
