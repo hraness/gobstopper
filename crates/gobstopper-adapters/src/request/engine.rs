@@ -997,11 +997,10 @@ mod tests {
     }
 
     #[test]
-    fn a_head_near_the_threshold_recompacts_at_most_once_more_at_the_default_tail() {
+    fn a_head_near_the_threshold_recompacts_at_most_once_more_at_a_40_percent_tail() {
         let mut messages = vec![a_user(&"h".repeat(9_000))];
         messages.extend(a_session(12, 3000).into_iter().skip(1));
-        let engine = engine(2_000, 1);
-        assert!(engine.config().keep_tail_percent > 0);
+        let engine = tail_engine(2_000, 1, 40);
         let first = engine
             .prepare(a_body(messages.clone()), Dialect::Anthropic)
             .unwrap();

@@ -123,14 +123,14 @@ Gobstopper keeps the exact source in a local vault before any compaction changes
 and its model provider. It has shipped in tagged releases since v0.3.1 and
 gained the Chat Completions dialect in v0.4.0, the tail budget and the
 separate 1M-token threshold in v0.5.0, and the carried conversation in
-v0.6.0; estimate calibration is in the current `main` source build and not
-yet in a release. Each time the
+v0.6.0, and estimate calibration in v0.7.0. Each time the
 client resends its history, the proxy estimates the request size. Past the
 threshold (128,000 tokens by default), it sends the system prompt and the
 first task verbatim, one mechanical summary of the older turns, and the
-newest turns verbatim: at least three, plus older whole turns while the
-summary and the kept turns fit in 40% of the room left under the threshold
-after the system prompt and the first task. The provider then reports the
+newest three turns verbatim. With `--keep-tail-percent`, it also keeps older
+whole turns while the summary and the kept turns fit in that share of the
+room left under the threshold after the system prompt and the first task.
+The provider then reports the
 compacted size back to the client, so the client's own auto-compaction does
 not reach its trigger. The summary rule is CliffCompaction's; see [How
 Gobstopper compares with
@@ -165,12 +165,14 @@ longer fit. Between compactions, requests reuse the same compacted prefix,
 so the provider's prompt cache can match it.
 
 The kept turns hold the files and command output the agent read most
-recently, which the summary drops once they pass 500 characters. Unless the
-summary, with its carried text, and the newest `--keep-recent` turns need
-more, the summary and the kept turns fill at most 40% of that room, and the
-other 60% is left for new turns before the next compaction.
-`--keep-tail-percent` sets the share, from 0 to 60, and `0` keeps exactly
-`--keep-recent` turns. The carried words keep earlier instructions in view
+recently, which the summary drops once they pass 500 characters. By default
+the proxy keeps exactly the newest `--keep-recent` turns, as CliffCompaction
+does. `--keep-tail-percent` (0 to 60, default 0 since v0.7.3; 40 before)
+keeps older whole turns too while the summary and the kept turns fit in that
+share of the room, and leaves the rest for new turns before the next
+compaction. In one Terminal-Bench 2.1 trial, tail 0 cost 28% less than
+tail 40 at a resolution rate within noise; see the v0.7.3 entry in
+[CHANGELOG.md](CHANGELOG.md). The carried words keep earlier instructions in view
 after the summary that held them is discarded; they use at most a quarter of
 that room, and `--carry-max-chars 0` turns carrying off. Anthropic Messages
 requests that declare a 1M-token context window use a separate threshold,
@@ -885,7 +887,7 @@ compactions summarized, and also works on saved session files:
 | Where it runs | A local HTTP proxy between the agent and the Anthropic or OpenAI API | A local HTTP proxy between the agent and its model provider, plus a CLI over the session files Claude Code and Codex write |
 | Clients | Any client of the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses API | Any client of the same three dialects that accepts a custom provider address: Claude Code, Codex, opencode, Crush, Aider, Goose, and more |
 | What it changes | Each outgoing request, transparently, while the session runs | The proxy rewrites outgoing requests over the threshold; file commands publish a separate compacted copy and leave the source unchanged |
-| How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy applies the same summary rule and keeps at least the last three turns verbatim, plus older whole turns that fit in 40% of the room under the threshold; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
+| How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy applies the same summary rule and keeps the last three turns verbatim, plus, with `--keep-tail-percent`, older whole turns that fit in that share of the room under the threshold; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
 | Recompaction | Rebuilt from the original history; the prior summary is discarded | The proxy rebuilds from the original history, and each summary keeps the human's words and the assistant's visible replies from the turns earlier compactions summarized, up to 24,000 characters (since v0.6.0); `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy |
 | What holds the originals | The agent's own history and the files on disk; the proxy keeps only an in-memory cache of compacted prefixes | For proxied requests, the agent's own transcript and an in-memory cache; for copies, a content-addressed vault with `search-snapshot` and `read-snapshot` |
 | Evidence published | Terminal-Bench 2.0 and 2.1 (including a run through Claude Code), SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models | Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, one dated afternoon of live proxy counters, literal retention probes, and dated single-session trials; no task-success or billing claims |
@@ -895,9 +897,9 @@ compactions summarized, and also works on saved session files:
 same summary format and header, prefix reuse between compactions, harsher
 settings when one pass leaves a request over the threshold, and a retry when
 the provider rejects a request for length. It departs from the reference in
-six ways. It keeps older whole turns verbatim beyond the last three while
-they fit its tail budget; `--keep-tail-percent 0` keeps the reference tail,
-except for the next rule. It counts a run of consecutive assistant messages
+six ways. With `--keep-tail-percent` above 0 it keeps older whole turns
+verbatim beyond the last three while they fit that tail budget; the default,
+0, keeps the reference tail, except for the next rule. It counts a run of consecutive assistant messages
 as one turn in every dialect, where the reference does so only for
 Responses. Claude Code can record one step as two assistant messages, tool
 calls and then text; the Anthropic API merges them, so a split between them

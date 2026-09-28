@@ -2,6 +2,13 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## v0.7.3 - 2026-09-28
+
+The request proxy now keeps exactly the newest three turns after a compaction by default, as CliffCompaction does, because the larger tail cost more on a Terminal-Bench 2.1 run without resolving more tasks.
+
+- `proxy serve`, `proxy run` and `proxy replay` default to `--keep-tail-percent 0` instead of 40. `--keep-tail-percent 40` restores the old default, and any share from 0 to 60 still works. `proxy status` and the startup line report the value in use.
+- The evidence is one trial of the 89 Terminal-Bench 2.1 tasks through Claude Code 2.1.283 on GLM-5.3-flash, at a 45,000-token threshold, with v0.7.2 serving the tail-40 arm and at least 68 of the 89 tail-0 tasks (the build that served the first 21 was not recorded). Gobstopper at tail 0 resolved 61 of 89 tasks for $5.72 in total; at tail 40, 59 for $7.97; Claude Code with no proxy, 60 for $6.82. The resolution differences are within noise. Tail 0 against tail 40 is the only cost difference whose 95% interval excludes zero: 28% lower (interval 2% to 47%), with most of the gap from five tasks. Dollar figures are Vercel AI Gateway's metered prices for that model.
+
 ## v0.7.2 - 2026-09-27
 
 The request proxy samples provider-reported usage on every dialect it serves, including the ChatGPT backend streams that carry no content type.

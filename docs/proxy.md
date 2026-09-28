@@ -2,9 +2,8 @@
 
 `gobstopper proxy` sits on 127.0.0.1 between a coding agent and its model
 provider. When a request passes the threshold, it sends the head verbatim,
-one mechanical summary of the older turns, and the newest turns verbatim: at
-least three, plus older whole turns while the summary and the kept turns fit
-in 40% of the room under the threshold. The provider then reports the smaller
+one mechanical summary of the older turns, and the newest three turns
+verbatim; `--keep-tail-percent` can keep older whole turns too. The provider then reports the smaller
 size back to the client, so the client's own auto-compaction does not reach
 its trigger. Session files are not changed. The summary rule is
 CliffCompaction's (Nguyen, Cho, Chen and Dettmers,
@@ -22,11 +21,11 @@ custom provider address can use it:
 | OpenAI Chat Completions | `.../chat/completions` | opencode, Crush, Aider, Goose, other OpenAI-compatible clients |
 
 The proxy has shipped in tagged releases since v0.3.1, and the Chat
-Completions dialect since v0.4.0. This page describes the current `main`
-source build: the tail budget (`--keep-tail-percent`) and the separate 1M
-threshold (`--threshold-1m`) shipped in v0.5.0, carrying the conversation
-across compactions (`--carry-max-chars`) in v0.6.0, and estimate calibration
-(`--no-calibrate`) is not yet in a release. The proxy needs the
+Completions dialect since v0.4.0. The tail budget (`--keep-tail-percent`) and
+the separate 1M threshold (`--threshold-1m`) shipped in v0.5.0, carrying the
+conversation across compactions (`--carry-max-chars`) in v0.6.0, and
+estimate calibration (`--no-calibrate`) in v0.7.0. The tail budget defaults
+to 0 since v0.7.3; it was 40 from v0.5.0 through v0.7.2. The proxy needs the
 system `curl`, version 8.3 or later (`curl --version`).
 
 ## What you get
@@ -255,7 +254,7 @@ declares a 1M-token window, pass `--threshold 256000`.
 | `--threshold` | 128000 | Compact when the estimated outgoing request exceeds this many tokens. Applies to every OpenAI-dialect request and to Anthropic requests that do not declare a 1M-token window; those that do use `--threshold-1m`. Keep it below the client's own auto-compaction point. |
 | `--threshold-1m` | 256000, or `--threshold` if higher | `serve` and `run` only. The threshold for Anthropic Messages requests whose `anthropic-beta` header lists a token starting with `context-1m`. It can't be lower than `--threshold`; an equal value applies one threshold to every request. Keep it below the client's own auto-compaction point, including any `claude --autocompact` value. |
 | `--keep-recent` | 3 | Newest assistant steps kept verbatim. A request still over the threshold after one pass keeps one. |
-| `--keep-tail-percent` | 40 | Share of the room under the threshold, after the fixed request fields and the head, that the summary and the kept steps may fill. Older whole steps are kept while they fit. From 0 to 60; `0` keeps exactly `--keep-recent` steps. |
+| `--keep-tail-percent` | 0 | Share of the room under the threshold, after the fixed request fields and the head, that the summary and the kept steps may fill. Older whole steps are kept while they fit. From 0 to 60; `0` keeps exactly `--keep-recent` steps, as CliffCompaction does. The default was 40 before v0.7.3; `--keep-tail-percent 40` restores it. |
 | `--result-max-chars` | 500 | Older tool results longer than this are dropped from the summary; shorter ones stay verbatim. |
 | `--carry-max-chars` | 24000 | Characters of the human's words and the assistant's visible replies that each summary carries forward from the turns earlier compactions summarized. The oldest text drops out first, and the carried text takes at most a quarter of the room under the threshold after the fixed request fields and the head. `0` turns carrying off. |
 | `--drop-thinking` | off | Leave thinking and reasoning text out of summaries. |
@@ -295,8 +294,9 @@ declares a 1M-token window, pass `--threshold 256000`.
   `--keep-tail-percent` of the room under the threshold, the threshold minus
   the system prompt, tool definitions, and head. The kept turns hold the
   files and command output the agent read most recently, which the summary
-  drops once they pass 500 characters. At the default 40%, a compacted
-  request leaves 60% of that room for new turns before the next compaction.
+  drops once they pass 500 characters. At 40%, a compacted request leaves
+  60% of that room for new turns before the next compaction. At the default,
+  0, the tail is exactly the newest `--keep-recent` turns.
   If the summary, with its carried text, and the newest `--keep-recent`
   turns need more, the proxy keeps those turns anyway, and the next request
   can compact again.

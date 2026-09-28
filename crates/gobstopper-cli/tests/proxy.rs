@@ -782,6 +782,13 @@ fn the_tail_percent_is_bounded_and_reported_in_status() {
     let proxy = start_proxy("http://127.0.0.1:9", &["--keep-tail-percent", "60"]);
     let status = request(proxy.port, "GET", "/gobstopper/status", &[], b"").json();
     assert_eq!(status["keep_tail_percent"], 60);
+    // Since v0.7.3 the default is 0; the old default of 40 is still a flag away.
+    let default = start_proxy("http://127.0.0.1:9", &[]);
+    let status = request(default.port, "GET", "/gobstopper/status", &[], b"").json();
+    assert_eq!(status["keep_tail_percent"], 0);
+    let old = start_proxy("http://127.0.0.1:9", &["--keep-tail-percent", "40"]);
+    let status = request(old.port, "GET", "/gobstopper/status", &[], b"").json();
+    assert_eq!(status["keep_tail_percent"], 40);
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1071,7 +1078,7 @@ fn log_lines_and_ledger_records_carry_sizes_and_the_window_but_no_content() {
 
     let lines = std::fs::read_to_string(&log).unwrap();
     let startup = format!(
-        "threshold 2000 tokens, threshold_1m 8000 tokens, keep_recent 1, keep_tail_percent 40, carry_max_chars {}, calibrate on, result_max_chars",
+        "threshold 2000 tokens, threshold_1m 8000 tokens, keep_recent 1, keep_tail_percent 0, carry_max_chars {}, calibrate on, result_max_chars",
         CliffConfig::default().carry_max_chars
     );
     assert!(
@@ -1180,7 +1187,7 @@ fn proxy_status_prints_no_null_for_an_older_server() {
     let output = gobstopper(&["proxy", "status", "--port", &port], &dir);
     let text = String::from_utf8(output.stdout).unwrap();
     assert!(
-        text.contains(": threshold 128000 tokens, threshold_1m 300000 tokens, keep_recent 3, keep_tail_percent 40, carry_max_chars 7000\nrequests 0 (0 with a 1M window), compacted 0,"),
+        text.contains(": threshold 128000 tokens, threshold_1m 300000 tokens, keep_recent 3, keep_tail_percent 0, carry_max_chars 7000\nrequests 0 (0 with a 1M window), compacted 0,"),
         "{text}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1279,7 +1286,7 @@ fn replay_at_zero_tail_percent_matches_the_reference_report() {
     );
     let text = String::from_utf8(text.stdout).unwrap();
     assert!(
-        text.contains(", keep_tail_percent 40, carry_max_chars 24000, "),
+        text.contains(", keep_tail_percent 0, carry_max_chars 24000, "),
         "{text}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -1361,9 +1368,7 @@ fn a_carry_is_sent_upstream_and_only_its_size_is_logged() {
         let text = gobstopper(&["proxy", "status", "--port", &port], &dir).stdout;
         let text = String::from_utf8(text).unwrap();
         assert!(
-            text.contains(&format!(
-                ", keep_tail_percent 40, carry_max_chars {carry}\n"
-            )),
+            text.contains(&format!(", keep_tail_percent 0, carry_max_chars {carry}\n")),
             "{text}"
         );
         drop(proxy);
@@ -1595,7 +1600,19 @@ fn openai_dialects_calibrate_from_json_and_streamed_usage() {
                 estimate_as(&recorded.body, Dialect::ChatCompletions) * 3 / 2}}),
         )
     });
-    let proxy = start_proxy(&chat.url(), &["--threshold", "8000", "--keep-recent", "1"]);
+    // A 40% tail keeps the compacted request above the 1,000-token sampling
+    // floor, so the compacted reply is the sixth sample.
+    let proxy = start_proxy(
+        &chat.url(),
+        &[
+            "--threshold",
+            "8000",
+            "--keep-recent",
+            "1",
+            "--keep-tail-percent",
+            "40",
+        ],
+    );
     for i in 0..5 {
         let response = request(
             proxy.port,
@@ -1639,7 +1656,14 @@ fn openai_dialects_calibrate_from_json_and_streamed_usage() {
     let responses = Fake::start(|recorded| Reply::SseBare(responses_usage_events(&recorded.body)));
     let proxy = start_proxy(
         &responses.url(),
-        &["--threshold", "8000", "--keep-recent", "1"],
+        &[
+            "--threshold",
+            "8000",
+            "--keep-recent",
+            "1",
+            "--keep-tail-percent",
+            "40",
+        ],
     );
     for i in 0..5 {
         let response = request(

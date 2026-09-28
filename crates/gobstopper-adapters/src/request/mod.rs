@@ -99,7 +99,7 @@ impl Default for CliffConfig {
         Self {
             threshold_tokens: DEFAULT_THRESHOLD_TOKENS,
             keep_recent: 3,
-            keep_tail_percent: 40,
+            keep_tail_percent: 0,
             thought_max_chars: 0,
             cmd_max_chars: 150,
             result_max_chars: 500,
@@ -859,6 +859,16 @@ mod tests {
             keep_recent,
             ..CliffConfig::default()
         }
+    }
+
+    #[test]
+    fn the_default_keeps_exactly_the_recent_turns() {
+        // v0.7.3: the default tail budget is 0, the reference tail. One
+        // Terminal-Bench 2.1 trial found tail 0 cheaper than tail 40 at the
+        // same resolution; `--keep-tail-percent` still selects a larger tail.
+        let cfg = CliffConfig::default();
+        assert_eq!(cfg.keep_tail_percent, 0);
+        assert_eq!(cfg.keep_recent, 3);
     }
 
     #[test]
