@@ -1,6 +1,6 @@
 [package]
 name = "gobstopper"
-description = "Local proxy and CLI that compact Claude Code and Codex sessions"
+description = "Inspects Claude Code and Codex sessions and prepares compacted transcript copies"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
