@@ -1,12 +1,21 @@
 import type { Metadata } from "next";
 
+import { GobChurn } from "../_components/gob-churn";
+import { GobGap } from "../_components/gob-gap";
+import { GobGrid } from "../_components/gob-grid";
+import { GobSawtooth } from "../_components/gob-sawtooth";
+import { GobSolved } from "../_components/gob-solved";
+import { GobTail } from "../_components/gob-tail";
+import { GobTokens } from "../_components/gob-tokens";
 import { SiteDocument } from "../_components/site-document";
 import { SiteHeader, SiteFooter } from "../_components/site-chrome";
+import { ARM_LABEL, ARM_ORDER, arm, pair, replayGrid, terminalBench, type ArmId } from "../_lib/gobbench-data";
+import { F, GAP_ROWS, millions, signed, usd } from "../_lib/gobbench-format";
 
 const title = "Benchmarks";
 const socialTitle = "Gobstopper benchmarks";
 const description =
-  "Results from offline replays of 729 archived agent sessions, request-proxy replays and live counters, a synthetic snapshot-recovery study, and single-session resume trials, each dated and scoped.";
+  "A live Terminal-Bench 2.1 run of the request proxy against Claude Code with no proxy, results from offline replays of 729 archived agent sessions, request-proxy replays and live counters, a synthetic snapshot-recovery study, and single-session resume trials, each dated and scoped.";
 
 export const metadata: Metadata = {
   title,
@@ -28,22 +37,288 @@ export const metadata: Metadata = {
   },
 };
 
+const TB_DOWNLOADS = [
+  {
+    href: "/benchmarks/2026-09-28/terminal-bench-results.json",
+    label: "terminal-bench-results.json",
+    detail: "per-arm totals, the three paired comparisons, task churn, cost concentration, per-task outcomes and costs, proxy activity, and the protocol",
+  },
+  {
+    href: "/benchmarks/2026-09-28/replay-grid.json",
+    label: "replay-grid.json",
+    detail: "the 288-cell replay grid, pooled and by provider only",
+  },
+  {
+    href: "/benchmarks/2026-09-28/sawtooth-series.json",
+    label: "sawtooth-series.json",
+    detail: "per-request estimated sizes for the one session in the sawtooth figure",
+  },
+] as const;
+
+/** "+2.25" or "−7.87" points, as stored, with a real minus sign. */
+function points(value: number): string {
+  if (value === 0) return "0";
+  return `${value > 0 ? "+" : "−"}${Math.abs(value).toFixed(2)}`;
+}
+
+/** The three pairs in the order the evidence report gives them. */
+const TB_PAIRS: readonly (readonly [ArmId, ArmId])[] = [
+  ["tail0", "tail40"],
+  ["tail0", "no_proxy"],
+  ["tail40", "no_proxy"],
+];
+
+const [activity0, activity40] = terminalBench.proxy_activity.arms;
+const faults = terminalBench.proxy_activity.upstream_faults;
+const coveredBy = (provider: string, tail: number) =>
+  replayGrid.by_provider.find((row) => row.provider === provider && row.threshold === 32000 && row.keep_tail_percent === tail);
+const count = (value: number) => value.toLocaleString("en-US");
+/** Pooled estimated cache reads with the proxy, for one replay cell. */
+function cacheRead(threshold: number, tail: number): string {
+  const row = replayGrid.pooled.find((entry) => entry.threshold === threshold && entry.keep_tail_percent === tail);
+  if (row === undefined) throw new Error(`replay-grid.json has no pooled row at ${threshold}, tail ${tail}.`);
+  return millions(row.est_cache_read_tokens_with_proxy);
+}
+
+/** The September 27 and 28 Terminal-Bench 2.1 run, first on the page. */
+function TerminalBench() {
+  if (activity0 === undefined || activity40 === undefined) {
+    throw new Error("terminal-bench-results.json or replay-grid.json is missing a row this section reads.");
+  }
+  const claude0 = coveredBy("claude_code", 0);
+  const claude40 = coveredBy("claude_code", 40);
+  const codex0 = coveredBy("codex", 0);
+  const codex40 = coveredBy("codex", 40);
+  const coverage = (a: typeof claude0, b: typeof claude0) =>
+    a === undefined || b === undefined
+      ? ""
+      : `${Math.min(a.repeated_reads_covered, b.repeated_reads_covered)} to ${Math.max(a.repeated_reads_covered, b.repeated_reads_covered)} of ${a.repeated_reads}`;
+  const [paperProxy, paperNative, paperAuto] = terminalBench.paper_reference.reported.map((row) => `${row.resolved_pct}%`);
+  return (
+    <section aria-labelledby="terminal-bench-2026-09-28" className="gob-bench">
+      <h2 id="terminal-bench-2026-09-28">Terminal-Bench 2.1 through Claude Code · September 27 and 28, 2026</h2>
+      <p>
+        <strong>
+          {F.solved.tail0}, {F.solved.no_proxy} and {F.solved.tail40} of 89 tasks resolved
+        </strong>
+        , within single-trial noise, and{" "}
+        <strong>{F.inputFewer} fewer provider-reported input tokens</strong> for
+        Gobstopper at its default tail than for Claude Code with no proxy.
+      </p>
+      <p>
+        We benchmarked our own default, and it lost. The old default, tail 40,
+        cost {F.oldVsNew} more than tail 0 and {F.oldVsNone} more than no proxy in
+        provider-reported terms, so v0.7.3 makes tail 0 the default. Tail 40
+        against tail 0 is the only comparison whose interval excludes zero
+        (tail 0 was {F.newVsOld}, 95% interval {F.oldVsNewCI}), and only just.
+        Five tasks drive it, and one task accounts for {usd(GAP_ROWS[0]?.deltaUsd ?? 0, 2)} of the{" "}
+        {F.gapTotal} gap. Host load of 58 to 68 during the tail 40 arm is a
+        confound.
+      </p>
+
+      <h3>Setup</h3>
+      <ul>
+        <li>Benchmark: Terminal-Bench 2.1, 89 tasks, one trial per task per arm, on harbor 0.23.0 with 3 concurrent trials and up to 2 retries.</li>
+        <li>Agent: Claude Code 2.1.283.</li>
+        <li>Model: GLM 5.3 Flash through Vercel AI Gateway, in the Anthropic Messages format.</li>
+        <li>Proxy: a 45,000-token threshold (estimated; the default is 128,000), calibration on, a 24,000-character carry, and the last 3 turns kept.</li>
+        <li>Arms, in run order: {ARM_LABEL.tail0}, then {ARM_LABEL.tail40}, then {ARM_LABEL.no_proxy}.</li>
+        <li>Build: Gobstopper v0.7.2. 21 of 89 tail 0 trials started before a proxy restart and may have run an earlier build; their logs were lost in a host reboot. All tail 40 trials ran on v0.7.2.</li>
+        <li>Host: one Apple-silicon Mac with a Colima VM of 5 CPUs and 6 GiB, x86 task images under Rosetta emulation, host load 58 to 68 during the tail 40 arm.</li>
+        <li>Dates: September 27, 16:18 UTC, to September 28, 15:53 UTC; 9.2, 8.0 and 6.3 hours of wall time for the three arms in run order.</li>
+      </ul>
+
+      <figure>
+        <table>
+          <caption>Resolved tasks and provider-reported tokens and cost, all 89 trials per arm</caption>
+          <thead>
+            <tr>
+              <th scope="col">Arm</th>
+              <th scope="col">Resolved (Wilson 95%)</th>
+              <th scope="col">Total input</th>
+              <th scope="col">Cache read</th>
+              <th scope="col">Uncached input</th>
+              <th scope="col">Output</th>
+              <th scope="col">Provider-reported cost</th>
+              <th scope="col">Per task</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ARM_ORDER.map((id) => {
+              const tokens = arm(id).tokens_all_trials;
+              return (
+                <tr key={id}>
+                  <th scope="row">{ARM_LABEL[id]}</th>
+                  <td>
+                    {F.solved[id]} ({F.ci[id].replace("–", " to ")})
+                  </td>
+                  <td>{millions(tokens.total_input, 2)}</td>
+                  <td>{millions(tokens.cache_read, 2)}</td>
+                  <td>{millions(tokens.uncached_input, 2)}</td>
+                  <td>{millions(tokens.output, 2)}</td>
+                  <td>{F.cost[id]}</td>
+                  <td>{F.perTask[id]}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </figure>
+
+      <h3>Paired statistics</h3>
+      <p>
+        Each pair compares the same 89 tasks: an exact McNemar test on resolved
+        tasks, and a 20,000-sample paired bootstrap for the resolve-rate
+        difference and the change in total cost. Only tail 0 against tail 40
+        excludes zero, and only just.
+      </p>
+      <figure>
+        <table>
+          <caption>Paired comparisons over the same 89 tasks, with 95% intervals</caption>
+          <thead>
+            <tr>
+              <th scope="col">Pair</th>
+              <th scope="col">McNemar p</th>
+              <th scope="col">Resolved, difference in points</th>
+              <th scope="col">Total cost, change</th>
+            </tr>
+          </thead>
+          <tbody>
+            {TB_PAIRS.map(([a, b]) => {
+              const row = pair(a, b);
+              const [dLo = 0, dHi = 0] = row.resolve_rate_diff_pp_boot95;
+              const [cLo = 0, cHi = 0] = row.total_cost_ratio_minus1_boot95;
+              return (
+                <tr key={`${a}-${b}`}>
+                  <th scope="row">
+                    {ARM_LABEL[a]} against {ARM_LABEL[b]}
+                  </th>
+                  <td>{row.mcnemar_exact_p.toFixed(2)}</td>
+                  <td>
+                    {points(row.resolve_rate_diff_pp)} ({points(dLo)} to {points(dHi)})
+                  </td>
+                  <td>
+                    {signed(row.total_cost_ratio_minus1, 1)} ({signed(cLo, 1)} to {signed(cHi, 1)})
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </figure>
+
+      <h3>Figures</h3>
+      <GobSolved />
+      <GobTokens variant="full" />
+      <GobChurn />
+
+      <h3>Cost terms</h3>
+      <p>
+        Vercel AI Gateway prices for GLM 5.3 Flash, $0.15 per million uncached
+        input tokens, $0.03 per million cache reads and $0.50 per million output
+        tokens, reproduce every trial&apos;s provider-reported cost exactly. This
+        route recorded no cache writes. Anthropic prices cache reads at 0.1× input
+        and bills cache writes, so the same token cut is worth a different share
+        of the cost there, and subscriptions are not billed per token. Timed-out
+        trials are cut short, so their costs are partial.
+      </p>
+      <GobGap />
+
+      <h3>What the proxies did</h3>
+      <p>
+        With {ARM_LABEL.tail0}, the proxy compacted {activity0.fresh_compactions}{" "}
+        requests and reused a compacted prefix for {count(activity0.reused_compacted_prefix)} more
+        in the logged part of the arm, about 68 of 89 trials; a host reboot
+        removed the earlier log. The median reused request went from{" "}
+        {activity0.median_request_k_est_before_after.reuses[0]}K to{" "}
+        {activity0.median_request_k_est_before_after.reuses[1]}K estimated tokens.
+        With {ARM_LABEL.tail40}, it compacted {activity40.fresh_compactions} and
+        reused {count(activity40.reused_compacted_prefix)}, and{" "}
+        {activity40.still_over_threshold_after_compaction} requests were still over
+        the threshold after compaction ({activity0.still_over_threshold_after_compaction} with tail 0).
+        No request fell back to its original bytes. The provider returned{" "}
+        {faults.tail0 + faults.tail40} upstream faults across both arms.
+      </p>
+
+      <h3>Against the paper</h3>
+      <p>
+        CliffCompaction&apos;s authors report {paperProxy} for their proxy at 45K
+        against {paperNative} for Claude Code&apos;s 200K default on the same model
+        family (GLM 5.3 Flash), their figures. Here, Gobstopper at its default
+        tail resolved {F.rate.tail0} against {F.rate.no_proxy} with no proxy:
+        the same direction, within noise, and about 5 to 8 points lower in
+        absolute terms. The lower rate likely comes from 18 to 19 timeouts per
+        arm under emulation; that is inferred, not measured. This run had no
+        45K native auto-compaction arm, so it has no counterpart to their {paperAuto}.
+      </p>
+
+      <h3>Replay grid</h3>
+      <p className="gob-bench__label">Estimates, main fdeb099, September 26</p>
+      <p>
+        Over 24 recorded sessions (12 Claude Code, 12 Codex; 288 settings),
+        replay cut cumulative estimated input by {F.replay.t32} at a 32K
+        threshold and {F.replay.t128} at 128K, with 0 unpaired tool calls. These
+        are estimates at four characters per token, not billed tokens, from a
+        build older than the live run. Three large sessions hold 476M of the
+        665M tokens, so the typical session cut at 32K is about 46%. At 128K the
+        median Claude Code session is not cut at all, because most never cross
+        it. Keeping 40% of the tail instead of none raised estimated cache reads
+        at every threshold, from {cacheRead(32000, 0)} to {cacheRead(32000, 40)} at
+        32K and from {cacheRead(128000, 0)} to {cacheRead(128000, 40)} at 128K. Repeated reads still covered at
+        32K: {coverage(claude0, claude40)} for Claude Code and{" "}
+        {coverage(codex0, codex40)} for Codex.
+      </p>
+      <GobGrid />
+      <GobSawtooth variant="full" />
+      <GobTail />
+
+      <h3>What this run does not show</h3>
+      <ul>
+        <li>It is one trial per arm, so the resolved counts cannot separate the arms.</li>
+        <li>It used one model, and not an Anthropic model.</li>
+        <li>The threshold was 45,000 tokens, not the 128,000 default; quality at 128K was not measured live.</li>
+        <li>Tasks ran under emulation on a shared host, with timeouts in every arm.</li>
+        <li>Up to 21 tail 0 trials may have run an earlier build.</li>
+        <li>There was no 45K native auto-compaction arm.</li>
+        <li>It makes no subscription or billing claim.</li>
+      </ul>
+
+      <h3>Downloads</h3>
+      <ul>
+        {TB_DOWNLOADS.map((file) => (
+          <li key={file.href}>
+            <a href={file.href}>
+              <code>{file.label}</code>
+            </a>
+            : {file.detail}.
+          </li>
+        ))}
+      </ul>
+      <p>
+        The files hold aggregate counts, per-task outcomes and the protocol. They
+        contain no transcripts, keys or machine paths.
+      </p>
+    </section>
+  );
+}
+
 export default function Benchmarks() {
   return (
     <>
       <SiteHeader path="/benchmarks" />
       <main id="main" tabIndex={-1}>
         <SiteDocument
-          dek="Offline replays project context size and check which text survives; a few live trials resumed real sessions. None of them claim subscription or billing savings."
+          dek="Offline replays project context size and check which text survives; one live Terminal-Bench run compared the proxy with Claude Code alone. None of them claim subscription or billing savings."
           eyebrow="Evidence"
           heading={title}
           meta={
             <>
               Latest:{" "}
-              <a href="#archived-recovery-2026-09-20">September 20 snapshot search and recovery checks</a>
+              <a href="#terminal-bench-2026-09-28">September 27 and 28 Terminal-Bench 2.1 run</a>
             </>
           }
           toc={[
+            { href: "#terminal-bench-2026-09-28", label: "Terminal-Bench 2.1" },
             { href: "#retrospective-2026-09-19", label: "729-session retrospective" },
             { href: "#retention-policy-2026-09-19", label: "Keep-score cutoff comparison" },
             { href: "#apple-cutoff-2026-09-19", label: "On-device Apple scorer pilot" },
@@ -53,6 +328,8 @@ export default function Benchmarks() {
             { href: "#historical-live-trials", label: "Historical live trials" },
           ]}
         >
+
+          <TerminalBench />
 
           <section aria-labelledby="retrospective-2026-09-19">
             <h2 id="retrospective-2026-09-19">729-session retrospective · September 19, 2026</h2>
@@ -408,7 +685,9 @@ export default function Benchmarks() {
             not billed tokens, cache hit rates, or task results.
             CliffCompaction&apos;s authors report cost and benchmark results
             for their proxy on the <a href="/compare/cliffcompaction">comparison
-            page</a>; Gobstopper has not rerun them.
+            page</a>. Gobstopper has not rerun the authors&apos; benchmarks as
+            published; its own Terminal-Bench run is{" "}
+            <a href="#terminal-bench-2026-09-28">above</a>.
           </p>
 
           <h2 id="synthetic-strategy-benchmark">Synthetic strategy benchmark</h2>

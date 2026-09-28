@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { ReactElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 
 import { ARM_LABEL, ARM_ORDER, arm, pair, replayGrid, sawtooth, terminalBench } from "../app/_lib/gobbench-data";
 import { F, GAP_ROWS, fewer, millions, pct, range, signed, thousands, usd, wilson } from "../app/_lib/gobbench-format";
@@ -8,10 +10,25 @@ import {
   ANATOMY, FUSE, RING, SLAB, TAIL, type SlabKind, areaPath, linePath, linear, resendColumns, stackHeight, stepPath, ticks,
 } from "../app/_lib/gob-geometry";
 import { gobFilm } from "../app/_data/gob-film";
+import { GobAnatomy } from "../app/_components/gob-anatomy";
+import { GobChurn } from "../app/_components/gob-churn";
+import { GobFilm } from "../app/_components/gob-film";
+import { GobFuse } from "../app/_components/gob-fuse";
+import { GobGap } from "../app/_components/gob-gap";
+import { GobGrid } from "../app/_components/gob-grid";
+import { GobResend } from "../app/_components/gob-resend";
+import { GobRoute } from "../app/_components/gob-route";
+import { GobSawtooth } from "../app/_components/gob-sawtooth";
+import { GobSolved } from "../app/_components/gob-solved";
+import { GobTail } from "../app/_components/gob-tail";
+import { GobTokens } from "../app/_components/gob-tokens";
+import Home from "../app/page";
+import Benchmarks from "../app/benchmarks/page";
 
 const site = join(import.meta.dir, "..");
 const read = async (path: string): Promise<string> => await readFile(join(site, path), "utf8");
 const DATA_DIR = "public/benchmarks/2026-09-28";
+const visible = (html: string): string => html.replace(/<[^>]+>/gu, " ").replace(/&amp;/gu, "&").replace(/\s+/gu, " ");
 
 describe("launch formatter", () => {
   test("formats every launch number from the data package (§2.3)", () => {
@@ -31,6 +48,7 @@ describe("launch formatter", () => {
       costLowerCI: "−32% to +2%",
       oldVsNew: "+39%",
       oldVsNone: "+17%",
+      newVsOld: "−28%",
       oldVsNewCI: "−46.5% to −1.6%",
       churn: { all: "43", none: "15", split: "31" },
       gapTotal: "$2.25",
@@ -212,6 +230,88 @@ describe("launch data files", () => {
       const text = await read(path);
       const hits = PRIVATE.filter((pattern) => pattern.test(text)).map(String);
       expect({ path, hits }).toEqual({ path, hits: [] });
+    }
+  });
+});
+
+describe("launch figures render", () => {
+  const figures: readonly { readonly name: string; readonly element: ReactElement; readonly chart: boolean }[] = [
+    { name: "D-resend", element: <GobResend />, chart: false },
+    { name: "D-fuse", element: <GobFuse />, chart: false },
+    { name: "D-anatomy", element: <GobAnatomy />, chart: false },
+    { name: "D-route", element: <GobRoute />, chart: false },
+    { name: "D-tail", element: <GobTail />, chart: false },
+    { name: "C-tokens home", element: <GobTokens variant="home" />, chart: true },
+    { name: "C-tokens full", element: <GobTokens variant="full" />, chart: true },
+    { name: "C-solved", element: <GobSolved />, chart: true },
+    { name: "C-sawtooth home", element: <GobSawtooth variant="home" />, chart: true },
+    { name: "C-sawtooth full", element: <GobSawtooth variant="full" />, chart: true },
+    { name: "C-grid", element: <GobGrid />, chart: true },
+    { name: "C-gap", element: <GobGap />, chart: true },
+    { name: "C-churn", element: <GobChurn />, chart: true },
+  ];
+
+  for (const { name, element, chart } of figures) {
+    test(`${name} renders an accessible, token-coloured figure`, () => {
+      const html = renderToStaticMarkup(element);
+      const text = visible(html);
+      expect(html).not.toMatch(/#[0-9a-f]{3,8}\b/iu);
+      expect(html).not.toContain("hraness-marketing-data-table");
+      expect(html).toContain('role="img"');
+      const labelled = /aria-labelledby="([^"]+)"/u.exec(html)?.[1];
+      expect(labelled).toBeDefined();
+      const alt = new RegExp(`id="${labelled}">([^<]{40,})<`, "u").exec(html)?.[1];
+      expect(alt).toBeDefined();
+      expect(html.includes("<details")).toBe(chart);
+      expect(text).not.toMatch(/\bbetter\b/iu);
+      expect(html).toContain("<figcaption");
+      for (const label of Object.values(ARM_LABEL)) expect(label).not.toContain("CliffCompaction");
+      if (chart && !name.startsWith("C-sawtooth") && name !== "C-grid" && name !== "C-gap" && name !== "C-churn") {
+        for (const id of ARM_ORDER) expect(text).toContain(ARM_LABEL[id]);
+      }
+    });
+  }
+
+  test("the tokens chart shows no dollars on the homepage and cost on the benchmarks page", () => {
+    expect(renderToStaticMarkup(<GobTokens variant="home" />)).not.toContain("$");
+    expect(visible(renderToStaticMarkup(<GobTokens variant="full" />))).toContain(F.perTask.tail0);
+  });
+
+  test("the film embed renders nothing while the manifest is empty", () => {
+    expect(renderToStaticMarkup(<GobFilm film={null} />)).toBe("");
+  });
+});
+
+describe("launch pages", () => {
+  test("the homepage places the Terminal-Bench result before How it works, without dollars or a film", () => {
+    const html = renderToStaticMarkup(<Home />);
+    // One marketing data table; the figures' own tables sit behind "Show the numbers".
+    expect(html.match(/<table\b(?![^>]*gob-table)/gu)).toHaveLength(1);
+    const bench = html.indexOf('id="terminal-bench"');
+    const how = html.indexOf('id="how"');
+    expect(bench).toBeGreaterThan(-1);
+    expect(how).toBeGreaterThan(bench);
+    const section = html.slice(bench, how);
+    expect(section).toContain('href="/benchmarks#terminal-bench-2026-09-28"');
+    expect(section).not.toContain("$");
+    expect(section).toContain(`${F.inputFewer} fewer input tokens`);
+    expect(html.slice(how)).toContain('id="fig-fuse"');
+    expect(html).toContain('id="fig-sawtooth"');
+    expect(html).not.toContain('id="film"');
+    expect(html).not.toContain("<video");
+  });
+
+  test("the benchmarks page leads with the Terminal-Bench run and keeps the archived anchors", () => {
+    const html = renderToStaticMarkup(<Benchmarks />);
+    const toc = [...html.matchAll(/href="#([a-z0-9-]+)"/gu)].map((match) => match[1]);
+    expect(html).toContain('id="terminal-bench-2026-09-28"');
+    expect(toc.find((id) => id !== "main")).toBe("terminal-bench-2026-09-28");
+    expect(html).toContain('id="archived-recovery-2026-09-20"');
+    for (const id of ["fig-solved", "fig-tokens-full", "fig-churn", "fig-gap", "fig-grid", "fig-sawtooth-full", "fig-tail"]) {
+      expect(html).toContain(`id="${id}"`);
+    }
+    for (const file of ["terminal-bench-results.json", "replay-grid.json", "sawtooth-series.json"]) {
+      expect(html).toContain(`href="/benchmarks/2026-09-28/${file}"`);
     }
   });
 });

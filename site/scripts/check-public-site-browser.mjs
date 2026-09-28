@@ -12,6 +12,7 @@ const repository = resolve(import.meta.dirname, '..');
 const artifacts = resolve(repository, '.impeccable/review', `public-${Date.now()}`);
 await mkdir(artifacts, { recursive: true });
 const routes = ['/', '/docs', '/benchmarks', '/methodology', '/compare/claude-code-compact', '/compare/cliffcompaction', '/blog', '/blog/introducing-gobstopper', '/blog/proofs-for-the-admission-math', '/blog/vault-models-that-fail-on-purpose', '/missing-public-verification'];
+const anchors = ['/#terminal-bench', '/benchmarks#terminal-bench-2026-09-28'];
 const errors = [];
 const records = [];
 const startedAt = Date.now();
@@ -103,6 +104,29 @@ try {
       assert.ok(Math.abs(moved.header) <= 1, `${label}: sticky chrome`);
       assert.ok(Math.abs(moved.footer + moved.scroll - metrics.footer.top) <= 2, `${label}: footer scrolls with document`);
       records.push({ route: path, width, theme, status: response.status(), metrics });
+      const figures = await page.evaluate(() => [...document.querySelectorAll('.gob-figure')].map(figure => {
+        const box = figure.getBoundingClientRect();
+        const small = [...figure.querySelectorAll('*')].filter(element => element.childNodes.length > 0 && [...element.childNodes].some(node => node.nodeType === 3 && node.textContent.trim() !== '') && element.checkVisibility() && parseFloat(getComputedStyle(element).fontSize) < 11.5).map(element => element.textContent.trim().slice(0, 40));
+        const escaped = [...figure.querySelectorAll('.gob-figure__plot *')].filter(element => element.checkVisibility() && getComputedStyle(element).position !== 'static').filter(element => { const r = element.getBoundingClientRect(); return r.width > 0 && (r.left < box.left - 1 || r.right > box.right + 1); }).map(element => element.className);
+        return { id: figure.id, left: box.left, right: box.right, small, escaped };
+      }));
+      for (const figure of figures) {
+        assert.ok(figure.left >= -1 && figure.right <= width + 1, `${label}: ${figure.id} fits the viewport`);
+        assert.deepEqual(figure.small, [], `${label}: ${figure.id} text is at least 12px`);
+        assert.deepEqual(figure.escaped, [], `${label}: ${figure.id} marks stay inside the frame`);
+      }
+    }
+    for (const anchor of anchors) {
+      const label = `anchor-${anchor.replace(/[^a-z0-9]+/gu, '-').replace(/^-|-$/gu, '')}-${width}-${theme}`;
+      const response = await page.goto(origin + anchor, { waitUntil: 'load' });
+      assert.equal(response.status(), 200, label);
+      const id = anchor.split('#')[1];
+      assert.equal(await page.locator(`#${id}`).count(), 1, `${label}: anchor target exists`);
+      await until(() => page.locator(`#${id}`).evaluate(element => element.getBoundingClientRect().top >= document.querySelector('.hraness-marketing-header').getBoundingClientRect().bottom - 1), `${label}: anchor clears sticky chrome`);
+      await page.screenshot({ path: resolve(artifacts, `${label}.png`), animations: 'disabled' });
+      for (const [index, figure] of (await page.locator('.gob-figure').all()).entries()) {
+        await figure.screenshot({ path: resolve(artifacts, `${label}-figure-${index}.png`), animations: 'disabled' });
+      }
     }
     await page.goto(origin, { waitUntil: 'load' });
     const trigger = page.locator('.hraness-design-palette-menu > summary');

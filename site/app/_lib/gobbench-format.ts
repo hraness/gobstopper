@@ -113,6 +113,9 @@ export const F = {
   costLowerCI: interval(pair("tail0", "no_proxy").total_cost_ratio_minus1_boot95, 0),
   oldVsNew: signed(cost("tail40") / cost("tail0") - 1),
   oldVsNone: signed(cost("tail40") / cost("no_proxy") - 1),
+  // The interval is stored for tail 0 over tail 40, so it is quoted beside newVsOld (the
+  // same direction); oldVsNew is the same comparison turned round and has no interval here.
+  newVsOld: signed(pair("tail0", "tail40").total_cost_ratio_minus1),
   oldVsNewCI: interval(pair("tail0", "tail40").total_cost_ratio_minus1_boot95, 1),
   churn: {
     all: String(terminalBench.churn.resolved_by_all),

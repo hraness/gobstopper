@@ -16,7 +16,12 @@ import {
 } from "@hraness/design-kit/react/server";
 import { product, type PortfolioProductId } from "@hraness/design-kit/portfolio";
 
+import { GobFilm } from "./_components/gob-film";
+import { GobFuse } from "./_components/gob-fuse";
+import { GobSawtooth } from "./_components/gob-sawtooth";
+import { GobTokens } from "./_components/gob-tokens";
 import { SiteHeader, SiteFooter } from "./_components/site-chrome";
+import { gobFilm } from "./_data/gob-film";
 import { publishedRelease } from "./publication";
 
 /** A related product from the portfolio snapshot: mark, name, address, and one-line role. */
@@ -48,7 +53,7 @@ const steps = [
   },
   {
     label: "Large requests keep the recent work",
-    detail: "Past the threshold, the system prompt, the first task, and at least the last three turns go out word for word. Older turns become one summary that keeps human and assistant text and tool results up to 500 characters. Longer tool results are dropped, because the agent can read the file or rerun the command.",
+    detail: "Past the threshold, the system prompt, the first task, and the last three turns go out word for word. Older turns become one summary that keeps human and assistant text and tool results up to 500 characters. Longer tool results are dropped, because the agent can read the file or rerun the command.",
   },
   {
     label: "Check what it did",
@@ -140,7 +145,7 @@ const trust = [
 const questions = [
   {
     question: "How much does it actually save?",
-    answer: "The proxy's summary rule comes from CliffCompaction, whose authors report up to 50% lower cost at a bounded context with Terminal-Bench scores held or improved on the models they tested, and a higher Terminal-Bench 2.1 score through Claude Code than Claude Code's own auto-compaction. Those are their measurements of their proxy, with costs modeled on perfect prompt caching. Gobstopper has not rerun them. On September 26, 2026, on one Mac running v0.4.1 at its defaults for about 77 minutes of Claude Code, requests the proxy compacted went out 38% smaller in estimated tokens; most requests were under the threshold and went out unchanged. That is an estimate, not a bill: real cost depends on cache hits, details the agent reads again, and how long the session runs. The benchmarks page lists every dated measurement.",
+    answer: "On Terminal-Bench 2.1 (September 27 and 28, 2026; 89 tasks, one trial per arm; Claude Code with GLM 5.3 Flash; 45,000-token threshold), Gobstopper at its default tail resolved 61 tasks and Claude Code with no proxy 60, within single-trial noise, while Gobstopper sent 29% fewer input tokens. Provider-reported cost for that model was about 16% lower, which one trial cannot separate from noise. Dollars depend on your provider's cache pricing, and subscriptions are not billed per token. Most short sessions never reach the default 128,000-token threshold and pass through unchanged. CliffCompaction's authors report their own results for the rule on the comparison page. The benchmarks page lists every dated measurement.",
   },
   {
     question: "Does it edit my live session?",
@@ -148,7 +153,7 @@ const questions = [
   },
   {
     question: "What if a compaction loses something important?",
-    answer: "Snapshot search can locate an archived record, and snapshot reads retrieve its verified bytes. For Claude Code and Codex, `gobstopper undo` prepares a separate fork with a new session identity. `gobstopper eval` measures literal probe retention and structural findings on copies. Those checks cannot guarantee that every task fact survives or that an agent will retrieve a missing fact.",
+    answer: "The proxy drops only tool results over 500 characters from the request; the files and commands behind them are still there, and the agent's transcript keeps the full history. Snapshot search can locate an archived record, and snapshot reads retrieve its verified bytes. For Claude Code and Codex, `gobstopper undo` prepares a separate fork with a new session identity. `gobstopper eval` measures literal probe retention and structural findings on copies. Those checks cannot guarantee that every task fact survives or that an agent will retrieve a missing fact.",
   },
   {
     question: "Which agents does it support?",
@@ -156,7 +161,7 @@ const questions = [
   },
   {
     question: "How is this different from CliffCompaction?",
-    answer: "CliffCompaction is an API proxy: it rewrites each request over a token threshold while the session runs, keeps the head and the last three turns verbatim, drops tool results over 500 characters, and never paraphrases. `gobstopper proxy` ports its summary rule to the Anthropic Messages, OpenAI Responses, and Chat Completions dialects and by default keeps more of the recent session verbatim: at least the last three turns, plus older whole turns that fit its tail budget. Each summary also carries the human's words and the assistant's visible replies from the turns earlier compactions summarized, up to 24,000 characters, where CliffCompaction discards the previous summary. Gobstopper's file commands prepare copies you inspect and resume, with the source archived in a vault, and the `cliff` strategy applies the drop rule to those copies. The comparison page lists the differences and the authors' benchmark figures.",
+    answer: "CliffCompaction is an API proxy: it rewrites each request over a token threshold while the session runs, keeps the head and the last three turns verbatim, drops tool results over 500 characters, and never paraphrases. `gobstopper proxy` ports its summary rule to the Anthropic Messages, OpenAI Responses, and Chat Completions dialects and keeps the last three turns verbatim by default and can keep more with a tail budget. Each summary also carries the human's words and the assistant's visible replies from the turns earlier compactions summarized, up to 24,000 characters, where CliffCompaction discards the previous summary. Gobstopper's file commands prepare copies you inspect and resume, with the source archived in a vault, and the `cliff` strategy applies the drop rule to those copies. The comparison page has the authors' benchmark figures. In all, Gobstopper makes seven departures, listed on the comparison page.",
   },
   {
     question: "Can I run my own compaction logic?",
@@ -239,12 +244,38 @@ export default function Home() {
           />
 
           <MarketingSection
+            heading="Same tasks solved, 29% fewer tokens sent."
+            headingId="terminal-bench-title"
+            id="terminal-bench"
+            label="Terminal-Bench 2.1"
+            summary="On Terminal-Bench 2.1, Claude Code behind Gobstopper at its default tail resolved 61 of 89 tasks, against 60 with no proxy, a difference within single-trial noise, and sent 84.3M input tokens against 118.6M. The old default tail of 40 cost more than no proxy, so v0.7.3 made tail 0 the default. One trial per arm, GLM 5.3 Flash, 45,000-token threshold, September 27 and 28, 2026."
+          >
+            <GobTokens variant="home" />
+            <p className="gob-section-link">
+              <a href="/benchmarks#terminal-bench-2026-09-28">Setup, statistics and downloads</a>
+            </p>
+          </MarketingSection>
+
+          {gobFilm === null ? null : (
+            <MarketingSection
+              heading="Watch it in 75 seconds."
+              headingId="film-title"
+              id="film"
+              label="Film"
+              summary="No narration. Captions carry every line. The film never plays until you press play."
+            >
+              <GobFilm film={gobFilm} />
+            </MarketingSection>
+          )}
+
+          <MarketingSection
             heading="It keeps each request under a threshold you choose."
             headingId="how-title"
             id="how"
             label="How the proxy works"
             summary="No model call writes the summary, and each compaction starts again from the full history your agent resends, so a summary is never summarized."
           >
+            <GobFuse />
             <MarketingFlow
               ariaLabel="How the proxy works"
               steps={steps.map(({ detail, label, ...rest }) => ({
@@ -253,6 +284,7 @@ export default function Home() {
                 ...("code" in rest ? { code: rest.code } : {}),
               }))}
             />
+            <GobSawtooth variant="home" />
           </MarketingSection>
 
           <MarketingSection
