@@ -25,7 +25,8 @@ Gob.scene({ palette: "paper" }, (s) => {
   const barH = 150;
   const top = Math.round(p.y + (p.h - barH) / 2 - 60);
   let x = p.x;
-  runs.forEach((run) => {
+  runs.forEach((run, index) => {
+    const last = index === runs.length - 1;
     const start = x;
     for (let i = 0; i < run.n; i++) {
       const cell = s.el("div", `position:absolute;left:${x.toFixed(2)}px;top:${top}px;width:${cellW.toFixed(2)}px;height:${barH}px;border-radius:3px`);
@@ -36,8 +37,11 @@ Gob.scene({ palette: "paper" }, (s) => {
     x += runGap - gap;
     const end = x - runGap;
     const w = end - start;
-    s.text("hero", String(run.n), { x: start, y: top + barH + 26 }, { nowrap: true, weight: 600 }).style.fontSize = "76px";
-    s.text("label", run.label, { x: start, y: top + barH + 124, w: Math.max(w, 260) }, { color: "var(--ink-2)" });
+    // The last run is narrow, so its number and label align to the right margin instead.
+    const box = last ? { x: p.x + p.w - 420, w: 420 } : { x: start, w: Math.max(w, 260) };
+    const align = last ? "right" : "left";
+    s.text("hero", String(run.n), { x: box.x, y: top + barH + 26, w: box.w }, { nowrap: true, weight: 600, align }).style.fontSize = "76px";
+    s.text("label", run.label, { x: box.x, y: top + barH + 124, w: box.w }, { color: "var(--ink-2)", align });
   });
 });
 </script>

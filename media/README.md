@@ -81,7 +81,7 @@ Render sequentially and leave generous timeouts; the machine is shared.
 
 ## Disk space
 
-- Check free space with `df -h /` before rendering. `render.ts` refuses a still with less than 5 GiB free and a full-size shot with less than 20 GiB free.
+- Check free space with `df -h /` before rendering. `render.ts` refuses a still with less than 2 GiB free and a full-size shot with less than 20 GiB free.
 - `render.ts` deletes each job's `artifacts/slopcamera/generated/html-scenes/<job>` directory after it collects the output. Delete `media/artifacts/` and `media/out/build/` after a session.
 
 ## Privacy

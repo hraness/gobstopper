@@ -22,7 +22,7 @@ Gob.scene({ palette: "paper" }, (s) => {
   const x0 = p.x + axisW + 40;
   const x1 = p.x + p.w - noteW - 64 - endW;
   const y0 = p.y + p.h - 56;
-  const y1 = p.y + 12;
+  const y1 = p.y + 60;
   const thresholds = [32000, 64000, 128000, 256000];
   const X = (t) => x0 + (Math.log2(t / 32000) / 3) * (x1 - x0);
   const Y = (v) => y0 - v * (y0 - y1);

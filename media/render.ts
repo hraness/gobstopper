@@ -113,6 +113,27 @@ function dataSlice(name: string): unknown {
   }
 }
 
+/**
+ * Slopcamera accepts parameter arrays of at most 128 items. A longer array travels as
+ * `{ "$chunks": [[…128], […128], …] }`, and `lib/stage.ts` joins it back before the
+ * scene reads `s.params`.
+ */
+export const MAX_PARAMETER_ARRAY = 128;
+function packArrays(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    const items = value.map(packArrays);
+    if (items.length <= MAX_PARAMETER_ARRAY) return items;
+    const chunks: unknown[][] = [];
+    for (let i = 0; i < items.length; i += MAX_PARAMETER_ARRAY) chunks.push(items.slice(i, i + MAX_PARAMETER_ARRAY));
+    if (chunks.length > MAX_PARAMETER_ARRAY) throw new Error(`A ${items.length}-item array is too long for scene parameters.`);
+    return { $chunks: chunks };
+  }
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, packArrays(item)]));
+  }
+  return value;
+}
+
 function sha256(bytes: Uint8Array | string): string {
   return createHash("sha256").update(bytes).digest("hex");
 }
@@ -186,7 +207,7 @@ function sceneRequest(o: {
   const data: Record<string, unknown> = { ...o.extra };
   for (const name of o.data) data[name] = dataSlice(name);
   const parameters = {
-    palette: o.palette, F, data, timeOffsetSeconds: o.timeOffsetSeconds,
+    palette: o.palette, F, data: packArrays(data), timeOffsetSeconds: o.timeOffsetSeconds,
     ...(o.layoutZoom !== undefined && o.layoutZoom !== 1 ? { layoutZoom: o.layoutZoom } : {}),
   };
   const parameterBytes = Buffer.byteLength(JSON.stringify(parameters));
@@ -363,6 +384,8 @@ function jobDirectory(video: string): string | undefined {
   return dir.startsWith(generated + "/") ? dir : undefined;
 }
 
+const STILL_MIN_FREE_GIB = 2;
+
 function freeGiB(path: string): number {
   const s = statfsSync(path);
   return (s.bavail * s.bsize) / GIB;
@@ -420,7 +443,8 @@ async function renderStill(job: StillJob, dryRun: boolean, log: (s: string) => v
   const plan = await slopcamera(requestPath, true, join(BUILD, `${name}.plan.log`));
   if (dryRun) { log(JSON.stringify({ job: name, state: "planned", plan })); return; }
 
-  if (freeGiB(REPO) < 5) throw new Error("Less than 5 GiB free; not rendering.");
+  // A still peaks at tens of megabytes (one short video, one lossless frame, the browser profile).
+  if (freeGiB(REPO) < STILL_MIN_FREE_GIB) throw new Error(`Less than ${STILL_MIN_FREE_GIB} GiB free; not rendering.`);
   const version = slopcameraVersion();
   const release = await acquire(process.env.GOB_RENDER_LANE ?? "l3", name, log);
   const started = Date.now();

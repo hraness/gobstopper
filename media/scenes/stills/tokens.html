@@ -39,7 +39,7 @@ Gob.scene({ palette: "paper" }, (s) => {
   rows.forEach((row, i) => {
     const style = ARM_STYLE[row.id];
     const top = Math.round(p.y + i * rowH + rowH - barH - 18);
-    s.text("label", `${ARM_LABEL[row.id]} · ${F.solved[row.id]} of 89 solved`, { x: p.x, y: top - 50 }, { nowrap: true, weight: 500 });
+    s.text("label", `${ARM_LABEL[row.id]} · ${F.solved[row.id]} of 89 solved`, { x: x(0) + 20, y: top - 50 }, { nowrap: true, weight: 500 });
     const x0 = x(0) + 1;
     const xc = x(row.cache_read);
     const xt = x(row.total_input);

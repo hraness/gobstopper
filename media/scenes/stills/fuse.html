@@ -32,8 +32,8 @@ Gob.scene({ palette: "paper" }, (s) => {
     if (slab.kind === "summary") {
       const span = node.querySelector("span");
       if (span) span.style.paddingLeft = "0";
-      node.style.paddingLeft = `${h * 0.3 + 34}px`;
-      s.ring(rightX + h * 0.3 + 14, slabTop(j) + h / 2, 30, { color: "var(--on-fill)", stroke: 1.8 });
+      node.style.paddingLeft = "54px";
+      s.ring(rightX + 24, slabTop(j) + h / 2, 30, { color: "var(--on-fill)", stroke: 1.8 });
     }
   });
 

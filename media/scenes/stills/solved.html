@@ -13,9 +13,9 @@ Gob.scene({ palette: "paper" }, (s) => {
   const P_TB_FULL = "Terminal-Bench 2.1 · 89 tasks · one trial per arm · Claude Code 2.1.283 with GLM 5.3 Flash via Vercel AI Gateway · Gobstopper v0.7.2, 45,000-token threshold (default 128,000) · September 27–28, 2026 · 21 of 89 tail-0 trials may have run an earlier build";
   const frame = s.still({ title: "Solved about as often", provenance: P_TB_FULL });
   const p = frame.plot;
-  const sideW = 430;
+  const sideW = 380;
   const leftW = p.w - sideW - 56;
-  const labelW = 290;
+  const labelW = 380;
   const plotX0 = p.x;
   const plotX1 = p.x + leftW - labelW;
   const x = (v) => plotX0 + ((v - 0.5) / 0.3) * (plotX1 - plotX0);
@@ -50,7 +50,7 @@ Gob.scene({ palette: "paper" }, (s) => {
   s.text("small", "The intervals overlap almost completely: no measurable difference (McNemar p = 1.0 against no proxy). 31 of 89 tasks changed outcome between arms, the noise level of one trial.", { x: plotX0, y: axisY + 118, w: leftW });
 
   // The attributed reference, kept apart from the axis on purpose.
-  const [r0, r1, r2] = data.reported;
+  const [r0, r1, r2] = data.reported.map((r) => r.resolved_pct.toFixed(2));
   const box = s.el("div", `position:absolute;left:${p.x + p.w - sideW}px;top:${rowsTop + 8}px;width:${sideW}px;padding:28px 30px;border-radius:12px;background:var(--panel);box-shadow:inset 0 0 0 1.5px var(--rule)`);
   const body = s.text("small", `CliffCompaction's authors report ${r0}% for their proxy at 45K, ${r1}% for Claude Code's 200K default and ${r2}% for its 45K auto-compaction, on their own setup (arXiv:2609.26779). Not comparable to the rows above.`, { x: 0, y: 0 }, { parent: box, color: "var(--ink-2)" });
   body.style.position = "relative";

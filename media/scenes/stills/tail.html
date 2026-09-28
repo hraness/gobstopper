@@ -29,10 +29,10 @@ Gob.scene({ palette: "paper" }, (s) => {
     slabs.forEach((slab, j) => {
       const node = s.slab(slab.kind, { x, y: slabTop(j), w: stackW, h }, slab.label);
       if (slab.kind === "summary") {
-        node.style.paddingLeft = `${h * 0.3 + 34}px`;
+        node.style.paddingLeft = "54px";
         const span = node.querySelector("span");
         if (span) span.style.paddingLeft = "0";
-        s.ring(x + h * 0.3 + 14, slabTop(j) + h / 2, 30, { color: "var(--on-fill)", stroke: 1.8 });
+        s.ring(x + 24, slabTop(j) + h / 2, 30, { color: "var(--on-fill)", stroke: 1.8 });
       }
     });
     return slabTop(slabs.length - 1);
@@ -63,8 +63,11 @@ Gob.scene({ palette: "paper" }, (s) => {
   s.root.appendChild(svg);
   s.text("small", "less room left, so the next rewrite comes sooner", { x: ax + 34, y: lidY + 18, w: p.x + p.w - ax - 34 }, { color: "var(--tail40)", weight: 500 });
 
-  s.text("label", "Gobstopper, tail 0 (the new default)", { x: leftX - 40, y: base + 24, w: stackW + 80 }, { align: "center", weight: 600 });
-  s.text("label", "Gobstopper, tail 40 (old default)", { x: rightX - 40, y: base + 24, w: stackW + 80 }, { align: "center", weight: 600 });
+  // Each caption breaks after the arm name so the parenthetical sits whole on line two.
+  for (const [x, name, note] of [[leftX, "Gobstopper, tail 0", "(the new default)"], [rightX, "Gobstopper, tail 40", "(old default)"]]) {
+    const node = s.text("label", `${name}\n${note}`, { x: x - 40, y: base + 24, w: stackW + 80 }, { align: "center", weight: 600 });
+    node.style.whiteSpace = "pre-line";
+  }
 });
 </script>
 </body>

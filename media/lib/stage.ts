@@ -144,6 +144,20 @@ export interface Stage {
   still(opts: { title: string; subtitle?: string; provenance?: string; legend?: HTMLElement }): StillFrame;
 }
 
+/** Joins arrays that render.ts split into `{ $chunks }` to fit Slopcamera's 128-item limit. */
+function unpackArrays(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(unpackArrays);
+  if (value !== null && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record);
+    if (keys.length === 1 && keys[0] === "$chunks" && Array.isArray(record.$chunks)) {
+      return (record.$chunks as unknown[][]).flat().map(unpackArrays);
+    }
+    return Object.fromEntries(keys.map((key) => [key, unpackArrays(record[key])]));
+  }
+  return value;
+}
+
 function hash32(input: string, seed: number): number {
   // FNV-1a, then a murmur finaliser: stable across engines.
   let h = (0x811c9dc5 ^ seed) >>> 0;
@@ -195,7 +209,7 @@ export function boot(opts: { palette: PaletteName; scale?: TypeScale }): Promise
   const paletteName = opts.palette;
   const palette = PALETTES[paletteName];
   if (palette === undefined) throw new RangeError(`Unknown palette ${String(paletteName)}`);
-  const params = api.parameters as unknown as StageParams;
+  const params = unpackArrays(api.parameters) as StageParams;
   // Slopcamera captures at the canvas's CSS size whatever the device scale factor, so a
   // 2400×1350 still is a 2400×1350 canvas whose 1600×900 layout is zoomed 1.5×. Text is
   // then laid out and rasterized at full size rather than upscaled.

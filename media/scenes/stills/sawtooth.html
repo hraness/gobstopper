@@ -60,8 +60,10 @@ Gob.scene({ palette: "paper" }, (s) => {
 
   // Annotations.
   const peakIndex = d.without.indexOf(Math.max(...d.without));
-  s.text("small", `no proxy: up to ${F.saw.peak} per request`, { x: X(peakIndex) - 520, y: Y(Math.max(...d.without)) - 4, w: 500 }, { align: "right", color: "var(--noproxy)", weight: 500 });
-  s.text("small", `${F.saw.compactions} rewrites`, { x: x0, y: ringY - 58 }, { color: "var(--tail0)", weight: 500, nowrap: true }).style.left = `${X(8)}px`;
+  // Under the teal line, inside its wash, right-aligned to the peak.
+  s.text("small", `no proxy: up to ${F.saw.peak} per request`, { x: X(peakIndex) - 620, y: Y(330000), w: 600 }, { align: "right", color: "var(--noproxy)", weight: 500 });
+  // Labels the sawtooth itself, just above the blue line; the rings below mark each one.
+  s.text("small", `${F.saw.compactions} rewrites`, { x: X(250), y: Y(42000) - 44 }, { color: "var(--tail0)", weight: 600, nowrap: true });
   s.text("label", `total over the session: ${F.saw.cumFrom} to ${F.saw.cumTo} estimated tokens (${F.saw.cut} less)`, { x: x0 + 24, y: Y(470000), w: 620 }, { weight: 500 });
 });
 </script>

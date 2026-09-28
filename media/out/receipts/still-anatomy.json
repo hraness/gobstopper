@@ -1,0 +1,89 @@
+{
+  "kind": "gobstopper.media-render",
+  "renders": [
+    {
+      "job": "still-anatomy",
+      "id": "anatomy",
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T21:23:14.203Z",
+      "seconds": 18,
+      "canvas": {
+        "width": 2400,
+        "height": 1350,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1600,
+        "layoutHeight": 900,
+        "layoutZoom": 1.5
+      },
+      "holdSeconds": 0,
+      "sceneHtmlSha256": "51fc0cf3ed64b65872098130425036401f5d1d1799f72ae60192237d8764f977",
+      "sceneSource": "scenes/stills/anatomy.html",
+      "sceneSourceSha256": "6d7f12228f2ec8c56da5e9c720bd3736df24b40041cf089e560c277777b30607",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "width": 2400,
+        "height": 1350,
+        "bytes": 158782,
+        "sha256": "0166274197843ad2c5e131f29c920149a3a5095bb4cf7cdf10fc39bb9fa6270d",
+        "source": "captured frame 0",
+        "copies": {
+          "docs": "docs/assets/gob-anatomy.png",
+          "blog": "site/public/blog/introducing-gobstopper/gob-anatomy.png"
+        }
+      }
+    },
+    {
+      "job": "still-anatomy",
+      "id": "anatomy",
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T21:39:47.444Z",
+      "seconds": 25,
+      "canvas": {
+        "width": 2400,
+        "height": 1350,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1600,
+        "layoutHeight": 900,
+        "layoutZoom": 1.5
+      },
+      "holdSeconds": 0,
+      "sceneHtmlSha256": "388eba667e743a64e95cdc72510938fa02fce0613cc59ebdf099ada21416fd58",
+      "sceneSource": "scenes/stills/anatomy.html",
+      "sceneSourceSha256": "6d7f12228f2ec8c56da5e9c720bd3736df24b40041cf089e560c277777b30607",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "width": 2400,
+        "height": 1350,
+        "bytes": 158782,
+        "sha256": "0166274197843ad2c5e131f29c920149a3a5095bb4cf7cdf10fc39bb9fa6270d",
+        "source": "captured frame 0",
+        "copies": {
+          "docs": "docs/assets/gob-anatomy.png",
+          "blog": "site/public/blog/introducing-gobstopper/gob-anatomy.png"
+        }
+      }
+    }
+  ]
+}
