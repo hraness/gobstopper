@@ -1,0 +1,3553 @@
+{
+ "schema_version": 1,
+ "source": {
+  "benchmark": "Terminal-Bench 2.1 (terminal-bench/terminal-bench-2-1), 89 tasks x 3 arms x 1 trial",
+  "harness": "harbor 0.23.0, 3 concurrent trials, up to 2 retries; per-task timeouts from task.toml",
+  "agent": "Claude Code 2.1.283 (prebuilt linux-x64 binary mounted into each task container)",
+  "model": "zai/glm-5.3-flash via Vercel AI Gateway, Anthropic /v1/messages format",
+  "host": "Apple M5 Max laptop; Colima VM (5 CPU, 6 GiB); amd64 task images under Rosetta emulation; host shared with other work (load about 58-68 during the tail 40 arm)",
+  "dates_utc": {
+   "tail0": [
+    "2026-09-27T16:18Z",
+    "2026-09-28T01:30Z"
+   ],
+   "tail40": [
+    "2026-09-28T01:30Z",
+    "2026-09-28T09:32Z"
+   ],
+   "no_proxy": [
+    "2026-09-28T09:32Z",
+    "2026-09-28T15:53Z"
+   ],
+   "order": "tail 0, then tail 40, then no proxy (sequential)"
+  },
+  "proxy_settings": {
+   "threshold_tokens": 45000,
+   "threshold_note": "45,000-token threshold (estimated; calibration on by default; carry 24,000 chars)",
+   "threshold_1m_tokens": 256000,
+   "keep_recent": 3,
+   "result_max_chars": 500,
+   "carry_max_chars": 24000,
+   "calibration": "on (v0.7.2 default)",
+   "keep_tail_percent": {
+    "tail0": 0,
+    "tail40": 40
+   }
+  },
+  "no_proxy_settings": "Claude Code talks straight to the gateway; its own compaction near the default ~200K window",
+  "build": {
+   "live_arms": "gobstopper v0.7.2 (tag commit e894097)",
+   "caveat": "21 of 89 tail 0 trials started before the 2026-09-27 19:07Z proxy restart and may have been served by an earlier build; logs lost in a host reboot. All tail 40 trials ran on v0.7.2."
+  },
+  "arm_names": {
+   "tail0": "Gobstopper, tail 0 (the new default once v0.7.3 ships; v0.7.3 changes the default keep_tail_percent from 40 to 0)",
+   "tail40": "Gobstopper, tail 40 (old default, shipped through v0.7.2)",
+   "no_proxy": "Claude Code, no proxy"
+  },
+  "resolved_definition": "verifier reward == 1.0; a trial with no reward counts as unresolved; denominator 89 per arm",
+  "cost_definition": "sum over trials of Claude Code's per-trial model_usage cost_usd (final attempt of each trial); reproduces exactly as tokens x price model",
+  "token_definition": "harbor per-trial agent totals over all 89 trials: total input (uncached + cache read), cache read, output. No cache writes were recorded.",
+  "price_model": {
+   "usd_per_million_tokens": {
+    "uncached_input": 0.15,
+    "cache_read": 0.03,
+    "output": 0.5
+   },
+   "note": "Dollars are provider-reported Vercel AI Gateway prices for zai/glm-5.3-flash on metered API access. They are NOT Anthropic prices (Anthropic cache reads cost 0.1x input, not 0.2x) and NOT subscription billing. Lead with token counts."
+  },
+  "statistics": "paired over the same 89 tasks; McNemar exact test; 20,000-sample paired bootstrap, seed 20260928; one trial per task per arm",
+  "excluded": [
+   "12-task pilot (earlier build, reversed by the full run)",
+   "harbor job-level cost_usd (wrong price table)",
+   "final-result-record token columns (omit timed-out trials)"
+  ],
+  "generated": "2026-09-28"
+ },
+ "arms": [
+  {
+   "arm": "tail0",
+   "label": "Gobstopper, tail 0",
+   "gobstopper": {
+    "build": "gobstopper v0.7.2 (tag commit e894097)",
+    "keep_tail_percent": 0
+   },
+   "n_tasks": 89,
+   "resolved": 61,
+   "resolved_rate": 0.6854,
+   "wilson95": [
+    0.583,
+    0.7725
+   ],
+   "outcome_categories": {
+    "resolved_clean": 59,
+    "resolved_despite_exception": 2,
+    "unresolved_verifier_fail": 9,
+    "unresolved_with_exception": 19
+   },
+   "no_reward_recorded": 2,
+   "exceptions": {
+    "AgentTimeoutError": 18,
+    "OutputTokenExceededError": 2,
+    "UnknownApiError": 1
+   },
+   "harness_retries": 42,
+   "tokens_all_trials": {
+    "total_input": 84305420,
+    "uncached_input": 15613196,
+    "cache_read": 68692224,
+    "output": 2635254
+   },
+   "tokens_all_trials_millions": {
+    "total_input": 84.31,
+    "uncached_input": 15.61,
+    "cache_read": 68.69,
+    "output": 2.64
+   },
+   "cost_usd": {
+    "total": 5.7204,
+    "per_task_mean": 0.06427,
+    "per_task_median": 0.03785,
+    "per_resolved": 0.09378,
+    "by_token_class": {
+     "uncached_input": 2.342,
+     "cache_read": 2.0608,
+     "output": 1.3176
+    }
+   },
+   "tool_calls": {
+    "total": 2532,
+    "per_task_median": 25
+   },
+   "trials_started": "2026-09-27T16:18Z",
+   "trials_finished": "2026-09-28T01:30Z",
+   "trials_started_before_proxy_restart": 21
+  },
+  {
+   "arm": "tail40",
+   "label": "Gobstopper, tail 40 (old default)",
+   "gobstopper": {
+    "build": "gobstopper v0.7.2 (tag commit e894097)",
+    "keep_tail_percent": 40
+   },
+   "n_tasks": 89,
+   "resolved": 59,
+   "resolved_rate": 0.6629,
+   "wilson95": [
+    0.5598,
+    0.7526
+   ],
+   "outcome_categories": {
+    "resolved_clean": 54,
+    "resolved_despite_exception": 5,
+    "unresolved_verifier_fail": 14,
+    "unresolved_with_exception": 16
+   },
+   "no_reward_recorded": 0,
+   "exceptions": {
+    "AgentTimeoutError": 19,
+    "OutputTokenExceededError": 2
+   },
+   "harness_retries": 17,
+   "tokens_all_trials": {
+    "total_input": 118481901,
+    "uncached_input": 20252653,
+    "cache_read": 98229248,
+    "output": 3969410
+   },
+   "tokens_all_trials_millions": {
+    "total_input": 118.48,
+    "uncached_input": 20.25,
+    "cache_read": 98.23,
+    "output": 3.97
+   },
+   "cost_usd": {
+    "total": 7.9695,
+    "per_task_mean": 0.08954,
+    "per_task_median": 0.04005,
+    "per_resolved": 0.13508,
+    "by_token_class": {
+     "uncached_input": 3.0379,
+     "cache_read": 2.9469,
+     "output": 1.9847
+    }
+   },
+   "tool_calls": {
+    "total": 3314,
+    "per_task_median": 23
+   },
+   "trials_started": "2026-09-28T01:30Z",
+   "trials_finished": "2026-09-28T09:32Z",
+   "trials_started_before_proxy_restart": null
+  },
+  {
+   "arm": "no_proxy",
+   "label": "Claude Code, no proxy",
+   "gobstopper": null,
+   "n_tasks": 89,
+   "resolved": 60,
+   "resolved_rate": 0.6742,
+   "wilson95": [
+    0.5713,
+    0.7626
+   ],
+   "outcome_categories": {
+    "resolved_clean": 56,
+    "resolved_despite_exception": 4,
+    "unresolved_verifier_fail": 13,
+    "unresolved_with_exception": 16
+   },
+   "no_reward_recorded": 0,
+   "exceptions": {
+    "AgentTimeoutError": 18,
+    "OutputTokenExceededError": 2
+   },
+   "harness_retries": 6,
+   "tokens_all_trials": {
+    "total_input": 118550963,
+    "uncached_input": 15912627,
+    "cache_read": 102638336,
+    "output": 2706744
+   },
+   "tokens_all_trials_millions": {
+    "total_input": 118.55,
+    "uncached_input": 15.91,
+    "cache_read": 102.64,
+    "output": 2.71
+   },
+   "cost_usd": {
+    "total": 6.8194,
+    "per_task_mean": 0.07662,
+    "per_task_median": 0.04201,
+    "per_resolved": 0.11366,
+    "by_token_class": {
+     "uncached_input": 2.3869,
+     "cache_read": 3.0792,
+     "output": 1.3534
+    }
+   },
+   "tool_calls": {
+    "total": 2552,
+    "per_task_median": 20
+   },
+   "trials_started": "2026-09-28T09:32Z",
+   "trials_finished": "2026-09-28T15:53Z",
+   "trials_started_before_proxy_restart": null
+  }
+ ],
+ "pairs": [
+  {
+   "a": "tail0",
+   "b": "tail40",
+   "both_resolved": 50,
+   "both_unresolved": 19,
+   "only_a_resolved": 11,
+   "only_b_resolved": 9,
+   "only_a_tasks": [
+    "build-pov-ray",
+    "dna-assembly",
+    "filter-js-from-html",
+    "install-windows-3.11",
+    "log-summary-date-ranges",
+    "model-extraction-relu-logits",
+    "mteb-retrieve",
+    "protein-assembly",
+    "schemelike-metacircular-eval",
+    "sparql-university",
+    "write-compressor"
+   ],
+   "only_b_tasks": [
+    "adaptive-rejection-sampler",
+    "bn-fit-modify",
+    "chess-best-move",
+    "cobol-modernization",
+    "llm-inference-batching-scheduler",
+    "make-mips-interpreter",
+    "overfull-hbox",
+    "rstan-to-pystan",
+    "tune-mjcf"
+   ],
+   "mcnemar_exact_p": 0.8238,
+   "resolve_rate_diff_pp": 2.25,
+   "resolve_rate_diff_pp_boot95": [
+    -7.87,
+    12.36
+   ],
+   "cost_per_task_diff_usd": -0.02527,
+   "cost_per_task_diff_usd_boot95": [
+    -0.05633,
+    -0.00104
+   ],
+   "total_cost_ratio_minus1": -0.2822,
+   "total_cost_ratio_minus1_boot95": [
+    -0.4648,
+    -0.0158
+   ],
+   "tasks_a_cheaper": 45,
+   "median_paired_cost_diff_usd": -0.00021,
+   "token_ratio_minus1": {
+    "total_input": -0.2885,
+    "uncached_input": -0.2291,
+    "cache_read": -0.3007,
+    "output": -0.3361
+   },
+   "significant_at_95": {
+    "resolve_rate": false,
+    "total_cost": true
+   }
+  },
+  {
+   "a": "tail0",
+   "b": "no_proxy",
+   "both_resolved": 50,
+   "both_unresolved": 18,
+   "only_a_resolved": 11,
+   "only_b_resolved": 10,
+   "only_a_tasks": [
+    "configure-git-webserver",
+    "extract-elf",
+    "gpt2-codegolf",
+    "headless-terminal",
+    "install-windows-3.11",
+    "model-extraction-relu-logits",
+    "mteb-retrieve",
+    "password-recovery",
+    "protein-assembly",
+    "query-optimize",
+    "sam-cell-seg"
+   ],
+   "only_b_tasks": [
+    "adaptive-rejection-sampler",
+    "caffe-cifar-10",
+    "chess-best-move",
+    "cobol-modernization",
+    "compile-compcert",
+    "llm-inference-batching-scheduler",
+    "mcmc-sampling-stan",
+    "overfull-hbox",
+    "tune-mjcf",
+    "winning-avg-corewars"
+   ],
+   "mcnemar_exact_p": 1.0,
+   "resolve_rate_diff_pp": 1.12,
+   "resolve_rate_diff_pp_boot95": [
+    -8.99,
+    11.24
+   ],
+   "cost_per_task_diff_usd": -0.01235,
+   "cost_per_task_diff_usd_boot95": [
+    -0.02907,
+    0.00126
+   ],
+   "total_cost_ratio_minus1": -0.1612,
+   "total_cost_ratio_minus1_boot95": [
+    -0.3183,
+    0.0195
+   ],
+   "tasks_a_cheaper": 44,
+   "median_paired_cost_diff_usd": 0.0003,
+   "token_ratio_minus1": {
+    "total_input": -0.2889,
+    "uncached_input": -0.0188,
+    "cache_read": -0.3307,
+    "output": -0.0264
+   },
+   "significant_at_95": {
+    "resolve_rate": false,
+    "total_cost": false
+   }
+  },
+  {
+   "a": "tail40",
+   "b": "no_proxy",
+   "both_resolved": 49,
+   "both_unresolved": 19,
+   "only_a_resolved": 10,
+   "only_b_resolved": 11,
+   "only_a_tasks": [
+    "bn-fit-modify",
+    "configure-git-webserver",
+    "extract-elf",
+    "gpt2-codegolf",
+    "headless-terminal",
+    "make-mips-interpreter",
+    "password-recovery",
+    "query-optimize",
+    "rstan-to-pystan",
+    "sam-cell-seg"
+   ],
+   "only_b_tasks": [
+    "build-pov-ray",
+    "caffe-cifar-10",
+    "compile-compcert",
+    "dna-assembly",
+    "filter-js-from-html",
+    "log-summary-date-ranges",
+    "mcmc-sampling-stan",
+    "schemelike-metacircular-eval",
+    "sparql-university",
+    "winning-avg-corewars",
+    "write-compressor"
+   ],
+   "mcnemar_exact_p": 1.0,
+   "resolve_rate_diff_pp": -1.12,
+   "resolve_rate_diff_pp_boot95": [
+    -11.24,
+    8.99
+   ],
+   "cost_per_task_diff_usd": 0.01292,
+   "cost_per_task_diff_usd_boot95": [
+    -0.01181,
+    0.04381
+   ],
+   "total_cost_ratio_minus1": 0.1686,
+   "total_cost_ratio_minus1_boot95": [
+    -0.1444,
+    0.5957
+   ],
+   "tasks_a_cheaper": 44,
+   "median_paired_cost_diff_usd": 0.00028,
+   "token_ratio_minus1": {
+    "total_input": -0.0006,
+    "uncached_input": 0.2727,
+    "cache_read": -0.043,
+    "output": 0.4665
+   },
+   "significant_at_95": {
+    "resolve_rate": false,
+    "total_cost": false
+   }
+  }
+ ],
+ "churn": {
+  "resolved_by_all": 43,
+  "resolved_by_none": 15,
+  "split": 31,
+  "split_tasks": [
+   "adaptive-rejection-sampler",
+   "bn-fit-modify",
+   "build-pov-ray",
+   "caffe-cifar-10",
+   "chess-best-move",
+   "cobol-modernization",
+   "compile-compcert",
+   "configure-git-webserver",
+   "dna-assembly",
+   "extract-elf",
+   "filter-js-from-html",
+   "gpt2-codegolf",
+   "headless-terminal",
+   "install-windows-3.11",
+   "llm-inference-batching-scheduler",
+   "log-summary-date-ranges",
+   "make-mips-interpreter",
+   "mcmc-sampling-stan",
+   "model-extraction-relu-logits",
+   "mteb-retrieve",
+   "overfull-hbox",
+   "password-recovery",
+   "protein-assembly",
+   "query-optimize",
+   "rstan-to-pystan",
+   "sam-cell-seg",
+   "schemelike-metacircular-eval",
+   "sparql-university",
+   "tune-mjcf",
+   "winning-avg-corewars",
+   "write-compressor"
+  ]
+ },
+ "cost_concentration": [
+  {
+   "minuend": "tail40",
+   "subtrahend": "tail0",
+   "total_gap_usd": 2.2491,
+   "top_tasks": [
+    {
+     "task": "video-processing",
+     "tail0": 0.2359,
+     "tail40": 1.2548,
+     "no_proxy": 0.2299
+    },
+    {
+     "task": "winning-avg-corewars",
+     "tail0": 0.0066,
+     "tail40": 0.5217,
+     "no_proxy": 0.4377
+    },
+    {
+     "task": "path-tracing-reverse",
+     "tail0": 0.172,
+     "tail40": 0.465,
+     "no_proxy": 0.2872
+    },
+    {
+     "task": "path-tracing",
+     "tail0": 0.1651,
+     "tail40": 0.4564,
+     "no_proxy": 0.1076
+    },
+    {
+     "task": "schemelike-metacircular-eval",
+     "tail0": 0.1166,
+     "tail40": 0.3709,
+     "no_proxy": 0.2207
+    }
+   ],
+   "top_share_of_gap": 1.055
+  },
+  {
+   "minuend": "no_proxy",
+   "subtrahend": "tail0",
+   "total_gap_usd": 1.099,
+   "top_tasks": [
+    {
+     "task": "winning-avg-corewars",
+     "tail0": 0.0066,
+     "tail40": 0.5217,
+     "no_proxy": 0.4377
+    },
+    {
+     "task": "make-mips-interpreter",
+     "tail0": 0.2442,
+     "tail40": 0.1754,
+     "no_proxy": 0.5969
+    },
+    {
+     "task": "extract-moves-from-video",
+     "tail0": 0.101,
+     "tail40": 0.0792,
+     "no_proxy": 0.3044
+    },
+    {
+     "task": "qemu-alpine-ssh",
+     "tail0": 0.0288,
+     "tail40": 0.0796,
+     "no_proxy": 0.2192
+    },
+    {
+     "task": "path-tracing-reverse",
+     "tail0": 0.172,
+     "tail40": 0.465,
+     "no_proxy": 0.2872
+    }
+   ],
+   "top_share_of_gap": 1.176
+  }
+ ],
+ "per_task": [
+  {
+   "task": "adaptive-rejection-sampler",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.066735,
+    "tokens": {
+     "total_input": 263995,
+     "uncached_input": 161083,
+     "cache_read": 102912,
+     "output": 78970
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.096004,
+    "tokens": {
+     "total_input": 1536810,
+     "uncached_input": 124458,
+     "cache_read": 1412352,
+     "output": 69930
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.110043,
+    "tokens": {
+     "total_input": 1505833,
+     "uncached_input": 172073,
+     "cache_read": 1333760,
+     "output": 88438
+    }
+   }
+  },
+  {
+   "task": "bn-fit-modify",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.014308,
+    "tokens": {
+     "total_input": 220478,
+     "uncached_input": 39742,
+     "cache_read": 180736,
+     "output": 5850
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.016486,
+    "tokens": {
+     "total_input": 321921,
+     "uncached_input": 16513,
+     "cache_read": 305408,
+     "output": 9693
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.022423,
+    "tokens": {
+     "total_input": 293071,
+     "uncached_input": 88015,
+     "cache_read": 205056,
+     "output": 6138
+    }
+   }
+  },
+  {
+   "task": "break-filter-js-from-html",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.010283,
+    "tokens": {
+     "total_input": 103737,
+     "uncached_input": 16441,
+     "cache_read": 87296,
+     "output": 10396
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.010496,
+    "tokens": {
+     "total_input": 163107,
+     "uncached_input": 29731,
+     "cache_read": 133376,
+     "output": 4070
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.008351,
+    "tokens": {
+     "total_input": 123138,
+     "uncached_input": 24834,
+     "cache_read": 98304,
+     "output": 3354
+    }
+   }
+  },
+  {
+   "task": "build-cython-ext",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.071519,
+    "tokens": {
+     "total_input": 1724341,
+     "uncached_input": 117813,
+     "cache_read": 1606528,
+     "output": 11303
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.060607,
+    "tokens": {
+     "total_input": 1537261,
+     "uncached_input": 70381,
+     "cache_read": 1466880,
+     "output": 12086
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.053616,
+    "tokens": {
+     "total_input": 1073541,
+     "uncached_input": 128517,
+     "cache_read": 945024,
+     "output": 11975
+    }
+   }
+  },
+  {
+   "task": "build-pmars",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.024638,
+    "tokens": {
+     "total_input": 534692,
+     "uncached_input": 50852,
+     "cache_read": 483840,
+     "output": 4991
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.021261,
+    "tokens": {
+     "total_input": 415413,
+     "uncached_input": 55221,
+     "cache_read": 360192,
+     "output": 4344
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.031773,
+    "tokens": {
+     "total_input": 414448,
+     "uncached_input": 143600,
+     "cache_read": 270848,
+     "output": 4216
+    }
+   }
+  },
+  {
+   "task": "build-pov-ray",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.037375,
+    "tokens": {
+     "total_input": 871433,
+     "uncached_input": 62729,
+     "cache_read": 808704,
+     "output": 7409
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.06797,
+    "tokens": {
+     "total_input": 1541863,
+     "uncached_input": 138727,
+     "cache_read": 1403136,
+     "output": 10133
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.02963,
+    "tokens": {
+     "total_input": 679448,
+     "uncached_input": 55832,
+     "cache_read": 623616,
+     "output": 5093
+    }
+   }
+  },
+  {
+   "task": "caffe-cifar-10",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.06886,
+    "tokens": {
+     "total_input": 1567416,
+     "uncached_input": 101944,
+     "cache_read": 1465472,
+     "output": 19208
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.08004,
+    "tokens": {
+     "total_input": 1656908,
+     "uncached_input": 136524,
+     "cache_read": 1520384,
+     "output": 27900
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.064056,
+    "tokens": {
+     "total_input": 1503603,
+     "uncached_input": 90995,
+     "cache_read": 1412608,
+     "output": 16057
+    }
+   }
+  },
+  {
+   "task": "cancel-async-tasks",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.049571,
+    "tokens": {
+     "total_input": 695646,
+     "uncached_input": 117342,
+     "cache_read": 578304,
+     "output": 29241
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.025088,
+    "tokens": {
+     "total_input": 455062,
+     "uncached_input": 27798,
+     "cache_read": 427264,
+     "output": 16200
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.016811,
+    "tokens": {
+     "total_input": 214197,
+     "uncached_input": 48309,
+     "cache_read": 165888,
+     "output": 9176
+    }
+   }
+  },
+  {
+   "task": "chess-best-move",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.217427,
+    "tokens": {
+     "total_input": 1781139,
+     "uncached_input": 1120147,
+     "cache_read": 660992,
+     "output": 59150
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.144989,
+    "tokens": {
+     "total_input": 2742675,
+     "uncached_input": 220307,
+     "cache_read": 2522368,
+     "output": 72544
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.2482,
+    "tokens": {
+     "total_input": 3112661,
+     "uncached_input": 1115093,
+     "cache_read": 1997568,
+     "output": 42019
+    }
+   }
+  },
+  {
+   "task": "circuit-fibsqrt",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.067756,
+    "tokens": {
+     "total_input": 86723,
+     "uncached_input": 9411,
+     "cache_read": 77312,
+     "output": 128050
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.073276,
+    "tokens": {
+     "total_input": 86691,
+     "uncached_input": 55459,
+     "cache_read": 31232,
+     "output": 128041
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.071611,
+    "tokens": {
+     "total_input": 86667,
+     "uncached_input": 41611,
+     "cache_read": 45056,
+     "output": 128036
+    }
+   }
+  },
+  {
+   "task": "cobol-modernization",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.054034,
+    "tokens": {
+     "total_input": 877028,
+     "uncached_input": 59364,
+     "cache_read": 817664,
+     "output": 41199
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.101134,
+    "tokens": {
+     "total_input": 1260580,
+     "uncached_input": 223012,
+     "cache_read": 1037568,
+     "output": 73111
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.065963,
+    "tokens": {
+     "total_input": 1185441,
+     "uncached_input": 89505,
+     "cache_read": 1095936,
+     "output": 39319
+    }
+   }
+  },
+  {
+   "task": "code-from-image",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.100664,
+    "tokens": {
+     "total_input": 2200817,
+     "uncached_input": 202993,
+     "cache_read": 1997824,
+     "output": 20560
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.049672,
+    "tokens": {
+     "total_input": 867840,
+     "uncached_input": 185344,
+     "cache_read": 682496,
+     "output": 2791
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.081605,
+    "tokens": {
+     "total_input": 1299374,
+     "uncached_input": 337582,
+     "cache_read": 961792,
+     "output": 4227
+    }
+   }
+  },
+  {
+   "task": "compile-compcert",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.038244,
+    "tokens": {
+     "total_input": 575789,
+     "uncached_input": 146861,
+     "cache_read": 428928,
+     "output": 6694
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.047317,
+    "tokens": {
+     "total_input": 1018439,
+     "uncached_input": 100679,
+     "cache_read": 917760,
+     "output": 9364
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.09922,
+    "tokens": {
+     "total_input": 1837017,
+     "uncached_input": 299097,
+     "cache_read": 1537920,
+     "output": 16435
+    }
+   }
+  },
+  {
+   "task": "configure-git-webserver",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.018727,
+    "tokens": {
+     "total_input": 314175,
+     "uncached_input": 50367,
+     "cache_read": 263808,
+     "output": 6516
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.019106,
+    "tokens": {
+     "total_input": 373618,
+     "uncached_input": 41074,
+     "cache_read": 332544,
+     "output": 5938
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.011526,
+    "tokens": {
+     "total_input": 130543,
+     "uncached_input": 49903,
+     "cache_read": 80640,
+     "output": 3242
+    }
+   }
+  },
+  {
+   "task": "constraints-scheduling",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.00456,
+    "tokens": {
+     "total_input": 50487,
+     "uncached_input": 16439,
+     "cache_read": 34048,
+     "output": 2146
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.00574,
+    "tokens": {
+     "total_input": 50787,
+     "uncached_input": 25699,
+     "cache_read": 25088,
+     "output": 2266
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.006724,
+    "tokens": {
+     "total_input": 50835,
+     "uncached_input": 33939,
+     "cache_read": 16896,
+     "output": 2253
+    }
+   }
+  },
+  {
+   "task": "count-dataset-tokens",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.006233,
+    "tokens": {
+     "total_input": 95674,
+     "uncached_input": 21946,
+     "cache_read": 73728,
+     "output": 1459
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.009155,
+    "tokens": {
+     "total_input": 144028,
+     "uncached_input": 33436,
+     "cache_read": 110592,
+     "output": 1644
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.010869,
+    "tokens": {
+     "total_input": 163669,
+     "uncached_input": 40149,
+     "cache_read": 123520,
+     "output": 2282
+    }
+   }
+  },
+  {
+   "task": "crack-7z-hash",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.114038,
+    "tokens": {
+     "total_input": 2171116,
+     "uncached_input": 211692,
+     "cache_read": 1959424,
+     "output": 47003
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.02077,
+    "tokens": {
+     "total_input": 455671,
+     "uncached_input": 45047,
+     "cache_read": 410624,
+     "output": 3389
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.024137,
+    "tokens": {
+     "total_input": 378810,
+     "uncached_input": 96186,
+     "cache_read": 282624,
+     "output": 2460
+    }
+   }
+  },
+  {
+   "task": "custom-memory-heap-crash",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.075446,
+    "tokens": {
+     "total_input": 1472589,
+     "uncached_input": 148557,
+     "cache_read": 1324032,
+     "output": 26882
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.058655,
+    "tokens": {
+     "total_input": 1069111,
+     "uncached_input": 100919,
+     "cache_read": 968192,
+     "output": 28942
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.031686,
+    "tokens": {
+     "total_input": 589042,
+     "uncached_input": 86770,
+     "cache_read": 502272,
+     "output": 7204
+    }
+   }
+  },
+  {
+   "task": "db-wal-recovery",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.017461,
+    "tokens": {
+     "total_input": 187704,
+     "uncached_input": 54456,
+     "cache_read": 133248,
+     "output": 10590
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.010785,
+    "tokens": {
+     "total_input": 167286,
+     "uncached_input": 22646,
+     "cache_read": 144640,
+     "output": 6098
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.009503,
+    "tokens": {
+     "total_input": 190331,
+     "uncached_input": 14075,
+     "cache_read": 176256,
+     "output": 4209
+    }
+   }
+  },
+  {
+   "task": "distribution-search",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.028992,
+    "tokens": {
+     "total_input": 321853,
+     "uncached_input": 44861,
+     "cache_read": 276992,
+     "output": 27906
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.023892,
+    "tokens": {
+     "total_input": 206400,
+     "uncached_input": 3392,
+     "cache_read": 203008,
+     "output": 34586
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.010497,
+    "tokens": {
+     "total_input": 104276,
+     "uncached_input": 28500,
+     "cache_read": 75776,
+     "output": 7897
+    }
+   }
+  },
+  {
+   "task": "dna-assembly",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.083831,
+    "tokens": {
+     "total_input": 1089838,
+     "uncached_input": 192046,
+     "cache_read": 897792,
+     "output": 56181
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.132526,
+    "tokens": {
+     "total_input": 1650302,
+     "uncached_input": 196734,
+     "cache_read": 1453568,
+     "output": 118818
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.086801,
+    "tokens": {
+     "total_input": 1718544,
+     "uncached_input": 84496,
+     "cache_read": 1634048,
+     "output": 50210
+    }
+   }
+  },
+  {
+   "task": "dna-insert",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.02187,
+    "tokens": {
+     "total_input": 300098,
+     "uncached_input": 70210,
+     "cache_read": 229888,
+     "output": 8884
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.02411,
+    "tokens": {
+     "total_input": 402658,
+     "uncached_input": 57698,
+     "cache_read": 344960,
+     "output": 10213
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.02553,
+    "tokens": {
+     "total_input": 277485,
+     "uncached_input": 108781,
+     "cache_read": 168704,
+     "output": 8304
+    }
+   }
+  },
+  {
+   "task": "extract-elf",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.037845,
+    "tokens": {
+     "total_input": 474521,
+     "uncached_input": 124057,
+     "cache_read": 350464,
+     "output": 17446
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.034353,
+    "tokens": {
+     "total_input": 588117,
+     "uncached_input": 75093,
+     "cache_read": 513024,
+     "output": 15397
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.045276,
+    "tokens": {
+     "total_input": 421078,
+     "uncached_input": 76758,
+     "cache_read": 344320,
+     "output": 46865
+    }
+   }
+  },
+  {
+   "task": "extract-moves-from-video",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.100964,
+    "tokens": {
+     "total_input": 1261115,
+     "uncached_input": 473403,
+     "cache_read": 787712,
+     "output": 12644
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.079176,
+    "tokens": {
+     "total_input": 1526520,
+     "uncached_input": 190200,
+     "cache_read": 1336320,
+     "output": 21113
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.304441,
+    "tokens": {
+     "total_input": 2664887,
+     "uncached_input": 1802551,
+     "cache_read": 862336,
+     "output": 16376
+    }
+   }
+  },
+  {
+   "task": "feal-differential-cryptanalysis",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.093025,
+    "tokens": {
+     "total_input": 1505578,
+     "uncached_input": 177450,
+     "cache_read": 1328128,
+     "output": 53128
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.020998,
+    "tokens": {
+     "total_input": 200324,
+     "uncached_input": 38276,
+     "cache_read": 162048,
+     "output": 20790
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.039088,
+    "tokens": {
+     "total_input": 456871,
+     "uncached_input": 104103,
+     "cache_read": 352768,
+     "output": 25779
+    }
+   }
+  },
+  {
+   "task": "feal-linear-cryptanalysis",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.086956,
+    "tokens": {
+     "total_input": 1068304,
+     "uncached_input": 115472,
+     "cache_read": 952832,
+     "output": 82100
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.095427,
+    "tokens": {
+     "total_input": 1427546,
+     "uncached_input": 166618,
+     "cache_read": 1260928,
+     "output": 65212
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.042013,
+    "tokens": {
+     "total_input": 517929,
+     "uncached_input": 75561,
+     "cache_read": 442368,
+     "output": 34815
+    }
+   }
+  },
+  {
+   "task": "filter-js-from-html",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.103099,
+    "tokens": {
+     "total_input": 870269,
+     "uncached_input": 149885,
+     "cache_read": 720384,
+     "output": 118009
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.078064,
+    "tokens": {
+     "total_input": 610962,
+     "uncached_input": 178706,
+     "cache_read": 432256,
+     "output": 76581
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.09461,
+    "tokens": {
+     "total_input": 1054942,
+     "uncached_input": 156254,
+     "cache_read": 898688,
+     "output": 88422
+    }
+   }
+  },
+  {
+   "task": "financial-document-processor",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.120921,
+    "tokens": {
+     "total_input": 1226099,
+     "uncached_input": 665971,
+     "cache_read": 560128,
+     "output": 8443
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.149935,
+    "tokens": {
+     "total_input": 2366695,
+     "uncached_input": 607207,
+     "cache_read": 1759488,
+     "output": 12138
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.118835,
+    "tokens": {
+     "total_input": 1105433,
+     "uncached_input": 693785,
+     "cache_read": 411648,
+     "output": 4836
+    }
+   }
+  },
+  {
+   "task": "fix-code-vulnerability",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.01026,
+    "tokens": {
+     "total_input": 170733,
+     "uncached_input": 34285,
+     "cache_read": 136448,
+     "output": 2047
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.012418,
+    "tokens": {
+     "total_input": 201931,
+     "uncached_input": 42443,
+     "cache_read": 159488,
+     "output": 2533
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.020181,
+    "tokens": {
+     "total_input": 170854,
+     "uncached_input": 118118,
+     "cache_read": 52736,
+     "output": 1762
+    }
+   }
+  },
+  {
+   "task": "fix-git",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.010788,
+    "tokens": {
+     "total_input": 213261,
+     "uncached_input": 28941,
+     "cache_read": 184320,
+     "output": 1835
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.00778,
+    "tokens": {
+     "total_input": 109840,
+     "uncached_input": 30736,
+     "cache_read": 79104,
+     "output": 1592
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.017026,
+    "tokens": {
+     "total_input": 148840,
+     "uncached_input": 97384,
+     "cache_read": 51456,
+     "output": 1749
+    }
+   }
+  },
+  {
+   "task": "fix-ocaml-gc",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.073187,
+    "tokens": {
+     "total_input": 1621694,
+     "uncached_input": 138430,
+     "cache_read": 1483264,
+     "output": 15850
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.075725,
+    "tokens": {
+     "total_input": 1682423,
+     "uncached_input": 134903,
+     "cache_read": 1547520,
+     "output": 18128
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.092875,
+    "tokens": {
+     "total_input": 1767727,
+     "uncached_input": 266031,
+     "cache_read": 1501696,
+     "output": 15838
+    }
+   }
+  },
+  {
+   "task": "gcode-to-text",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.17427,
+    "tokens": {
+     "total_input": 1760821,
+     "uncached_input": 881717,
+     "cache_read": 879104,
+     "output": 31278
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.369979,
+    "tokens": {
+     "total_input": 7683096,
+     "uncached_input": 626968,
+     "cache_read": 7056128,
+     "output": 128500
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.133223,
+    "tokens": {
+     "total_input": 2366398,
+     "uncached_input": 381886,
+     "cache_read": 1984512,
+     "output": 32809
+    }
+   }
+  },
+  {
+   "task": "git-leak-recovery",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.016735,
+    "tokens": {
+     "total_input": 216283,
+     "uncached_input": 65755,
+     "cache_read": 150528,
+     "output": 4712
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.011233,
+    "tokens": {
+     "total_input": 237500,
+     "uncached_input": 17340,
+     "cache_read": 220160,
+     "output": 4055
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.007677,
+    "tokens": {
+     "total_input": 95952,
+     "uncached_input": 33744,
+     "cache_read": 62208,
+     "output": 1499
+    }
+   }
+  },
+  {
+   "task": "git-multibranch",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.030929,
+    "tokens": {
+     "total_input": 612508,
+     "uncached_input": 57244,
+     "cache_read": 555264,
+     "output": 11369
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.034228,
+    "tokens": {
+     "total_input": 728582,
+     "uncached_input": 58118,
+     "cache_read": 670464,
+     "output": 10793
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.022154,
+    "tokens": {
+     "total_input": 397323,
+     "uncached_input": 67979,
+     "cache_read": 329344,
+     "output": 4154
+    }
+   }
+  },
+  {
+   "task": "gpt2-codegolf",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.126179,
+    "tokens": {
+     "total_input": 1800588,
+     "uncached_input": 245004,
+     "cache_read": 1555584,
+     "output": 85522
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.067337,
+    "tokens": {
+     "total_input": 965897,
+     "uncached_input": 168969,
+     "cache_read": 796928,
+     "output": 36168
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.060077,
+    "tokens": {
+     "total_input": 824696,
+     "uncached_input": 89208,
+     "cache_read": 735488,
+     "output": 49262
+    }
+   }
+  },
+  {
+   "task": "headless-terminal",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.053172,
+    "tokens": {
+     "total_input": 938181,
+     "uncached_input": 95941,
+     "cache_read": 842240,
+     "output": 27027
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.175126,
+    "tokens": {
+     "total_input": 3518299,
+     "uncached_input": 198235,
+     "cache_read": 3320064,
+     "output": 91578
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.033146,
+    "tokens": {
+     "total_input": 428479,
+     "uncached_input": 95935,
+     "cache_read": 332544,
+     "output": 17558
+    }
+   }
+  },
+  {
+   "task": "hf-model-inference",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.011882,
+    "tokens": {
+     "total_input": 156330,
+     "uncached_input": 52650,
+     "cache_read": 103680,
+     "output": 1748
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.007947,
+    "tokens": {
+     "total_input": 141822,
+     "uncached_input": 23294,
+     "cache_read": 118528,
+     "output": 1794
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.01226,
+    "tokens": {
+     "total_input": 141560,
+     "uncached_input": 59768,
+     "cache_read": 81792,
+     "output": 1683
+    }
+   }
+  },
+  {
+   "task": "install-windows-3.11",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.46913,
+    "tokens": {
+     "total_input": 8824016,
+     "uncached_input": 1594832,
+     "cache_read": 7229184,
+     "output": 26060
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.302048,
+    "tokens": {
+     "total_input": 7329785,
+     "uncached_input": 444153,
+     "cache_read": 6885632,
+     "output": 57712
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.448295,
+    "tokens": {
+     "total_input": 12040199,
+     "uncached_input": 425095,
+     "cache_read": 11615104,
+     "output": 72156
+    }
+   }
+  },
+  {
+   "task": "kv-store-grpc",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.009659,
+    "tokens": {
+     "total_input": 108388,
+     "uncached_input": 48228,
+     "cache_read": 60160,
+     "output": 1241
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.018854,
+    "tokens": {
+     "total_input": 179452,
+     "uncached_input": 100604,
+     "cache_read": 78848,
+     "output": 2796
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.009042,
+    "tokens": {
+     "total_input": 93084,
+     "uncached_input": 45468,
+     "cache_read": 47616,
+     "output": 1587
+    }
+   }
+  },
+  {
+   "task": "large-scale-text-editing",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.020816,
+    "tokens": {
+     "total_input": 301222,
+     "uncached_input": 49318,
+     "cache_read": 251904,
+     "output": 11722
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.013079,
+    "tokens": {
+     "total_input": 134195,
+     "uncached_input": 45363,
+     "cache_read": 88832,
+     "output": 7220
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.029167,
+    "tokens": {
+     "total_input": 207625,
+     "uncached_input": 136969,
+     "cache_read": 70656,
+     "output": 13004
+    }
+   }
+  },
+  {
+   "task": "largest-eigenval",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.039158,
+    "tokens": {
+     "total_input": 485065,
+     "uncached_input": 81865,
+     "cache_read": 403200,
+     "output": 29564
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.103985,
+    "tokens": {
+     "total_input": 1698762,
+     "uncached_input": 83658,
+     "cache_read": 1615104,
+     "output": 85966
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.045113,
+    "tokens": {
+     "total_input": 650093,
+     "uncached_input": 96621,
+     "cache_read": 553472,
+     "output": 28031
+    }
+   }
+  },
+  {
+   "task": "llm-inference-batching-scheduler",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.173504,
+    "tokens": {
+     "total_input": 2491595,
+     "uncached_input": 313035,
+     "cache_read": 2178560,
+     "output": 122384
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.053915,
+    "tokens": {
+     "total_input": 682517,
+     "uncached_input": 119317,
+     "cache_read": 563200,
+     "output": 38243
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.065422,
+    "tokens": {
+     "total_input": 1190393,
+     "uncached_input": 36601,
+     "cache_read": 1153792,
+     "output": 50637
+    }
+   }
+  },
+  {
+   "task": "log-summary-date-ranges",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.002898,
+    "tokens": {
+     "total_input": 48524,
+     "uncached_input": 8204,
+     "cache_read": 40320,
+     "output": 916
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.005532,
+    "tokens": {
+     "total_input": 123699,
+     "uncached_input": 5171,
+     "cache_read": 118528,
+     "output": 2402
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.009329,
+    "tokens": {
+     "total_input": 82787,
+     "uncached_input": 50019,
+     "cache_read": 32768,
+     "output": 1687
+    }
+   }
+  },
+  {
+   "task": "mailman",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.057506,
+    "tokens": {
+     "total_input": 1338024,
+     "uncached_input": 59560,
+     "cache_read": 1278464,
+     "output": 20436
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.08849,
+    "tokens": {
+     "total_input": 1873936,
+     "uncached_input": 132880,
+     "cache_read": 1741056,
+     "output": 32653
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.084334,
+    "tokens": {
+     "total_input": 2088648,
+     "uncached_input": 118472,
+     "cache_read": 1970176,
+     "output": 14916
+    }
+   }
+  },
+  {
+   "task": "make-doom-for-mips",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.152457,
+    "tokens": {
+     "total_input": 2990886,
+     "uncached_input": 312230,
+     "cache_read": 2678656,
+     "output": 50525
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.212052,
+    "tokens": {
+     "total_input": 3713906,
+     "uncached_input": 360306,
+     "cache_read": 3353600,
+     "output": 114797
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.187255,
+    "tokens": {
+     "total_input": 3888739,
+     "uncached_input": 337379,
+     "cache_read": 3551360,
+     "output": 60214
+    }
+   }
+  },
+  {
+   "task": "make-mips-interpreter",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.244208,
+    "tokens": {
+     "total_input": 4867287,
+     "uncached_input": 419543,
+     "cache_read": 4447744,
+     "output": 95689
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.175377,
+    "tokens": {
+     "total_input": 3372390,
+     "uncached_input": 378982,
+     "cache_read": 2993408,
+     "output": 57455
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.596876,
+    "tokens": {
+     "total_input": 17461233,
+     "uncached_input": 383985,
+     "cache_read": 17077248,
+     "output": 53922
+    }
+   }
+  },
+  {
+   "task": "mcmc-sampling-stan",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.028499,
+    "tokens": {
+     "total_input": 555293,
+     "uncached_input": 68509,
+     "cache_read": 486784,
+     "output": 7239
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.017894,
+    "tokens": {
+     "total_input": 307378,
+     "uncached_input": 47282,
+     "cache_read": 260096,
+     "output": 5998
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.060794,
+    "tokens": {
+     "total_input": 1117691,
+     "uncached_input": 181499,
+     "cache_read": 936192,
+     "output": 10966
+    }
+   }
+  },
+  {
+   "task": "merge-diff-arc-agi-task",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.018852,
+    "tokens": {
+     "total_input": 341885,
+     "uncached_input": 54141,
+     "cache_read": 287744,
+     "output": 4198
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.02406,
+    "tokens": {
+     "total_input": 333078,
+     "uncached_input": 88086,
+     "cache_read": 244992,
+     "output": 6994
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.051594,
+    "tokens": {
+     "total_input": 864397,
+     "uncached_input": 133773,
+     "cache_read": 730624,
+     "output": 19219
+    }
+   }
+  },
+  {
+   "task": "model-extraction-relu-logits",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.054383,
+    "tokens": {
+     "total_input": 793081,
+     "uncached_input": 89849,
+     "cache_read": 703232,
+     "output": 39617
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.04005,
+    "tokens": {
+     "total_input": 279214,
+     "uncached_input": 29102,
+     "cache_read": 250112,
+     "output": 56362
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.068878,
+    "tokens": {
+     "total_input": 74743,
+     "uncached_input": 21751,
+     "cache_read": 52992,
+     "output": 128051
+    }
+   }
+  },
+  {
+   "task": "modernize-scientific-stack",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.006695,
+    "tokens": {
+     "total_input": 83386,
+     "uncached_input": 28602,
+     "cache_read": 54784,
+     "output": 1523
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.011725,
+    "tokens": {
+     "total_input": 119958,
+     "uncached_input": 59542,
+     "cache_read": 60416,
+     "output": 1963
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.009444,
+    "tokens": {
+     "total_input": 83637,
+     "uncached_input": 50869,
+     "cache_read": 32768,
+     "output": 1661
+    }
+   }
+  },
+  {
+   "task": "mteb-leaderboard",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.109767,
+    "tokens": {
+     "total_input": 2487624,
+     "uncached_input": 203208,
+     "cache_read": 2284416,
+     "output": 21506
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.09856,
+    "tokens": {
+     "total_input": 1829135,
+     "uncached_input": 254735,
+     "cache_read": 1574400,
+     "output": 26236
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.069804,
+    "tokens": {
+     "total_input": 1732721,
+     "uncached_input": 76657,
+     "cache_read": 1656064,
+     "output": 17247
+    }
+   }
+  },
+  {
+   "task": "mteb-retrieve",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.027453,
+    "tokens": {
+     "total_input": 254661,
+     "uncached_input": 155845,
+     "cache_read": 98816,
+     "output": 2224
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.019915,
+    "tokens": {
+     "total_input": 289152,
+     "uncached_input": 83072,
+     "cache_read": 206080,
+     "output": 2543
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.010375,
+    "tokens": {
+     "total_input": 184538,
+     "uncached_input": 29402,
+     "cache_read": 155136,
+     "output": 2621
+    }
+   }
+  },
+  {
+   "task": "multi-source-data-merger",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.008086,
+    "tokens": {
+     "total_input": 131984,
+     "uncached_input": 24208,
+     "cache_read": 107776,
+     "output": 2444
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.006575,
+    "tokens": {
+     "total_input": 95933,
+     "uncached_input": 23357,
+     "cache_read": 72576,
+     "output": 1788
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.007788,
+    "tokens": {
+     "total_input": 81265,
+     "uncached_input": 36209,
+     "cache_read": 45056,
+     "output": 2010
+    }
+   }
+  },
+  {
+   "task": "nginx-request-logging",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.015464,
+    "tokens": {
+     "total_input": 144141,
+     "uncached_input": 85773,
+     "cache_read": 58368,
+     "output": 1695
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.012633,
+    "tokens": {
+     "total_input": 191061,
+     "uncached_input": 42581,
+     "cache_read": 148480,
+     "output": 3583
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.009904,
+    "tokens": {
+     "total_input": 111426,
+     "uncached_input": 48450,
+     "cache_read": 62976,
+     "output": 1494
+    }
+   }
+  },
+  {
+   "task": "openssl-selfsigned-cert",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.010178,
+    "tokens": {
+     "total_input": 133704,
+     "uncached_input": 38728,
+     "cache_read": 94976,
+     "output": 3040
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.007496,
+    "tokens": {
+     "total_input": 96050,
+     "uncached_input": 32050,
+     "cache_read": 64000,
+     "output": 1537
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.009022,
+    "tokens": {
+     "total_input": 77809,
+     "uncached_input": 50161,
+     "cache_read": 27648,
+     "output": 1337
+    }
+   }
+  },
+  {
+   "task": "overfull-hbox",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.021441,
+    "tokens": {
+     "total_input": 361821,
+     "uncached_input": 44381,
+     "cache_read": 317440,
+     "output": 10522
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.031564,
+    "tokens": {
+     "total_input": 598246,
+     "uncached_input": 65510,
+     "cache_read": 532736,
+     "output": 11511
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.046241,
+    "tokens": {
+     "total_input": 793962,
+     "uncached_input": 142442,
+     "cache_read": 651520,
+     "output": 10659
+    }
+   }
+  },
+  {
+   "task": "password-recovery",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.070773,
+    "tokens": {
+     "total_input": 1465837,
+     "uncached_input": 145645,
+     "cache_read": 1320192,
+     "output": 18641
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.042005,
+    "tokens": {
+     "total_input": 546218,
+     "uncached_input": 104618,
+     "cache_read": 441600,
+     "output": 26128
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.087419,
+    "tokens": {
+     "total_input": 1824970,
+     "uncached_input": 145610,
+     "cache_read": 1679360,
+     "output": 30393
+    }
+   }
+  },
+  {
+   "task": "path-tracing",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.165124,
+    "tokens": {
+     "total_input": 2627346,
+     "uncached_input": 331922,
+     "cache_read": 2295424,
+     "output": 92946
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.456355,
+    "tokens": {
+     "total_input": 8125312,
+     "uncached_input": 843648,
+     "cache_read": 7281664,
+     "output": 222715
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.107589,
+    "tokens": {
+     "total_input": 1838653,
+     "uncached_input": 241981,
+     "cache_read": 1596672,
+     "output": 46783
+    }
+   }
+  },
+  {
+   "task": "path-tracing-reverse",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.171958,
+    "tokens": {
+     "total_input": 1810651,
+     "uncached_input": 485851,
+     "cache_read": 1324800,
+     "output": 118672
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.465027,
+    "tokens": {
+     "total_input": 4509115,
+     "uncached_input": 1159611,
+     "cache_read": 3349504,
+     "output": 381200
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.287213,
+    "tokens": {
+     "total_input": 4831248,
+     "uncached_input": 386832,
+     "cache_read": 4444416,
+     "output": 191711
+    }
+   }
+  },
+  {
+   "task": "polyglot-c-py",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.029893,
+    "tokens": {
+     "total_input": 448981,
+     "uncached_input": 36053,
+     "cache_read": 412928,
+     "output": 24195
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.018696,
+    "tokens": {
+     "total_input": 320460,
+     "uncached_input": 4300,
+     "cache_read": 316160,
+     "output": 17133
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.019152,
+    "tokens": {
+     "total_input": 264266,
+     "uncached_input": 45386,
+     "cache_read": 218880,
+     "output": 11556
+    }
+   }
+  },
+  {
+   "task": "polyglot-rust-c",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.035369,
+    "tokens": {
+     "total_input": 259674,
+     "uncached_input": 44634,
+     "cache_read": 215040,
+     "output": 44445
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.033533,
+    "tokens": {
+     "total_input": 93124,
+     "uncached_input": 48068,
+     "cache_read": 45056,
+     "output": 49942
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.033252,
+    "tokens": {
+     "total_input": 357561,
+     "uncached_input": 64697,
+     "cache_read": 292864,
+     "output": 29523
+    }
+   }
+  },
+  {
+   "task": "portfolio-optimization",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.022713,
+    "tokens": {
+     "total_input": 384592,
+     "uncached_input": 40784,
+     "cache_read": 343808,
+     "output": 12563
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.015198,
+    "tokens": {
+     "total_input": 275983,
+     "uncached_input": 9231,
+     "cache_read": 266752,
+     "output": 11621
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.009598,
+    "tokens": {
+     "total_input": 108416,
+     "uncached_input": 40576,
+     "cache_read": 67840,
+     "output": 2952
+    }
+   }
+  },
+  {
+   "task": "protein-assembly",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.062075,
+    "tokens": {
+     "total_input": 889059,
+     "uncached_input": 140771,
+     "cache_read": 748288,
+     "output": 37022
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.042228,
+    "tokens": {
+     "total_input": 669409,
+     "uncached_input": 70369,
+     "cache_read": 599040,
+     "output": 27402
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.063149,
+    "tokens": {
+     "total_input": 856739,
+     "uncached_input": 159395,
+     "cache_read": 697344,
+     "output": 36638
+    }
+   }
+  },
+  {
+   "task": "prove-plus-comm",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.010045,
+    "tokens": {
+     "total_input": 165503,
+     "uncached_input": 26239,
+     "cache_read": 139264,
+     "output": 3862
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.005781,
+    "tokens": {
+     "total_input": 80387,
+     "uncached_input": 17411,
+     "cache_read": 62976,
+     "output": 2560
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.004263,
+    "tokens": {
+     "total_input": 90576,
+     "uncached_input": 8784,
+     "cache_read": 81792,
+     "output": 983
+    }
+   }
+  },
+  {
+   "task": "pypi-server",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.014672,
+    "tokens": {
+     "total_input": 151733,
+     "uncached_input": 69045,
+     "cache_read": 82688,
+     "output": 3670
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.016713,
+    "tokens": {
+     "total_input": 211815,
+     "uncached_input": 74599,
+     "cache_read": 137216,
+     "output": 2814
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.01709,
+    "tokens": {
+     "total_input": 193558,
+     "uncached_input": 85014,
+     "cache_read": 108544,
+     "output": 2163
+    }
+   }
+  },
+  {
+   "task": "pytorch-model-cli",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.028178,
+    "tokens": {
+     "total_input": 526356,
+     "uncached_input": 55316,
+     "cache_read": 471040,
+     "output": 11498
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.062629,
+    "tokens": {
+     "total_input": 1207595,
+     "uncached_input": 82731,
+     "cache_read": 1124864,
+     "output": 32946
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.026161,
+    "tokens": {
+     "total_input": 612678,
+     "uncached_input": 28614,
+     "cache_read": 584064,
+     "output": 8693
+    }
+   }
+  },
+  {
+   "task": "pytorch-model-recovery",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.019595,
+    "tokens": {
+     "total_input": 194457,
+     "uncached_input": 88857,
+     "cache_read": 105600,
+     "output": 6196
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.011121,
+    "tokens": {
+     "total_input": 174111,
+     "uncached_input": 21279,
+     "cache_read": 152832,
+     "output": 6688
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.032846,
+    "tokens": {
+     "total_input": 547609,
+     "uncached_input": 61721,
+     "cache_read": 485888,
+     "output": 18022
+    }
+   }
+  },
+  {
+   "task": "qemu-alpine-ssh",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.028811,
+    "tokens": {
+     "total_input": 561047,
+     "uncached_input": 61335,
+     "cache_read": 499712,
+     "output": 9239
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.079563,
+    "tokens": {
+     "total_input": 1738714,
+     "uncached_input": 111578,
+     "cache_read": 1627136,
+     "output": 28025
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.219227,
+    "tokens": {
+     "total_input": 5496007,
+     "uncached_input": 186311,
+     "cache_read": 5309696,
+     "output": 63978
+    }
+   }
+  },
+  {
+   "task": "qemu-startup",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.107514,
+    "tokens": {
+     "total_input": 2033876,
+     "uncached_input": 178388,
+     "cache_read": 1855488,
+     "output": 50182
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.133611,
+    "tokens": {
+     "total_input": 2503035,
+     "uncached_input": 172155,
+     "cache_read": 2330880,
+     "output": 75723
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.036363,
+    "tokens": {
+     "total_input": 537584,
+     "uncached_input": 107632,
+     "cache_read": 429952,
+     "output": 14639
+    }
+   }
+  },
+  {
+   "task": "query-optimize",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.072021,
+    "tokens": {
+     "total_input": 1308952,
+     "uncached_input": 149272,
+     "cache_read": 1159680,
+     "output": 29679
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.037577,
+    "tokens": {
+     "total_input": 606698,
+     "uncached_input": 88042,
+     "cache_read": 518656,
+     "output": 17623
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.013105,
+    "tokens": {
+     "total_input": 224439,
+     "uncached_input": 31927,
+     "cache_read": 192512,
+     "output": 5082
+    }
+   }
+  },
+  {
+   "task": "raman-fitting",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.138907,
+    "tokens": {
+     "total_input": 1294350,
+     "uncached_input": 364814,
+     "cache_read": 929536,
+     "output": 112598
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.024392,
+    "tokens": {
+     "total_input": 306351,
+     "uncached_input": 65967,
+     "cache_read": 240384,
+     "output": 14570
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.128058,
+    "tokens": {
+     "total_input": 1343644,
+     "uncached_input": 510876,
+     "cache_read": 832768,
+     "output": 52888
+    }
+   }
+  },
+  {
+   "task": "regex-chess",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.091464,
+    "tokens": {
+     "total_input": 111807,
+     "uncached_input": 67007,
+     "cache_read": 44800,
+     "output": 160138
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.073065,
+    "tokens": {
+     "total_input": 80330,
+     "uncached_input": 55242,
+     "cache_read": 25088,
+     "output": 128052
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.101455,
+    "tokens": {
+     "total_input": 127221,
+     "uncached_input": 13045,
+     "cache_read": 114176,
+     "output": 192146
+    }
+   }
+  },
+  {
+   "task": "regex-log",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.031452,
+    "tokens": {
+     "total_input": 392822,
+     "uncached_input": 78966,
+     "cache_read": 313856,
+     "output": 20383
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.022472,
+    "tokens": {
+     "total_input": 360372,
+     "uncached_input": 19892,
+     "cache_read": 340480,
+     "output": 18547
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.036583,
+    "tokens": {
+     "total_input": 505763,
+     "uncached_input": 53411,
+     "cache_read": 452352,
+     "output": 30002
+    }
+   }
+  },
+  {
+   "task": "reshard-c4-data",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.062334,
+    "tokens": {
+     "total_input": 1210755,
+     "uncached_input": 92547,
+     "cache_read": 1118208,
+     "output": 29812
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.082643,
+    "tokens": {
+     "total_input": 1713358,
+     "uncached_input": 75982,
+     "cache_read": 1637376,
+     "output": 44248
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.054652,
+    "tokens": {
+     "total_input": 518725,
+     "uncached_input": 252229,
+     "cache_read": 266496,
+     "output": 17645
+    }
+   }
+  },
+  {
+   "task": "rstan-to-pystan",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.045814,
+    "tokens": {
+     "total_input": 959172,
+     "uncached_input": 102852,
+     "cache_read": 856320,
+     "output": 9393
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.095437,
+    "tokens": {
+     "total_input": 2283575,
+     "uncached_input": 106551,
+     "cache_read": 2177024,
+     "output": 28288
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.057297,
+    "tokens": {
+     "total_input": 974236,
+     "uncached_input": 185500,
+     "cache_read": 788736,
+     "output": 11619
+    }
+   }
+  },
+  {
+   "task": "sam-cell-seg",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.143104,
+    "tokens": {
+     "total_input": 1269041,
+     "uncached_input": 771889,
+     "cache_read": 497152,
+     "output": 24812
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.186263,
+    "tokens": {
+     "total_input": 3282133,
+     "uncached_input": 591317,
+     "cache_read": 2690816,
+     "output": 33681
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.123665,
+    "tokens": {
+     "total_input": 1106205,
+     "uncached_input": 693277,
+     "cache_read": 412928,
+     "output": 14572
+    }
+   }
+  },
+  {
+   "task": "sanitize-git-repo",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.013289,
+    "tokens": {
+     "total_input": 185976,
+     "uncached_input": 52856,
+     "cache_read": 133120,
+     "output": 2734
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.011347,
+    "tokens": {
+     "total_input": 204226,
+     "uncached_input": 28354,
+     "cache_read": 175872,
+     "output": 3635
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.012709,
+    "tokens": {
+     "total_input": 218714,
+     "uncached_input": 30938,
+     "cache_read": 187776,
+     "output": 4870
+    }
+   }
+  },
+  {
+   "task": "schemelike-metacircular-eval",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.116576,
+    "tokens": {
+     "total_input": 1878650,
+     "uncached_input": 254586,
+     "cache_read": 1624064,
+     "output": 59333
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.37086,
+    "tokens": {
+     "total_input": 5967545,
+     "uncached_input": 589497,
+     "cache_read": 5378048,
+     "output": 242189
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.220716,
+    "tokens": {
+     "total_input": 5481771,
+     "uncached_input": 66603,
+     "cache_read": 5415168,
+     "output": 96542
+    }
+   }
+  },
+  {
+   "task": "sparql-university",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.027683,
+    "tokens": {
+     "total_input": 482481,
+     "uncached_input": 70065,
+     "cache_read": 412416,
+     "output": 9601
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.008708,
+    "tokens": {
+     "total_input": 114939,
+     "uncached_input": 24571,
+     "cache_read": 90368,
+     "output": 4623
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.018521,
+    "tokens": {
+     "total_input": 130318,
+     "uncached_input": 93198,
+     "cache_read": 37120,
+     "output": 6855
+    }
+   }
+  },
+  {
+   "task": "sqlite-db-truncate",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.014366,
+    "tokens": {
+     "total_input": 94574,
+     "uncached_input": 78446,
+     "cache_read": 16128,
+     "output": 4230
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.00714,
+    "tokens": {
+     "total_input": 66585,
+     "uncached_input": 16153,
+     "cache_read": 50432,
+     "output": 6408
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.006553,
+    "tokens": {
+     "total_input": 81395,
+     "uncached_input": 21875,
+     "cache_read": 59520,
+     "output": 2973
+    }
+   }
+  },
+  {
+   "task": "sqlite-with-gcov",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.019051,
+    "tokens": {
+     "total_input": 289317,
+     "uncached_input": 72997,
+     "cache_read": 216320,
+     "output": 3223
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.013333,
+    "tokens": {
+     "total_input": 237718,
+     "uncached_input": 42134,
+     "cache_read": 195584,
+     "output": 2290
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.00965,
+    "tokens": {
+     "total_input": 234709,
+     "uncached_input": 14677,
+     "cache_read": 220032,
+     "output": 1695
+    }
+   }
+  },
+  {
+   "task": "torch-pipeline-parallelism",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.038541,
+    "tokens": {
+     "total_input": 363962,
+     "uncached_input": 124474,
+     "cache_read": 239488,
+     "output": 25370
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.047161,
+    "tokens": {
+     "total_input": 639615,
+     "uncached_input": 92031,
+     "cache_read": 547584,
+     "output": 33857
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.098846,
+    "tokens": {
+     "total_input": 1851012,
+     "uncached_input": 154116,
+     "cache_read": 1696896,
+     "output": 49643
+    }
+   }
+  },
+  {
+   "task": "torch-tensor-parallelism",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.024864,
+    "tokens": {
+     "total_input": 372031,
+     "uncached_input": 67775,
+     "cache_read": 304256,
+     "output": 11141
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.052179,
+    "tokens": {
+     "total_input": 921142,
+     "uncached_input": 84022,
+     "cache_read": 837120,
+     "output": 28924
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.040727,
+    "tokens": {
+     "total_input": 774979,
+     "uncached_input": 81731,
+     "cache_read": 693248,
+     "output": 15339
+    }
+   }
+  },
+  {
+   "task": "train-fasttext",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.023765,
+    "tokens": {
+     "total_input": 438360,
+     "uncached_input": 70360,
+     "cache_read": 368000,
+     "output": 4343
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.032818,
+    "tokens": {
+     "total_input": 554501,
+     "uncached_input": 108293,
+     "cache_read": 446208,
+     "output": 6376
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.096468,
+    "tokens": {
+     "total_input": 1316267,
+     "uncached_input": 395435,
+     "cache_read": 920832,
+     "output": 19055
+    }
+   }
+  },
+  {
+   "task": "tune-mjcf",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.033043,
+    "tokens": {
+     "total_input": 491281,
+     "uncached_input": 64017,
+     "cache_read": 427264,
+     "output": 21246
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.048864,
+    "tokens": {
+     "total_input": 776072,
+     "uncached_input": 97672,
+     "cache_read": 678400,
+     "output": 27723
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.047254,
+    "tokens": {
+     "total_input": 871118,
+     "uncached_input": 84686,
+     "cache_read": 786432,
+     "output": 21917
+    }
+   }
+  },
+  {
+   "task": "video-processing",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.235877,
+    "tokens": {
+     "total_input": 2325529,
+     "uncached_input": 1186585,
+     "cache_read": 1138944,
+     "output": 47441
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 1.254766,
+    "tokens": {
+     "total_input": 9238052,
+     "uncached_input": 7495204,
+     "cache_read": 1742848,
+     "output": 156400
+    }
+   },
+   "no_proxy": {
+    "resolved": false,
+    "cost_usd": 0.22991,
+    "tokens": {
+     "total_input": 2497949,
+     "uncached_input": 1164317,
+     "cache_read": 1333632,
+     "output": 30507
+    }
+   }
+  },
+  {
+   "task": "vulnerable-secret",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.022421,
+    "tokens": {
+     "total_input": 201797,
+     "uncached_input": 130117,
+     "cache_read": 71680,
+     "output": 1506
+    }
+   },
+   "tail40": {
+    "resolved": true,
+    "cost_usd": 0.009509,
+    "tokens": {
+     "total_input": 146042,
+     "uncached_input": 38010,
+     "cache_read": 108032,
+     "output": 1133
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.017262,
+    "tokens": {
+     "total_input": 276158,
+     "uncached_input": 63166,
+     "cache_read": 212992,
+     "output": 2795
+    }
+   }
+  },
+  {
+   "task": "winning-avg-corewars",
+   "tail0": {
+    "resolved": false,
+    "cost_usd": 0.006584,
+    "tokens": {
+     "total_input": 31639,
+     "uncached_input": 4503,
+     "cache_read": 27136,
+     "output": 10188
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.521712,
+    "tokens": {
+     "total_input": 6438603,
+     "uncached_input": 745419,
+     "cache_read": 5693184,
+     "output": 478208
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.437673,
+    "tokens": {
+     "total_input": 6863610,
+     "uncached_input": 663290,
+     "cache_read": 6200320,
+     "output": 304339
+    }
+   }
+  },
+  {
+   "task": "write-compressor",
+   "tail0": {
+    "resolved": true,
+    "cost_usd": 0.079556,
+    "tokens": {
+     "total_input": 938172,
+     "uncached_input": 100668,
+     "cache_read": 837504,
+     "output": 78661
+    }
+   },
+   "tail40": {
+    "resolved": false,
+    "cost_usd": 0.124167,
+    "tokens": {
+     "total_input": 726934,
+     "uncached_input": 305046,
+     "cache_read": 421888,
+     "output": 131506
+    }
+   },
+   "no_proxy": {
+    "resolved": true,
+    "cost_usd": 0.142859,
+    "tokens": {
+     "total_input": 3272932,
+     "uncached_input": 77028,
+     "cache_read": 3195904,
+     "output": 70856
+    }
+   }
+  }
+ ],
+ "proxy_activity": {
+  "note": "Aggregate counts from the two proxy logs. The tail 0 log is PARTIAL: it covers about 68 of 89 trials (a host reboot removed the earlier part). Sizes are the proxy's own estimates in thousands of tokens. Stray lines outside each arm's trial window are excluded from reliability counts.",
+  "arms": [
+   {
+    "arm": "tail0",
+    "window_utc": [
+     "2026-09-27T20:20Z",
+     "2026-09-28T01:11Z"
+    ],
+    "fresh_compactions": 64,
+    "reused_compacted_prefix": 524,
+    "median_request_k_est_before_after": {
+     "compactions": [
+      55.0,
+      31.5
+     ],
+     "reuses": [
+      62.0,
+      36.0
+     ]
+    },
+    "largest_request_k_est": 157,
+    "still_over_threshold_after_compaction": 0
+   },
+   {
+    "arm": "tail40",
+    "window_utc": [
+     "2026-09-28T01:35Z",
+     "2026-09-28T09:29Z"
+    ],
+    "fresh_compactions": 178,
+    "reused_compacted_prefix": 1363,
+    "median_request_k_est_before_after": {
+     "compactions": [
+      88.0,
+      31.0
+     ],
+     "reuses": [
+      88,
+      36
+     ]
+    },
+    "largest_request_k_est": 375,
+    "still_over_threshold_after_compaction": 3
+   }
+  ],
+  "upstream_faults": {
+   "tail0": 2,
+   "tail40": 1
+  },
+  "fail_open_events": 0
+ },
+ "paper_reference": {
+  "attribution": "Authors' reported numbers, CliffCompaction, arXiv:2609.26779. Not run by us. Different model, host and prices: directional comparison only.",
+  "reported": [
+   {
+    "arm": "45K CliffCompaction (authors)",
+    "resolved_pct": 76.69,
+    "pm": 1.41
+   },
+   {
+    "arm": "200K native summarization (authors)",
+    "resolved_pct": 73.03,
+    "pm": 3.04
+   },
+   {
+    "arm": "45K native autocompact (authors)",
+    "resolved_pct": 70.97,
+    "pm": 3.72
+   }
+  ],
+  "not_run_by_us": [
+   "45K native autocompact",
+   "the authors' CliffCompaction code"
+  ],
+  "our_absolute_rates_note": "Our absolute rates are about 8pp lower; inferred (not measured) to come from Rosetta emulation timeouts (18-19 per arm) and host load."
+ }
+}

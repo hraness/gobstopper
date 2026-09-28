@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { readFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
+import { gobFilm } from "../app/_data/gob-film";
 import { parsePublishedRelease } from "../app/publication";
 import { BENCHMARK_STUDIES, benchmarkDatasetsJsonLd } from "../app/benchmarks/datasets";
 
@@ -506,6 +508,30 @@ test("the site serves a favicon.ico", async () => {
   // ICO header: reserved 0, type 1 (icon), then the image count.
   expect([...bytes.subarray(0, 4)]).toEqual([0, 0, 1, 0]);
   expect(bytes.readUInt16LE(4)).toBeGreaterThanOrEqual(2);
+});
+
+describe("launch film files", () => {
+  const media = join(site, "public", "media");
+  const listed = async (): Promise<readonly string[]> =>
+    await readdir(media).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+
+  test("ships the film files exactly when the manifest names them", async () => {
+    const films = (await listed()).filter((name) => name.startsWith("gobstopper-film"));
+    if (gobFilm === null) {
+      expect(films).toEqual([]);
+      return;
+    }
+    const paths = [gobFilm.src, gobFilm.poster, gobFilm.captions];
+    expect([...films].sort()).toEqual(paths.map((path) => path.replace("/media/", "")).sort());
+    const video = await readFile(join(site, "public", gobFilm.src));
+    expect((await stat(join(site, "public", gobFilm.src))).size).toBe(gobFilm.bytes);
+    expect(video.byteLength).toBeLessThanOrEqual(10_000_000);
+    expect(createHash("sha256").update(video).digest("hex")).toBe(gobFilm.sha256);
+    expect(await read(`public${gobFilm.captions}`)).toStartWith("WEBVTT");
+  });
 });
 
 describe("share card declaration", () => {

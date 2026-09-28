@@ -16,7 +16,13 @@ import {
 } from "@hraness/design-kit/react/server";
 import { relatedFor } from "@hraness/design-kit/portfolio";
 
+import { GobFilm } from "./_components/gob-film";
+import { GobFuse } from "./_components/gob-fuse";
+import { GobSawtooth } from "./_components/gob-sawtooth";
+import { GobTokens } from "./_components/gob-tokens";
 import { SiteHeader, SiteFooter } from "./_components/site-chrome";
+import { gobFilm } from "./_data/gob-film";
+import { F } from "./_lib/gobbench-format";
 import { plainInline, renderInline } from "./_lib/inline";
 import { publishedRelease } from "./publication";
 
@@ -135,7 +141,7 @@ const trust = [
 const questions = [
   {
     question: "How much does it actually save?",
-    answer: "The proxy's summary rule comes from CliffCompaction, whose authors report up to 50% lower cost at a bounded context with Terminal-Bench scores held or improved on the models they tested, and a higher Terminal-Bench 2.1 score through Claude Code than Claude Code's own auto-compaction. Those are their measurements of their proxy, with costs modeled on perfect prompt caching. Gobstopper has not rerun them. On September 26, 2026, on one Mac running v0.4.1 at its defaults for about 77 minutes of Claude Code, requests the proxy compacted went out 38% smaller in estimated tokens; most requests were under the threshold and went out unchanged. That is an estimate, not a bill: real cost depends on cache hits, details the agent reads again, and how long the session runs. The benchmarks page lists every dated measurement.",
+    answer: `On Terminal-Bench 2.1 (September 27 and 28, 2026; 89 tasks, one trial per arm; Claude Code with GLM 5.3 Flash; 45,000-token threshold), Gobstopper at tail 0 resolved ${F.solved.tail0} tasks and Claude Code with no proxy ${F.solved.no_proxy}, within single-trial noise, while Gobstopper sent ${F.inputFewer} fewer input tokens. Provider-reported cost for that model was about ${F.costLower} lower, which one trial cannot separate from noise. Dollars depend on your provider's cache pricing, and subscriptions are not billed per token. Most short sessions never reach the default 128,000-token threshold and pass through unchanged. CliffCompaction's authors report their own results for the rule on the comparison page. The benchmarks page lists every dated measurement.`,
   },
   {
     question: "Does it edit my live session?",
@@ -143,7 +149,7 @@ const questions = [
   },
   {
     question: "What if a compaction loses something important?",
-    answer: "Snapshot search can locate an archived record, and snapshot reads retrieve its verified bytes. For Claude Code and Codex, `gobstopper undo` prepares a separate fork with a new session identity. `gobstopper eval` measures literal probe retention and structural findings on copies. Those checks cannot guarantee that every task fact survives or that an agent will retrieve a missing fact.",
+    answer: "A compacted request keeps the system prompt, your first task and the newest turns word for word, and replaces the older turns with a summary. That summary keeps what you and the agent wrote, reduces each tool call to its name, and leaves out older tool results over 500 characters; the files and commands behind them are still there, and the agent's transcript keeps the full history. Snapshot search can locate an archived record, and snapshot reads retrieve its verified bytes. For Claude Code and Codex, `gobstopper undo` prepares a separate fork with a new session identity. `gobstopper eval` measures literal probe retention and structural findings on copies. Those checks cannot guarantee that every task fact survives or that an agent will retrieve a missing fact.",
   },
   {
     question: "Which agents does it support?",
@@ -151,7 +157,7 @@ const questions = [
   },
   {
     question: "How is this different from CliffCompaction?",
-    answer: "CliffCompaction is the Python research proxy that introduced the summary rule. `gobstopper proxy` is a Rust port for the same three API dialects, and by default both keep the last three turns word for word. Gobstopper's summaries also carry your words and the assistant's visible replies across compactions, where CliffCompaction discards the previous summary. Its file commands write copies of saved sessions and keep the originals in a vault. [Gobstopper vs CliffCompaction](/compare/cliffcompaction) has the full table and the authors' benchmark figures.",
+    answer: "CliffCompaction is the Python research proxy that introduced the summary rule. `gobstopper proxy` is a Rust port for the same three API dialects, and by default both keep the last three turns word for word. Gobstopper's summaries also carry your words and the assistant's visible replies across compactions, where CliffCompaction discards the previous summary. Its file commands write copies of saved sessions and keep the originals in a vault. [Gobstopper vs CliffCompaction](/compare/cliffcompaction) has the full table and the authors' benchmark figures. In all, Gobstopper makes seven departures, listed on the comparison page.",
   },
   {
     question: "Can I run my own compaction logic?",
@@ -174,7 +180,7 @@ const alternatives = [
   },
   {
     label: "CliffCompaction",
-    summary: "The Python research proxy that Gobstopper's summary rule comes from. Its authors publish task-success benchmarks that Gobstopper has not rerun.",
+    summary: "The Python research proxy that Gobstopper's summary rule comes from. Its authors publish task-success benchmarks that Gobstopper has not rerun; Gobstopper's own Terminal-Bench 2.1 run is on the benchmarks page.",
     link: { href: "/compare/cliffcompaction", label: "Gobstopper vs CliffCompaction" },
   },
   {
@@ -251,12 +257,38 @@ export default function Home() {
           />
 
           <MarketingSection
+            heading={`About as many tasks solved, ${F.inputFewer} fewer tokens sent.`}
+            headingId="terminal-bench-title"
+            id="terminal-bench"
+            label="Terminal-Bench 2.1"
+            summary={`On Terminal-Bench 2.1, Claude Code behind Gobstopper at tail 0 resolved ${F.solved.tail0} of 89 tasks, against ${F.solved.no_proxy} with no proxy, a difference within single-trial noise, and sent ${F.input.tail0} input tokens against ${F.input.no_proxy}. The old default, tail 40, sent about as many tokens as no proxy and cost more in total than tail 0, the one cost gap whose interval excludes zero, so v0.7.3 made tail 0 the default. One trial per arm, GLM 5.3 Flash, 45,000-token threshold, September 27 and 28, 2026.`}
+          >
+            <GobTokens variant="home" />
+            <p className="gob-section-link">
+              <a href="/benchmarks#terminal-bench-2026-09-28">Setup, statistics and downloads</a>
+            </p>
+          </MarketingSection>
+
+          {gobFilm === null ? null : (
+            <MarketingSection
+              heading="Watch it in 75 seconds."
+              headingId="film-title"
+              id="film"
+              label="Film"
+              summary="No narration. Captions carry every line. The film never plays until you press play."
+            >
+              <GobFilm film={gobFilm} />
+            </MarketingSection>
+          )}
+
+          <MarketingSection
             heading="It keeps each request under a threshold you choose."
             headingId="how-title"
             id="how"
             label="How the proxy works"
             summary="No model call writes the summary, and each compaction starts again from the full history your agent resends, so a summary is never summarized."
           >
+            <GobFuse />
             <MarketingFlow
               ariaLabel="How the proxy works"
               steps={steps.map(({ detail, label, ...rest }) => ({
@@ -265,6 +297,7 @@ export default function Home() {
                 ...("code" in rest ? { code: rest.code } : {}),
               }))}
             />
+            <GobSawtooth variant="home" />
           </MarketingSection>
 
           <MarketingSection
