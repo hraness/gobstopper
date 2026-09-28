@@ -6,6 +6,8 @@ import Docs from "../app/docs/page";
 import BlogIndex from "../app/blog/page";
 import { publishedRelease } from "../app/publication";
 import RootLayout from "../app/layout";
+import Benchmarks from "../app/benchmarks/page";
+import { BENCHMARK_STUDIES } from "../app/benchmarks/datasets";
 import { plainInline, renderInline } from "../app/_lib/inline";
 
 const SUPPORT_URL = "https://account.hraness.com/support?product=gobstopper&amp;source=web#support";
@@ -201,4 +203,12 @@ test("the application node names Hraness as publisher and a free offer", () => {
     url: "https://hraness.com",
   });
   expect(app.offers).toEqual({ "@type": "Offer", price: "0", priceCurrency: "USD" });
+});
+
+test("each benchmark Dataset points at a section the benchmarks page renders", () => {
+  const html = renderToStaticMarkup(<Benchmarks />);
+  for (const study of BENCHMARK_STUDIES) {
+    expect(html).toContain(`id="${study.anchor.slice(1)}"`);
+  }
+  expect(html).toContain('"@type":"Dataset"');
 });

@@ -77,11 +77,12 @@ export default function CompareCliffCompaction() {
           ]}
         >
           <p>
-            Pick CliffCompaction for the proxy the paper measured, in Python.
+            Pick CliffCompaction for the Python proxy the paper measured.
             Pick <code>gobstopper proxy</code> for a single Rust binary that
             carries your own words across compactions and can replay a recorded
-            session without calling a provider. Only CliffCompaction has
-            published task-success benchmarks.
+            session without calling a provider. CliffCompaction&apos;s authors
+            report task results on Terminal-Bench, SWE-bench Verified, and
+            KernelBench; Gobstopper has one Terminal-Bench 2.1 trial.
           </p>
           <p>
             CliffCompaction is the research proxy that introduced the rule.{" "}

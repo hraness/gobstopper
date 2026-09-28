@@ -22,7 +22,7 @@ export const BENCHMARK_STUDIES: readonly BenchmarkStudy[] = [
     date: "2026-09-19",
     name: "Gobstopper 729-session compaction retrospective, September 19, 2026",
     description:
-      "Aggregate results and protocols from an offline replay of 729 archived Codex and Claude Code sessions from one Mac. Across 73 high-context archived Codex root tasks, the portable compacted strategy projected a 36.4% median context reduction with 76.9% sampled-string retention; across all 729 sessions the median reduction was 0%. Also includes a keep-score cutoff comparison on the same 114 roots and a three-input on-device Apple scorer pilot. The replay did not measure billing savings, successful continuation, or model quality.",
+      "Aggregate results and protocols from an offline replay of 729 archived Codex and Claude Code sessions from one Mac. Across 73 high-context archived Codex root tasks, the portable compacted strategy projected a 36.4% median context reduction with 76.9% sampled-string retention; across all 729 sessions the median reduction was 0%. Also includes a keep-score cutoff comparison on 114 archived roots (those 73 tasks and 41 controls) and a three-input on-device Apple scorer pilot. The replay did not measure billing savings, successful continuation, or model quality.",
     anchor: "#retrospective-2026-09-19",
     files: [
       "aggregates.json",

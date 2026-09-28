@@ -100,8 +100,8 @@ test("the README /compact comparison table carries the same cells as the page", 
 test("the CliffCompaction page opens with a verdict and dates its source check", () => {
   const html = renderToStaticMarkup(<CompareCliffCompaction />);
   const text = html.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ");
-  expect(text).toContain("Pick CliffCompaction for the proxy the paper measured, in Python.");
-  expect(text).toContain("Only CliffCompaction has published task-success benchmarks.");
+  expect(text).toContain("Pick CliffCompaction for the Python proxy the paper measured.");
+  expect(text).toMatch(/report task results on Terminal-Bench, SWE-bench Verified, and KernelBench; Gobstopper has one Terminal-Bench 2.1 trial\./u);
   expect(text).toMatch(/Checked against the CliffCompaction paper and repository and Gobstopper(?:'|&#x27;)s source on [A-Z][a-z]+ \d{1,2}, \d{4}/u);
   expect(text).not.toContain("Proxy since v0.3.1 ·");
   // Since v0.7.3 the proxy keeps exactly the newest three turns by default.
