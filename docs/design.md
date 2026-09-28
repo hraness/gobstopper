@@ -86,7 +86,7 @@ size and the client's auto-compaction does not reach its trigger.
 - Six behaviors differ from the reference. The kept tail grows past the
   newest `keep_recent` turns, one older whole turn at a time, while the
   summary and the tail fit a share of the room between the verbatim floor
-  and the applied threshold (`--keep-tail-percent`, 40 by default; 0 keeps
+  and the applied threshold (`--keep-tail-percent`, 0 by default since v0.7.3 and 40 before; 0 keeps
   the reference tail, except for the grouping rule that follows). The rest
   of that room is the margin before the next compaction, and the length
   retry and the harsher steps use no extension. A run of consecutive model
@@ -174,9 +174,21 @@ over the four sessions at 256,000, 40% covers the most repeated reads per
 cost unit: 210 for 35.80, against 176 for 32.23 at 25% and 214 for 38.57 at
 50%. At 128,000, 25% covers at least as many as 40% for less cost on every
 session (65 against 50 pooled), but coverage there does not rise steadily
-with the share, so the default stays 40%. No session compacted on two
+with the share, so the default stayed 40%. No session compacted on two
 consecutive requests at any share, and every replayed request kept each tool
 call with its result.
+
+v0.7.3 changed the default to 0. One Terminal-Bench 2.1 trial (89 tasks,
+Claude Code 2.1.283 on GLM-5.3-flash through Vercel AI Gateway, a
+45,000-token threshold, v0.7.2 for all but 21 early tail-0 tasks, whose
+build was not recorded) resolved 61 of 89 tasks at tail 0, 59 at
+tail 40, and 60 with no proxy; those differences are within noise. Tail 0
+cost $5.72 in total, tail 40 $7.97, and no proxy $6.82, at the gateway's
+prices for that model. Tail 0 against tail 40 is the only cost difference
+whose 95% interval excludes zero (−28%, interval −47% to −2%), and five
+heavy tasks carry most of it. The replay table above measured re-read
+coverage, which a larger tail buys; the trial measured task cost, which it
+raised.
 
 A fifth main session shows a limit the tail share cannot reach. Its system
 prompt and tools took 92,615 tokens, and its three newest turns alone held

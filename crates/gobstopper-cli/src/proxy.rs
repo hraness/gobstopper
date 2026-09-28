@@ -2238,7 +2238,7 @@ mod tests {
         assert_eq!(
             test_proxy(128_000, 128_000).settings(),
             format!(
-                "threshold 128000 tokens, threshold_1m 128000 tokens, keep_recent 3, keep_tail_percent 40, carry_max_chars {}, calibrate on",
+                "threshold 128000 tokens, threshold_1m 128000 tokens, keep_recent 3, keep_tail_percent 0, carry_max_chars {}, calibrate on",
                 CliffConfig::default().carry_max_chars
             )
         );
