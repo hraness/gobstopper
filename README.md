@@ -35,6 +35,18 @@ and providers when you explicitly trust them.
 
 <!-- hraness:gobstopper-landing:end -->
 
+Website: [gobstopper.sh](https://gobstopper.sh) · Compared with [Claude Code /compact](https://gobstopper.sh/compare/claude-code-compact) and [CliffCompaction](https://gobstopper.sh/compare/cliffcompaction)
+
+## Quick start
+
+```sh
+cargo install --git https://github.com/hraness/gobstopper gobstopper --locked
+gobstopper proxy run -- claude   # one Claude Code session through the proxy
+gobstopper proxy status          # requests compacted, estimated tokens saved
+```
+
+On macOS arm64, you can download the prebuilt binary from the [latest release](https://github.com/hraness/gobstopper/releases/latest) instead. For Codex, see [Set up Gobstopper for Claude Code and Codex](#set-up-gobstopper-for-claude-code-and-codex).
+
 ## Why
 
 A coding agent resends its whole history with every request. In a long
@@ -341,8 +353,8 @@ cover edit structure and size, not semantic preservation or provider acceptance.
 
 This builds the current `main` branch, which the commands below describe.
 The proxy is in every release since v0.3.1; the tail budget and the 1M-window
-threshold shipped in v0.5.0, and estimate calibration is on `main` only until
-the next release. Check the [release
+threshold shipped in v0.5.0, and estimate calibration shipped in v0.7.0.
+Check the [release
 notes](https://github.com/hraness/gobstopper/releases) for what a tagged
 release includes.
 
