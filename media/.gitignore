@@ -1,0 +1,4 @@
+artifacts/
+out/*
+!out/receipts/
+*.wav

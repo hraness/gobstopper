@@ -1,0 +1,10 @@
+Fonts copied from hraness/design-kit at commit a4e30f15dd6d50b3d78cdffadffd026c0b65f072 (src/fonts/).
+Both families are under the SIL Open Font License 1.1: NebulaSans-LICENSE.txt and GeistMono-OFL.txt.
+
+file                        source path                                   sha256
+NebulaSans-Book.woff2       src/fonts/nebula-sans/NebulaSans-Book.woff2   4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df
+NebulaSans-Medium.woff2     src/fonts/nebula-sans/NebulaSans-Medium.woff2 5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb
+NebulaSans-Semibold.woff2   src/fonts/nebula-sans/NebulaSans-Semibold.woff2 0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64
+GeistMono-wght.woff2        src/fonts/geist-mono/GeistMono[wght].woff2    afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101
+NebulaSans-LICENSE.txt      src/fonts/nebula-sans/LICENSE.txt             ceab45a6fcb5cce75ffb7e2a4f49b59dd2daa6ede14fe4b07b9f8e58675f33b8
+GeistMono-OFL.txt           src/fonts/geist-mono/OFL.txt                  942560b236adfa83745b2c64e5fc09ebaf91cb331751b1157eb92187e5d6e930
