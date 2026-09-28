@@ -117,12 +117,13 @@ describe("Gobstopper site source contract", () => {
   });
 
   test("keeps social previews and the agent map on the canonical origin", async () => {
-    const [layout, docs, llms, homeCard, docsCard] = await Promise.all([
+    const [layout, docs, llms, homeCard, docsCard, postCard] = await Promise.all([
       read("app/layout.tsx"),
       read("app/docs/page.tsx"),
       read("public/llms.txt"),
       read("app/opengraph-image/route.ts"),
       read("app/docs/opengraph-image/route.ts"),
+      read("app/blog/[slug]/opengraph-image/route.ts"),
     ]);
     for (const page of [layout, docs]) {
       expect(page).toContain('card: "summary_large_image"');
@@ -130,8 +131,11 @@ describe("Gobstopper site source contract", () => {
     }
     expect(layout).toContain('url: "/opengraph-image"');
     expect(docs).toContain('url: "/docs/opengraph-image"');
-    for (const card of [homeCard, docsCard]) {
-      expect(card).toContain("createSocialImage");
+    // Every card renders the shared template from the one site declaration.
+    for (const card of [homeCard, docsCard, postCard]) {
+      expect(card).toContain('from "@hraness/web-discovery/social-image"');
+      expect(card).toContain("createSiteSocialImageResponse(socialSite");
+      expect(card).not.toContain("new ImageResponse");
       expect(card).toContain('"force-static"');
     }
     expect(llms).toContain("https://gobstopper.sh/");
@@ -502,4 +506,30 @@ test("the site serves a favicon.ico", async () => {
   // ICO header: reserved 0, type 1 (icon), then the image count.
   expect([...bytes.subarray(0, 4)]).toEqual([0, 0, 1, 0]);
   expect(bytes.readUInt16LE(4)).toBeGreaterThanOrEqual(2);
+});
+
+describe("share card declaration", () => {
+  test("declares the real app icon, brand name, domain, and light theme once", async () => {
+    const { socialSite } = await import("../app/social");
+    const { socialImageSiteDetails } = await import("@hraness/web-discovery/social-image");
+    expect(socialSite.name).toBe("Gobstopper");
+    expect(socialSite.domain).toBe("gobstopper.sh");
+    expect(socialSite.icon).toMatchObject({ kind: "app" });
+    const icon = socialSite.icon as { src: string };
+    expect(icon.src.startsWith("data:image/png;base64,")).toBe(true);
+    for (const value of Object.values(socialSite.theme ?? {})) expect(value).toMatch(/^#[0-9A-F]{6}$/u);
+    const details = socialImageSiteDetails(socialSite);
+    expect(details.domain).toBe("gobstopper.sh");
+  });
+
+  test("post and docs cards pass page copy only", async () => {
+    const { blogPosts } = await import("../app/blog/articles");
+    const { postSocialPage } = await import("../app/blog/discovery");
+    const { docsSocialPage } = await import("../app/docs/social-page");
+    for (const page of [docsSocialPage, ...blogPosts.map(postSocialPage)]) {
+      expect(Object.keys(page).sort()).toEqual(["description", "eyebrow", "headline"]);
+      // Two card lines at the smallest body size hold about 100 characters.
+      expect(page.description?.length ?? 0).toBeLessThanOrEqual(100);
+    }
+  });
 });

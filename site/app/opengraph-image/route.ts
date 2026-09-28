@@ -1,13 +1,9 @@
-import { createSocialImage } from "../social-image";
-import { siteDescription, siteDomain, siteName, siteTitle } from "../site";
+import { createSiteSocialImageResponse } from "@hraness/web-discovery/social-image";
+
+import { socialSite } from "../social";
 
 export const dynamic = "force-static";
 
 export function GET() {
-  return createSocialImage({
-    description: siteDescription,
-    domain: siteDomain,
-    eyebrow: siteName,
-    title: siteTitle,
-  });
+  return createSiteSocialImageResponse(socialSite);
 }
