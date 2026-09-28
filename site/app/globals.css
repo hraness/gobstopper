@@ -17,8 +17,6 @@
 :root {
   --hraness-site-accent: var(--primary);
   --hraness-site-accent-ink: var(--primary-foreground);
-  --inverse-background: #14202a;
-  --gobstopper-code-foreground: #eef2ea;
   --font-heading: var(--font-text);
   font-synthesis: none;
   line-height: 1.55;
@@ -31,7 +29,7 @@
 :root,
 [data-hraness-marketing-preset="editorial"] {
   --hraness-marketing-display-font: var(--font-text);
-  --hraness-marketing-display-weight: 600;
+  --hraness-marketing-display-weight: 550;
 }
 
 * {
@@ -52,6 +50,22 @@ body {
   text-rendering: optimizeLegibility;
 }
 
+.hraness-marketing-header :is(a, button, summary),
+.hraness-marketing-header .hraness-design-palette-menu > summary {
+  min-inline-size: max(2.75rem, var(--interactive-target-compact, 2.75rem));
+  min-block-size: max(2.75rem, var(--interactive-target-compact, 2.75rem));
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.hraness-marketing-action[data-emphasis="primary"] {
+  background: var(--primary);
+  border: 1px solid var(--primary);
+  box-shadow: none;
+  color: var(--primary-foreground);
+}
+
 code,
 kbd,
 samp,
@@ -70,39 +84,9 @@ a:focus-visible {
   block-size: 1.25em;
 }
 
-.gobstopper-marketing-hero .hraness-marketing-hero__heading {
-  max-inline-size: 22ch;
-}
-
-.hraness-marketing-stats {
-  --hraness-marketing-fact-columns: 4;
-}
-
-.transcript {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  border-radius: 0;
-}
-
-.hraness-marketing-proof-frame__content > .transcript {
-  padding: 1.15rem 1.25rem;
-}
-
-.record-link,
-.interface-link {
-  margin: 0;
-  font-size: 0.95rem;
-  font-weight: 500;
-}
-
-.hraness-marketing-section__body > .record-link {
-  justify-self: start;
-}
-
 /* Links inside body copy stay underlined; the grammar's buttons do not. */
-.record-link a,
-.interface-link a,
 .install-note a,
+.gob-proof__note a,
 .hraness-marketing-maker__links a,
 .hraness-marketing-question__answer a {
   color: var(--foreground);
@@ -111,29 +95,11 @@ a:focus-visible {
   text-underline-offset: 0.18em;
 }
 
-.record-link a:hover,
-.interface-link a:hover,
 .install-note a:hover,
+.gob-proof__note a:hover,
 .hraness-marketing-maker__links a:hover,
 .hraness-marketing-question__answer a:hover {
   text-decoration-color: currentColor;
-}
-
-/* The trace section: the heading group stays at the top of its column and
- * follows the reader while the trace and record scroll past. */
-#trace[data-layout="split"] {
-  align-items: start;
-}
-
-@media (min-width: 48.01rem) {
-  #trace > .hraness-marketing-section__heading-group {
-    position: sticky;
-    inset-block-start: 5rem;
-  }
-}
-
-.hraness-marketing-interface pre {
-  flex: 1 1 auto;
 }
 
 .install-command {
@@ -204,7 +170,7 @@ a { text-underline-offset: 0.2em; }
 }
 .document-page h1, .document-page h2, .document-page h3 { text-wrap: balance; line-height: 1.2; }
 .document-page h2 { margin-top: 2.5rem; padding-top: 1.25rem; }
-.document-page pre { overflow-x: auto; padding: 1rem; border: 1px solid var(--ui-surface-edge, var(--hraness-material-seam)); border-radius: .875rem; background: var(--surface); box-shadow: var(--elevation-inset, var(--hraness-material-inset)); }
+.document-page pre { overflow-x: auto; padding: 1rem; border: 1px solid var(--ui-surface-edge, var(--hraness-material-seam)); border-radius: .875rem; background: var(--surface); }
 .document-page code { font-family: var(--font-mono); font-size: 0.92em; }
 .document-page table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto; }
 .document-page th, .document-page td { border-bottom: 1px solid var(--line); padding: 0.5rem 0.6rem; text-align: left; vertical-align: top; }
@@ -221,12 +187,6 @@ a { text-underline-offset: 0.2em; }
 .document-page article ol { list-style: decimal; padding-left: 1.5rem; margin: 1rem 0; }
 .document-page article li + li { margin-top: 0.5rem; }
 
-/* The product's command transcript retains its fixed code contrast. */
-.gobstopper-marketing-hero .hraness-marketing-proof-frame {
-  --hraness-marketing-inverse: var(--inverse-background);
-  --hraness-marketing-inverse-ink: var(--gobstopper-code-foreground);
-}
-
 /* The existing grammar owns layout and controls. Lantern supplies only material
    paint; these bridges keep old compiled peers and their focus rules intact. */
 [data-hraness-material="lantern"] .hraness-marketing-header.hraness-material-chrome {
@@ -234,20 +194,6 @@ a { text-underline-offset: 0.2em; }
   backdrop-filter: var(--hraness-material-chrome-blur, none);
   background: var(--hraness-material-chrome-paint, var(--hraness-material-plane));
   border-block-end-color: var(--hraness-material-seam);
-}
-@media (max-width: 48rem) {
-  /* Wrapped navigation has a variable height; keep anchor headings unobscured. */
-  [data-hraness-material="lantern"] .hraness-marketing-header.hraness-material-chrome {
-    position: static;
-  }
-}
-[data-hraness-marketing-preset="editorial"] .hraness-material-wall > .hraness-marketing-hero {
-  padding-inline: var(--hraness-marketing-gutter);
-}
-[data-hraness-material="lantern"] .hraness-marketing-proof-frame.hraness-material-pane {
-  --hraness-marketing-line: var(--hraness-material-seam);
-  --hraness-marketing-surface: var(--hraness-material-plane);
-  box-shadow: var(--hraness-material-lift);
 }
 
 /* A framed component already draws its own boundary; a ruled section directly
@@ -280,8 +226,6 @@ a { text-underline-offset: 0.2em; }
   color: var(--hraness-material-ink);
 }
 
-.gobstopper-topic-icon { display: block; width: 88px; height: 88px; margin: 0 0 18px; }
-
 .gob-agent-marks {
   display: flex; flex-wrap: wrap; gap: 18px 30px; align-items: center;
 }
@@ -290,119 +234,5 @@ a { text-underline-offset: 0.2em; }
   margin-block-end: 2rem;
 }
 
-/* ── Hero: ambient compaction field ─────────────────────────────────────── */
-.gob-opening { position: relative; overflow: clip; }
-.gob-opening .gobstopper-marketing-hero { position: relative; z-index: 1; }
-/* The shared backdrop is measured against the hero column; this opening lets
-   the field span the full wall so the haze dies at the viewport edges. */
-.gob-opening .hraness-marketing-hero-backdrop { margin-inline: calc(50% - 50vw); }
-.gob-opening .gobstopper-marketing-hero::before {
-  content: ""; position: absolute; inset: -2rem -4rem; z-index: -1; pointer-events: none;
-  background: radial-gradient(ellipse 72% 64% at 50% 55%, color-mix(in srgb, var(--background) 82%, transparent), color-mix(in srgb, var(--background) 50%, transparent) 58%, transparent);
-}
-.gob-field { pointer-events: none; z-index: 0; position: absolute; inset: 0; overflow: clip; }
-.gob-field::after {
-  content: ""; pointer-events: none; position: absolute; inset: 0;
-  background:
-    linear-gradient(to right,
-      var(--background),
-      color-mix(in srgb, var(--background) 78%, transparent) 5%,
-      color-mix(in srgb, var(--background) 42%, transparent) 11%,
-      color-mix(in srgb, var(--background) 15%, transparent) 18%,
-      transparent 25%,
-      transparent 75%,
-      color-mix(in srgb, var(--background) 15%, transparent) 82%,
-      color-mix(in srgb, var(--background) 42%, transparent) 89%,
-      color-mix(in srgb, var(--background) 78%, transparent) 95%,
-      var(--background)),
-    linear-gradient(to bottom, var(--background), transparent 20%, transparent 84%, var(--background));
-}
-.gob-edges { position: absolute; inset: 0; inline-size: 100%; block-size: 100%; }
-.gob-edge {
-  fill: none; stroke: var(--gob-edge-color, color-mix(in srgb, var(--muted) 55%, transparent));
-  stroke-width: 1.1px; stroke-dasharray: 3 4; vector-effect: non-scaling-stroke;
-  opacity: calc(.3 + var(--hraness-hero-proximity, 0) * .7); transition: opacity .45s;
-}
-.gob-edge--pulse { stroke-dasharray: 5 55; stroke-dashoffset: calc(var(--hraness-hero-proximity, 0) * -24px); }
-.gob-edge-label {
-  position: absolute; translate: -50% -50%; padding: .12rem .4rem; border-radius: 999px;
-  background: color-mix(in srgb, var(--hraness-material-plane) 78%, transparent);
-  color: var(--muted); font: italic .5625rem var(--font-mono); letter-spacing: .02em;
-  white-space: nowrap; opacity: calc(.25 + var(--hraness-hero-proximity, 0) * .75); transition: opacity .45s;
-}
-.gob-field-note {
-  position: absolute; left: var(--x); top: var(--y); inline-size: var(--w);
-  translate: -50% -50%; rotate: var(--r, 0deg); pointer-events: none;
-  padding: .8rem .95rem; border: 1px solid var(--hraness-material-seam); border-radius: .8rem;
-  background: color-mix(in srgb, var(--hraness-material-plane) 90%, transparent);
-  box-shadow: var(--hraness-material-lift);
-  opacity: calc(.46 + var(--hraness-hero-proximity, 0) * .54);
-  filter: blur(calc((1 - var(--hraness-hero-proximity, 0)) * 1.9px));
-  transform: translate(var(--hraness-hero-drift-x, 0px), var(--hraness-hero-drift-y, 0px));
-}
-.gob-field-note-type {
-  display: inline-block; margin-block-end: .45rem; padding: .1rem .42rem; border-radius: 999px;
-  background: color-mix(in srgb, var(--gob-note-accent, var(--hraness-site-accent)) 12%, transparent);
-  color: var(--gob-note-accent, var(--hraness-site-accent));
-  font: 600 .5625rem var(--font-mono); letter-spacing: .09em; text-transform: uppercase;
-}
-.gob-field-note[data-type="session"] { --gob-note-accent: light-dark(#2b5fbf, #7ea4f0); }
-.gob-field-note[data-type="snapshot"] { --gob-note-accent: light-dark(#8b631f, #d6b670); }
-.gob-field-note[data-type="elision"] { --gob-note-accent: light-dark(#1f6f54, #6fc2a0); }
-.gob-field-note[data-type="digest"] { --gob-note-accent: light-dark(#386345, #a7c397); }
-.gob-field-note[data-type="threshold"] { --gob-note-accent: light-dark(#8a4a2c, #d88d64); }
-.gob-field-note[data-type="event"] { --gob-note-accent: light-dark(#6d5a8a, #a793cf); }
-.gob-field-note[data-type="verify"] { --gob-note-accent: light-dark(#4a7a78, #7fb5b2); }
-.gob-field-note[data-type="provider"] { --gob-note-accent: light-dark(#2b5fbf, #7ea4f0); }
-.gob-field-note[data-type="undo"] { --gob-note-accent: var(--muted); }
-.gob-field-note[data-type="strategy"] { --gob-note-accent: light-dark(#4a7a78, #7fb5b2); }
-.gob-field-note-title { margin: 0 0 .3rem; font: 600 .8125rem/1.25 var(--font-text); letter-spacing: -.005em; }
-.gob-field-note[data-type="undo"] .gob-field-note-title { font-family: var(--font-mono); font-weight: 500; }
-.gob-field-note-body { margin: 0; color: var(--muted); font-size: .6875rem; line-height: 1.5; }
-.gob-field-note[data-type="undo"] .gob-field-note-body { white-space: pre-line; font-family: var(--font-mono); }
-.gob-field-note-tags { display: flex; flex-wrap: wrap; gap: .3rem .45rem; margin-block-start: .55rem; }
-.gob-field-note-tags span { color: var(--muted); font: .5625rem var(--font-mono); letter-spacing: .02em; }
-@media (prefers-reduced-motion: reduce) {
-  .gob-field-note { transform: none; }
-  .gob-edge, .gob-edge-label, .gob-field-note { transition: none; }
-}
-@media (forced-colors: active) { .gob-field { display: none; } }
-
-/* ── Hero: context-occupancy sawtooth ───────────────────────────────────── */
-.gob-sawtooth {
-  padding: 1rem 1.15rem .9rem;
-  border-bottom: 1px solid var(--line);
-  cursor: ew-resize; touch-action: pan-y;
-}
-.gob-sawtooth-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .4rem 1rem; align-items: baseline; }
-.gob-sawtooth-title { font: .68rem var(--font-mono); letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
-.gob-sawtooth-readout { font: .72rem var(--font-mono); color: var(--foreground); white-space: nowrap; }
-.gob-sawtooth-chart { display: block; width: 100%; height: auto; margin-block: .4rem .2rem; }
-.gob-sawtooth-grid { stroke: var(--line); stroke-width: .5; stroke-dasharray: 2 5; }
-.gob-sawtooth-tick { fill: var(--muted); font: .55rem var(--font-mono); }
-.gob-sawtooth-axislabel { fill: var(--muted); font: .55rem var(--font-mono); letter-spacing: .04em; }
-.gob-sawtooth-floor { fill: color-mix(in srgb, var(--hraness-site-accent) 7%, transparent); }
-.gob-sawtooth-trigger { stroke: light-dark(#8a4a2c, #d88d64); stroke-width: 1; stroke-dasharray: 4 4; }
-.gob-sawtooth-provider { fill: none; stroke: var(--muted); stroke-width: 1.5; stroke-dasharray: 6 4; }
-.gob-sawtooth-series { fill: none; stroke: var(--hraness-site-accent); stroke-width: 2.2; stroke-linejoin: round; stroke-linecap: round; }
-.gob-sawtooth-event path { fill: var(--hraness-site-accent); }
-.gob-sawtooth-event text { fill: var(--muted); font: .52rem var(--font-mono); }
-.gob-sawtooth-playhead { stroke: var(--foreground); stroke-width: 1; opacity: .5; }
-.gob-sawtooth-dot--gob { fill: var(--hraness-site-accent); }
-.gob-sawtooth-dot--pro { fill: var(--muted); }
-.gob-sawtooth-legend { display: flex; flex-wrap: wrap; gap: .3rem 1.1rem; font-size: .7rem; color: var(--muted); }
-.gob-sawtooth-legend span { display: inline-flex; align-items: center; gap: .4rem; }
-.gob-sawtooth-swatch { display: inline-block; width: 1.1rem; height: .14rem; border-radius: 999px; }
-.gob-sawtooth-swatch--pro { background: var(--muted); }
-.gob-sawtooth-swatch--gob { background: var(--hraness-site-accent); }
-
-/* A deliberately larger hero than the shared h1 token, in the same face. */
-.gobstopper-marketing-hero .hraness-marketing-hero__heading { font-size: clamp(2.8rem, 4.8vw, 4.5rem); line-height: 1.06; letter-spacing: -.05em; }
 .document-page { font-size: 1rem; line-height: 1.75; }
 .document-page :is(h1, h2, h3) { letter-spacing: -.025em; }
-
-/* Keep the appearance panel inside the viewport when navigation wraps. */
-@media (max-width: 48rem) {
-  [data-hraness-material="lantern"] .site-header.hraness-material-chrome { position: relative; }
-  .site-header .hraness-marketing-header__actions { margin-inline-start: auto; }
-}

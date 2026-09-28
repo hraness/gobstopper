@@ -108,24 +108,19 @@ test("delivers material chrome and reduced-transparency fallback through the exi
   expect(forcedPlane).toBe(true);
 });
 
-test("keeps wrapped phone navigation in flow while preserving desktop sticky chrome", async () => {
+test("keeps the shared sticky header and scrollable phone navigation", async () => {
   const { root } = await compiled;
-  let desktopSticky = false;
-  const phoneOverrides: Rule[] = [];
+  let sticky = false;
+  let phoneScroll = false;
+  let phoneTargets = false;
   root.walkRules(rule => {
-    if (rule.selector === ".hraness-marketing-header") {
-      rule.walkDecls("position", declaration => { if (declaration.value === "sticky") desktopSticky = true; });
-    }
-    if (rule.selector === '[data-hraness-material="lantern"] .hraness-marketing-header.hraness-material-chrome') {
-      rule.walkDecls("position", declaration => { if (declaration.value === "static") phoneOverrides.push(rule); });
-    }
+    if (rule.selector === ".hraness-marketing-header") rule.walkDecls("position", declaration => { if (declaration.value === "sticky") sticky = true; });
+    const parent = rule.parent;
+    if (parent?.type !== "atrule" || parent.name !== "media" || !parent.params.includes("48rem")) return;
+    if (rule.selector === ".hraness-marketing-header__nav") rule.walkDecls("overflow-x", declaration => { if (declaration.value === "auto") phoneScroll = true; });
+    if (rule.selector === ".hraness-marketing-header__nav a") rule.walkDecls("min-block-size", declaration => { if (declaration.value === "2.75rem") phoneTargets = true; });
   });
-  expect(desktopSticky).toBe(true);
-  expect(phoneOverrides).toHaveLength(1);
-  const parent = phoneOverrides[0]!.parent;
-  expect(parent?.type).toBe("atrule");
-  if (parent?.type !== "atrule") throw new Error("Phone chrome override must be scoped by a media query");
-  expect(parent.name).toBe("media");
-  expect(parent.params.replaceAll(/\s/gu, "")).toBe("(max-width:48rem)");
-  expect(phoneOverrides[0]!.nodes.filter(node => node.type === "decl").map(node => [node.prop, node.value])).toEqual([["position", "static"]]);
+  expect(sticky).toBe(true);
+  expect(phoneScroll).toBe(true);
+  expect(phoneTargets).toBe(true);
 });

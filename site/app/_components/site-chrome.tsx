@@ -17,6 +17,14 @@ import { supportProfile } from "../support-profile";
 // eslint-disable-next-line @next/next/no-img-element
 const productMark = <img alt="" height={20} src="/icon.png" width={20} />;
 
+const headerLinks: readonly { href: string; label: string; section?: string }[] = [
+  { href: "/docs", label: "Docs", section: "/docs" },
+  { href: "/benchmarks", label: "Benchmarks", section: "/benchmarks" },
+  { href: "/compare/claude-code-compact", label: "Compare", section: "/compare" },
+  { href: "/blog", label: "Blog", section: "/blog" },
+  { href: GITHUB_URL, label: "GitHub" },
+];
+
 export function SiteHeader({ path }: Readonly<{ path?: CanonicalPagePath }>) {
   return (
     <>
@@ -24,28 +32,18 @@ export function SiteHeader({ path }: Readonly<{ path?: CanonicalPagePath }>) {
         Skip to content
       </a>
       <MarketingSiteHeader
-        action={{ href: "/#install", label: "Install Gobstopper" }}
+        action={{ href: "/#install", label: "Install" }}
         ariaLabel="Primary navigation"
         trailing={<ThemeMenuButton aria-label="Appearance" />}
         brand="Gobstopper"
         brandMark="/marks/gobstopper.svg"
         brandLabel="Gobstopper home"
-        className={
-          path === "/"
-            ? "site-header hraness-material-chrome"
-            : "site-header"
-        }
-        links={[
-          { href: "/#model", label: "Model" },
-          { href: "/#interfaces", label: "Interfaces" },
-          { href: "/docs", label: "Docs" },
-          { href: "/methodology", label: "Methodology" },
-          { href: "/benchmarks", label: "Benchmarks" },
-          { href: "/compare/claude-code-compact", label: "Compare" },
-          { href: "/blog", label: "Blog" },
-          { href: ARCHITECTURE_URL, label: "Architecture" },
-          { href: GITHUB_URL, label: "GitHub" },
-        ]}
+        className="site-header hraness-material-chrome"
+        links={headerLinks.map(({ href, label, section }) => ({
+          href,
+          label,
+          current: path !== undefined && section !== undefined && path.startsWith(section),
+        }))}
       />
     </>
   );
@@ -77,7 +75,6 @@ export function SiteFooter({ path }: Readonly<{ path?: CanonicalPagePath }>) {
       </MarketingSiteFooter>
       <div className="network-footer">
         <HranessSiteFooter
-          placement="flow"
           mailingList={{ kind: "none" }}
           support={supportProfile}
         />

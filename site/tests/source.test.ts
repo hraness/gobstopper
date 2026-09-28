@@ -64,7 +64,7 @@ describe("Gobstopper site source contract", () => {
       read("app/readme.generated.ts"),
     ]);
     expect(packageJson).toContain('"@hraness/ui": "github:hraness/ui#v0.5.18"');
-    expect(packageJson).toContain('"@hraness/design-kit": "github:hraness/design-kit#v0.21.0"');
+    expect(packageJson).toContain('"@hraness/design-kit": "github:hraness/design-kit#v0.23.0"');
     expect(chrome).toContain('import { AskAiAboutThis } from "@hraness/ui"');
     expect(chrome).toContain('url={absoluteUrl(path)}');
     expect(generated).toContain('export const readmeTitle = "Gobstopper";');
@@ -89,7 +89,7 @@ describe("Gobstopper site source contract", () => {
       expect(globals).toContain(`.document-page ${level} { `);
       expect(globals).toContain(`font-size: var(--hraness-type-${level}-size)`);
     }
-    expect(home).toContain("<div data-hraness-marketing-preset=\"editorial\">");
+    expect(home).toContain("data-hraness-marketing-preset=\"editorial\"");
     expect(home).not.toContain("relationship:");
   });
 
