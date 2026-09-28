@@ -217,6 +217,9 @@ jobs:
           key: bun-site-${{ runner.os }}-${{ hashFiles('site/bun.lock') }}
           restore-keys: bun-site-${{ runner.os }}-
       - run: bun install --frozen-lockfile --ignore-scripts
+      - name: Check the launch stills against their receipts
+        working-directory: .
+        run: bun test media/stills.test.ts
       - name: Run the complete site gate and production build
         run: bun run check
       - name: Verify public routes and appearance

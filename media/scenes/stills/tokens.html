@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Same tasks solved, 29% fewer tokens sent</title>
+</head>
+<body>
+<script>
+// C-tokens: total input per arm, cache reads plus new input, from zero on a linear scale.
+Gob.scene({ palette: "paper" }, (s) => {
+  const { F, ARM_LABEL, ARM_STYLE, PROV, hatch } = Gob;
+  const rows = s.params.data.tokens;
+  // The two segments are named on the first bar itself, so no legend has to stand in
+  // for three different arm colours.
+  const frame = s.still({
+    title: `Same tasks solved, ${F.inputFewer} fewer tokens sent`,
+    subtitle: "Gobstopper at its default tail vs Claude Code, no proxy · same tasks solved within single-trial noise",
+    provenance: PROV.tbFull,
+  });
+  const p = frame.plot;
+  const tipW = 150;
+  const plotW = p.w - tipW;
+  const max = 120e6;
+  const x = (v) => p.x + (v / max) * plotW;
+  const axisH = 40;
+  const rowH = (p.h - axisH) / rows.length;
+  const barH = Math.min(58, Math.round(rowH * 0.42));
+  const svg = Gob.svgLayer(s);
+
+  // Grid and ticks.
+  for (const t of [0, 40e6, 80e6, 120e6]) {
+    const gx = Math.round(x(t)) + 0.5;
+    Gob.svgNode(svg, "line", { x1: gx, x2: gx, y1: p.y, y2: p.y + p.h - axisH + 4, stroke: t === 0 ? "var(--ink)" : "var(--rule)", "stroke-width": t === 0 ? 2 : 1.5 });
+    s.text("small", t === 0 ? "0" : `${t / 1e6}M`, { x: gx - 60, y: p.y + p.h - axisH + 12, w: 120 }, { align: "center", color: "var(--ink-2)" });
+  }
+
+  rows.forEach((row, i) => {
+    const style = ARM_STYLE[row.id];
+    const top = Math.round(p.y + i * rowH + rowH - barH - 18);
+    s.text("label", `${ARM_LABEL[row.id]} · ${F.solved[row.id]} of 89 solved`, { x: x(0) + 20, y: top - 50 }, { nowrap: true, weight: 500 });
+    const x0 = x(0) + 1;
+    const xc = x(row.cache_read);
+    const xt = x(row.total_input);
+    const cache = s.el("div", `position:absolute;left:${x0}px;top:${top}px;width:${xc - x0}px;height:${barH}px;border-radius:0 3px 3px 0`);
+    cache.style.background = style.hatchAngle === null ? style.color : hatch(style.color, "color-mix(in oklab, var(--bg) 42%, transparent)", style.hatchAngle, 2.5, 11);
+    s.el("div", `position:absolute;left:${xc + 2}px;top:${top}px;width:${xt - xc - 2}px;height:${barH}px;border-radius:0 6px 6px 0;background:color-mix(in oklab, ${style.color} 35%, var(--bg));box-shadow:inset 0 0 0 1.5px ${style.color}`);
+    s.text("label", F.input[row.id], { x: xt + 18, y: top + barH / 2 - 22 }, { nowrap: true, weight: 600 });
+    if (i === 0) {
+      const cy = top + barH / 2 - 19;
+      s.text("small", "cache reads (context re-sent)", { x: x0 + 18, y: cy }, { nowrap: true, weight: 500, color: "var(--on-fill)" });
+      s.text("small", "new input", { x: xc + 2, y: cy, w: xt - xc - 2 }, { nowrap: true, weight: 500, align: "center" });
+    }
+  });
+});
+</script>
+</body>
+</html>

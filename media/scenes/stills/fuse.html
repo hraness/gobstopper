@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>When a request passes the threshold, the middle becomes one summary</title>
+</head>
+<body>
+<script>
+// D-fuse: nine slabs rise through the lid; with Gobstopper five sit under it.
+Gob.scene({ palette: "paper" }, (s) => {
+  const { SLAB, FUSE } = Gob.geometry;
+  const frame = s.still({ title: "When a request passes the threshold, the middle becomes one summary" });
+  const p = frame.plot;
+  const labelH = 44;
+  const bottomBand = 22 + labelH;
+  const tallest = FUSE.before.length;
+  const h = Math.floor((p.h - bottomBand - 8) / (tallest + (tallest - 1) * SLAB.gap));
+  const gap = Math.round(h * SLAB.gap);
+  const base = p.y + p.h - bottomBand;
+  const step = h + gap;
+  const slabTop = (j) => base - (j + 1) * h - j * gap;
+  const stackW = 440;
+  const leftX = p.x + 40;
+  const rightX = p.x + 700;
+  // lidAt counts slab heights from the base; add the gaps below that point so the lid
+  // runs through the same place on the slab it names (the middle of the seventh).
+  const lidY = Math.round(base - FUSE.lidAt * h - Math.floor(FUSE.lidAt) * gap);
+
+  FUSE.before.forEach((slab, j) => {
+    s.slab(slab.kind, { x: leftX, y: slabTop(j), w: stackW, h }, slab.label);
+  });
+  FUSE.after.forEach((slab, j) => {
+    const node = s.slab(slab.kind, { x: rightX, y: slabTop(j), w: stackW, h }, slab.kind === "recent" ? undefined : slab.label);
+    if (slab.kind === "summary") {
+      const span = node.querySelector("span");
+      if (span) span.style.paddingLeft = "0";
+      node.style.paddingLeft = "54px";
+      s.ring(rightX + 24, slabTop(j) + h / 2, 30, { color: "var(--on-fill)", stroke: 1.8 });
+    }
+  });
+
+  // One bracket names the three recent slabs together.
+  const recent = FUSE.after.map((slab, j) => (slab.kind === "recent" ? j : -1)).filter((j) => j >= 0);
+  const bTop = slabTop(recent[recent.length - 1]);
+  const bBottom = slabTop(recent[0]) + h;
+  const bx = rightX + stackW + 22;
+  s.el("div", `position:absolute;left:${bx}px;top:${bTop}px;width:14px;height:${bBottom - bTop}px;border:2.5px solid var(--tail0);border-left:none;border-radius:0 8px 8px 0`);
+  const recentLabel = FUSE.after[recent[0]].label;
+  const [first, second] = recentLabel.split(", ");
+  s.text("small", `${first},\n${second}`, { x: bx + 32, y: (bTop + bBottom) / 2 - 38, w: 260 }, { color: "var(--tail0)", weight: 500 }).style.whiteSpace = "pre-line";
+
+  s.lid(lidY, "threshold", { x0: p.x, x1: p.x + p.w });
+
+  s.text("label", "Without Gobstopper", { x: leftX, y: base + 22, w: stackW }, { align: "center", weight: 600 });
+  s.text("label", "With Gobstopper", { x: rightX, y: base + 22, w: stackW }, { align: "center", weight: 600 });
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Five tasks carried the old default's extra cost</title>
+</head>
+<body>
+<script>
+// C-gap: extra provider-reported cost of tail 40 over tail 0, per task.
+Gob.scene({ palette: "paper" }, (s) => {
+  const { PROV } = Gob;
+  const rows = s.params.data.gap;
+  const frame = s.still({
+    title: "Five tasks carried the old default’s extra cost",
+    subtitle: "Provider-reported cost (Vercel AI Gateway prices for GLM 5.3 Flash), tail 40 minus tail 0, per task",
+    provenance: PROV.tbFull,
+  });
+  const p = frame.plot;
+  const nameW = 470;
+  const valueW = 130;
+  const zeroX = p.x + nameW + 150;
+  const max = 1.2;
+  const unit = (p.x + p.w - valueW - zeroX) / max;
+  const rowH = Math.floor((p.h - 20) / rows.length);
+  const barH = Math.min(46, Math.round(rowH * 0.56));
+  const svg = Gob.svgLayer(s);
+  const money = (v) => `${v < 0 ? "−" : "+"}$${Math.abs(v).toFixed(2)}`;
+
+  rows.forEach((row, i) => {
+    const cy = Math.round(p.y + i * rowH + rowH / 2);
+    const other = row.deltaUsd < 0;
+    s.text(other ? "label" : "mono", row.task, { x: p.x, y: cy - 22, w: nameW + 100 }, { nowrap: true, color: other ? "var(--ink-2)" : "var(--ink)" });
+    const w = Math.abs(row.deltaUsd) * unit;
+    const left = row.deltaUsd >= 0 ? zeroX : zeroX - w;
+    const color = row.deltaUsd >= 0 ? "var(--tail40)" : "var(--tail0)";
+    const radius = row.deltaUsd >= 0 ? "0 6px 6px 0" : "6px 0 0 6px";
+    s.el("div", `position:absolute;left:${left}px;top:${cy - barH / 2}px;width:${w}px;height:${barH}px;border-radius:${radius};background:${color}`);
+    const vx = row.deltaUsd >= 0 ? zeroX + w + 16 : zeroX + 16;
+    s.text("label", money(row.deltaUsd), { x: vx, y: cy - 22 }, { nowrap: true, weight: 600, color });
+  });
+  Gob.svgNode(svg, "line", { x1: zeroX, x2: zeroX, y1: p.y - 4, y2: p.y + rowH * rows.length + 4, stroke: "var(--ink)", "stroke-width": 2 });
+});
+</script>
+</body>
+</html>

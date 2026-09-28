@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Keeping more old turns meant more rewrites and more tokens</title>
+</head>
+<body>
+<script>
+// D-tail: both arms just after a rewrite, under one threshold.
+Gob.scene({ palette: "paper" }, (s) => {
+  const { TAIL, SLAB, stackHeight } = Gob.geometry;
+  const frame = s.still({ title: "Keeping more old turns meant more rewrites and more tokens" });
+  const p = frame.plot;
+  const labelH = 44;
+  const bottomBand = 24 + labelH;
+  // The lid sits above the taller stack so both read as "under the threshold"; TAIL.lidAt
+  // is lower than a seven-slab stack, so the still keeps half a slab of headroom.
+  const lidUnits = Math.max(TAIL.lidAt, stackHeight(TAIL.tail40.length) + 0.7);
+  const h = Math.floor((p.h - bottomBand - 56) / lidUnits);
+  const gap = Math.round(h * SLAB.gap);
+  const base = p.y + p.h - bottomBand;
+  const slabTop = (j) => base - (j + 1) * h - j * gap;
+  const stackW = 440;
+  const leftX = p.x + 40;
+  const rightX = p.x + 620;
+  const lidY = Math.round(base - lidUnits * h);
+
+  const drawStack = (slabs, x) => {
+    slabs.forEach((slab, j) => {
+      const node = s.slab(slab.kind, { x, y: slabTop(j), w: stackW, h }, slab.label);
+      if (slab.kind === "summary") {
+        node.style.paddingLeft = "54px";
+        const span = node.querySelector("span");
+        if (span) span.style.paddingLeft = "0";
+        s.ring(x + 24, slabTop(j) + h / 2, 30, { color: "var(--on-fill)", stroke: 1.8 });
+      }
+    });
+    return slabTop(slabs.length - 1);
+  };
+  const leftTop = drawStack(TAIL.tail0, leftX);
+  const rightTop = drawStack(TAIL.tail40, rightX);
+  void leftTop;
+
+  s.lid(lidY, "threshold", { x0: p.x, x1: p.x + p.w });
+
+  // Headroom arrow beside tail 40: the gap between its top and the threshold.
+  const ax = rightX + stackW + 44;
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("width", "40");
+  svg.setAttribute("height", String(rightTop - lidY));
+  svg.style.cssText = `position:absolute;left:${ax - 20}px;top:${lidY}px;overflow:visible`;
+  const len = rightTop - lidY;
+  const d = `M20,${len - 4} V6 M11,15 L20,6 L29,15 M11,${len - 13} L20,${len - 4} L29,${len - 13}`;
+  const line = document.createElementNS(ns, "path");
+  line.setAttribute("d", d);
+  line.setAttribute("fill", "none");
+  line.setAttribute("stroke", "var(--tail40)");
+  line.setAttribute("stroke-width", "2.5");
+  line.setAttribute("stroke-linecap", "round");
+  line.setAttribute("stroke-linejoin", "round");
+  svg.appendChild(line);
+  s.root.appendChild(svg);
+  s.text("small", "less room left, so the next rewrite comes sooner", { x: ax + 34, y: lidY + 18, w: p.x + p.w - ax - 34 }, { color: "var(--tail40)", weight: 500 });
+
+  // Each caption breaks after the arm name so the parenthetical sits whole on line two.
+  for (const [x, name, note] of [[leftX, "Gobstopper, tail 0", "(the new default)"], [rightX, "Gobstopper, tail 40", "(old default)"]]) {
+    const node = s.text("label", `${name}\n${note}`, { x: x - 40, y: base + 24, w: stackW + 80 }, { align: "center", weight: 600 });
+    node.style.whiteSpace = "pre-line";
+  }
+});
+</script>
+</body>
+</html>

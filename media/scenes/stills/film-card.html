@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Film card</title>
+</head>
+<body>
+<script>
+// The film card: the only Night still. README and blog link it to the film.
+Gob.scene({ palette: "night" }, (s) => {
+  const { F } = Gob;
+  const W = s.width;
+  const H = s.height;
+  const padX = 88;
+  s.el("div", "position:absolute;inset:0;box-shadow:inset 0 0 0 1px var(--rule);pointer-events:none;z-index:5");
+  s.el("div", `position:absolute;inset:0;background:radial-gradient(ellipse 60% 70% at 78% 44%, color-mix(in oklab, var(--tail0) 16%, transparent), transparent 70%)`);
+
+  // Brand row.
+  s.mark(padX, 72, 48);
+  s.text("label", "Gobstopper", { x: padX + 66, y: 76 }, { nowrap: true, weight: 600 });
+
+  // Hero and line beneath it, left column.
+  const colW = 860;
+  const hero = s.text("hero", `${F.inputFewer} fewer input tokens`, { x: padX, y: 270, w: colW }, { weight: 600 });
+  hero.style.fontSize = "112px";
+  hero.style.lineHeight = "1.02";
+  const heroH = s.measure(hero).height;
+  s.text("beat", "Same tasks solved, within single-trial noise", { x: padX, y: 270 + heroH + 30, w: colW }, { color: "var(--ink-2)", weight: 500 }).style.fontSize = "40px";
+
+  // Play glyph: the brand ring, in the tail 0 blue, with a play triangle where its inner
+  // circle would be. Same proportions as RING (box 26, radii 13 and 8).
+  const { RING } = Gob.geometry;
+  const cx = 1236;
+  const cy = 440;
+  const size = 340;
+  const k = size / RING.box;
+  const stroke = 1.3 * k;
+  const svg = Gob.svgLayer(s);
+  for (const r of RING.r.slice(0, 2)) {
+    Gob.svgNode(svg, "circle", { cx, cy, r: r * k - stroke / 2, fill: "none", stroke: "var(--tail0)", "stroke-width": stroke });
+  }
+  // An equilateral triangle whose centroid sits on the ring's centre, inside the space the
+  // inner circle (r 5) and the gap around it would take, with rounded corners.
+  const t = RING.r[2] * k * 1.55; // height
+  const half = t / Math.sqrt(3);
+  const pts = [[cx - t / 3, cy - half], [cx + (2 * t) / 3, cy], [cx - t / 3, cy + half]];
+  const round = 0.18 * t;
+  Gob.svgNode(svg, "path", {
+    d: `M${pts.map(([x, y]) => `${x.toFixed(2)},${y.toFixed(2)}`).join("L")}Z`,
+    fill: "var(--tail0)", stroke: "var(--tail0)", "stroke-width": round, "stroke-linejoin": "round",
+  });
+
+  // Footer.
+  s.el("div", `position:absolute;left:${padX}px;right:${padX}px;bottom:128px;height:1px;background:var(--rule)`);
+  s.text("label", `Watch the ${s.params.data.film.seconds}-second film · gobstopper.sh`, { x: padX, y: H - 112 }, { nowrap: true, weight: 500 });
+  void W;
+});
+</script>
+</body>
+</html>

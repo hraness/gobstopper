@@ -1,0 +1,215 @@
+{
+  "kind": "gobstopper.media-render",
+  "renders": [
+    {
+      "job": "still-solved",
+      "id": "solved",
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T21:24:33.442Z",
+      "seconds": 19,
+      "canvas": {
+        "width": 2400,
+        "height": 1350,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1600,
+        "layoutHeight": 900,
+        "layoutZoom": 1.5
+      },
+      "holdSeconds": 0,
+      "sceneHtmlSha256": "66cbba913e02905e730e7ad91f4a27e1b0e452676242deafdd13f065f8df4c52",
+      "sceneSource": "scenes/stills/solved.html",
+      "sceneSourceSha256": "12d28a07e9323f0178285487b9fcc34a31deb8ebbd5753be3b3df30849fcf6b3",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "width": 2400,
+        "height": 1350,
+        "bytes": 345724,
+        "sha256": "59977a558082d65074d4be071f9f8f0639a95fcba1509b663639e7a5717cc91d",
+        "source": "captured frame 0",
+        "copies": {
+          "docs": "docs/assets/gob-solved.png",
+          "blog": "site/public/blog/introducing-gobstopper/gob-solved.png"
+        }
+      }
+    },
+    {
+      "job": "still-solved",
+      "id": "solved",
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T21:42:43.845Z",
+      "seconds": 18,
+      "canvas": {
+        "width": 2400,
+        "height": 1350,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1600,
+        "layoutHeight": 900,
+        "layoutZoom": 1.5
+      },
+      "holdSeconds": 0,
+      "sceneHtmlSha256": "666436c052dbd4d096e09403abf743fb44f2b9682677f2ff9e765977eeaff914",
+      "sceneSource": "scenes/stills/solved.html",
+      "sceneSourceSha256": "c704f357c5eddd83e128f9dd592699f732885d49e7790362d65fa58aefa79332",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "width": 2400,
+        "height": 1350,
+        "bytes": 338436,
+        "sha256": "58f061e1ec6e7ab8d273f1394b38841459887f050a5b24d199fb82aac38e24c3",
+        "source": "captured frame 0",
+        "copies": {
+          "docs": "docs/assets/gob-solved.png",
+          "blog": "site/public/blog/introducing-gobstopper/gob-solved.png"
+        }
+      }
+    },
+    {
+      "job": "still-solved",
+      "id": "solved",
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T22:14:34.603Z",
+      "seconds": 18,
+      "canvas": {
+        "width": 2400,
+        "height": 1350,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1600,
+        "layoutHeight": 900,
+        "layoutZoom": 1.5
+      },
+      "holdSeconds": 0,
+      "sceneHtmlSha256": "fde48f69e5a4eb4f37cb3d6e119a9a6097529b88b40159b70d2d02511981a38c",
+      "sceneSource": "scenes/stills/solved.html",
+      "sceneSourceSha256": "f4ca5e12a9f7ae257d85b99881c38496714ef73b0d4651c540bded0cc2160b15",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "width": 2400,
+        "height": 1350,
+        "bytes": 326878,
+        "sha256": "d8bfc994c5581e09d8a3d539e822ee0729336c1299c8a4e34c4b0a92b09fb4f3",
+        "source": "captured frame 0",
+        "copies": {
+          "docs": "docs/assets/gob-solved.png",
+          "blog": "site/public/blog/introducing-gobstopper/gob-solved.png"
+        }
+      }
+    },
+    {
+      "job": "still-solved",
+      "id": "solved",
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T22:20:09.263Z",
+      "seconds": 22,
+      "canvas": {
+        "width": 2400,
+        "height": 1350,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1600,
+        "layoutHeight": 900,
+        "layoutZoom": 1.5
+      },
+      "holdSeconds": 0,
+      "sceneHtmlSha256": "fb72a7e42542aca0aa87fbe6b67d4e29453b96c4c8cf110f6d6e4e3c548db36f",
+      "sceneSource": "scenes/stills/solved.html",
+      "sceneSourceSha256": "9a512e130224e351911b99ac2592897b46d910b63cc0f9666beb3695e200d74b",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "width": 2400,
+        "height": 1350,
+        "bytes": 314377,
+        "sha256": "6c2399de2cf3558fe717c6bbe620d0fc691c3bf0f84e5c094c18e6e542218db5",
+        "source": "captured frame 0",
+        "copies": {
+          "docs": "docs/assets/gob-solved.png",
+          "blog": "site/public/blog/introducing-gobstopper/gob-solved.png"
+        }
+      }
+    },
+    {
+      "job": "still-solved",
+      "id": "solved",
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T22:20:42.202Z",
+      "seconds": 16,
+      "canvas": {
+        "width": 2400,
+        "height": 1350,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1600,
+        "layoutHeight": 900,
+        "layoutZoom": 1.5
+      },
+      "holdSeconds": 0,
+      "sceneHtmlSha256": "9a8694517266119f69773976bac320efeec5b3a957509d537db725837677bab1",
+      "sceneSource": "scenes/stills/solved.html",
+      "sceneSourceSha256": "1cf322a2fff47dceb761f8005cb071736123823cc60d28843c84a93d921db705",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "width": 2400,
+        "height": 1350,
+        "bytes": 311384,
+        "sha256": "a1bc4bdebc3018db7a52a283abf4be95ae5f3953486e44ade7799585d2b999ec",
+        "source": "captured frame 0",
+        "copies": {
+          "docs": "docs/assets/gob-solved.png",
+          "blog": "site/public/blog/introducing-gobstopper/gob-solved.png"
+        }
+      }
+    }
+  ]
+}

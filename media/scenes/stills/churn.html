@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>31 of 89 tasks changed outcome between arms</title>
+</head>
+<body>
+<script>
+// C-churn: 89 unit cells in three runs.
+Gob.scene({ palette: "paper" }, (s) => {
+  const { PROV, hatch } = Gob;
+  const c = s.params.data.churn;
+  const frame = s.still({ title: `${c.split} of 89 tasks changed outcome between arms`, provenance: PROV.tbFull });
+  const p = frame.plot;
+  const runs = [
+    { n: c.resolved_by_all, label: "solved by all three arms", fill: "var(--ink-2)", edge: null },
+    { n: c.split, label: "changed between arms", fill: hatch("color-mix(in oklab, var(--ink) 10%, var(--bg))", "var(--ink)", 135, 2.5, 10), edge: "var(--ink)" },
+    { n: c.resolved_by_none, label: "solved by none", fill: "var(--slab)", edge: "var(--slab-edge)" },
+  ];
+  const total = runs.reduce((sum, r) => sum + r.n, 0);
+  const gap = 3;
+  const runGap = 14;
+  const cellW = (p.w - gap * (total - runs.length) - runGap * (runs.length - 1)) / total;
+  const barH = 150;
+  // Bar, number and label as one block, centred a little above the plot's middle.
+  const blockH = barH + 124 + 44;
+  const top = Math.round(p.y + (p.h - blockH) / 2 - p.h * 0.04);
+  let x = p.x;
+  runs.forEach((run, index) => {
+    const last = index === runs.length - 1;
+    const start = x;
+    for (let i = 0; i < run.n; i++) {
+      const cell = s.el("div", `position:absolute;left:${x.toFixed(2)}px;top:${top}px;width:${cellW.toFixed(2)}px;height:${barH}px;border-radius:3px`);
+      cell.style.background = run.fill;
+      if (run.edge) cell.style.boxShadow = `inset 0 0 0 1.5px ${run.edge}`;
+      x += cellW + gap;
+    }
+    x += runGap - gap;
+    const end = x - runGap;
+    const w = end - start;
+    // The last run is narrow, so its number and label align to the right margin instead.
+    const box = last ? { x: p.x + p.w - 420, w: 420 } : { x: start, w: Math.max(w, 260) };
+    const align = last ? "right" : "left";
+    s.text("hero", String(run.n), { x: box.x, y: top + barH + 26, w: box.w }, { nowrap: true, weight: 600, align }).style.fontSize = "76px";
+    s.text("label", run.label, { x: box.x, y: top + barH + 124, w: box.w }, { color: "var(--ink-2)", align });
+  });
+});
+</script>
+</body>
+</html>
