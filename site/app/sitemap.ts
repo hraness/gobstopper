@@ -6,11 +6,10 @@ import { absoluteUrl, SITE_ORIGIN } from "./_lib/site";
 import { blogSitemapPaths } from "./blog/discovery";
 
 export default function sitemap(): MetadataRoute.Sitemap {
-  const now = new Date();
   return [
     ...SITE_PAGES.map((page) => ({
       url: absoluteUrl(page.path),
-      lastModified: page.lastModified === undefined ? now : new Date(page.lastModified),
+      lastModified: new Date(page.lastModified),
       changeFrequency: page.changeFrequency,
       priority: page.priority,
     })),

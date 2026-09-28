@@ -102,6 +102,8 @@ describe("Gobstopper blog", () => {
       expect(schema["@type"]).toBe("BlogPosting");
       expect(schema["@id"]).toBe(`${url}#article`);
       expect(schema.isPartOf).toMatchObject({ "@type": "Blog", url: "https://gobstopper.sh/blog" });
+      // Hraness publishes the blog; Gobstopper is the product, not an organization.
+      expect(schema.publisher).toMatchObject({ "@type": "Organization", name: "Hraness", url: "https://hraness.com" });
     }
   });
 

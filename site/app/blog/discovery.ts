@@ -40,7 +40,8 @@ export const hraness: ArticleParty = {
   url: "https://hraness.com",
   sameAs: ["https://github.com/hraness"],
 };
-const publisher: ArticleParty = { kind: "Organization", name: SITE_NAME, path: "/" };
+/** Hraness publishes Gobstopper and its blog; Gobstopper is the product, not an organization. */
+const publisher: ArticleParty = hraness;
 
 export function postDiscovery(post: BlogPost): ArticleDiscovery {
   const path = postPath(post);

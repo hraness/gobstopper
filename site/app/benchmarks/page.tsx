@@ -11,6 +11,8 @@ import { SiteDocument } from "../_components/site-document";
 import { SiteHeader, SiteFooter } from "../_components/site-chrome";
 import { ARM_LABEL, ARM_ORDER, arm, pair, replayGrid, terminalBench, type ArmId } from "../_lib/gobbench-data";
 import { F, GAP_ROWS, millions, signed, usd } from "../_lib/gobbench-format";
+import { serializeJsonLd } from "../_lib/site";
+import { benchmarkDatasetsJsonLd } from "./datasets";
 
 const title = "Benchmarks";
 const socialTitle = "Gobstopper benchmarks";
@@ -305,6 +307,10 @@ function TerminalBench() {
 export default function Benchmarks() {
   return (
     <>
+      <script
+        dangerouslySetInnerHTML={{ __html: serializeJsonLd(benchmarkDatasetsJsonLd()) }}
+        type="application/ld+json"
+      />
       <SiteHeader path="/benchmarks" />
       <main id="main" tabIndex={-1}>
         <SiteDocument

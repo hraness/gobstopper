@@ -6,6 +6,9 @@ import Docs from "../app/docs/page";
 import BlogIndex from "../app/blog/page";
 import { publishedRelease } from "../app/publication";
 import RootLayout from "../app/layout";
+import Benchmarks from "../app/benchmarks/page";
+import { BENCHMARK_STUDIES } from "../app/benchmarks/datasets";
+import { plainInline, renderInline } from "../app/_lib/inline";
 
 const SUPPORT_URL = "https://account.hraness.com/support?product=gobstopper&amp;source=web#support";
 const SUPPORT_LABEL = "Support ongoing development of Gobstopper, context compaction you can undo.";
@@ -46,7 +49,7 @@ test("the homepage shares the README identity and installs the guarded source bu
     expect(html).toContain(publishedRelease.verificationRun);
   }
   expect(html).toMatch(/automatic provider compaction stays disabled/iu);
-  expect(html).toMatch(/refuses automatic provider compaction[^.]+auto_compact_closed/u);
+  expect(html).toContain("Gobstopper does not trigger Claude Code&#x27;s or Codex&#x27;s own compaction and does not edit session files in place.");
   expect(html).not.toContain("hraness.com/gobstopper");
   expect(text).toContain("gobstopper proxy serve");
   expect(html).not.toContain("Source preview");
@@ -142,4 +145,70 @@ test("the header keeps a named home link and exact-artwork foil fallback", () =>
     expect(fallbackImages).toEqual(["/marks/gobstopper.svg"]);
     expect(masks).toEqual(['--hraness-foil-mask:url("/marks/gobstopper.svg")']);
   }
+});
+
+test("the homepage names the other ways to shrink context and links each comparison", () => {
+  const html = renderToStaticMarkup(<Home />);
+  const text = html.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ");
+  expect(html).toContain('id="alternatives"');
+  for (const name of ["Claude Code /compact", "Codex /compact", "CliffCompaction", "RTK"]) {
+    expect(text).toContain(name);
+  }
+  expect(html).toContain('href="/compare/claude-code-compact"');
+  expect(html).toContain('href="https://github.com/openai/codex"');
+  expect(html).toContain('href="https://github.com/rtk-ai/rtk"');
+  expect(text).toMatch(/Checked (January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}, \d{4}\./u);
+  // The CliffCompaction answer links the comparison page instead of naming it in plain text.
+  expect(html).toContain('<a href="/compare/cliffcompaction">Gobstopper vs CliffCompaction</a>');
+  expect(html).not.toContain("[Gobstopper vs CliffCompaction]");
+});
+
+test("the FAQPage structured data carries plain answer text", () => {
+  const html = renderToStaticMarkup(<Home />);
+  const scripts = [...html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/gu)].map((match) => JSON.parse(match[1] ?? "null"));
+  const faq = scripts.find((value) => value?.["@type"] === "FAQPage");
+  expect(faq).toBeDefined();
+  for (const entry of faq.mainEntity) {
+    const answer: string = entry.acceptedAnswer.text;
+    expect(answer).not.toContain("`");
+    expect(answer).not.toMatch(/\]\(\//u);
+  }
+  expect(JSON.stringify(faq)).toContain("Gobstopper vs CliffCompaction has the full table");
+});
+
+test("inline answer markup renders code and site links, and strips both for structured data", () => {
+  const html = renderToStaticMarkup(<p>{renderInline("Run `gobstopper proxy`; see [the table](/compare/cliffcompaction) and [x](https://example.com).")}</p>);
+  expect(html).toBe('<p>Run <code>gobstopper proxy</code>; see <a href="/compare/cliffcompaction">the table</a> and [x](https://example.com).</p>');
+  expect(plainInline("Run `a`; see [the table](/compare/x).")).toBe("Run a; see the table.");
+  expect(plainInline("no markup")).toBe("no markup");
+});
+
+test("the related block lists only products with a registered relation", () => {
+  const html = renderToStaticMarkup(<Home />);
+  expect(html).toContain("Works with Gobstopper.");
+  expect(html).toContain('href="https://xcb.sh"');
+  expect(html).not.toContain("More from Hraness.");
+});
+
+test("the application node names Hraness as publisher and a free offer", () => {
+  const html = renderToStaticMarkup(<RootLayout><Home /></RootLayout>);
+  const graphs = [...html.matchAll(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/gu)]
+    .map((match) => JSON.parse(match[1] ?? "null"))
+    .filter((value) => Array.isArray(value?.["@graph"]));
+  const app = graphs.flatMap((value) => value["@graph"]).find((node) => node["@type"] === "SoftwareApplication");
+  expect(app.publisher).toEqual({
+    "@type": "Organization",
+    "@id": "https://hraness.com/#organization",
+    name: "Hraness",
+    url: "https://hraness.com",
+  });
+  expect(app.offers).toEqual({ "@type": "Offer", price: "0", priceCurrency: "USD" });
+});
+
+test("each benchmark Dataset points at a section the benchmarks page renders", () => {
+  const html = renderToStaticMarkup(<Benchmarks />);
+  for (const study of BENCHMARK_STUDIES) {
+    expect(html).toContain(`id="${study.anchor.slice(1)}"`);
+  }
+  expect(html).toContain('"@type":"Dataset"');
 });

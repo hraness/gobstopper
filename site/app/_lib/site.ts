@@ -1,10 +1,17 @@
 export const SITE_ORIGIN = "https://gobstopper.sh";
 export const SITE_NAME = "Gobstopper";
 export const SITE_TAGLINE = "Context compaction you can undo.";
-export const SITE_TITLE = `${SITE_NAME}: context compaction you can undo`;
+export const SITE_TITLE = `${SITE_NAME}: context compaction proxy for Claude Code and Codex`;
 export const SITE_DESCRIPTION =
   "Gobstopper makes long coding sessions smaller. A local proxy compacts live Claude Code, Codex, opencode, Crush, Aider, and Goose requests, and file commands write a compacted copy with every original byte kept in a local vault.";
 export const GITHUB_URL = "https://github.com/hraness/gobstopper";
+/** The Hraness organization node, identified by the @id hraness.com publishes. */
+export const HRANESS_ORGANIZATION = {
+  "@type": "Organization",
+  "@id": "https://hraness.com/#organization",
+  name: "Hraness",
+  url: "https://hraness.com",
+} as const;
 export const ARCHITECTURE_URL = "https://github.com/hraness/gobstopper/blob/main/docs/design.md";
 
 export type CanonicalPagePath = "/" | "/docs" | "/methodology" | "/benchmarks" | "/compare/cliffcompaction" | "/compare/claude-code-compact" | "/blog" | `/blog/${string}`;

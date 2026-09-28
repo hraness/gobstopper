@@ -14,7 +14,7 @@ import {
   ProductHero,
   ProviderMarkChip,
 } from "@hraness/design-kit/react/server";
-import { product, type PortfolioProductId } from "@hraness/design-kit/portfolio";
+import { relatedFor } from "@hraness/design-kit/portfolio";
 
 import { GobFilm } from "./_components/gob-film";
 import { GobFuse } from "./_components/gob-fuse";
@@ -22,13 +22,8 @@ import { GobSawtooth } from "./_components/gob-sawtooth";
 import { GobTokens } from "./_components/gob-tokens";
 import { SiteHeader, SiteFooter } from "./_components/site-chrome";
 import { gobFilm } from "./_data/gob-film";
+import { plainInline, renderInline } from "./_lib/inline";
 import { publishedRelease } from "./publication";
-
-/** A related product from the portfolio snapshot: mark, name, address, and one-line role. */
-function related(id: PortfolioProductId, name: string) {
-  const { canonicalUrl, mark, oneLiner } = product(id);
-  return { href: canonicalUrl, mark, name, role: oneLiner };
-}
 
 const releaseVersion = publishedRelease?.version;
 const repository = "https://github.com/hraness/gobstopper";
@@ -103,7 +98,7 @@ trusted_legacy_command = true`,
 const inside = [
   {
     label: "Strategies",
-    detail: "The default, auto, picks a strategy from the transcript. Elide replaces eligible stale tool output, cliff keeps the newest assistant steps and drops older tool results over 500 bytes, structured writes a state card from metadata, and sawtooth recommends provider compaction. Scored ranks candidates; optional on-device models can score them or draft cards.",
+    detail: "For an idle session, the default, auto, scores each checked file strategy by tokens saved and cached prefix kept, and picks the best. Elide replaces stale tool output with short stubs. Cliff applies the proxy's drop rule to a saved copy. Structured adds a state card built from session metadata. The docs list the rest.",
   },
   {
     label: "Undo vault",
@@ -115,7 +110,7 @@ const inside = [
   },
   {
     label: "Eval and telemetry",
-    detail: "Eval compares strategies on frozen input, checks supported structures, and counts which sampled details remain. Events link snapshots with observed usage and report missing measurements as missing.",
+    detail: "`gobstopper eval` runs each strategy on the same frozen session and counts which sampled details survive. Each compaction event links its snapshot to the usage the provider reported, and usage it could not measure is recorded as missing.",
   },
 ] as const;
 
@@ -130,7 +125,7 @@ const trust = [
   },
   {
     label: "Automatic provider compaction is disabled",
-    detail: "The source build refuses automatic provider compaction, including auto_compact_closed, and direct in-place edits. An idle check cannot establish that another process has finished using a session. Provider commands need separate testing before they can be enabled.",
+    detail: "Gobstopper does not trigger Claude Code's or Codex's own compaction and does not edit session files in place. It cannot be sure another process has finished with a session, so it writes a separate copy.",
   },
   {
     label: "Unknown outcomes stay unknown",
@@ -161,7 +156,7 @@ const questions = [
   },
   {
     question: "How is this different from CliffCompaction?",
-    answer: "CliffCompaction is an API proxy: it rewrites each request over a token threshold while the session runs, keeps the head and the last three turns verbatim, drops tool results over 500 characters, and never paraphrases. `gobstopper proxy` ports its summary rule to the Anthropic Messages, OpenAI Responses, and Chat Completions dialects and keeps the last three turns verbatim by default and can keep more with a tail budget. Each summary also carries the human's words and the assistant's visible replies from the turns earlier compactions summarized, up to 24,000 characters, where CliffCompaction discards the previous summary. Gobstopper's file commands prepare copies you inspect and resume, with the source archived in a vault, and the `cliff` strategy applies the drop rule to those copies. The comparison page has the authors' benchmark figures. In all, Gobstopper makes seven departures, listed on the comparison page.",
+    answer: "CliffCompaction is the Python research proxy that introduced the summary rule. `gobstopper proxy` is a Rust port for the same three API dialects, and by default both keep the last three turns word for word. Gobstopper's summaries also carry your words and the assistant's visible replies across compactions, where CliffCompaction discards the previous summary. Its file commands write copies of saved sessions and keep the originals in a vault. [Gobstopper vs CliffCompaction](/compare/cliffcompaction) has the full table and the authors' benchmark figures. In all, Gobstopper makes seven departures, listed on the comparison page.",
   },
   {
     question: "Can I run my own compaction logic?",
@@ -169,24 +164,41 @@ const questions = [
   },
 ] as const;
 
-const relatedProducts = [
-  related("xcb", "xcb"),
-  related("wrench", "Ghostget"),
-  related("aicharts", "AI Charts"),
-  related("peopleblade", "PeopleBlade"),
-  related("kb", "Wordcell"),
+const alternativesCheckedOn = "September 28, 2026";
+
+const alternatives = [
+  {
+    label: "Claude Code /compact",
+    summary: "Built in, nothing to install. A model writes a summary and replaces the history, with no preview.",
+    link: { href: "/compare/claude-code-compact", label: "Gobstopper vs Claude Code /compact" },
+  },
+  {
+    label: "Codex /compact",
+    summary: "Built in. Codex replaces the history with a model-written summary when you run /compact or when context passes model_auto_compact_token_limit. The proxy passes Codex's own compact requests through unchanged.",
+    link: { href: "https://github.com/openai/codex", label: "Codex source on GitHub" },
+  },
+  {
+    label: "CliffCompaction",
+    summary: "The Python research proxy that Gobstopper's summary rule comes from. Its authors publish task-success benchmarks that Gobstopper has not rerun.",
+    link: { href: "/compare/cliffcompaction", label: "Gobstopper vs CliffCompaction" },
+  },
+  {
+    label: "RTK",
+    summary: "Shortens shell command output before the agent reads it. It leaves conversation history alone, so it trims a different part of the context.",
+    link: { href: "https://github.com/rtk-ai/rtk", label: "RTK on GitHub" },
+  },
 ] as const;
 
-function withCode(text: string) {
-  return text.split("`").map((part, index) => (index % 2 === 1 ? <code key={index}>{part}</code> : part));
-}
+/** Products with a registered relation to Gobstopper, from the portfolio snapshot. */
+const relatedProducts = relatedFor("gobstopper").map(({ href, mark, name, role }) => ({ href, mark, name, role }));
+
 
 const structuredData = {
   "@context": "https://schema.org",
   "@type": "FAQPage",
   mainEntity: questions.map(({ answer, question }) => ({
     "@type": "Question",
-    acceptedAnswer: { "@type": "Answer", text: answer.replaceAll("`", "") },
+    acceptedAnswer: { "@type": "Answer", text: plainInline(answer) },
     name: question,
   })),
 };
@@ -301,6 +313,19 @@ export default function Home() {
             </div>
           </MarketingSection>
 
+          <MarketingPrimitives
+            heading="Other ways to shrink context."
+            headingId="alternatives-title"
+            id="alternatives"
+            items={alternatives.map(({ label, link, summary: alternativeSummary }) => ({
+              example: <p><a href={link.href}>{link.label}</a></p>,
+              label,
+              summary: alternativeSummary,
+            }))}
+            label="Compared with"
+            summary={`Use the built-in /compact when a model-written summary is good enough. Use gobstopper proxy to keep a running session under a limit without a model call. Checked ${alternativesCheckedOn}.`}
+          />
+
           <MarketingInterfaceGrid
             heading="In front of your agent, on saved sessions, or from your own code."
             headingId="interfaces-title"
@@ -386,7 +411,7 @@ export default function Home() {
             id="questions"
             label="Questions"
             questions={questions.map(({ answer, question }) => ({
-              answer: <p>{withCode(answer)}</p>,
+              answer: <p>{renderInline(answer)}</p>,
               question,
             }))}
           />
@@ -411,11 +436,11 @@ export default function Home() {
           </MarketingMaker>
 
           <MarketingRelated
-            heading="More from Hraness."
+            heading="Works with Gobstopper."
             headingId="related-title"
-            items={[...relatedProducts]}
+            items={relatedProducts}
             label="Related"
-            summary="The rest of the stack, one line each."
+            summary="Other Hraness tools that use it."
           />
         </MarketingPage>
       </main>

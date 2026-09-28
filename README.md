@@ -35,6 +35,23 @@ and providers when you explicitly trust them.
 
 <!-- hraness:gobstopper-landing:end -->
 
+Website: [gobstopper.sh](https://gobstopper.sh) · Compared with [Claude Code /compact](https://gobstopper.sh/compare/claude-code-compact) and [CliffCompaction](https://gobstopper.sh/compare/cliffcompaction)
+
+## Quick start
+
+```sh
+cargo install --git https://github.com/hraness/gobstopper gobstopper --locked
+gobstopper proxy run -- claude   # one Claude Code session through a temporary proxy
+```
+
+When the session ends, `proxy run` prints how many requests it compacted. For
+a proxy that stays up, with `gobstopper proxy status` counters, see [Compact
+live coding-agent requests](#compact-live-coding-agent-requests). On macOS
+arm64, you can download the prebuilt binary from the [latest
+release](https://github.com/hraness/gobstopper/releases/latest) instead. For
+Codex, see [Set up Gobstopper for Claude Code and
+Codex](#set-up-gobstopper-for-claude-code-and-codex).
+
 ## Why
 
 A coding agent resends its whole history with every request. In a long
@@ -48,8 +65,8 @@ constraint, and each later summary summarizes the one before.
 a model call:
 
 - **Recent work stays word for word.** The system prompt, the first task,
-  and the newest turns (at least three, and more while they fit its tail
-  budget) are sent unchanged. Older turns become one summary that keeps human
+  and the newest three turns (more with `--keep-tail-percent`) are sent
+  unchanged. Older turns become one summary that keeps human
   and assistant text, keeps tool results of at most 500 characters, and
   reduces each tool call to a one-line signature. Longer tool results are
   dropped, because the agent can read the file or rerun the command.
@@ -341,8 +358,8 @@ cover edit structure and size, not semantic preservation or provider acceptance.
 
 This builds the current `main` branch, which the commands below describe.
 The proxy is in every release since v0.3.1; the tail budget and the 1M-window
-threshold shipped in v0.5.0, and estimate calibration is on `main` only until
-the next release. Check the [release
+threshold shipped in v0.5.0, and estimate calibration shipped in v0.7.0.
+Check the [release
 notes](https://github.com/hraness/gobstopper/releases) for what a tagged
 release includes.
 
@@ -890,7 +907,7 @@ compactions summarized, and also works on saved session files:
 | How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy applies the same summary rule and keeps the last three turns verbatim, plus, with `--keep-tail-percent`, older whole turns that fit in that share of the room under the threshold; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
 | Recompaction | Rebuilt from the original history; the prior summary is discarded | The proxy rebuilds from the original history, and each summary keeps the human's words and the assistant's visible replies from the turns earlier compactions summarized, up to 24,000 characters (since v0.6.0); `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy |
 | What holds the originals | The agent's own history and the files on disk; the proxy keeps only an in-memory cache of compacted prefixes | For proxied requests, the agent's own transcript and an in-memory cache; for copies, a content-addressed vault with `search-snapshot` and `read-snapshot` |
-| Evidence published | Terminal-Bench 2.0 and 2.1 (including a run through Claude Code), SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models | Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, one dated afternoon of live proxy counters, literal retention probes, and dated single-session trials; no task-success or billing claims |
+| Evidence published | Terminal-Bench 2.0 and 2.1 (including a run through Claude Code), SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models | Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, one dated afternoon of live proxy counters, literal retention probes, dated single-session trials, and one Terminal-Bench 2.1 trial of 89 tasks (v0.7.3 changelog) whose resolution rates with and without the proxy were within noise |
 | Model needed | None; the summary is mechanical | None for the proxy or the built-in strategies; optional model scorers |
 
 `gobstopper proxy` is a Rust port of CliffCompaction's request engine: the

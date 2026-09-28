@@ -24,3 +24,4 @@ the content footer also keeps its current PNG.
 | --- | --- | --- |
 | icon.png | 512×512 | `8d4e6d605dff8f53f473640df2ec579ad8eaaba70f569fd9848d421318e4f98f` |
 | apple-icon.png | 180×180 | `fbc8ca53a9009433b161a839651c2f8fcb0203894e35b5bd6f6851922597a019` |
+| app/favicon.ico | 48×48, 32×32 (from icon.png) | `c06d5c860cd4a6626e28714887d052f3d74f88681ecdb0d9d69c3c8abcc1a061` |
