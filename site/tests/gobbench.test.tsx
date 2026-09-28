@@ -1,0 +1,217 @@
+import { describe, expect, test } from "bun:test";
+import { readdir, readFile } from "node:fs/promises";
+import { join } from "node:path";
+
+import { ARM_LABEL, ARM_ORDER, arm, pair, replayGrid, sawtooth, terminalBench } from "../app/_lib/gobbench-data";
+import { F, GAP_ROWS, fewer, millions, pct, range, signed, thousands, usd, wilson } from "../app/_lib/gobbench-format";
+import {
+  ANATOMY, FUSE, RING, SLAB, TAIL, type SlabKind, areaPath, linePath, linear, resendColumns, stackHeight, stepPath, ticks,
+} from "../app/_lib/gob-geometry";
+import { gobFilm } from "../app/_data/gob-film";
+
+const site = join(import.meta.dir, "..");
+const read = async (path: string): Promise<string> => await readFile(join(site, path), "utf8");
+const DATA_DIR = "public/benchmarks/2026-09-28";
+
+describe("launch formatter", () => {
+  test("formats every launch number from the data package (§2.3)", () => {
+    expect(F).toEqual({
+      solved: { tail0: "61", no_proxy: "60", tail40: "59" },
+      rate: { tail0: "68.5%", no_proxy: "67.4%", tail40: "66.3%" },
+      ci: { tail0: "58.3–77.2", no_proxy: "57.1–76.3", tail40: "56.0–75.3" },
+      input: { tail0: "84.3M", no_proxy: "118.6M", tail40: "118.5M" },
+      cache: { tail0: "68.7M", no_proxy: "102.6M", tail40: "98.2M" },
+      uncached: { tail0: "15.6M", no_proxy: "15.9M", tail40: "20.3M" },
+      output: { tail0: "2.64M", no_proxy: "2.71M", tail40: "3.97M" },
+      cost: { tail0: "$5.72", no_proxy: "$6.82", tail40: "$7.97" },
+      perTask: { tail0: "$0.064", no_proxy: "$0.077", tail40: "$0.090" },
+      inputFewer: "29%",
+      cacheFewer: "33%",
+      costLower: "16%",
+      costLowerCI: "−32% to +2%",
+      oldVsNew: "+39%",
+      oldVsNone: "+17%",
+      oldVsNewCI: "−46.5% to −1.6%",
+      churn: { all: "43", none: "15", split: "31" },
+      gapTotal: "$2.25",
+      gapTopShare: "105%",
+      replay: { t32: "78%", t64: "73%", t128: "61%", t256: "38%" },
+      replayLargest: { from: "595K", to: "41K" },
+      // 12,948,162 estimated tokens: the raw data gives 12.9M, not the spec's expected 13.0M.
+      saw: { requests: "383", peak: "491K", cumFrom: "116.7M", cumTo: "12.9M", cut: "89%", compactions: "50" },
+    });
+  });
+
+  test("computes Wilson intervals from resolved and n_tasks, never the stored bounds", () => {
+    expect(F.ci.tail0).toBe("58.3–77.2");
+    const [lo, hi] = wilson(61, 89);
+    expect(lo).toBeCloseTo(0.58296, 4);
+    expect(hi).toBeCloseTo(0.77249, 4);
+    expect(() => wilson(90, 89)).toThrow();
+  });
+
+  test("uses a real minus sign and en dash and never signs a zero", () => {
+    expect(signed(-0.161)).toBe("−16%");
+    expect(signed(0.393)).toBe("+39%");
+    expect(signed(0.001)).toBe("0%");
+    expect(range(0.5, 0.75)).toBe("50.0–75.0");
+    expect(usd(-0.1235, 2)).toBe("−$0.12");
+    expect(usd(5.7204, 2)).toBe("$5.72");
+    expect(pct(0.6854)).toBe("68.5%");
+    expect(millions(84305420)).toBe("84.3M");
+    expect(thousands(595109)).toBe("595K");
+    expect(fewer(-0.2889)).toBe("29%");
+    expect(JSON.stringify(F)).not.toMatch(/[—-]/u);
+  });
+
+  test("agrees with the ratios stored in the data package", () => {
+    const newVsNone = pair("tail0", "no_proxy");
+    const inputRatio = arm("tail0").tokens_all_trials.total_input / arm("no_proxy").tokens_all_trials.total_input - 1;
+    expect(inputRatio).toBeCloseTo(newVsNone.token_ratio_minus1.total_input, 3);
+    for (const id of ARM_ORDER) {
+      const tokens = arm(id).tokens_all_trials;
+      expect(tokens.cache_read + tokens.uncached_input).toBe(tokens.total_input);
+    }
+    const gap = terminalBench.cost_concentration[0]!;
+    expect(gap.minuend).toBe("tail40");
+    expect(gap.subtrahend).toBe("tail0");
+    expect(Math.abs(GAP_ROWS.slice(0, -1).reduce((sum, row) => sum + row.deltaUsd, 0) / gap.total_gap_usd - gap.top_share_of_gap)).toBeLessThan(0.0006);
+  });
+
+  test("builds the cost-gap rows with the other tasks netting slightly negative", () => {
+    expect(GAP_ROWS.map((row) => `${row.task} ${row.deltaUsd > 0 ? "+" : ""}${usd(row.deltaUsd, 2)}`)).toEqual([
+      "video-processing +$1.02",
+      "winning-avg-corewars +$0.52",
+      "path-tracing-reverse +$0.29",
+      "path-tracing +$0.29",
+      "schemelike-metacircular-eval +$0.25",
+      "other 84 tasks −$0.12",
+    ]);
+  });
+
+  test("names the arms exactly and never as CliffCompaction", () => {
+    expect(ARM_ORDER).toEqual(["tail0", "no_proxy", "tail40"]);
+    expect(ARM_LABEL).toEqual({
+      tail0: "Gobstopper, tail 0",
+      tail40: "Gobstopper, tail 40 (old default)",
+      no_proxy: "Claude Code, no proxy",
+    });
+    for (const id of ARM_ORDER) expect(arm(id).label).toBe(ARM_LABEL[id]);
+    expect(Object.values(ARM_LABEL).join(" ")).not.toContain("CliffCompaction");
+  });
+});
+
+describe("launch geometry", () => {
+  test("keeps the brand ring and slab constants", () => {
+    expect(RING).toEqual({ box: 26, r: [13, 8, 5] });
+    expect(SLAB).toEqual({ h: 1, gap: 0.14 });
+    expect(stackHeight(3)).toBeCloseTo(3.28, 10);
+  });
+
+  test("stacks the diagrams as specified", () => {
+    const columns = resendColumns(5);
+    expect(columns.map((column) => column.length)).toEqual([1, 2, 3, 4, 5]);
+    expect(columns.every((column) => column[0]!.kind === "task" && column.slice(1).every((slab) => slab.kind === "turn"))).toBe(true);
+    expect(FUSE.before.map((slab) => slab.kind)).toEqual(["task", ...Array<SlabKind>(8).fill("turn")]);
+    expect(FUSE.after.map((slab) => slab.kind)).toEqual(["task", "summary", "recent", "recent", "recent"]);
+    expect(stackHeight(FUSE.before.length)).toBeGreaterThan(FUSE.lidAt);
+    expect(stackHeight(FUSE.after.length)).toBeLessThan(FUSE.lidAt);
+    expect(TAIL.tail0.map((slab) => slab.kind)).toEqual(["task", "summary", "recent", "recent", "recent"]);
+    expect(TAIL.tail40.map((slab) => slab.kind)).toEqual(["task", "summary", "kept", "kept", "recent", "recent", "recent"]);
+    expect(stackHeight(TAIL.tail40.length)).toBeLessThan(TAIL.lidAt + 1);
+    expect(ANATOMY.blocks.reduce((sum, block) => sum + block.w, 0)).toBeCloseTo(0.57, 10);
+  });
+
+  test("draws paths in a 1000 box with y inverted", () => {
+    expect(linePath([0, 50, 100], 100)).toBe("M0,1000 L500,500 L1000,0");
+    expect(areaPath([0, 100], 100)).toBe("M0,1000 L1000,0 L1000,1000 L0,1000 Z");
+    expect(stepPath([50, 50, 25], 100)).toBe("M0,500 H500 H1000 V750");
+    expect(linear(0, 10, 0, 1)(5)).toBe(0.5);
+    expect(() => linePath([1], 1)).toThrow();
+  });
+
+  test("picks round ticks from zero", () => {
+    expect(ticks(120_000_000, 4)).toEqual([0, 40_000_000, 80_000_000, 120_000_000]);
+    expect(ticks(120_000_000, 3)).toEqual([0, 60_000_000, 120_000_000]);
+    expect(ticks(500_000, 6)).toEqual([0, 100_000, 200_000, 300_000, 400_000, 500_000]);
+    expect(ticks(500_000, 3)).toEqual([0, 250_000, 500_000]);
+    expect(ticks(1, 5)).toEqual([0, 0.25, 0.5, 0.75, 1]);
+  });
+});
+
+describe("launch data files", () => {
+  const files: Readonly<Record<string, readonly string[]>> = {
+    "terminal-bench-results.json": [
+      "arms", "churn", "cost_concentration", "pairs", "paper_reference", "per_task", "proxy_activity",
+      "schema_version", "source",
+    ],
+    "replay-grid.json": [
+      "by_provider", "corpus", "largest_session_at_32k_tail0", "pairing_violations_total", "pooled",
+      "schema_version", "source",
+    ],
+    "sawtooth-series.json": [
+      "request", "runs", "schema_version", "schematic", "session_profile", "source", "without_proxy",
+    ],
+  };
+
+  const FORBIDDEN_KEYS = new Set([
+    "samples", "rows", "sample", "session_id", "path", "snapshot", "sha256", "manifest", "manifest_sha256",
+    "missed_probes", "argv", "environment",
+  ]);
+
+  function keys(value: unknown, into: Set<string>): Set<string> {
+    if (Array.isArray(value)) for (const item of value) keys(item, into);
+    else if (typeof value === "object" && value !== null) {
+      for (const [key, item] of Object.entries(value)) {
+        into.add(key);
+        keys(item, into);
+      }
+    }
+    return into;
+  }
+
+  test("publishes exactly the three aggregate files with allowlisted top-level keys", async () => {
+    expect((await readdir(join(site, DATA_DIR))).sort()).toEqual(Object.keys(files).sort());
+    for (const [file, allowed] of Object.entries(files)) {
+      const parsed = JSON.parse(await read(`${DATA_DIR}/${file}`)) as Record<string, unknown>;
+      expect(Object.keys(parsed).sort()).toEqual([...allowed]);
+      expect([...keys(parsed, new Set())].filter((key) => FORBIDDEN_KEYS.has(key))).toEqual([]);
+    }
+  });
+
+  test("serves the same values the site imports", () => {
+    expect(terminalBench.arms).toHaveLength(3);
+    expect(sawtooth.schematic).toBe(false);
+    expect(sawtooth.without_proxy).toHaveLength(sawtooth.request.length);
+    expect(replayGrid.pairing_violations_total.proxy_introduced).toBe(0);
+  });
+
+  test("leaves the film manifest empty until the film files exist", () => {
+    expect(gobFilm).toBeNull();
+  });
+
+  const PRIVATE: readonly RegExp[] = [
+    /vck_/u, /192\.168\./u, /\b10\.0\./u, /gateway\.env/u, /\.jsonl/u, /~\/\.claude/u, /~\/\.codex/u,
+    // The two private proxy ports as standalone numbers; the same digits inside token counts are fine.
+    /base_url/u, /(?<![\d.])837[01](?![\d])/u, /\/Users\//u, /\/home\//u, /\/private\//u, /\/tmp\//u, /rollout-/u,
+    /session-\d{4}/u, /AI_GATEWAY/u, /GATEWAY_API_KEY/u,
+    /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/iu,
+  ];
+
+  test("keeps keys, hosts, ports and session names out of the data and the figures", async () => {
+    const components = (await readdir(join(site, "app/_components"))).filter((name) => /^gob-.*\.tsx$/u.test(name));
+    const sources = [
+      ...Object.keys(files).map((file) => `${DATA_DIR}/${file}`),
+      ...components.map((name) => `app/_components/${name}`),
+      "app/_lib/gobbench-data.ts",
+      "app/_lib/gobbench-format.ts",
+      "app/_lib/gob-geometry.ts",
+      "app/_data/gob-film.ts",
+    ];
+    for (const path of sources) {
+      const text = await read(path);
+      const hits = PRIVATE.filter((pattern) => pattern.test(text)).map(String);
+      expect({ path, hits }).toEqual({ path, hits: [] });
+    }
+  });
+});
