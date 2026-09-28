@@ -3,7 +3,10 @@ import { getDesignPaletteTheme } from "@hraness/design-kit";
 import { DesignPaletteProvider, ThemeColorSync } from "@hraness/design-kit/react";
 import { siteDefaultPalette } from "../palette";
 
+import { socialImageAlt } from "@hraness/web-discovery/social-image";
+
 import { FoilController } from "./foil-controller";
+import { socialSite } from "./social";
 
 import {
   GITHUB_URL,
@@ -74,7 +77,7 @@ export const metadata: Metadata = {
         url: "/opengraph-image",
         width: 1200,
         height: 630,
-        alt: title,
+        alt: socialImageAlt(socialSite),
       },
     ],
   },
@@ -82,7 +85,7 @@ export const metadata: Metadata = {
     card: "summary_large_image",
     title,
     description,
-    images: [{ url: "/opengraph-image", alt: title }],
+    images: [{ url: "/opengraph-image", alt: socialImageAlt(socialSite) }],
   },
 };
 

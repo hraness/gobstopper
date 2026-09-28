@@ -12,6 +12,7 @@ import {
   type SearchSite,
 } from "@hraness/web-discovery";
 import { isArticleIndexable, renderArticleProvenanceHtml } from "@hraness/design-kit";
+import { socialImageAlt, type SocialImagePage } from "@hraness/web-discovery/social-image";
 
 import { SITE_DESCRIPTION, SITE_NAME, SITE_ORIGIN, SITE_TITLE } from "../_lib/site";
 import {
@@ -26,6 +27,7 @@ import {
   publishedTime,
   type BlogPost,
 } from "./articles";
+import { socialSite } from "../social";
 
 export const searchSite = {
   description: SITE_DESCRIPTION,
@@ -43,6 +45,11 @@ export const hraness: ArticleParty = {
 /** Hraness publishes Gobstopper and its blog; Gobstopper is the product, not an organization. */
 const publisher: ArticleParty = hraness;
 
+/** Copy for a post's share card; the site declaration in app/social.ts supplies the rest. */
+export function postSocialPage(post: BlogPost): SocialImagePage {
+  return { description: post.shareLine, eyebrow: post.eyebrow, headline: post.title };
+}
+
 export function postDiscovery(post: BlogPost): ArticleDiscovery {
   const path = postPath(post);
   return {
@@ -51,7 +58,7 @@ export function postDiscovery(post: BlogPost): ArticleDiscovery {
     canonicalPath: path,
     description: post.dek,
     image: {
-      alt: post.title,
+      alt: socialImageAlt(socialSite, postSocialPage(post)),
       contentType: "image/png",
       height: 630,
       path: `${path}/opengraph-image`,

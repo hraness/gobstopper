@@ -1,7 +1,9 @@
 import type { Metadata } from "next";
+import { socialImageAlt } from "@hraness/web-discovery/social-image";
 
 import { SiteDocument } from "../_components/site-document";
 import { SiteHeader, SiteFooter } from "../_components/site-chrome";
+import { socialSite } from "../social";
 
 const title = "Methodology";
 const socialTitle = "Gobstopper methodology";
@@ -18,13 +20,13 @@ export const metadata: Metadata = {
     siteName: "Gobstopper",
     type: "article",
     url: "/methodology",
-    images: [{ url: "/opengraph-image", width: 1200, height: 630, alt: socialTitle }],
+    images: [{ url: "/opengraph-image", width: 1200, height: 630, alt: socialImageAlt(socialSite) }],
   },
   twitter: {
     card: "summary_large_image",
     title: socialTitle,
     description,
-    images: [{ url: "/opengraph-image", alt: socialTitle }],
+    images: [{ url: "/opengraph-image", alt: socialImageAlt(socialSite) }],
   },
 };
 

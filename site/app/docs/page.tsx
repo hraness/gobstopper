@@ -1,9 +1,12 @@
 import type { Metadata } from "next";
 import { ProviderMarkChip } from "@hraness/design-kit/react/server";
+import { socialImageAlt } from "@hraness/web-discovery/social-image";
 
 import { SiteDocument } from "../_components/site-document";
 import { SiteHeader, SiteFooter } from "../_components/site-chrome";
 import { readmeHtml, readmeSections } from "../readme.generated";
+import { socialSite } from "../social";
+import { docsSocialPage } from "./social-page";
 
 const agents = ["claudecode", "codex", "opencode", "crush", "aider", "goose"] as const;
 
@@ -22,13 +25,13 @@ export const metadata: Metadata = {
     siteName: "Gobstopper",
     type: "article",
     url: "/docs",
-    images: [{ url: "/docs/opengraph-image", width: 1200, height: 630, alt: socialTitle }],
+    images: [{ url: "/docs/opengraph-image", width: 1200, height: 630, alt: socialImageAlt(socialSite, docsSocialPage) }],
   },
   twitter: {
     card: "summary_large_image",
     title: socialTitle,
     description,
-    images: [{ url: "/docs/opengraph-image", alt: socialTitle }],
+    images: [{ url: "/docs/opengraph-image", alt: socialImageAlt(socialSite, docsSocialPage) }],
   },
 };
 
