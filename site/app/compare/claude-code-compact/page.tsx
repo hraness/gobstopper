@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
+import { SyntaxCode } from "@hraness/design-kit/react/server";
 
+import { SiteDocument } from "../../_components/site-document";
 import { SiteHeader, SiteFooter } from "../../_components/site-chrome";
 import { GITHUB_URL } from "../../_lib/site";
 import {
@@ -60,9 +62,21 @@ export default function CompareClaudeCodeCompact() {
         type="application/ld+json"
       />
       <SiteHeader path="/compare/claude-code-compact" />
-      <main id="main" tabIndex={-1} className="document-page">
-        <article>
-          <h1>Gobstopper compared with Claude Code /compact</h1>
+      <main id="main" tabIndex={-1}>
+        <SiteDocument
+          dek="Claude Code's /compact swaps history for a model-written summary with no preview; Gobstopper previews the cut, archives the original, and can undo it."
+          eyebrow="Comparison"
+          heading={title}
+          meta="Checked against Anthropic's Claude Code documentation and Gobstopper's README and source on September 26, 2026"
+          toc={[
+            { href: "#compact-summary", label: "/compact replaces history with a model-written summary" },
+            { href: "#gobstopper-copy", label: "Gobstopper previews the cut and archives the original" },
+            { href: "#side-by-side", label: "Side-by-side comparison" },
+            { href: "#when-to-use-each", label: "When to use each" },
+            { href: "#questions", label: "Questions" },
+            { href: "#sources", label: "Sources" },
+          ]}
+        >
           <p>
             Claude Code&apos;s <code>/compact</code> command and Gobstopper both
             make a long session&apos;s context smaller. They differ in what
@@ -78,7 +92,7 @@ export default function CompareClaudeCodeCompact() {
             simpler choice.
           </p>
 
-          <h2>/compact replaces the history with a model-written summary</h2>
+          <h2 id="compact-summary">/compact replaces the history with a model-written summary</h2>
           <p>
             <code>/compact</code> is built into Claude Code. To produce the
             summary, Claude Code sends a separate request carrying the same
@@ -107,7 +121,7 @@ export default function CompareClaudeCodeCompact() {
             it in the transcript yourself and pasting it back.
           </p>
 
-          <h2>Gobstopper previews the cut and archives the original</h2>
+          <h2 id="gobstopper-copy">Gobstopper previews the cut and archives the original</h2>
           <p>
             Gobstopper inspects saved Claude Code and Codex session files and
             prepares compacted copies. <code>gobstopper plan</code> shows what a
@@ -132,13 +146,14 @@ export default function CompareClaudeCodeCompact() {
             reports a smaller context and the client&apos;s own auto-compaction
             does not reach its trigger. The session files stay unchanged.
           </p>
-          <pre tabIndex={0}><code>{`gobstopper detect                 # sessions, context sizes
+          <pre><SyntaxCode code={`gobstopper detect                 # sessions, context sizes
 gobstopper plan <session>         # preview the cut under each strategy
 gobstopper apply <session>        # write the compacted copy as a new fork
-gobstopper undo <session>         # restore a vaulted snapshot into a new fork`}</code></pre>
+gobstopper undo <session>         # restore a vaulted snapshot into a new fork`} language="sh" /></pre>
 
-          <h2>Side-by-side comparison</h2>
-          <table>
+          <h2 id="side-by-side">Side-by-side comparison</h2>
+          <figure>
+            <table>
             <caption>Checked against Anthropic&apos;s Claude Code documentation and blog and Gobstopper&apos;s README and source on September 26, 2026</caption>
             <thead>
               <tr>
@@ -156,9 +171,10 @@ gobstopper undo <session>         # restore a vaulted snapshot into a new fork`}
                 </tr>
               ))}
             </tbody>
-          </table>
+            </table>
+          </figure>
 
-          <h2>When to use each</h2>
+          <h2 id="when-to-use-each">When to use each</h2>
           <p>
             Run <code>/compact</code> when a live session is bloated and a
             model-chosen summary is an acceptable trade: it is already
@@ -172,7 +188,7 @@ gobstopper undo <session>         # restore a vaulted snapshot into a new fork`}
             <a href="/compare/cliffcompaction">Gobstopper compared with CliffCompaction</a>.
           </p>
 
-          <h2>Questions</h2>
+          <h2 id="questions">Questions</h2>
           {comparisonQuestions.map(({ answer, question }) => (
             <section key={question}>
               <h3>{question}</h3>
@@ -180,7 +196,7 @@ gobstopper undo <session>         # restore a vaulted snapshot into a new fork`}
             </section>
           ))}
 
-          <h2>Sources</h2>
+          <h2 id="sources">Sources</h2>
           <ul>
             <li>
               <a href={CLAUDE_COMMANDS}>Claude Code commands reference</a>{" "}
@@ -212,7 +228,7 @@ gobstopper undo <session>         # restore a vaulted snapshot into a new fork`}
             </li>
             <li><a href={`${GITHUB_URL}/blob/main/README.md`}>Gobstopper README</a>, which carries the same comparison table.</li>
           </ul>
-        </article>
+        </SiteDocument>
       </main>
       <SiteFooter path="/compare/claude-code-compact" />
     </>

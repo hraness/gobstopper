@@ -1,8 +1,16 @@
 import {
+  MarketingCodeBlock,
+  MarketingDataTable,
   MarketingFlow,
+  MarketingInstallPanel,
+  MarketingInterfaceGrid,
+  MarketingMaker,
   MarketingPage,
+  MarketingPrimitives,
   MarketingQuestionList,
+  MarketingRelated,
   MarketingSection,
+  MarketingTrustBoundary,
   ProductHero,
   ProviderMarkChip,
 } from "@hraness/design-kit/react/server";
@@ -11,10 +19,10 @@ import { product, type PortfolioProductId } from "@hraness/design-kit/portfolio"
 import { SiteHeader, SiteFooter } from "./_components/site-chrome";
 import { publishedRelease } from "./publication";
 
-/** A related product from the portfolio snapshot: name, address, and one-line role. */
+/** A related product from the portfolio snapshot: mark, name, address, and one-line role. */
 function related(id: PortfolioProductId, name: string) {
-  const { canonicalUrl, oneLiner } = product(id);
-  return { href: canonicalUrl, name, role: oneLiner };
+  const { canonicalUrl, mark, oneLiner } = product(id);
+  return { href: canonicalUrl, mark, name, role: oneLiner };
 }
 
 const releaseVersion = publishedRelease?.version;
@@ -56,6 +64,7 @@ const ways = [
     code: `gobstopper proxy run -- claude
 ANTHROPIC_BASE_URL=http://127.0.0.1:8260 claude
 gobstopper proxy replay <session>`,
+    language: "sh",
   },
   {
     label: "Saved sessions",
@@ -63,12 +72,14 @@ gobstopper proxy replay <session>`,
     code: `gobstopper plan <session> --trigger 250000
 gobstopper apply <session> --strategy elide
 gobstopper verify <session> && gobstopper undo <session>`,
+    language: "sh",
   },
   {
     label: "Watcher and hooks",
     summary: "The watcher checks sessions every 30 seconds by default and can prepare separate copies. Dry-run mode previews its decisions. Hook setup writes a settings file for you to review and does not change provider settings.",
     code: `gobstopper watch --dry-run --once
 gobstopper install-hooks --output ./hook-candidates.json`,
+    language: "sh",
   },
   {
     label: "Your program",
@@ -80,6 +91,7 @@ keep_recent_tool_outputs = 4
 [presets.custom]
 command = "node my-editor.js"
 trusted_legacy_command = true`,
+    language: "text",
   },
 ] as const;
 
@@ -176,7 +188,7 @@ const structuredData = {
 
 export default function Home() {
   return (
-    <div data-hraness-marketing-preset="editorial" data-hraness-pattern="none" className="gob-home">
+    <div data-hraness-marketing-preset="editorial" data-hraness-pattern="none">
       <script
         dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }}
         type="application/ld+json"
@@ -193,7 +205,6 @@ export default function Home() {
               { href: "/benchmarks", label: "See the benchmarks", emphasis: "secondary" },
             ]}
             boundary={facts}
-            className="gob-hero"
             eyebrow="Session compaction tool"
             heading={heading}
             headingId="hero-title"
@@ -201,21 +212,31 @@ export default function Home() {
             summary={summary}
           />
 
-          <figure className="gob-proof" aria-labelledby="proof-title">
-            <figcaption className="gob-proof__head">
-              <span id="proof-title">Resume trial on one 333k-token Claude Code session</span>
-              <span className="gob-proof__date">September 17, 2026</span>
-            </figcaption>
-            <pre className="gob-code gob-proof__table" tabIndex={0}><code>{`strategy          input tokens on resume   recalled the task?
-no compaction          312,722               yes
-elide                  219,167               yes
-compacted              220,447               yes
-autocompact 100         56,300               no`}</code></pre>
-            <p className="gob-proof__note">
-              Claude&apos;s own autocompact cut the resume context by 82% and then said unfinished renames were done. Gobstopper&apos;s elide and compacted strategies cut about 30% and recalled the task correctly. One session on an earlier build, not a general benchmark.{" "}
-              <a href="/benchmarks">All dated measurements</a>
-            </p>
-          </figure>
+          <MarketingDataTable
+            caption="Resume trial on one 333k-token Claude Code session"
+            columns={[
+              { label: "Strategy" },
+              { label: "Input tokens on resume", numeric: true },
+              { label: "vs. no compaction", numeric: true },
+              { label: "Recalled the task?" },
+            ]}
+            meta="September 17, 2026"
+            note={
+              <>
+                Claude&apos;s own autocompact cut the resume context by 82% and then said
+                unfinished renames were done. Gobstopper&apos;s elide and compacted
+                strategies cut about 30% and recalled the task correctly. One session on
+                an earlier build, not a general benchmark.{" "}
+                <a href="/benchmarks">All dated measurements</a>
+              </>
+            }
+            rows={[
+              ["no compaction", "312,722", "—", "yes"],
+              ["elide", "219,167", "−29.9%", { content: "yes", tone: "positive" }],
+              ["compacted", "220,447", "−29.5%", { content: "yes", tone: "positive" }],
+              [{ content: "autocompact 100" }, "56,300", "−82.0%", { content: "no", tone: "negative" }],
+            ]}
+          />
 
           <MarketingSection
             heading="It keeps each request under a threshold you choose."
@@ -226,7 +247,6 @@ autocompact 100         56,300               no`}</code></pre>
           >
             <MarketingFlow
               ariaLabel="How the proxy works"
-              className="gob-steps"
               steps={steps.map(({ detail, label, ...rest }) => ({
                 label,
                 detail: detail.replaceAll("`", ""),
@@ -249,96 +269,84 @@ autocompact 100         56,300               no`}</code></pre>
             </div>
           </MarketingSection>
 
-          <MarketingSection
+          <MarketingInterfaceGrid
             heading="In front of your agent, on saved sessions, or from your own code."
             headingId="interfaces-title"
             id="interfaces"
+            interfaces={ways.map(({ code, label, language, summary: waySummary }) => ({
+              example: <MarketingCodeBlock code={code} language={language} />,
+              label,
+              summary: waySummary.replaceAll("`", ""),
+            }))}
             label="Four ways to run it"
             summary="Built-in strategies and trusted programs go through the same checks before Gobstopper writes a copy."
-          >
-            <div className="gob-rows">
-              {ways.map((way) => (
-                <div className="gob-row" key={way.label}>
-                  <div className="gob-row__text">
-                    <h3>{way.label}</h3>
-                    <p>{withCode(way.summary)}</p>
-                  </div>
-                  <pre className="gob-code" tabIndex={0}><code>{way.code}</code></pre>
-                </div>
-              ))}
-            </div>
-          </MarketingSection>
+          />
 
-          <MarketingSection
+          <MarketingPrimitives
             heading="What's inside."
             headingId="model-title"
             id="model"
+            items={inside.map(({ detail, label }) => ({
+              label,
+              summary: detail.replaceAll("`", ""),
+            }))}
             label="Parts"
             summary="Set a threshold, compare strategies on frozen input, and inspect the candidate before you resume it."
-          >
-            <dl className="gob-list">
-              {inside.map((item) => (
-                <div key={item.label}>
-                  <dt>{item.label}</dt>
-                  <dd>{withCode(item.detail)}</dd>
-                </div>
-              ))}
-            </dl>
-          </MarketingSection>
+          />
 
-          <MarketingSection
+          <MarketingTrustBoundary
             heading="What Gobstopper won't do."
             headingId="boundary-title"
             id="boundary"
+            items={[...trust]}
             label="Limits"
             summary="A compaction that breaks resume or hides a failure is worse than none. The commands enforce these rules, and tests cover them."
-          >
-            <dl className="gob-list">
-              {trust.map((item) => (
-                <div key={item.label}>
-                  <dt>{item.label}</dt>
-                  <dd>{item.detail}</dd>
-                </div>
-              ))}
-            </dl>
-          </MarketingSection>
+          />
 
-          <MarketingSection
+          <MarketingInstallPanel
+            eyebrow="Install"
             heading="Install and inspect your first session."
             headingId="install-title"
             id="install"
-            label="Install"
-            summary="This installs the current source build, which this page describes. It needs Rust 1.85 or newer."
+            note={
+              <p>
+                This installs the current source build, which this page describes.
+                It needs Rust 1.85 or newer.
+              </p>
+            }
           >
-            <div className="gob-install">
-              <pre className="gob-code install-command" tabIndex={0}><code>{`cargo install --git ${repository} gobstopper --locked
-gobstopper --help`}</code></pre>
-              <pre className="gob-code install-command" tabIndex={0}><code>{`gobstopper proxy run -- claude    # one Claude Code session through the proxy
-gobstopper proxy serve            # background proxy on http://127.0.0.1:8260
-gobstopper proxy status           # requests compacted, estimated tokens saved`}</code></pre>
-              <pre className="gob-code install-command" tabIndex={0}><code>{`gobstopper detect                         # list sessions and their size
-gobstopper plan <session> --trigger 250000   # preview a compaction; changes nothing`}</code></pre>
-              {publishedRelease === null ? (
-                <p className="install-note">No release yet.</p>
-              ) : (
-                <p className="install-note">
-                  Latest tagged release: <a href={`${repository}/releases/tag/v${releaseVersion}`}>v{releaseVersion}</a>.{" "}
-                  <a href={publishedRelease.verificationRun}>See how this release was verified</a>.
-                </p>
-              )}
+            <MarketingCodeBlock
+              code={`cargo install --git ${repository} gobstopper --locked\ngobstopper --help`}
+              language="sh"
+            />
+            <MarketingCodeBlock
+              code={`gobstopper proxy run -- claude    # one Claude Code session through the proxy\ngobstopper proxy serve            # background proxy on http://127.0.0.1:8260\ngobstopper proxy status           # requests compacted, estimated tokens saved`}
+              language="sh"
+            />
+            <MarketingCodeBlock
+              code={`gobstopper detect                            # list sessions and their size\ngobstopper plan <session> --trigger 250000   # preview a compaction; changes nothing`}
+              language="sh"
+            />
+            {publishedRelease === null ? (
+              <p className="install-note">No release yet.</p>
+            ) : (
               <p className="install-note">
-                Gobstopper reads Codex and Claude Code session data on your machine. Built-in
-                inspection makes no model call. If you enable a remote scorer, it receives
-                selected transcript text; trusted plugins run your code.{" "}
-                <a href="/docs#install--use">Read the full reference</a>.
+                Latest tagged release: <a href={`${repository}/releases/tag/v${releaseVersion}`}>v{releaseVersion}</a>.{" "}
+                <a href={publishedRelease.verificationRun}>See how this release was verified</a>.
               </p>
-              <p className="install-note">
-                <a href={`${repository}/blob/main/docs/assurance/qualification.json`}>Provider support status</a>{" · "}
-                <a href={`${repository}/blob/main/docs/assurance/operations.md`}>Recovery runbook</a>{" · "}
-                <a href={`${repository}/blob/main/verify/README.md`}>Verification scopes and assumptions</a>
-              </p>
-            </div>
-          </MarketingSection>
+            )}
+            <p className="install-note">
+              Gobstopper reads Codex and Claude Code session data on your machine. Built-in
+              inspection makes no model call. If you enable a remote scorer, it receives
+              selected transcript text; trusted plugins run your code.{" "}
+              <a href="/docs#install--use">Read the full reference</a>.
+            </p>
+            <p className="install-note">
+              <a href={`${repository}/blob/main/docs/assurance/qualification.json`}>Provider support status</a>{" · "}
+              <a href={`${repository}/blob/main/docs/assurance/operations.md`}>Recovery runbook</a>{" · "}
+              <a href={`${repository}/blob/main/verify/README.md`}>Verification scopes and assumptions</a>
+            </p>
+          </MarketingInstallPanel>
 
           <MarketingQuestionList
             heading="Before you install."
@@ -351,27 +359,32 @@ gobstopper plan <session> --trigger 250000   # preview a compaction; changes not
             }))}
           />
 
-          <MarketingSection
+          <MarketingMaker
             heading="Built by Hraness."
             headingId="maker-title"
             id="maker"
             label="Maker"
-            summary="Hraness is a software studio in Puerto Rico. We build tools that give AI agents memory, context, web access, and a record of their work, and we make apps and sourced archives for people. Hraness publishes Gobstopper under your choice of the MIT or Apache-2.0 license."
+            links={[
+              { href: "https://hraness.com", label: "hraness.com" },
+              { href: "https://x.com/hraness", label: "@hraness" },
+              { href: repository, label: "GitHub" },
+            ]}
           >
-            <ul className="gob-related" aria-label="More from Hraness">
-              {relatedProducts.map((item) => (
-                <li key={item.href}>
-                  <a href={item.href}>{item.name}</a>
-                  <span>{item.role}</span>
-                </li>
-              ))}
-            </ul>
-            <p className="install-note">
-              <a href="https://hraness.com">hraness.com</a>{" · "}
-              <a href="https://x.com/hraness">@hraness</a>{" · "}
-              <a href={repository}>GitHub</a>
+            <p>
+              Hraness is a software studio in Puerto Rico. We build tools that give
+              AI agents memory, context, web access, and a record of their work,
+              and we make apps and sourced archives for people. Hraness publishes
+              Gobstopper under your choice of the MIT or Apache-2.0 license.
             </p>
-          </MarketingSection>
+          </MarketingMaker>
+
+          <MarketingRelated
+            heading="More from Hraness."
+            headingId="related-title"
+            items={[...relatedProducts]}
+            label="Related"
+            summary="The rest of the stack, one line each."
+          />
         </MarketingPage>
       </main>
 

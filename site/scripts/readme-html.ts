@@ -1,3 +1,5 @@
+import { highlightCode } from "@hraness/design-kit/syntax-highlighting";
+
 const REPOSITORY_BLOB_ROOT = "https://github.com/hraness/gobstopper/blob/main/";
 const REPOSITORY_RAW_ROOT = "https://raw.githubusercontent.com/hraness/gobstopper/main/";
 
@@ -100,6 +102,48 @@ export function assertFragmentsResolve(html: string): void {
   }
 }
 
+/** One pass so `&amp;lt;` decodes to the literal "&lt;" a reader typed. */
+function decodeCodeText(html: string): string {
+  return html.replace(
+    /&#x([0-9a-f]+);?|&#([0-9]+);?|&([a-z]+);?/giu,
+    (match, hex: string | undefined, decimal: string | undefined, name: string | undefined) => {
+      if (hex !== undefined) return String.fromCodePoint(Number.parseInt(hex, 16));
+      if (decimal !== undefined) return String.fromCodePoint(Number.parseInt(decimal, 10));
+      switch ((name ?? "").toLowerCase()) {
+        case "amp": return "&";
+        case "lt": return "<";
+        case "gt": return ">";
+        case "quot": return '"';
+        case "apos": return "'";
+        case "colon": return ":";
+        case "tab": return "\t";
+        case "newline": return "\n";
+        default: return match;
+      }
+    },
+  );
+}
+
+/** Fenced blocks become shared syntax markup; the fence hint selects the language. */
+export function highlightCodeBlocks(html: string): string {
+  return html.replace(
+    /<pre><code(?:\s+class="([^"]*)")?>([\s\S]*?)<\/code><\/pre>/gu,
+    (_, classAttribute: string | undefined, body: string) => {
+      const highlighted = highlightCode(
+        decodeCodeText(body),
+        classAttribute === undefined ? undefined : classAttribute,
+        { styles: "classes" },
+      );
+      return `<pre><code class="${highlighted.className}" data-language="${highlighted.language}">${highlighted.html}</code></pre>`;
+    },
+  );
+}
+
+/** A bare table cannot scroll; wrap it so the publication grammar's figure hook owns the scroll region. */
+function wrapTablesInScrollableFigures(html: string): string {
+  return html.replace(/<table[\s>][\s\S]*?<\/table>/gu, (table) => `<figure>${table}</figure>`);
+}
+
 export function renderReadmeHtml(source: string): string {
   const document = source.replaceAll(LANDING_START, "").replaceAll(LANDING_END, "")
     .replace(/^\[!\[Agent Skill\]\([^)]+\)\]\(([^)]+)\)\s*$/mu, "[Install the Agent Skill]($1)");
@@ -114,7 +158,15 @@ export function renderReadmeHtml(source: string): string {
   }
   const rendered = rewriteRelativeTargets(addHeadingIds(html));
   assertFragmentsResolve(rendered);
-  return rendered;
+  return highlightCodeBlocks(wrapTablesInScrollableFigures(rendered));
+}
+
+/** Section entries for a rendered document's contents list: each h2's id and text. */
+export function documentSections(html: string): ReadonlyArray<{ readonly href: `#${string}`; readonly label: string }> {
+  return Array.from(
+    html.matchAll(/<h2 id="([^"]+)">([\s\S]*?)<\/h2>/gu),
+    ([, id, body]) => ({ href: `#${id}` as const, label: headingText(body ?? "") }),
+  );
 }
 
 /** The README landing block between the shared Hraness markers, without its heading. */

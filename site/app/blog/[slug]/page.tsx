@@ -33,7 +33,7 @@ export default async function BlogPost({ params }: Readonly<{ params: Params }>)
   return (
     <>
       <SiteHeader path={path} />
-      <main id="main" tabIndex={-1} className="document-page blog-page">
+      <main id="main" tabIndex={-1}>
         <script
           dangerouslySetInnerHTML={{ __html: serializeJsonLd(postJsonLd(post)) }}
           type="application/ld+json"

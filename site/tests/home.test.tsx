@@ -33,10 +33,12 @@ test("every public route has one optional support footer without product signup"
 
 test("the homepage shares the README identity and installs the guarded source build", () => {
   const html = renderToStaticMarkup(<Home />);
+  // Syntax highlighting wraps command tokens in spans; compare visible text.
+  const text = html.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ");
   expect(html.match(/<h1\b/gu)).toHaveLength(1);
   expect(html).toContain("Before writing a separate Claude Code or Codex copy, Gobstopper archives the original and prepared bytes.");
-  expect(html).toContain("cargo install --git https://github.com/hraness/gobstopper gobstopper --locked");
-  expect(html).not.toContain("--tag v");
+  expect(text).toContain("cargo install --git https://github.com/hraness/gobstopper gobstopper --locked");
+  expect(text).not.toContain("--tag v");
   if (publishedRelease === null) {
     expect(html).toContain("No release yet");
   } else {
@@ -46,7 +48,7 @@ test("the homepage shares the README identity and installs the guarded source bu
   expect(html).toMatch(/automatic provider compaction stays disabled/iu);
   expect(html).toMatch(/refuses automatic provider compaction[^.]+auto_compact_closed/u);
   expect(html).not.toContain("hraness.com/gobstopper");
-  expect(html).toContain("gobstopper proxy serve");
+  expect(text).toContain("gobstopper proxy serve");
   expect(html).not.toContain("Source preview");
 });
 
@@ -54,7 +56,8 @@ test("the docs page renders the README with its installation anchor", () => {
   const html = renderToStaticMarkup(<Docs />);
   expect(html).toContain('id="install--use"');
   expect(html).toContain('id="integrating-with-a-session-runtime"');
-  expect(html).toContain("gobstopper detect");
+  expect(html.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ")).toContain("gobstopper detect");
+  expect(html).toContain('data-language="');
   expect(html).not.toContain("data-hraness-marketing-preset");
 });
 
@@ -88,12 +91,12 @@ test("scopes the editorial preset to the homepage header and real command exampl
     .on('[data-hraness-marketing-preset="editorial"] .hraness-marketing-header.hraness-material-chrome', {
       element() { elements.push("header"); },
     })
-    .on('[data-hraness-marketing-preset="editorial"] #main .gob-proof', {
+    .on('[data-hraness-marketing-preset="editorial"] #main .hraness-marketing-data-table', {
       element() { elements.push("proof"); },
     })
     .transform(html);
   expect(elements).toEqual(["header", "proof"]);
-  expect(html).toMatch(/autocompact 100\s+56,300\s+no/u);
+  expect(html).toMatch(/autocompact 100<\/th>[\s\S]*?56,300[\s\S]*?data-tone="negative"/u);
   expect(html).not.toContain("--in-place");
   // Retired or nonexistent flags must not appear in homepage examples.
   expect(html).not.toContain("--double-buffer");

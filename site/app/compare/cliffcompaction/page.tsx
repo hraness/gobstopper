@@ -1,5 +1,7 @@
 import type { Metadata } from "next";
+import { SyntaxCode } from "@hraness/design-kit/react/server";
 
+import { SiteDocument } from "../../_components/site-document";
 import { SiteHeader, SiteFooter } from "../../_components/site-chrome";
 import { GITHUB_URL } from "../../_lib/site";
 import {
@@ -58,13 +60,23 @@ export default function CompareCliffCompaction() {
         type="application/ld+json"
       />
       <SiteHeader path="/compare/cliffcompaction" />
-      <main id="main" tabIndex={-1} className="document-page">
-        <article>
-          <h1>Gobstopper compared with CliffCompaction</h1>
+      <main id="main" tabIndex={-1}>
+        <SiteDocument
+          dek="CliffCompaction and gobstopper proxy shrink a coding agent's context with the same rule: no model writes the summary, and the newest turns pass through untouched."
+          eyebrow="Comparison"
+          heading={title}
+          meta="Proxy since v0.3.1 · Chat Completions dialect since v0.4.0 · Carried conversation words since v0.6.0"
+          toc={[
+            { href: "#cliffcompaction-rule", label: "CliffCompaction summarizes older turns mechanically" },
+            { href: "#gobstopper-port", label: "Gobstopper ports the rule and adds archived copies" },
+            { href: "#side-by-side", label: "Side-by-side comparison" },
+            { href: "#cliff-strategy", label: "The cliff strategy applies the rule to saved sessions" },
+            { href: "#when-to-use-each", label: "When to use each" },
+            { href: "#questions", label: "Questions" },
+            { href: "#sources", label: "Sources" },
+          ]}
+        >
           <p>
-            CliffCompaction and <code>gobstopper proxy</code> shrink a coding
-            agent&apos;s context with the same rule: no model writes the
-            summary, and the newest turns pass through untouched.
             CliffCompaction is the research proxy that introduced the rule.{" "}
             <code>gobstopper proxy</code> ports it to the Anthropic Messages,
             OpenAI Responses, and Chat Completions dialects, for Claude Code,
@@ -77,7 +89,7 @@ export default function CompareCliffCompaction() {
             in v0.6.0.
           </p>
 
-          <h2>CliffCompaction summarizes older turns mechanically</h2>
+          <h2 id="cliffcompaction-rule">CliffCompaction summarizes older turns mechanically</h2>
           <p>
             <a href={CLIFF_REPOSITORY}>CliffCompaction</a> is an open-source
             (MIT) API proxy for coding agents by Trang Nguyen, Eulrang Cho,
@@ -110,7 +122,7 @@ export default function CompareCliffCompaction() {
             run those benchmarks.
           </p>
 
-          <h2>Gobstopper ports the rule and adds archived copies</h2>
+          <h2 id="gobstopper-port">Gobstopper ports the rule and adds archived copies</h2>
           <p>
             Gobstopper makes long Claude Code and Codex sessions smaller. For a
             saved session, you choose a threshold and a strategy, preview the
@@ -130,32 +142,34 @@ export default function CompareCliffCompaction() {
             auto-compaction does not reach its trigger. The session files
             stay unchanged.
           </p>
-          <pre tabIndex={0}><code>{`gobstopper proxy run -- claude       # one session through a temporary proxy
+          <pre><SyntaxCode code={`gobstopper proxy run -- claude       # one session through a temporary proxy
 gobstopper proxy serve               # background proxy on http://127.0.0.1:8260
-gobstopper proxy replay <session>    # what the proxy would have sent; calls no provider`}</code></pre>
+gobstopper proxy replay <session>    # what the proxy would have sent; calls no provider`} language="sh" /></pre>
 
-          <h2>Side-by-side comparison</h2>
-          <table>
-            <caption>Read from CliffCompaction&apos;s documentation and source on September 25, 2026, and from Gobstopper&apos;s on September 26, 2026</caption>
-            <thead>
-              <tr>
-                <th scope="col">Aspect</th>
-                <th scope="col">CliffCompaction</th>
-                <th scope="col">Gobstopper</th>
-              </tr>
-            </thead>
-            <tbody>
-              {comparisonRows.map((row) => (
-                <tr key={row.aspect}>
-                  <th scope="row">{row.aspect}</th>
-                  <td>{withCode(row.cliff)}</td>
-                  <td>{withCode(row.gobstopper)}</td>
+          <h2 id="side-by-side">Side-by-side comparison</h2>
+          <figure>
+            <table>
+              <caption>Read from CliffCompaction&apos;s documentation and source on September 25, 2026, and from Gobstopper&apos;s on September 26, 2026</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Aspect</th>
+                  <th scope="col">CliffCompaction</th>
+                  <th scope="col">Gobstopper</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {comparisonRows.map((row) => (
+                  <tr key={row.aspect}>
+                    <th scope="row">{row.aspect}</th>
+                    <td>{withCode(row.cliff)}</td>
+                    <td>{withCode(row.gobstopper)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </figure>
 
-          <h2>The cliff strategy applies the rule to saved sessions</h2>
+          <h2 id="cliff-strategy">The cliff strategy applies the rule to saved sessions</h2>
           <p>
             <code>cliff</code> keeps the head (the system prompt and the first
             user prompt) and the newest <code>keep_recent_turns</code> assistant
@@ -178,7 +192,7 @@ gobstopper proxy replay <session>    # what the proxy would have sent; calls no 
             Gobstopper&apos;s copy transforms replace tool-result payloads only.
             Codex <code>compacted</code> records count as one result.
           </p>
-          <pre tabIndex={0}><code>{`gobstopper plan <session> --strategy cliff
+          <pre><SyntaxCode code={`gobstopper plan <session> --strategy cliff
 gobstopper eval <session>      # cliff appears beside the other strategies
 
 # ~/.config/gobstopper/config.toml
@@ -186,9 +200,9 @@ gobstopper eval <session>      # cliff appears beside the other strategies
 strategy = "cliff"
 keep_recent_turns = 3
 result_max_bytes = 500
-keep_recent_tool_outputs = 0`}</code></pre>
+keep_recent_tool_outputs = 0`} language="sh" /></pre>
 
-          <h2>When to use each</h2>
+          <h2 id="when-to-use-each">When to use each</h2>
           <p>
             Use CliffCompaction for request-time compaction in any client that
             speaks the Anthropic Messages, OpenAI Chat Completions, or OpenAI
@@ -203,7 +217,7 @@ keep_recent_tool_outputs = 0`}</code></pre>
             <a href="/compare/claude-code-compact">Gobstopper compared with Claude Code /compact</a>.
           </p>
 
-          <h2>Questions</h2>
+          <h2 id="questions">Questions</h2>
           {comparisonQuestions.map(({ answer, question }) => (
             <section key={question}>
               <h3>{question}</h3>
@@ -211,7 +225,7 @@ keep_recent_tool_outputs = 0`}</code></pre>
             </section>
           ))}
 
-          <h2>Sources</h2>
+          <h2 id="sources">Sources</h2>
           <ul>
             <li>
               Trang Nguyen, Eulrang Cho, Bingqing Chen, and Tim Dettmers,{" "}
@@ -222,7 +236,7 @@ keep_recent_tool_outputs = 0`}</code></pre>
             <li><a href={CLIFF_BLOG}>The authors&apos; project page</a>.</li>
             <li><a href={`${GITHUB_URL}/blob/main/README.md`}>Gobstopper README</a>, which carries the same comparison table.</li>
           </ul>
-        </article>
+        </SiteDocument>
       </main>
       <SiteFooter path="/compare/cliffcompaction" />
     </>

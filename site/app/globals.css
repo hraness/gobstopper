@@ -86,7 +86,7 @@ a:focus-visible {
 
 /* Links inside body copy stay underlined; the grammar's buttons do not. */
 .install-note a,
-.gob-proof__note a,
+.hraness-marketing-data-table__note a,
 .hraness-marketing-maker__links a,
 .hraness-marketing-question__answer a {
   color: var(--foreground);
@@ -96,14 +96,10 @@ a:focus-visible {
 }
 
 .install-note a:hover,
-.gob-proof__note a:hover,
+.hraness-marketing-data-table__note a:hover,
 .hraness-marketing-maker__links a:hover,
 .hraness-marketing-question__answer a:hover {
   text-decoration-color: currentColor;
-}
-
-.install-command {
-  white-space: pre;
 }
 
 .install-note {
@@ -148,7 +144,7 @@ a:focus-visible {
 }
 
 @media (pointer: coarse) {
-  .site-footer a, .hraness-marketing-header__nav a, .document-nav a {
+  .site-footer a, .hraness-marketing-header__nav a, .plain-publication__toc a {
     display: inline-flex;
     align-items: center;
     min-height: 3rem;
@@ -162,30 +158,12 @@ a:focus-visible {
 ::selection { background: var(--hraness-material-warm-plane); color: var(--hraness-material-ink); }
 a { text-underline-offset: 0.2em; }
 
-/* Gobstopper document pages render README Markdown. */
-.document-page {
-  margin: 0 auto;
-  max-width: 72ch;
-  padding: 3rem 1.25rem 5rem;
+/* Document routes embed the shared publication grammar, which owns the inline
+   gutter and measure; the host main supplies the block spacing a marketing
+   section would carry. */
+main:has(> .plain-publication--embedded) {
+  padding-block: 3rem 5rem;
 }
-.document-page h1, .document-page h2, .document-page h3 { text-wrap: balance; line-height: 1.2; }
-.document-page h2 { margin-top: 2.5rem; padding-top: 1.25rem; }
-.document-page pre { overflow-x: auto; padding: 1rem; border: 1px solid var(--ui-surface-edge, var(--hraness-material-seam)); border-radius: .875rem; background: var(--surface); }
-.document-page code { font-family: var(--font-mono); font-size: 0.92em; }
-.document-page table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto; }
-.document-page th, .document-page td { border-bottom: 1px solid var(--line); padding: 0.5rem 0.6rem; text-align: left; vertical-align: top; }
-.document-nav { display: flex; flex-wrap: wrap; gap: 1rem; margin-bottom: 1.5rem; font-size: 0.95rem; }
-
-.document-page h1 { margin: 1.75rem 0 1rem; font-family: var(--hraness-type-h1-font); font-size: var(--hraness-type-h1-size); font-weight: var(--hraness-type-h1-weight); }
-.document-page h2 { font-family: var(--hraness-type-h2-font); font-size: var(--hraness-type-h2-size); font-weight: var(--hraness-type-h2-weight); margin-bottom: 1rem; }
-.document-page h3 { font-family: var(--hraness-type-h3-font); font-size: var(--hraness-type-h3-size); font-weight: var(--hraness-type-h3-weight); margin: 1.75rem 0 0.75rem; }
-.document-page p { margin: 1rem 0; }
-.document-page pre { margin: 1.25rem 0; }
-/* Body links stay underlined; related-product cards are whole-card links. */
-.document-page article a:not(.hraness-marketing-related__card) { text-decoration: underline; }
-.document-page article ul { list-style: disc; padding-left: 1.5rem; margin: 1rem 0; }
-.document-page article ol { list-style: decimal; padding-left: 1.5rem; margin: 1rem 0; }
-.document-page article li + li { margin-top: 0.5rem; }
 
 /* The existing grammar owns layout and controls. Lantern supplies only material
    paint; these bridges keep old compiled peers and their focus rules intact. */
@@ -196,31 +174,11 @@ a { text-underline-offset: 0.2em; }
   border-block-end-color: var(--hraness-material-seam);
 }
 
-/* A framed component already draws its own boundary; a ruled section directly
-   after it would stack a second hairline on the card edge. */
-:is(
-  .hraness-marketing-install,
-  .hraness-marketing-proof,
-  .hraness-marketing-proof-frame
-) + :is(
-  .hraness-marketing-section,
-  .hraness-marketing-primitives,
-  .hraness-marketing-interfaces,
-  .hraness-marketing-trust,
-  .hraness-marketing-quotes,
-  .hraness-marketing-pricing,
-  .hraness-marketing-questions,
-  .hraness-marketing-maker,
-  .hraness-marketing-related,
-  .hraness-marketing-cta
-) {
-  border-block-start: 0;
-}
 [data-hraness-material="lantern"] .hraness-marketing-question[open] > summary {
   background-color: var(--hraness-material-warm-plane);
   color: var(--hraness-material-ink);
 }
-[data-hraness-material="lantern"] :is(.document-page pre, .install-command) {
+[data-hraness-material="lantern"] .plain-publication__article-body pre {
   background: var(--hraness-material-plane);
   border-color: var(--ui-surface-edge, var(--hraness-material-seam));
   color: var(--hraness-material-ink);
@@ -233,6 +191,3 @@ a { text-underline-offset: 0.2em; }
   display: flex; flex-wrap: wrap; gap: 12px 22px; align-items: center;
   margin-block-end: 2rem;
 }
-
-.document-page { font-size: 1rem; line-height: 1.75; }
-.document-page :is(h1, h2, h3) { letter-spacing: -.025em; }

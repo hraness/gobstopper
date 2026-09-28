@@ -1,8 +1,9 @@
 import type { Metadata } from "next";
 import { ProviderMarkChip } from "@hraness/design-kit/react/server";
 
+import { SiteDocument } from "../_components/site-document";
 import { SiteHeader, SiteFooter } from "../_components/site-chrome";
-import { readmeHtml } from "../readme.generated";
+import { readmeHtml, readmeSections } from "../readme.generated";
 
 const agents = ["claudecode", "codex", "opencode", "crush", "aider", "goose"] as const;
 
@@ -31,19 +32,32 @@ export const metadata: Metadata = {
   },
 };
 
+const body = readmeHtml.replace(/^<h1 id="[^"]*">[\s\S]*?<\/h1>\s*/u, "");
+
 export default function Docs() {
   return (
     <>
       <SiteHeader path="/docs" />
-      <main id="main" tabIndex={-1} className="document-page">
-        <article>
+      <main id="main" tabIndex={-1}>
+        <SiteDocument
+          dek={description}
+          eyebrow="Reference"
+          heading={title}
+          meta={
+            <>
+              Generated from the Gobstopper README ·{" "}
+              <a href="https://github.com/hraness/gobstopper/blob/main/README.md">Source on GitHub</a>
+            </>
+          }
+          toc={readmeSections}
+        >
           <div className="gob-doc-marks" aria-label="Supported agents">
             {agents.map((agent) => (
               <ProviderMarkChip key={agent} mark={agent} size={26} />
             ))}
           </div>
-          <div dangerouslySetInnerHTML={{ __html: readmeHtml }} />
-        </article>
+          <div dangerouslySetInnerHTML={{ __html: body }} />
+        </SiteDocument>
       </main>
       <SiteFooter path="/docs" />
     </>

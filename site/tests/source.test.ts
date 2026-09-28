@@ -64,7 +64,7 @@ describe("Gobstopper site source contract", () => {
       read("app/readme.generated.ts"),
     ]);
     expect(packageJson).toContain('"@hraness/ui": "github:hraness/ui#v0.5.18"');
-    expect(packageJson).toContain('"@hraness/design-kit": "github:hraness/design-kit#v0.23.0"');
+    expect(packageJson).toContain('"@hraness/design-kit": "github:hraness/design-kit#a4e30f15dd6d50b3d78cdffadffd026c0b65f072"');
     expect(chrome).toContain('import { AskAiAboutThis } from "@hraness/ui"');
     expect(chrome).toContain('url={absoluteUrl(path)}');
     expect(generated).toContain('export const readmeTitle = "Gobstopper";');
@@ -85,10 +85,11 @@ describe("Gobstopper site source contract", () => {
     // The preset declares its serif on the preset element, so the sans
     // override must be declared there too, not only on :root.
     expect(globals).toMatch(/:root,\s*\[data-hraness-marketing-preset="editorial"\]\s*\{\s*--hraness-marketing-display-font: var\(--font-text\);/u);
-    for (const level of ["h1", "h2", "h3"]) {
-      expect(globals).toContain(`.document-page ${level} { `);
-      expect(globals).toContain(`font-size: var(--hraness-type-${level}-size)`);
-    }
+    // Document routes embed the shared publication grammar, which owns the
+    // heading scale, measure, code, and table presentation.
+    expect(globals).toContain('@import "@hraness/design-kit/plain-publication.css"');
+    expect(globals).toContain("main:has(> .plain-publication--embedded)");
+    expect(globals).not.toContain(".document-page");
     expect(home).toContain("data-hraness-marketing-preset=\"editorial\"");
     expect(home).not.toContain("relationship:");
   });

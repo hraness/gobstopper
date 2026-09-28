@@ -112,7 +112,8 @@ describe("built Gobstopper site", () => {
       const home = rawHome.replaceAll(/https:\/\/[a-z0-9-]+\.vercel\.app/gu, "https://gobstopper.sh");
       const docs = rawDocs.replaceAll(/https:\/\/[a-z0-9-]+\.vercel\.app/gu, "https://gobstopper.sh");
       expect(homeResponse.status).toBe(200);
-      expect(home).toContain("cargo install --git https://github.com/hraness/gobstopper gobstopper --locked");
+      // Code blocks are syntax-highlighted, so command text carries token spans.
+      expect(home.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ")).toContain("cargo install --git https://github.com/hraness/gobstopper gobstopper --locked");
       if (publishedRelease === null) {
         expect(home).toContain("No release yet");
       } else {

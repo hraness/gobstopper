@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import { SiteDocument } from "../_components/site-document";
 import { SiteHeader, SiteFooter } from "../_components/site-chrome";
 
 const title = "Benchmarks";
@@ -31,18 +32,27 @@ export default function Benchmarks() {
   return (
     <>
       <SiteHeader path="/benchmarks" />
-      <main id="main" tabIndex={-1} className="document-page">
-        <article>
-          <h1>Benchmarks</h1>
-          <p>
-            These results come from offline replays, which project context
-            size and check which text survives, and from a few live trials
-            that resumed real sessions. We don&apos;t claim subscription or
-            billing savings from any of them.
-          </p>
-          <p>
-            Latest: <a href="#archived-recovery-2026-09-20">September 20 snapshot search and recovery checks</a>.
-          </p>
+      <main id="main" tabIndex={-1}>
+        <SiteDocument
+          dek="Offline replays project context size and check which text survives; a few live trials resumed real sessions. None of them claim subscription or billing savings."
+          eyebrow="Evidence"
+          heading={title}
+          meta={
+            <>
+              Latest:{" "}
+              <a href="#archived-recovery-2026-09-20">September 20 snapshot search and recovery checks</a>
+            </>
+          }
+          toc={[
+            { href: "#retrospective-2026-09-19", label: "729-session retrospective" },
+            { href: "#retention-policy-2026-09-19", label: "Keep-score cutoff comparison" },
+            { href: "#apple-cutoff-2026-09-19", label: "On-device Apple scorer pilot" },
+            { href: "#archived-recovery-2026-09-20", label: "Snapshot search and recovery" },
+            { href: "#request-proxy-2026-09-26", label: "Request proxy" },
+            { href: "#synthetic-strategy-benchmark", label: "Synthetic strategy benchmark" },
+            { href: "#historical-live-trials", label: "Historical live trials" },
+          ]}
+        >
 
           <section aria-labelledby="retrospective-2026-09-19">
             <h2 id="retrospective-2026-09-19">729-session retrospective · September 19, 2026</h2>
@@ -60,7 +70,8 @@ export default function Benchmarks() {
               Every median in the table includes no-plan cases, so the root-task
               result does not describe every session.
             </p>
-            <table>
+            <figure>
+              <table>
               <caption>Portable compacted strategy; projected current-context tokens</caption>
               <thead>
                 <tr>
@@ -78,7 +89,8 @@ export default function Benchmarks() {
                 <tr><th scope="row">Below-trigger controls, all cohorts</th><td>121</td><td>0</td><td>121</td><td>0%</td></tr>
                 <tr><th scope="row">All selected sessions</th><td>729</td><td>92</td><td>637</td><td>0%</td></tr>
               </tbody>
-            </table>
+              </table>
+            </figure>
             <h3>Retention and recovery</h3>
             <p>
               On the 73 root rewrites, 3,664 of 4,762 sampled strings survived;
@@ -164,7 +176,8 @@ export default function Benchmarks() {
               did not test task success and was not compared with
               fast-jev-compaction.
             </p>
-            <table>
+            <figure>
+              <table>
               <caption>All 73 high-context roots; reduction medians include no-plan cases</caption>
               <thead>
                 <tr>
@@ -182,7 +195,8 @@ export default function Benchmarks() {
                 <tr><th scope="row">Cutoff 0.5</th><td>73 / 0</td><td>36.35%</td><td>3,614 / 4,667 (77.44%)</td><td>11 / 0</td></tr>
                 <tr><th scope="row">Cutoff 0.65</th><td>73 / 0</td><td>36.44%</td><td>3,598 / 4,667 (77.09%)</td><td>1 / 0</td></tr>
               </tbody>
-            </table>
+              </table>
+            </figure>
             <p>
               Retention counts use the same 4,667 baseline probes in every row;
               improved and declined task counts compare literal retention with
@@ -235,7 +249,8 @@ export default function Benchmarks() {
               checks that this configuration runs; it does not measure model
               quality.
             </p>
-            <table>
+            <figure>
+              <table>
               <caption>All three inputs, including no-plan cases; one pass per variant</caption>
               <thead>
                 <tr>
@@ -250,7 +265,8 @@ export default function Benchmarks() {
                 <tr><th scope="row">Deterministic heuristic</th><td>3 / 0</td><td>50.35%</td><td>148 / 192</td><td>0.090 s</td></tr>
                 <tr><th scope="row">Apple overlay (on-device)</th><td>1 / 2</td><td>0%</td><td>192 / 192</td><td>11.912 s</td></tr>
               </tbody>
-            </table>
+              </table>
+            </figure>
             <p>
               Of Apple&apos;s 192 retained probes, <strong>128 are derived from
               the two unchanged no-plan inputs</strong>; 64 were checked against
@@ -303,7 +319,8 @@ export default function Benchmarks() {
               real tasks. The synthetic corpus is separate from the private
               session studies above.
             </p>
-            <table>
+            <figure>
+              <table>
               <caption>All registered recovery checks; no outcome-dependent exclusions</caption>
               <thead>
                 <tr><th scope="col">Check group</th><th scope="col">Passed / total</th></tr>
@@ -318,7 +335,8 @@ export default function Benchmarks() {
                 <tr><th scope="row">Invalid-input, integrity, pagination, and MCP safeguards</th><td>13 / 13</td></tr>
                 <tr><th scope="row">All checks</th><td>553 / 553</td></tr>
               </tbody>
-            </table>
+              </table>
+            </figure>
             <p>
               Half the snapshots encode Unicode as JSON escapes; six place a
               target record across a vault chunk boundary. Recovery reconstructs
@@ -362,7 +380,7 @@ export default function Benchmarks() {
             </p>
           </section>
 
-          <h2>Request proxy · recorded September 25 and 26, 2026</h2>
+          <h2 id="request-proxy-2026-09-26">Request proxy · recorded September 25 and 26, 2026</h2>
           <p>
             On September 25, <code>gobstopper proxy replay</code>, built from
             the main branch that day, ran nine recorded sessions from one Mac
@@ -393,7 +411,7 @@ export default function Benchmarks() {
             page</a>; Gobstopper has not rerun them.
           </p>
 
-          <h2>Synthetic strategy benchmark</h2>
+          <h2 id="synthetic-strategy-benchmark">Synthetic strategy benchmark</h2>
           <p>
             <code>cargo run --example bench_strategies --release</code> generates
             synthetic Codex transcripts with varying tool-output history and
@@ -401,7 +419,7 @@ export default function Benchmarks() {
             elapsed time, and structural integrity per strategy.
           </p>
 
-          <h2>Historical live trials · recorded September 17, 2026</h2>
+          <h2 id="historical-live-trials">Historical live trials · recorded September 17, 2026</h2>
           <p>
             The trials below were recorded in the repository on September 17.
             They are separate single-session experiments using earlier builds
@@ -428,7 +446,8 @@ export default function Benchmarks() {
             resume turn (input = cache read + cache creation + uncached input;
             output = response tokens).
           </p>
-          <table>
+          <figure>
+            <table>
             <thead>
               <tr>
                 <th>condition</th>
@@ -463,7 +482,8 @@ export default function Benchmarks() {
                 <td>no: incorrectly claimed the renames were already done and published</td>
               </tr>
             </tbody>
-          </table>
+            </table>
+          </figure>
           <p>
             Gobstopper&apos;s <code>elide</code> and <code>compacted</code> both cut
             the resume context by about 30% while keeping the answer accurate. Claude&apos;s
@@ -477,7 +497,8 @@ export default function Benchmarks() {
             (a real BEAM-benchmark thread) under three conditions. Provider-native
             Codex compaction was not included in this historical trial.
           </p>
-          <table>
+          <figure>
+            <table>
             <thead>
               <tr>
                 <th>condition</th>
@@ -506,7 +527,8 @@ export default function Benchmarks() {
                 <td>yes: same BEAM experiment and expansion gate</td>
               </tr>
             </tbody>
-          </table>
+            </table>
+          </figure>
           <p>
             On Codex, <code>compacted</code> cut resume input tokens by 66% and
             <code>elide</code> cut them by 43%, both with accurate answers.{" "}
@@ -527,7 +549,8 @@ export default function Benchmarks() {
             in-place mode. The provider&apos;s real cache
             counters were read from the API response:
           </p>
-          <table>
+          <figure>
+            <table>
             <thead>
               <tr>
                 <th>condition</th>
@@ -564,7 +587,8 @@ export default function Benchmarks() {
                 <td>yes</td>
               </tr>
             </tbody>
-          </table>
+            </table>
+          </figure>
           <p>
             All three answers were accurate. Both strategies cut cache-write
             tokens by ~21% (~20% lower cost on the resume turn). Both compacted
@@ -577,7 +601,8 @@ export default function Benchmarks() {
           </p>
 
           <h3>Historical transcript structure check</h3>
-          <table>
+          <figure>
+            <table>
             <thead>
               <tr>
                 <th>intervention</th>
@@ -610,7 +635,8 @@ export default function Benchmarks() {
                 <td>yes</td>
               </tr>
             </tbody>
-          </table>
+            </table>
+          </figure>
           <p>
             On the same 333k-token real Claude session, native <code>--autocompact 100</code>
             appended 59 records and removed none. The earlier Gobstopper
@@ -620,7 +646,7 @@ export default function Benchmarks() {
             <code>gobstopper diff</code> reports this kind of structural change
             between two vault snapshots.
           </p>
-        </article>
+        </SiteDocument>
       </main>
       <SiteFooter path="/benchmarks" />
     </>
