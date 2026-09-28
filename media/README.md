@@ -52,6 +52,10 @@ Each job:
 6. Appends a record to `out/receipts/<still|shot>-<id>.json`: the Slopcamera version, the SHA-256 of the scene, data files, fonts and output, and the render time.
 7. Deletes Slopcamera's working directory for the job.
 
+Slopcamera captures each frame at the canvas's CSS size, whatever `deviceScaleFactor` says. So the canvas is always the output size: 2400×1350 for a still, 3840×2160 for a final shot. The scene still lays out at 1600×900 or 1920×1080, and `lib/stage.ts` zooms that layout to fill the canvas. Text is set and rasterized at full size, not upscaled. Scenes measure elements with `s.measure(node)`, which returns layout pixels, and never with `getBoundingClientRect()`, which returns zoomed ones.
+
+A still's PNG comes from Slopcamera's lossless captured frame, not from the H.264 video, so it keeps full colour resolution.
+
 To rebuild everything:
 
 ```bash

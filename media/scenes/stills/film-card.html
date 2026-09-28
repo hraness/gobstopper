@@ -24,7 +24,7 @@ Gob.scene({ palette: "night" }, (s) => {
   const hero = s.text("hero", `${F.inputFewer} fewer input tokens`, { x: padX, y: 270, w: colW }, { weight: 600 });
   hero.style.fontSize = "112px";
   hero.style.lineHeight = "1.02";
-  const heroH = hero.getBoundingClientRect().height;
+  const heroH = s.measure(hero).height;
   s.text("beat", "Same tasks solved, within single-trial noise", { x: padX, y: 270 + heroH + 30, w: colW }, { color: "var(--ink-2)", weight: 500 }).style.fontSize = "40px";
 
   // Play glyph: a 120px triangle centred in the brand ring.

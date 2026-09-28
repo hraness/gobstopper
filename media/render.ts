@@ -181,10 +181,14 @@ async function buildScene(job: string, scenePath: string): Promise<{ htmlPath: s
 function sceneRequest(o: {
   job: string; htmlPath: string; palette: PaletteName; width: number; height: number; dsf: number;
   durationUs: number; timeOffsetSeconds: number; data: string[]; extra?: Record<string, unknown>;
+  layoutZoom?: number;
 }) {
   const data: Record<string, unknown> = { ...o.extra };
   for (const name of o.data) data[name] = dataSlice(name);
-  const parameters = { palette: o.palette, F, data, timeOffsetSeconds: o.timeOffsetSeconds };
+  const parameters = {
+    palette: o.palette, F, data, timeOffsetSeconds: o.timeOffsetSeconds,
+    ...(o.layoutZoom !== undefined && o.layoutZoom !== 1 ? { layoutZoom: o.layoutZoom } : {}),
+  };
   const parameterBytes = Buffer.byteLength(JSON.stringify(parameters));
   if (parameterBytes > MAX_PARAMETER_BYTES) throw new Error(`${o.job}: parameters are ${parameterBytes} bytes, over 64 KB.`);
   return {
@@ -394,13 +398,23 @@ const STILL_DESTINATIONS: Record<Exclude<Output, "social">, (id: string) => stri
   blog: (id) => join(REPO, "site/public/blog/introducing-gobstopper", `gob-${id}.png`),
 };
 
+/**
+ * A still. Slopcamera captures frames at the canvas's CSS size whatever the device scale
+ * factor, so the canvas is the output size (2400×1350, or 1200×630 for the social card)
+ * and the scene's layout (`size` in stills.json) is zoomed to fill it. The PNG comes from
+ * the lossless captured frame, not the H.264 video, so it has no chroma subsampling.
+ */
 async function renderStill(job: StillJob, dryRun: boolean, log: (s: string) => void): Promise<void> {
   const name = `still-${job.id}`;
-  const [width, height] = job.size;
+  const [layoutWidth, layoutHeight] = job.size;
+  const social = job.outputs.includes("social");
+  const [width, height] = social ? [layoutWidth, layoutHeight] : [2400, 1350];
+  const layoutZoom = width / layoutWidth;
+  if (Math.abs(height / layoutHeight - layoutZoom) > 1e-9) throw new Error(`${name}: size ${layoutWidth}×${layoutHeight} does not scale evenly to ${width}×${height}.`);
   const { htmlPath, htmlSha } = await buildScene(name, job.scene);
   const requestPath = join(BUILD, `${name}.scene.json`);
   await writeFile(requestPath, JSON.stringify(sceneRequest({
-    job: name, htmlPath, palette: job.palette, width, height, dsf: 2,
+    job: name, htmlPath, palette: job.palette, width, height, dsf: 1, layoutZoom,
     durationUs: 34_000, timeOffsetSeconds: job.hold, data: job.data ?? [],
   }), null, 2) + "\n");
   const plan = await slopcamera(requestPath, true, join(BUILD, `${name}.plan.log`));
@@ -417,39 +431,50 @@ async function renderStill(job: StillJob, dryRun: boolean, log: (s: string) => v
     await release();
   }
   const video = videoPath(result);
-  const social = job.outputs.includes("social");
-  const png = join(OUT, social ? "social" : "stills", social ? "gobstopper-terminal-bench-1200x630.png" : `gob-${job.id}.png`);
-  await mkdir(dirname(png), { recursive: true });
-  const extract = (w: number, h: number) => ffmpeg(["-i", video, "-frames:v", "1", "-vf", `scale=${w}:${h}:flags=lanczos`, "-pix_fmt", "rgb24", png]);
-  const target: [number, number] = social ? [width, height] : [2400, 1350];
-  extract(...target);
-  if (!social && (await stat(png)).size > MAX_STILL_BYTES) { target[0] = 2000; target[1] = 1125; extract(...target); }
-  const size = (await stat(png)).size;
-  if (size > MAX_STILL_BYTES) throw new Error(`${name}: ${size} bytes, over 600 KB even at 2000×1125.`);
-  const outputSha = await fileSha(png);
-
-  const copies: Record<string, string> = {};
-  for (const output of job.outputs) {
-    if (output === "social") continue;
-    const destination = STILL_DESTINATIONS[output](job.id);
-    await mkdir(dirname(destination), { recursive: true });
-    await copyFile(png, destination);
-    const copySha = await fileSha(destination);
-    if (copySha !== outputSha) throw new Error(`${destination} is not byte-identical to the render.`);
-    copies[output] = relative(REPO, destination);
-  }
   const jobDir = jobDirectory(video);
-  if (jobDir !== undefined) await rm(jobDir, { recursive: true, force: true });
+  const png = join(OUT, social ? "social" : "stills", social ? "gobstopper-terminal-bench-1200x630.png" : `gob-${job.id}.png`);
+  let size: number;
+  let outputSha: string;
+  const copies: Record<string, string> = {};
+  try {
+    if (jobDir === undefined) throw new Error(`${name}: the render is outside the media artifacts directory.`);
+    const frame = join(jobDir, "render/frames/frame-00000000.png");
+    if (!existsSync(frame)) throw new Error(`${name}: no captured frame at ${relative(REPO, frame)}.`);
+    await mkdir(dirname(png), { recursive: true });
+    ffmpeg(["-i", frame, "-frames:v", "1", "-pix_fmt", "rgb24", "-pred", "mixed", png]);
+    const [pw, ph] = pngSize(await readFile(png));
+    if (pw !== width || ph !== height) throw new Error(`${name}: frame is ${pw}×${ph}, expected ${width}×${height}.`);
+    size = (await stat(png)).size;
+    if (size > MAX_STILL_BYTES) throw new Error(`${name}: ${size} bytes, over 600 KB.`);
+    outputSha = await fileSha(png);
+    for (const output of job.outputs) {
+      if (output === "social") continue;
+      const destination = STILL_DESTINATIONS[output](job.id);
+      await mkdir(dirname(destination), { recursive: true });
+      await copyFile(png, destination);
+      const copySha = await fileSha(destination);
+      if (copySha !== outputSha) throw new Error(`${destination} is not byte-identical to the render.`);
+      copies[output] = relative(REPO, destination);
+    }
+  } finally {
+    if (jobDir !== undefined) await rm(jobDir, { recursive: true, force: true });
+  }
 
   await appendReceipt(name, {
     job: name, id: job.id, slopcamera: version, renderedAt: new Date().toISOString(),
     seconds: Math.round((Date.now() - started) / 1000),
-    canvas: { width, height, deviceScaleFactor: 2 }, holdSeconds: job.hold,
+    canvas: { width, height, deviceScaleFactor: 1, layoutWidth, layoutHeight, layoutZoom }, holdSeconds: job.hold,
     sceneHtmlSha256: htmlSha, sceneSource: job.scene, sceneSourceSha256: await fileSha(join(MEDIA, job.scene)),
     ...(await inputHashes()),
-    output: { width: target[0], height: target[1], bytes: size, sha256: outputSha, copies },
+    output: { width, height, bytes: size, sha256: outputSha, source: "captured frame 0", copies },
   });
   log(JSON.stringify({ job: name, state: "rendered", seconds: Math.round((Date.now() - started) / 1000), bytes: size, png: relative(REPO, png) }));
+}
+
+/** Width and height from a PNG's IHDR chunk. */
+function pngSize(bytes: Buffer): [number, number] {
+  if (bytes.length < 24 || bytes.readUInt32BE(12) !== 0x49484452) throw new Error("Not a PNG.");
+  return [bytes.readUInt32BE(16), bytes.readUInt32BE(20)];
 }
 
 /**
@@ -463,10 +488,14 @@ async function renderShot(list: ShotList, job: ShotJob, draft: boolean, dryRun: 
   const palette = job.palette ?? "night";
   const { htmlPath, htmlSha } = await buildScene(name, job.scene);
   const requestPath = join(BUILD, `${name}.scene.json`);
-  const dsf = draft ? 1 : 2;
+  // Frames are captured at the canvas's CSS size, so a 4K final is a 3840×2160 canvas with
+  // the 1920×1080 layout zoomed 2×; a draft is the layout at 1×.
+  const layoutZoom = draft ? 1 : 2;
+  const width = 1920 * layoutZoom;
+  const height = 1080 * layoutZoom;
   const shot = { id: job.id, start: job.start, end: job.end, handle: last ? 0 : list.handle, last, beats: job.beats ?? [], cues: job.cues ?? [] };
   await writeFile(requestPath, JSON.stringify(sceneRequest({
-    job: name, htmlPath, palette, width: 1920, height: 1080, dsf,
+    job: name, htmlPath, palette, width, height, dsf: 1, layoutZoom,
     durationUs: Math.round(seconds * 1_000_000), timeOffsetSeconds: 0, data: job.data ?? [],
     extra: { shot, lowerThird: list.lowerThird ?? null },
   }), null, 2) + "\n");
@@ -494,7 +523,7 @@ async function renderShot(list: ShotList, job: ShotJob, draft: boolean, dryRun: 
   await appendReceipt(`shot-${job.id}`, {
     job: name, id: job.id, draft, slopcamera: version, renderedAt: new Date().toISOString(),
     seconds: Math.round((Date.now() - started) / 1000),
-    canvas: { width: 1920, height: 1080, deviceScaleFactor: dsf }, durationSeconds: seconds,
+    canvas: { width, height, deviceScaleFactor: 1, layoutWidth: 1920, layoutHeight: 1080, layoutZoom }, durationSeconds: seconds,
     sceneHtmlSha256: htmlSha, sceneSource: job.scene, sceneSourceSha256: await fileSha(join(MEDIA, job.scene)),
     ...(await inputHashes()),
     output: { path: relative(REPO, destination), bytes: (await stat(destination)).size, sha256: outputSha },

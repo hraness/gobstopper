@@ -29,15 +29,15 @@ Gob.scene({ palette: "paper" }, (s) => {
   const agent = pill("Claude Code", false, false);
   const proxy = pill("gobstopper proxy · 127.0.0.1:8260", true, true);
   const provider = pill("model provider", false, false);
-  const rowW = row.getBoundingClientRect().width;
+  const rowW = s.measure(row).width;
   const rowX = Math.round(p.x + (p.w - rowW) / 2);
   const rowY = p.y + 24;
   row.style.left = `${rowX}px`;
   row.style.top = `${rowY}px`;
   const cy = rowY + pillH / 2;
   const box = (node) => {
-    const r = node.getBoundingClientRect();
-    return { x: r.left, y: r.top, w: r.width, h: r.height };
+    const r = s.measure(node);
+    return { x: r.x, y: r.y, w: r.width, h: r.height };
   };
   const a = box(agent), b = box(proxy), c = box(provider);
 

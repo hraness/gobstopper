@@ -103,6 +103,8 @@ export interface StageParams {
   F: Record<string, unknown>;
   data: Record<string, unknown>;
   timeOffsetSeconds?: number;
+  /** Layout pixels per CSS pixel: the canvas is this many times the layout size. */
+  layoutZoom?: number;
   [key: string]: unknown;
 }
 
@@ -129,6 +131,8 @@ export interface Stage {
   lid(y: number, label: string, opts?: { x0?: number; x1?: number; parent?: Element }): HTMLElement;
   ring(x: number, y: number, size?: number, opts?: { color?: string; parent?: Element; stroke?: number }): SVGElement;
   mark(x: number, y: number, size: number, parent?: Element): HTMLImageElement;
+  /** An element's box in layout pixels, relative to the stage. Use it instead of getBoundingClientRect. */
+  measure(node: Element): { x: number; y: number; width: number; height: number };
   text(role: TextRole, s: string, box: Box, opts?: { align?: Align; color?: string; weight?: number; parent?: Element; nowrap?: boolean }): HTMLElement;
   lowerThird(s: string): HTMLElement;
   timeline(segments: Segment[]): void;
@@ -191,8 +195,14 @@ export function boot(opts: { palette: PaletteName; scale?: TypeScale }): Promise
   const paletteName = opts.palette;
   const palette = PALETTES[paletteName];
   if (palette === undefined) throw new RangeError(`Unknown palette ${String(paletteName)}`);
-  const scale: TypeScale = opts.scale ?? (api.width === 1920 ? "film" : "still");
   const params = api.parameters as unknown as StageParams;
+  // Slopcamera captures at the canvas's CSS size whatever the device scale factor, so a
+  // 2400×1350 still is a 2400×1350 canvas whose 1600×900 layout is zoomed 1.5×. Text is
+  // then laid out and rasterized at full size rather than upscaled.
+  const zoom = typeof params.layoutZoom === "number" && params.layoutZoom > 0 ? params.layoutZoom : 1;
+  const W = Math.round(api.width / zoom);
+  const H = Math.round(api.height / zoom);
+  const scale: TypeScale = opts.scale ?? (W === 1920 ? "film" : "still");
   const offsetMs = Math.round((typeof params.timeOffsetSeconds === "number" ? params.timeOffsetSeconds : 0) * 1000);
 
   const rootStyle = document.documentElement.style;
@@ -230,8 +240,9 @@ export function boot(opts: { palette: PaletteName; scale?: TypeScale }): Promise
 
   const root = document.createElement("div");
   root.id = "gob-stage";
-  root.style.width = `${api.width}px`;
-  root.style.height = `${api.height}px`;
+  root.style.width = `${W}px`;
+  root.style.height = `${H}px`;
+  if (zoom !== 1) root.style.zoom = String(zoom);
   document.body.appendChild(root);
 
   const el: Stage["el"] = (tag, css, parent) => {
@@ -296,7 +307,7 @@ export function boot(opts: { palette: PaletteName; scale?: TypeScale }): Promise
 
   const lid: Stage["lid"] = (y, label, o = {}) => {
     const x0 = o.x0 ?? 0;
-    const x1 = o.x1 ?? api.width;
+    const x1 = o.x1 ?? W;
     const group = el("div", `position:absolute;left:${x0}px;top:${y - 1}px;width:${x1 - x0}px;height:2px;background:var(--lid)`, o.parent);
     group.className = "gob-lid";
     const tag = document.createElement("p");
@@ -338,7 +349,7 @@ export function boot(opts: { palette: PaletteName; scale?: TypeScale }): Promise
   };
 
   const lowerThird: Stage["lowerThird"] = (s) => {
-    const node = text("prov", s, { x: 120, y: api.height - 64 }, { nowrap: true });
+    const node = text("prov", s, { x: 120, y: H - 64 }, { nowrap: true });
     node.style.top = "auto";
     node.style.bottom = "64px";
     return node;
@@ -365,9 +376,15 @@ export function boot(opts: { palette: PaletteName; scale?: TypeScale }): Promise
     }
   };
 
+  // Layout-space box of an element, whatever zoom the browser folds into client rects.
+  const measure: Stage["measure"] = (node) => {
+    const r = node.getBoundingClientRect();
+    const o = root.getBoundingClientRect();
+    const k = o.width / W || 1;
+    return { x: (r.left - o.left) / k, y: (r.top - o.top) / k, width: r.width / k, height: r.height / k };
+  };
+
   const still: Stage["still"] = (o) => {
-    const W = api.width;
-    const H = api.height;
     const padX = 72;
     const padTop = 60;
     const padBottom = 52;
@@ -393,17 +410,18 @@ export function boot(opts: { palette: PaletteName; scale?: TypeScale }): Promise
       footer = el("div", `position:absolute;left:${padX}px;bottom:${padBottom}px;width:${W - padX * 2}px;padding-top:18px;border-top:1px solid var(--rule)`);
       const prov = text("prov", o.provenance, { x: 0, y: 0 }, { parent: footer });
       prov.style.position = "relative";
-      footerTop = H - padBottom - footer.getBoundingClientRect().height;
+      footerTop = H - padBottom - measure(footer).height;
     }
-    const headerBottom = padTop + header.getBoundingClientRect().height;
+    const headerBottom = padTop + measure(header).height;
     const plot = { x: padX, y: Math.round(headerBottom + 44), w: W - padX * 2, h: Math.round(footerTop - 40 - (headerBottom + 44)) };
     return { plot, header, footer };
   };
 
   const stage: Stage = {
     params, palette, paletteName, scale, root,
-    width: api.width,
-    height: api.height,
+    width: W,
+    height: H,
+    measure,
     jitter: (key) => hash32(key, api.seed) / 0x1_0000_0000,
     el, slab, lid, ring, mark, text, lowerThird, timeline, still,
     done: () => finish(),
