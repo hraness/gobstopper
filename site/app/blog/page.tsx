@@ -33,7 +33,7 @@ export default function Blog() {
   return (
     <>
       <SiteHeader path={BLOG_PATH} />
-      <main id="main" tabIndex={-1} className="document-page blog-page">
+      <main id="main" tabIndex={-1}>
         <script
           dangerouslySetInnerHTML={{ __html: serializeJsonLd(blogIndexJsonLd()) }}
           type="application/ld+json"

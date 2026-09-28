@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 
+import { SiteDocument } from "../_components/site-document";
 import { SiteHeader, SiteFooter } from "../_components/site-chrome";
 
 const title = "Methodology";
@@ -31,17 +32,19 @@ export default function Methodology() {
   return (
     <>
       <SiteHeader path="/methodology" />
-      <main id="main" tabIndex={-1} className="document-page">
-        <article>
-          <h1>Methodology</h1>
-          <p>
-            Gobstopper compares how compaction changes context size and which
-            details survive. You choose a threshold and strategy, then inspect
-            the result. The source build prepares separate Codex and Claude Code
-            copies; automatic provider compaction is disabled.
-          </p>
-
-          <h2>Occupancy model</h2>
+      <main id="main" tabIndex={-1}>
+        <SiteDocument
+          dek="Gobstopper compares how compaction changes context size and which details survive; you choose a threshold and strategy, then inspect the result. The source build prepares separate Codex and Claude Code copies, and automatic provider compaction is disabled."
+          eyebrow="Method"
+          heading={title}
+          toc={[
+            { href: "#occupancy-model", label: "Occupancy model" },
+            { href: "#strategies", label: "Strategies" },
+            { href: "#structural-diff-and-the-undo-vault", label: "Structural diff and the undo vault" },
+            { href: "#what-the-numbers-mean", label: "What the numbers mean" },
+          ]}
+        >
+          <h2 id="occupancy-model">Occupancy model</h2>
           <p>
             Context is a sawtooth. If you compact at trigger T and the summary
             floor is F, steady-state context occupancy per turn is roughly
@@ -54,7 +57,7 @@ export default function Methodology() {
             re-fetches from lost detail, and how often compaction itself runs.
           </p>
 
-          <h2>Strategies</h2>
+          <h2 id="strategies">Strategies</h2>
           <ul>
             <li><strong>auto</strong>, the default, recommends the provider&apos;s own controls for a live session and compares eligible file strategies for an idle one.</li>
             <li><strong>sawtooth</strong> proposes provider compaction. The source build does not execute that proposal.</li>
@@ -70,7 +73,7 @@ export default function Methodology() {
             <code>micro</code>, and <code>middle</code>.
           </p>
 
-          <h2>Structural diff and the undo vault</h2>
+          <h2 id="structural-diff-and-the-undo-vault">Structural diff and the undo vault</h2>
           <p>
             Before writing a separate copy, Gobstopper stores the original and
             prepared bytes in a local vault indexed by content hashes.
@@ -85,7 +88,7 @@ export default function Methodology() {
             the compaction edits.
           </p>
 
-          <h2>What the numbers mean</h2>
+          <h2 id="what-the-numbers-mean">What the numbers mean</h2>
           <p>
             We report file-byte changes and observed provider usage where we have
             them, and we don&apos;t claim dollar or quota savings without a
@@ -95,7 +98,7 @@ export default function Methodology() {
             <a href="/benchmarks">published studies</a> report their cohorts,
             no-ops, and limitations separately.
           </p>
-        </article>
+        </SiteDocument>
       </main>
       <SiteFooter path="/methodology" />
     </>

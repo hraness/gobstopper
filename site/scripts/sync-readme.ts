@@ -1,6 +1,6 @@
 import { resolve } from "node:path";
 
-import { readmeLanding, renderReadmeHtml } from "./readme-html.ts";
+import { documentSections, readmeLanding, renderReadmeHtml } from "./readme-html.ts";
 import { publishedReadme } from "./published-readme.ts";
 import { publishedRelease } from "../app/publication.ts";
 
@@ -32,6 +32,7 @@ if (import.meta.main) {
     "// Generated from ../README.md by scripts/sync-readme.ts. Do not edit.\n"
       + `export const readmeTitle = ${JSON.stringify(landing.title)};\n`
       + `export const readmeLead = ${JSON.stringify(landing.lead)};\n`
-      + `export const readmeHtml = ${JSON.stringify(html)};\n`,
+      + `export const readmeHtml = ${JSON.stringify(html)};\n`
+      + `export const readmeSections = ${JSON.stringify(documentSections(html))} as const;\n`,
   );
 }

@@ -39,7 +39,8 @@ test("the comparison page renders one heading, the shared rows, and primary sour
     expect(html).toContain(question);
   }
   // Authored copy avoids em dashes; the shared chrome may carry its own text.
-  const article = /<article>([\s\S]*)<\/article>/u.exec(html)?.[1] ?? "";
+  const article = /<article\b[^>]*>([\s\S]*)<\/article>/u.exec(html)?.[1] ?? "";
+  expect(article).not.toBe("");
   expect(article).not.toContain("—");
   expect(html).toContain('"@type":"FAQPage"');
 });
@@ -74,7 +75,8 @@ test("the /compact comparison page renders one heading, the shared rows, and pri
     expect(html).toContain(question);
   }
   // Authored copy avoids em dashes; the shared chrome may carry its own text.
-  const article = /<article>([\s\S]*)<\/article>/u.exec(html)?.[1] ?? "";
+  const article = /<article\b[^>]*>([\s\S]*)<\/article>/u.exec(html)?.[1] ?? "";
+  expect(article).not.toBe("");
   expect(article).not.toContain("—");
   expect(html).toContain('"@type":"FAQPage"');
 });
