@@ -144,9 +144,17 @@ export default function CompareClaudeCodeCompact() {
             For a running session, <code>gobstopper proxy</code> listens on
             127.0.0.1 between the agent and its provider. Past the threshold
             (128,000 estimated tokens by default) it sends the head, one
-            mechanical summary, and the newest turns verbatim, so the provider
-            reports a smaller context and the client&apos;s own auto-compaction
-            does not reach its trigger. The session files stay unchanged.
+            mechanical summary, and the last three turns verbatim, so the
+            provider reports a smaller context and the client&apos;s own
+            auto-compaction does not reach its trigger. The session files stay
+            unchanged. In one Terminal-Bench 2.1 run through Claude Code (GLM
+            5.3 Flash, 45,000-token threshold, one trial per arm, September 27
+            and 28, 2026), it solved 61 of 89 tasks against 60 with no proxy,
+            within single-trial noise, and sent 29% fewer input tokens; it had
+            no arm with Claude Code&apos;s own auto-compaction at that size.
+            The{" "}
+            <a href="/benchmarks#terminal-bench-2026-09-28">benchmarks page</a>{" "}
+            has the setup and limits.
           </p>
           <pre><SyntaxCode code={`gobstopper detect                 # sessions, context sizes
 gobstopper plan <session>         # preview the cut under each strategy

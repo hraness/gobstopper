@@ -1,0 +1,69 @@
+/* The departures table: flags stay whole, the departure column reads as text
+   rather than a wall of bold, and below 480px each row becomes a small
+   labelled block instead of three squeezed columns. */
+
+.plain-publication__article-body .gob-departures :is(th, td) code {
+  white-space: nowrap;
+  hyphens: none;
+}
+
+.plain-publication__article-body .gob-departures tbody th {
+  font-weight: 500;
+}
+
+@media (max-width: 480px) {
+  .plain-site.plain-publication .plain-publication__article-body .gob-departures table:not(.plain-publication__table) thead {
+    position: absolute;
+    inline-size: 1px;
+    block-size: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .plain-site.plain-publication .plain-publication__article-body .gob-departures :is(table, tbody, tr, th, td) {
+    display: block;
+  }
+
+  .plain-site.plain-publication .plain-publication__article-body .gob-departures table:not(.plain-publication__table) tbody tr {
+    padding-block: 0.85rem;
+    border-top: 1px solid var(--plain-line);
+  }
+
+  .plain-site.plain-publication .plain-publication__article-body .gob-departures table:not(.plain-publication__table) tbody :is(th, td) {
+    padding-block: 0;
+    padding-inline-end: 0;
+    border-top: 0;
+  }
+
+  .plain-site.plain-publication .plain-publication__article-body .gob-departures table:not(.plain-publication__table) tbody th {
+    padding-inline-start: 0;
+  }
+
+  .plain-site.plain-publication .plain-publication__article-body .gob-departures table:not(.plain-publication__table) tbody th {
+    margin-block-end: 0.4rem;
+    font-weight: 650;
+  }
+
+  .plain-site.plain-publication .plain-publication__article-body .gob-departures table:not(.plain-publication__table) caption {
+    display: block;
+    margin-block-end: 0.5rem;
+    text-align: start;
+  }
+
+  .plain-site.plain-publication .plain-publication__article-body .gob-departures table:not(.plain-publication__table) tbody td {
+    position: relative;
+    padding-inline-start: 5.25rem;
+  }
+
+  .plain-site.plain-publication .plain-publication__article-body .gob-departures table:not(.plain-publication__table) tbody td + td {
+    margin-block-start: 0.25rem;
+  }
+
+  .plain-site.plain-publication .plain-publication__article-body .gob-departures table:not(.plain-publication__table) tbody td::before {
+    position: absolute;
+    inset-inline-start: 0;
+    color: var(--plain-muted);
+    content: attr(data-label);
+  }
+}

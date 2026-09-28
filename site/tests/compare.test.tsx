@@ -9,6 +9,7 @@ import {
   CLIFF_REPOSITORY,
   comparisonQuestions,
   comparisonRows,
+  departureRows,
 } from "../app/compare/cliffcompaction/comparison";
 import CompareClaudeCodeCompact from "../app/compare/claude-code-compact/page";
 import {
@@ -43,6 +44,17 @@ test("the comparison page renders one heading, the shared rows, and primary sour
   expect(article).not.toBe("");
   expect(article).not.toContain("—");
   expect(html).toContain('"@type":"FAQPage"');
+});
+
+test("the departures table sets every flag as code and labels each cell for the narrow layout", () => {
+  const html = renderToStaticMarkup(<RootLayout><CompareCliffCompaction /></RootLayout>);
+  const table = /<figure class="gob-departures">([\s\S]*?)<\/figure>/u.exec(html)?.[1] ?? "";
+  expect(table).not.toBe("");
+  const cellsHtml = [...table.matchAll(/<t[hd]\b[^>]*>([\s\S]*?)<\/t[hd]>/gu)].map((match) => match[1]!);
+  expect(cellsHtml.length).toBeGreaterThan(0);
+  for (const cell of cellsHtml) expect(cell).not.toContain("`");
+  expect(table.match(/data-label="Default"/gu)?.length).toBe(departureRows.length);
+  expect(table.match(/data-label="Restore"/gu)?.length).toBe(departureRows.length);
 });
 
 test("the README comparison table carries the same cells as the page", async () => {

@@ -1,0 +1,78 @@
+/* Post figures and the launch film. The publication grammar already sets the
+   figure margin and a muted caption; these rules give a captioned still its
+   rhythm and keep the film's box reserved before its poster loads. */
+
+.plain-publication__article-body .gob-post-figure {
+  margin-block: 2.25rem 2rem;
+}
+
+.plain-publication__article-body .gob-post-figure > img {
+  inline-size: 100%;
+  block-size: auto;
+  aspect-ratio: 16 / 9;
+  object-fit: contain;
+}
+
+.plain-publication__article-body .gob-post-figure figcaption {
+  display: grid;
+  gap: 0.35rem;
+  margin-block-start: 0.75rem;
+  font-size: 0.875rem;
+  line-height: 1.5;
+  text-wrap: pretty;
+}
+
+.plain-publication__article-body .gob-post-figure__caption {
+  color: var(--plain-foreground);
+}
+
+.plain-publication__article-body .gob-post-figure__prov {
+  color: var(--plain-muted);
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.plain-publication__article-body .gob-film {
+  margin-block: 2.25rem 2rem;
+}
+
+.plain-publication__article-body .gob-film video {
+  display: block;
+  inline-size: 100%;
+  block-size: auto;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--hraness-marketing-frame-radius, 0.5rem);
+  background: #1a1b26;
+}
+
+.plain-publication__article-body .gob-film__reduced {
+  display: none;
+  margin: 0.75rem 0 0;
+  color: var(--plain-muted);
+  font-size: 0.875rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .plain-publication__article-body .gob-film__reduced { display: block; }
+}
+
+.plain-publication__article-body .gob-film details {
+  margin-block-start: 0.75rem;
+  font-size: 0.9375rem;
+}
+
+.plain-publication__article-body .gob-film summary {
+  cursor: pointer;
+  padding-block: 0.6rem;
+  color: var(--plain-foreground);
+}
+
+.plain-publication__article-body .gob-film details ol {
+  margin-block: 0.5rem 0;
+}
+
+.plain-publication__article-body .gob-film__scope {
+  margin: 0.75rem 0 0;
+  color: var(--plain-muted);
+  font-size: 0.875rem;
+}
