@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Every step resends the whole session</title>
+</head>
+<body>
+<script>
+// D-resend: column n stacks your task plus n - 1 steps, all resent on step n.
+Gob.scene({ palette: "paper" }, (s) => {
+  const { SLAB, resendColumns } = Gob.geometry;
+  const frame = s.still({
+    title: "Every step resends the whole session",
+    legend: Gob.legend([
+      { label: "your task", fill: "var(--slab)", edge: "var(--ink)" },
+      { label: "one step of chat and tool output", fill: "var(--slab)", edge: "color-mix(in oklab, var(--slab-edge) 45%, transparent)" },
+    ]),
+  });
+  const p = frame.plot;
+  const columns = resendColumns(5);
+  const tallest = Math.max(...columns.map((c) => c.length));
+  const labelH = 44;
+  const top = p.y + labelH + 10 + 22 + 16;
+  const bottomBand = 14 + labelH + 26 + labelH;
+  const unit = Math.floor((p.y + p.h - bottomBand - top) / (tallest + (tallest - 1) * SLAB.gap));
+  const h = unit;
+  const gap = Math.round(unit * SLAB.gap);
+  const base = top + tallest * h + (tallest - 1) * gap;
+  const slot = p.w / columns.length;
+  const slabW = Math.round(slot * 0.74);
+
+  s.el("div", `position:absolute;left:${p.x}px;top:${base + 12}px;width:${p.w}px;height:1px;background:var(--rule)`);
+  columns.forEach((column, i) => {
+    const cx = p.x + slot * i + slot / 2;
+    const x = Math.round(cx - slabW / 2);
+    column.forEach((slab, j) => {
+      s.slab(slab.kind, { x, y: base - (j + 1) * h - j * gap, w: slabW, h });
+    });
+    s.text("label", `Step ${i + 1}`, { x: x, y: base + 26, w: slabW }, { align: "center", weight: 500 });
+    if (i === columns.length - 1) {
+      const topY = base - column.length * h - (column.length - 1) * gap;
+      const bw = slabW;
+      const ns = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(ns, "svg");
+      svg.setAttribute("width", String(bw));
+      svg.setAttribute("height", "22");
+      svg.setAttribute("viewBox", `0 0 ${bw} 22`);
+      svg.style.cssText = `position:absolute;left:${x}px;top:${topY - 22 - 14}px;overflow:visible`;
+      const m = bw / 2;
+      const path = document.createElementNS(ns, "path");
+      path.setAttribute("d", `M1,21 Q1,11 13,11 H${m - 12} Q${m},11 ${m},1 Q${m},11 ${m + 12},11 H${bw - 13} Q${bw - 1},11 ${bw - 1},21`);
+      path.setAttribute("fill", "none");
+      path.setAttribute("stroke", "var(--ink)");
+      path.setAttribute("stroke-width", "2.5");
+      path.setAttribute("stroke-linecap", "round");
+      path.setAttribute("stroke-linejoin", "round");
+      svg.appendChild(path);
+      s.root.appendChild(svg);
+      s.text("label", "everything, again", { x: x - 60, y: topY - 22 - 14 - 10 - labelH, w: bw + 120 }, { align: "center", weight: 600 });
+    }
+  });
+  s.text("label", "every stacked slab is sent, and billed, again", { x: p.x, y: base + 26 + labelH + 26, w: p.w }, { align: "center", color: "var(--ink-2)" });
+});
+</script>
+</body>
+</html>

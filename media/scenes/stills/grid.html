@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lower thresholds cut more</title>
+</head>
+<body>
+<script>
+// C-grid: pooled cut in estimated input by threshold, tail 0 and tail 40.
+Gob.scene({ palette: "paper" }, (s) => {
+  const { ARM_STYLE } = Gob;
+  const d = s.params.data.grid;
+  const P_GRID = "Estimates, not billed · 24 recorded sessions (12 Claude Code, 12 Codex), 665M tokens · main fdeb099 · September 26, 2026";
+  const frame = s.still({
+    title: "Lower thresholds cut more",
+    provenance: P_GRID,
+  });
+  const p = frame.plot;
+  const noteW = 470;
+  const axisW = 96;
+  const endW = 150;
+  const x0 = p.x + axisW + 40;
+  const x1 = p.x + p.w - noteW - 64 - endW;
+  const y0 = p.y + p.h - 56;
+  const y1 = p.y + 12;
+  const thresholds = [32000, 64000, 128000, 256000];
+  const X = (t) => x0 + (Math.log2(t / 32000) / 3) * (x1 - x0);
+  const Y = (v) => y0 - v * (y0 - y1);
+  const svg = Gob.svgLayer(s);
+
+  for (const v of [0, 0.25, 0.5, 0.75, 1]) {
+    const gy = Math.round(Y(v)) + 0.5;
+    Gob.svgNode(svg, "line", { x1: x0 - 40, x2: x1 + 40, y1: gy, y2: gy, stroke: v === 0 ? "var(--ink)" : "var(--rule)", "stroke-width": v === 0 ? 2 : 1.5 });
+    s.text("small", `${v * 100}%`, { x: p.x, y: gy - 19, w: axisW }, { align: "right", color: "var(--ink-2)" });
+  }
+  for (const t of thresholds) {
+    const gx = X(t);
+    Gob.svgNode(svg, "line", { x1: gx, x2: gx, y1: y0, y2: y0 + 10, stroke: "var(--ink)", "stroke-width": 2 });
+    s.text("small", `${t / 1000}K`, { x: gx - 60, y: y0 + 14, w: 120 }, { align: "center", color: "var(--ink-2)" });
+  }
+  const yLabel = s.text("small", "cut in estimated input", { x: x0 - 40, y: y1 - 58 }, { nowrap: true, color: "var(--ink-2)" });
+  void yLabel;
+
+  const series = [
+    { id: "tail0", tail: 0, label: "tail 0" },
+    { id: "tail40", tail: 40, label: "tail 40" },
+  ];
+  const ends = [];
+  for (const line of series) {
+    const style = ARM_STYLE[line.id];
+    const rows = thresholds.map((t) => d.pooled.find((r) => r.threshold === t && r.tail === line.tail));
+    const pts = rows.map((r) => [X(r.threshold), Y(r.cut)]);
+    Gob.svgNode(svg, "path", {
+      d: pts.map(([px, py], i) => `${i ? "L" : "M"}${px.toFixed(2)},${py.toFixed(2)}`).join(""),
+      stroke: style.color, "stroke-width": 3.5, ...(style.dash ? { "stroke-dasharray": style.dash } : {}),
+    });
+    for (const [px, py] of pts) {
+      Gob.svgNode(svg, "circle", { cx: px, cy: py, r: 15, fill: "var(--bg)" });
+      Gob.marker(svg, style.marker, px, py, style.color, 20);
+    }
+    ends.push({ y: pts[pts.length - 1][1], label: line.label, color: style.color });
+  }
+  // Values for tail 0, printed above its markers.
+  const t0 = thresholds.map((t) => d.pooled.find((r) => r.threshold === t && r.tail === 0));
+  t0.forEach((r) => s.text("small", `${Math.round(r.cut * 100)}%`, { x: X(r.threshold) - 60, y: Y(r.cut) - 64, w: 120 }, { align: "center", color: "var(--tail0)", weight: 600 }));
+  // End labels, pushed apart if they would collide.
+  ends.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i - 1].y < 44) ends[i].y = ends[i - 1].y + 44;
+  for (const e of ends) s.text("label", e.label, { x: x1 + 40, y: e.y - 22 }, { nowrap: true, color: e.color, weight: 600 });
+
+  const note = s.el("div", `position:absolute;left:${p.x + p.w - noteW}px;top:${y1}px;width:${noteW}px;display:flex;flex-direction:column;gap:22px`);
+  const lines = [
+    `${d.violations} unpaired tool calls in ${d.cells} replays.`,
+    "Three large sessions hold 476M of the 665M tokens, so a typical session's cut at 32K is about 46%.",
+    "At 128K most Claude Code sessions never cross the threshold.",
+  ];
+  for (const line of lines) {
+    const t = s.text("small", line, { x: 0, y: 0 }, { parent: note, color: "var(--ink)" });
+    t.style.position = "relative";
+  }
+});
+</script>
+</body>
+</html>

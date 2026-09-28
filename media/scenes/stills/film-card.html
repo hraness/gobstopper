@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Film card</title>
+</head>
+<body>
+<script>
+// The film card: the only Night still. README and blog link it to the film.
+Gob.scene({ palette: "night" }, (s) => {
+  const { F } = Gob;
+  const W = s.width;
+  const H = s.height;
+  const padX = 88;
+  s.el("div", "position:absolute;inset:0;box-shadow:inset 0 0 0 1px var(--rule);pointer-events:none;z-index:5");
+  s.el("div", `position:absolute;inset:0;background:radial-gradient(ellipse 60% 70% at 78% 44%, color-mix(in oklab, var(--tail0) 16%, transparent), transparent 70%)`);
+
+  // Brand row.
+  s.mark(padX, 72, 48);
+  s.text("label", "Gobstopper", { x: padX + 66, y: 76 }, { nowrap: true, weight: 600 });
+
+  // Hero and line beneath it, left column.
+  const colW = 860;
+  const hero = s.text("hero", `${F.inputFewer} fewer input tokens`, { x: padX, y: 270, w: colW }, { weight: 600 });
+  hero.style.fontSize = "112px";
+  hero.style.lineHeight = "1.02";
+  const heroH = hero.getBoundingClientRect().height;
+  s.text("beat", "Same tasks solved, within single-trial noise", { x: padX, y: 270 + heroH + 30, w: colW }, { color: "var(--ink-2)", weight: 500 }).style.fontSize = "40px";
+
+  // Play glyph: a 120px triangle centred in the brand ring.
+  const cx = 1236;
+  const cy = 440;
+  const ring = 340;
+  s.ring(cx, cy, ring, { color: "color-mix(in oklab, var(--tail0) 55%, var(--bg))", stroke: 0.9 });
+  s.el("div", `position:absolute;left:${cx - 102}px;top:${cy - 102}px;width:204px;height:204px;border-radius:50%;background:var(--tail0)`);
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  const t = 120; // triangle height
+  const side = t * 2 / Math.sqrt(3);
+  svg.setAttribute("width", String(side));
+  svg.setAttribute("height", String(t));
+  svg.setAttribute("viewBox", `0 0 ${side} ${t}`);
+  // Optical centre: the triangle's centroid sits on the ring's centre.
+  svg.style.cssText = `position:absolute;left:${cx - t / 3}px;top:${cy - side / 2}px;width:${t}px;height:${side}px;overflow:visible`;
+  const tri = document.createElementNS(ns, "path");
+  const r = 10;
+  tri.setAttribute("d", `M${r},${r * 0.6} L${t - r * 0.6},${side / 2} L${r},${side - r * 0.6} Z`);
+  tri.setAttribute("fill", "#ffffff");
+  tri.setAttribute("stroke", "#ffffff");
+  tri.setAttribute("stroke-width", String(r * 1.4));
+  tri.setAttribute("stroke-linejoin", "round");
+  svg.setAttribute("viewBox", `0 0 ${t} ${side}`);
+  svg.appendChild(tri);
+  s.root.appendChild(svg);
+
+  // Footer.
+  s.el("div", `position:absolute;left:${padX}px;right:${padX}px;bottom:128px;height:1px;background:var(--rule)`);
+  s.text("label", "Watch the 75-second film · gobstopper.sh", { x: padX, y: H - 112 }, { nowrap: true, weight: 500 });
+  void W;
+});
+</script>
+</body>
+</html>

@@ -447,3 +447,52 @@ export function legend(items: readonly { label: string; fill: string; edge?: str
   }
   return row;
 }
+
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+/** A full-canvas SVG layer for lines and markers, drawn in stage pixels. */
+export function svgLayer(stage: Stage, parent?: Element): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, "svg");
+  svg.setAttribute("width", String(stage.width));
+  svg.setAttribute("height", String(stage.height));
+  svg.setAttribute("aria-hidden", "true");
+  svg.style.cssText = "position:absolute;left:0;top:0;overflow:visible";
+  (parent ?? stage.root).appendChild(svg);
+  return svg;
+}
+
+/** Appends an SVG child with attributes. Strokes default to round caps and joins. */
+export function svgNode<K extends keyof SVGElementTagNameMap>(parent: Element, tag: K, attrs: Record<string, string | number>): SVGElementTagNameMap[K] {
+  const node = document.createElementNS(SVG_NS, tag);
+  if (tag === "path" || tag === "line" || tag === "polyline") {
+    node.setAttribute("fill", "none");
+    node.setAttribute("stroke-linecap", "round");
+    node.setAttribute("stroke-linejoin", "round");
+  }
+  for (const [key, value] of Object.entries(attrs)) node.setAttribute(key, String(value));
+  parent.appendChild(node);
+  return node;
+}
+
+/** CSS background for a diagonal hatch of `color` over a fill (secondary encoding). */
+export function hatch(fill: string, color: string, angle: number, line = 2, spacing = 9): string {
+  return `repeating-linear-gradient(${angle}deg, ${color} 0 ${line}px, transparent ${line}px ${spacing}px), ${fill}`;
+}
+
+/** The per-arm secondary encoding (SPEC §1.1), scaled for stills. */
+export const ARM_STYLE = {
+  tail0: { color: "var(--tail0)", marker: "circle", dash: "", hatchAngle: null },
+  tail40: { color: "var(--tail40)", marker: "square", dash: "12 6", hatchAngle: 135 },
+  no_proxy: { color: "var(--noproxy)", marker: "diamond", dash: "2 7", hatchAngle: 45 },
+} as const;
+
+/** Draws an arm marker centred on (x, y) into an SVG parent. `size` is the circle diameter. */
+export function marker(parent: Element, kind: "circle" | "square" | "diamond", x: number, y: number, color: string, size = 18): SVGElement {
+  if (kind === "circle") return svgNode(parent, "circle", { cx: x, cy: y, r: size / 2, fill: color });
+  if (kind === "square") {
+    const s = size * 0.9;
+    return svgNode(parent, "rect", { x: x - s / 2, y: y - s / 2, width: s, height: s, fill: color });
+  }
+  const r = size * 0.68;
+  return svgNode(parent, "path", { d: `M${x},${y - r} L${x + r},${y} L${x},${y + r} L${x - r},${y} Z`, fill: color, stroke: "none" });
+}

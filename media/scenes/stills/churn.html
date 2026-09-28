@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>31 of 89 tasks changed outcome between arms</title>
+</head>
+<body>
+<script>
+// C-churn: 89 unit cells in three runs.
+Gob.scene({ palette: "paper" }, (s) => {
+  const { hatch } = Gob;
+  const c = s.params.data.churn;
+  const P_TB_FULL = "Terminal-Bench 2.1 · 89 tasks · one trial per arm · Claude Code 2.1.283 with GLM 5.3 Flash via Vercel AI Gateway · Gobstopper v0.7.2, 45,000-token threshold (default 128,000) · September 27–28, 2026 · 21 of 89 tail-0 trials may have run an earlier build";
+  const frame = s.still({ title: `${c.split} of 89 tasks changed outcome between arms`, provenance: P_TB_FULL });
+  const p = frame.plot;
+  const runs = [
+    { n: c.resolved_by_all, label: "solved by all three arms", fill: "var(--ink-2)", edge: null },
+    { n: c.split, label: "changed between arms", fill: hatch("color-mix(in oklab, var(--ink) 10%, var(--bg))", "var(--ink)", 135, 2.5, 10), edge: "var(--ink)" },
+    { n: c.resolved_by_none, label: "solved by none", fill: "var(--slab)", edge: "var(--slab-edge)" },
+  ];
+  const total = runs.reduce((sum, r) => sum + r.n, 0);
+  const gap = 3;
+  const runGap = 14;
+  const cellW = (p.w - gap * (total - runs.length) - runGap * (runs.length - 1)) / total;
+  const barH = 150;
+  const top = Math.round(p.y + (p.h - barH) / 2 - 60);
+  let x = p.x;
+  runs.forEach((run) => {
+    const start = x;
+    for (let i = 0; i < run.n; i++) {
+      const cell = s.el("div", `position:absolute;left:${x.toFixed(2)}px;top:${top}px;width:${cellW.toFixed(2)}px;height:${barH}px;border-radius:3px`);
+      cell.style.background = run.fill;
+      if (run.edge) cell.style.boxShadow = `inset 0 0 0 1.5px ${run.edge}`;
+      x += cellW + gap;
+    }
+    x += runGap - gap;
+    const end = x - runGap;
+    const w = end - start;
+    s.text("hero", String(run.n), { x: start, y: top + barH + 26 }, { nowrap: true, weight: 600 }).style.fontSize = "76px";
+    s.text("label", run.label, { x: start, y: top + barH + 124, w: Math.max(w, 260) }, { color: "var(--ink-2)" });
+  });
+});
+</script>
+</body>
+</html>

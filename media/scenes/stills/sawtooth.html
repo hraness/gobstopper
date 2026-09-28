@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>A sawtooth, not a ramp</title>
+</head>
+<body>
+<script>
+// C-sawtooth: estimated tokens per request over one recorded session, with and without
+// the proxy, at a 45,000-token threshold. Rings under the plot mark each rewrite.
+Gob.scene({ palette: "paper" }, (s) => {
+  const { F } = Gob;
+  const d = s.params.data.sawtooth;
+  const P_SAW = "Estimated tokens (4 characters per token), not billed · one recorded Claude Code session, 383 requests · replay on the v0.7.2 engine, calibration on";
+  const frame = s.still({
+    title: "A sawtooth, not a ramp",
+    provenance: P_SAW,
+    legend: Gob.legend([
+      { label: "Claude Code, no proxy", fill: "3px dotted var(--noproxy)", shape: "line" },
+      { label: "Gobstopper, tail 0", fill: "3.5px solid var(--tail0)", shape: "line" },
+      { label: "threshold: 45K set, lowered by calibration", fill: "2px solid var(--ink)", shape: "line" },
+    ]),
+  });
+  const p = frame.plot;
+  const axisW = 96;
+  const ringStrip = 34;
+  const axisLabels = 40;
+  const x0 = p.x + axisW;
+  const x1 = p.x + p.w;
+  const y0 = p.y + p.h - ringStrip - axisLabels - 8; // value 0
+  const y1 = p.y + 6; // value 500K
+  const n = d.without.length;
+  const X = (i) => x0 + (i / (n - 1)) * (x1 - x0);
+  const Y = (v) => y0 - (v / 500000) * (y0 - y1);
+  const svg = Gob.svgLayer(s);
+
+  for (let t = 0; t <= 500000; t += 100000) {
+    const gy = Math.round(Y(t)) + 0.5;
+    Gob.svgNode(svg, "line", { x1: x0, x2: x1, y1: gy, y2: gy, stroke: t === 0 ? "var(--ink)" : "var(--rule)", "stroke-width": t === 0 ? 2 : 1.5 });
+    s.text("small", t === 0 ? "0" : `${t / 1000}K`, { x: p.x, y: gy - 19, w: axisW - 18 }, { align: "right", color: "var(--ink-2)" });
+  }
+  for (const r of [1, 100, 200, 300, 383]) {
+    const gx = X(r - 1);
+    s.text("small", String(r), { x: gx - 60, y: y0 + 10, w: 120 }, { align: r === 383 ? "right" : "center", color: "var(--ink-2)" }).style.cssText += r === 383 ? `;left:${gx - 120}px` : "";
+  }
+  s.text("small", "request", { x: x0, y: y0 + 10 }, { color: "var(--ink-2)" }).style.left = `${X(49)}px`;
+
+  const line = (values) => values.map((v, i) => `${i === 0 ? "M" : "L"}${X(i).toFixed(2)},${Y(v).toFixed(2)}`).join("");
+  const area = (values) => `${line(values)}L${X(n - 1).toFixed(2)},${y0}L${X(0).toFixed(2)},${y0}Z`;
+  Gob.svgNode(svg, "path", { d: area(d.without), fill: "color-mix(in oklab, var(--noproxy) 12%, transparent)", stroke: "none" });
+  Gob.svgNode(svg, "path", { d: area(d.with), fill: "color-mix(in oklab, var(--tail0) 16%, transparent)", stroke: "none" });
+  Gob.svgNode(svg, "path", { d: line(d.without), stroke: "var(--noproxy)", "stroke-width": 3, "stroke-dasharray": "0.5 6" });
+  Gob.svgNode(svg, "path", { d: line(d.with), stroke: "var(--tail0)", "stroke-width": 2.5 });
+  const step = d.threshold.map((v, i) => (i === 0 ? `M${X(0)},${Y(v)}` : `H${X(i).toFixed(2)}V${Y(v).toFixed(2)}`)).join("");
+  Gob.svgNode(svg, "path", { d: step + `H${X(n - 1)}`, stroke: "var(--ink)", "stroke-width": 1.75, "stroke-linecap": "butt" });
+
+  // Rewrites as rings in a strip under the plot.
+  const ringY = y0 + axisLabels + ringStrip / 2 + 6;
+  for (const i of d.compactions) s.ring(X(i), ringY, 14, { color: "var(--tail0)", stroke: 2.4 });
+
+  // Annotations.
+  const peakIndex = d.without.indexOf(Math.max(...d.without));
+  s.text("small", `no proxy: up to ${F.saw.peak} per request`, { x: X(peakIndex) - 520, y: Y(Math.max(...d.without)) - 4, w: 500 }, { align: "right", color: "var(--noproxy)", weight: 500 });
+  s.text("small", `${F.saw.compactions} rewrites`, { x: x0, y: ringY - 58 }, { color: "var(--tail0)", weight: 500, nowrap: true }).style.left = `${X(8)}px`;
+  s.text("label", `total over the session: ${F.saw.cumFrom} to ${F.saw.cumTo} estimated tokens (${F.saw.cut} less)`, { x: x0 + 24, y: Y(470000), w: 620 }, { weight: 500 });
+});
+</script>
+</body>
+</html>

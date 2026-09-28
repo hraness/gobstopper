@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Solved about as often</title>
+</head>
+<body>
+<script>
+// C-solved: share of 89 tasks solved per arm, Wilson 95% intervals, axis from 50%.
+Gob.scene({ palette: "paper" }, (s) => {
+  const { F, ARM_LABEL, ARM_STYLE, wilson, pct } = Gob;
+  const data = s.params.data.solved;
+  const P_TB_FULL = "Terminal-Bench 2.1 · 89 tasks · one trial per arm · Claude Code 2.1.283 with GLM 5.3 Flash via Vercel AI Gateway · Gobstopper v0.7.2, 45,000-token threshold (default 128,000) · September 27–28, 2026 · 21 of 89 tail-0 trials may have run an earlier build";
+  const frame = s.still({ title: "Solved about as often", provenance: P_TB_FULL });
+  const p = frame.plot;
+  const sideW = 430;
+  const leftW = p.w - sideW - 56;
+  const labelW = 290;
+  const plotX0 = p.x;
+  const plotX1 = p.x + leftW - labelW;
+  const x = (v) => plotX0 + ((v - 0.5) / 0.3) * (plotX1 - plotX0);
+  const svg = Gob.svgLayer(s);
+
+  const rowStep = 104;
+  const rowsTop = p.y;
+  const axisY = rowsTop + rowStep * data.arms.length + 4;
+
+  for (const t of [0.5, 0.6, 0.7, 0.8]) {
+    const gx = Math.round(x(t)) + 0.5;
+    Gob.svgNode(svg, "line", { x1: gx, x2: gx, y1: rowsTop + 8, y2: axisY, stroke: "var(--rule)", "stroke-width": 1.5 });
+    Gob.svgNode(svg, "line", { x1: gx, x2: gx, y1: axisY, y2: axisY + 10, stroke: "var(--ink)", "stroke-width": 2 });
+    s.text("small", `${Math.round(t * 100)}%`, { x: gx - 60, y: axisY + 16, w: 120 }, { align: "center", color: "var(--ink-2)" });
+  }
+  Gob.svgNode(svg, "line", { x1: plotX0, x2: plotX1, y1: axisY, y2: axisY, stroke: "var(--ink)", "stroke-width": 2 });
+  s.text("small", "share of 89 tasks solved (axis starts at 50%)", { x: plotX0, y: axisY + 58 }, { nowrap: true, color: "var(--ink-2)" });
+
+  data.arms.forEach((row, i) => {
+    const style = ARM_STYLE[row.id];
+    const [lo, hi] = wilson(row.resolved, row.n);
+    const cy = rowsTop + i * rowStep + 70;
+    s.text("small", ARM_LABEL[row.id], { x: plotX0, y: cy - 60 }, { nowrap: true, weight: 500 });
+    Gob.svgNode(svg, "line", { x1: x(lo), x2: x(hi), y1: cy, y2: cy, stroke: style.color, "stroke-width": 3.5 });
+    for (const v of [lo, hi]) Gob.svgNode(svg, "line", { x1: x(v), x2: x(v), y1: cy - 10, y2: cy + 10, stroke: style.color, "stroke-width": 3.5 });
+    Gob.marker(svg, style.marker, x(row.resolved / row.n), cy, style.color, 22);
+    const bg = Gob.svgNode(svg, "circle", { cx: x(row.resolved / row.n), cy, r: 14, fill: "none", stroke: "var(--bg)", "stroke-width": 0 });
+    void bg;
+    s.text("label", `${F.solved[row.id]} of 89 · ${F.ci[row.id]}`, { x: plotX1 + 36, y: cy - 22 }, { nowrap: true, weight: 500 });
+  });
+
+  s.text("small", "The intervals overlap almost completely: no measurable difference (McNemar p = 1.0 against no proxy). 31 of 89 tasks changed outcome between arms, the noise level of one trial.", { x: plotX0, y: axisY + 118, w: leftW });
+
+  // The attributed reference, kept apart from the axis on purpose.
+  const [r0, r1, r2] = data.reported;
+  const box = s.el("div", `position:absolute;left:${p.x + p.w - sideW}px;top:${rowsTop + 8}px;width:${sideW}px;padding:28px 30px;border-radius:12px;background:var(--panel);box-shadow:inset 0 0 0 1.5px var(--rule)`);
+  const body = s.text("small", `CliffCompaction's authors report ${r0}% for their proxy at 45K, ${r1}% for Claude Code's 200K default and ${r2}% for its 45K auto-compaction, on their own setup (arXiv:2609.26779). Not comparable to the rows above.`, { x: 0, y: 0 }, { parent: box, color: "var(--ink-2)" });
+  body.style.position = "relative";
+  void pct;
+});
+</script>
+</body>
+</html>

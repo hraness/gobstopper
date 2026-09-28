@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Social card</title>
+</head>
+<body>
+<script>
+// The 1200×630 social card attached to the film release.
+Gob.scene({ palette: "night" }, (s) => {
+  const { F } = Gob;
+  const W = s.width;
+  const H = s.height;
+  const padX = 72;
+  s.el("div", "position:absolute;inset:0;box-shadow:inset 0 0 0 1px var(--rule);pointer-events:none;z-index:5");
+  s.el("div", `position:absolute;inset:0;background:radial-gradient(ellipse 55% 75% at 92% 8%, color-mix(in oklab, var(--tail0) 18%, transparent), transparent 70%)`);
+  s.mark(padX, 64, 52);
+  s.text("label", "Gobstopper", { x: padX + 70, y: 70 }, { nowrap: true, weight: 600 }).style.fontSize = "36px";
+  const hero = s.text("hero", `${F.inputFewer} fewer input tokens`, { x: padX, y: 0, w: W - padX * 2 }, { weight: 600 });
+  hero.style.fontSize = "92px";
+  hero.style.lineHeight = "1.02";
+  const sub = s.text("label", "Same tasks solved · Terminal-Bench 2.1 · one trial per arm · 45K threshold", { x: padX, y: 0, w: W - padX * 2 }, { color: "var(--ink-2)" });
+  sub.style.fontSize = "28px";
+  const subH = sub.getBoundingClientRect().height;
+  const heroH = hero.getBoundingClientRect().height;
+  const bottom = H - 76;
+  sub.style.top = `${bottom - subH}px`;
+  hero.style.top = `${bottom - subH - 26 - heroH}px`;
+  s.el("div", `position:absolute;left:${padX}px;top:${bottom - subH - 26 - heroH - 40}px;width:96px;height:6px;border-radius:3px;background:var(--tail0)`);
+});
+</script>
+</body>
+</html>

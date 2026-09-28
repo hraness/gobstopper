@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Same tasks solved, 29% fewer tokens sent</title>
+</head>
+<body>
+<script>
+// C-tokens: total input per arm, cache reads plus new input, from zero on a linear scale.
+Gob.scene({ palette: "paper" }, (s) => {
+  const { F, ARM_LABEL, ARM_STYLE, hatch } = Gob;
+  const rows = s.params.data.tokens;
+  const P_TB_FULL = "Terminal-Bench 2.1 · 89 tasks · one trial per arm · Claude Code 2.1.283 with GLM 5.3 Flash via Vercel AI Gateway · Gobstopper v0.7.2, 45,000-token threshold (default 128,000) · September 27–28, 2026 · 21 of 89 tail-0 trials may have run an earlier build";
+  const frame = s.still({
+    title: `Same tasks solved, ${F.inputFewer} fewer tokens sent`,
+    provenance: P_TB_FULL,
+    legend: Gob.legend([
+      { label: "cache reads (context re-sent)", fill: "var(--ink-2)" },
+      { label: "new input (not cached)", fill: "color-mix(in oklab, var(--ink-2) 35%, var(--bg))", edge: "var(--ink-2)" },
+    ]),
+  });
+  const p = frame.plot;
+  const tipW = 150;
+  const plotW = p.w - tipW;
+  const max = 120e6;
+  const x = (v) => p.x + (v / max) * plotW;
+  const axisH = 40;
+  const rowH = (p.h - axisH) / rows.length;
+  const barH = Math.min(58, Math.round(rowH * 0.42));
+  const svg = Gob.svgLayer(s);
+
+  // Grid and ticks.
+  for (const t of [0, 40e6, 80e6, 120e6]) {
+    const gx = Math.round(x(t)) + 0.5;
+    Gob.svgNode(svg, "line", { x1: gx, x2: gx, y1: p.y, y2: p.y + p.h - axisH + 4, stroke: t === 0 ? "var(--ink)" : "var(--rule)", "stroke-width": t === 0 ? 2 : 1.5 });
+    s.text("small", t === 0 ? "0" : `${t / 1e6}M`, { x: gx - 60, y: p.y + p.h - axisH + 12, w: 120 }, { align: "center", color: "var(--ink-2)" });
+  }
+
+  rows.forEach((row, i) => {
+    const style = ARM_STYLE[row.id];
+    const top = Math.round(p.y + i * rowH + rowH - barH - 18);
+    s.text("label", `${ARM_LABEL[row.id]} · ${F.solved[row.id]} of 89 solved`, { x: p.x, y: top - 50 }, { nowrap: true, weight: 500 });
+    const x0 = x(0) + 1;
+    const xc = x(row.cache_read);
+    const xt = x(row.total_input);
+    const cache = s.el("div", `position:absolute;left:${x0}px;top:${top}px;width:${xc - x0}px;height:${barH}px;border-radius:0 3px 3px 0`);
+    cache.style.background = style.hatchAngle === null ? style.color : hatch(style.color, "color-mix(in oklab, var(--bg) 42%, transparent)", style.hatchAngle, 2.5, 11);
+    s.el("div", `position:absolute;left:${xc + 2}px;top:${top}px;width:${xt - xc - 2}px;height:${barH}px;border-radius:0 6px 6px 0;background:color-mix(in oklab, ${style.color} 35%, var(--bg));box-shadow:inset 0 0 0 1.5px ${style.color}`);
+    s.text("label", F.input[row.id], { x: xt + 18, y: top + barH / 2 - 22 }, { nowrap: true, weight: 600 });
+  });
+});
+</script>
+</body>
+</html>
