@@ -65,7 +65,7 @@ export default function CompareCliffCompaction() {
           dek="CliffCompaction and gobstopper proxy shrink a coding agent's context with the same rule: no model writes the summary, and the newest turns pass through untouched."
           eyebrow="Comparison"
           heading={title}
-          meta="Proxy since v0.3.1 · Chat Completions dialect since v0.4.0 · Carried conversation words since v0.6.0"
+          meta="Checked against the CliffCompaction paper and repository and Gobstopper's source on September 28, 2026"
           toc={[
             { href: "#cliffcompaction-rule", label: "CliffCompaction summarizes older turns mechanically" },
             { href: "#gobstopper-port", label: "Gobstopper ports the rule and adds archived copies" },
@@ -76,6 +76,13 @@ export default function CompareCliffCompaction() {
             { href: "#sources", label: "Sources" },
           ]}
         >
+          <p>
+            Pick CliffCompaction for the proxy the paper measured, in Python.
+            Pick <code>gobstopper proxy</code> for a single Rust binary that
+            carries your own words across compactions and can replay a recorded
+            session without calling a provider. Only CliffCompaction has
+            published task-success benchmarks.
+          </p>
           <p>
             CliffCompaction is the research proxy that introduced the rule.{" "}
             <code>gobstopper proxy</code> ports it to the Anthropic Messages,
@@ -136,8 +143,8 @@ export default function CompareCliffCompaction() {
             127.0.0.1 between the agent and its provider. Past the
             threshold (128,000 estimated tokens by default, or 256,000 for
             an Anthropic request that declares a 1M-token window) it sends
-            the head, one mechanical summary, and the newest turns (at least
-            three, and more while they fit its tail budget), so the provider
+            the head, one mechanical summary, and the newest three turns
+            (more with <code>--keep-tail-percent</code>), so the provider
             reports a smaller context and the client&apos;s own
             auto-compaction does not reach its trigger. The session files
             stay unchanged.
@@ -149,7 +156,7 @@ gobstopper proxy replay <session>    # what the proxy would have sent; calls no 
           <h2 id="side-by-side">Side-by-side comparison</h2>
           <figure>
             <table>
-              <caption>Read from CliffCompaction&apos;s documentation and source on September 25, 2026, and from Gobstopper&apos;s on September 26, 2026</caption>
+              <caption>Read from CliffCompaction&apos;s documentation and source and from Gobstopper&apos;s on September 28, 2026</caption>
               <thead>
                 <tr>
                   <th scope="col">Aspect</th>
@@ -207,8 +214,8 @@ keep_recent_tool_outputs = 0`} language="sh" /></pre>
             Use CliffCompaction for request-time compaction in any client that
             speaks the Anthropic Messages, OpenAI Chat Completions, or OpenAI
             Responses API. Use <code>gobstopper proxy</code> for the same
-            dialects when you want a single Rust binary, a tail that keeps
-            more recent turns while they fit, and{" "}
+            dialects when you want a single Rust binary, an optional tail
+            budget that keeps more recent turns while they fit, and{" "}
             <code>proxy replay</code> to see what the proxy would have sent
             for a recorded Claude Code or Codex session. Use Gobstopper&apos;s file commands to
             compare strategies on frozen input, keep the source, and resume a
