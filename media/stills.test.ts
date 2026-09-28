@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { gobFilm } from "../site/app/_data/gob-film";
+import { P_GRID, P_SAW, P_TB, P_TB_FULL } from "../site/app/_components/gob-figure";
 import { PROV } from "./lib/provenance";
 import { FILM_SECONDS, MEDIA, REPO, loadStills } from "./render";
 
@@ -61,6 +62,10 @@ describe("still sources", () => {
     }
     expect(PROV.tbFull.startsWith(PROV.tb)).toBe(true);
     expect(PROV.tb).toContain("45,000-token threshold (default 128,000)");
+  });
+
+  test("each provenance line is the one the site's figures print", () => {
+    expect(PROV).toEqual({ tb: P_TB, tbFull: P_TB_FULL, saw: P_SAW, grid: P_GRID });
   });
 
   test("the film card's length agrees with the film", () => {

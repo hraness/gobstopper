@@ -74,7 +74,7 @@ Gob.scene({ palette: "paper" }, (s) => {
   const outcomes = [
     { text: "under the threshold: sent unchanged", color: "var(--slab-edge)", glyph: "slab" },
     { text: "over the threshold: rewritten", color: "var(--tail0)", glyph: "ring" },
-    { text: "if the rewrite fails: your original request is sent", color: "var(--ink)", glyph: "back" },
+    { text: "anything goes wrong: your original request is sent", color: "var(--ink)", glyph: "back" },
   ];
   const lastY = firstY + stepY * (outcomes.length - 1);
   path(`M${trunkX},${rowY + pillH} V${lastY - 18}`, "var(--ink)");

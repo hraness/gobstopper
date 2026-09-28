@@ -42,6 +42,14 @@ bun media/render.ts shots [--draft]     # every shot, one after another
 
 Add `--dry-run` to any of them to build the scene and ask Slopcamera to validate it without opening a browser.
 
+Check the committed stills, after installing the site's dependencies (`cd site && bun install --frozen-lockfile --ignore-scripts`):
+
+```bash
+bun test media/stills.test.ts           # sizes, docs/blog byte identity, file sets, receipts, provenance lines
+```
+
+CI runs the same test.
+
 Each job:
 
 1. Inlines `lib/bundle.ts` into a copy of the scene at `out/build/<job>.html`.
