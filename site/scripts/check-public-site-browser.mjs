@@ -91,7 +91,8 @@ try {
       assert.ok(['static', 'relative'].includes(metrics.footerPosition), `${label}: footer in flow`);
       assert.ok(metrics.footer.top >= metrics.main.bottom - 1, `${label}: footer follows main`);
       assert.ok(metrics.footer.height >= metrics.footerInner.height - 1, `${label}: footer reserves its footprint`);
-      for (const target of metrics.targets) assert.ok(target.height >= 44 && target.width >= 44 && (target.navigation || (target.left >= -1 && target.right <= width + 1)), `${label}: visible 44px header target ${target.label} (${target.width} × ${target.height})`);
+      const undersizedTargets = metrics.targets.filter(target => target.height < 44 || target.width < 44 || (!target.navigation && (target.left < -1 || target.right > width + 1)));
+      assert.deepEqual(undersizedTargets, [], `${label}: all header targets must be visible and at least 44px: ${JSON.stringify(undersizedTargets)}`);
       for (const link of await page.locator('.hraness-marketing-header nav a').all()) {
         await link.scrollIntoViewIfNeeded();
         const box = await link.boundingBox();
