@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Film shot 4: a sawtooth, not a ramp</title>
+</head>
+<body>
+<script>
+// film:begin (generated from _film.js by sync.ts; do not edit here)
+// Shared film runtime, inlined into every scenes/film/*.html between the generated-block
+// marker lines by `bun media/scenes/film/sync.ts` (run it after editing this file;
+// `--check` fails when a scene is out of date). render.ts copies a scene's HTML as is, so
+// each shot must be self-contained.
+//
+// Every time in scene code is ABSOLUTE film time in seconds (0–75), the same clock as
+// shots.json. Film.run converts to the shot's local scene clock. Visual state is a pure
+// function of time: tweens go through stage.timeline() (one ease per segment) and
+// per-frame text (counters, typing, carets) goes through ctx.frame().
+const Film = (() => {
+  const api = SlopcameraOverlay;
+  const P = api.parameters;
+  const shot = P.data.shot;
+  const offset = typeof P.timeOffsetSeconds === "number" ? P.timeOffsetSeconds : 0;
+  const frames = [];
+  // Registered synchronously, before the first frame (registration closes there).
+  api.onFrame((f) => {
+    const t = shot.start + f.timeMs / 1000 + offset;
+    for (const fn of frames) fn(t);
+  });
+
+  const W = 1920;
+  const H = 1080;
+  const X = 120; // left and right margin
+  const BEAT = { x: 120, y: 144, w: 1680 };
+  const LID_Y = 432;
+  const SLAB = { h: 44, gap: 6, pitch: 50, r: 12 };
+  const EASE = {
+    enter: "cubic-bezier(.2,.8,.2,1)",
+    exit: "cubic-bezier(.4,0,1,1)",
+    fuse: "cubic-bezier(.65,0,.35,1)",
+    drop: "cubic-bezier(.55,0,.85,.35)",
+    linear: "linear",
+  };
+
+  const ARM_VAR = { tail0: "var(--tail0)", tail40: "var(--tail40)", no_proxy: "var(--noproxy)" };
+  // Arm colours are slab fills. Text set in an arm colour uses a lighter tint of it, so it
+  // reaches at least 6.5:1 on the night background (the tail 0 fill alone is 3.9:1); the
+  // tints are matched in lightness so no arm's label reads dimmer than another's.
+  const ARM_TEXT = { tail0: "#7c9bff", tail40: "#e3924d", no_proxy: "#2fbf98" };
+  for (const [id, v] of Object.entries(ARM_TEXT)) document.documentElement.style.setProperty(`--${id === "no_proxy" ? "noproxy" : id}-text`, v);
+
+  // timing:begin (film.test.ts evaluates this block)
+  const XFADE = 0.4;
+  /**
+   * When beat i of a shot is visible, in absolute film seconds. Headings share one position,
+   * so a cut never dissolves two of them: the last beat of a shot is gone by the shot's end
+   * (before its handle and the cross-fade), and the first beat of the next shot starts
+   * halfway through the cross-fade. Beats inside a shot hand over at the beat boundary.
+   * The final beat of the film never fades.
+   */
+  function beatWindow(shot, i, lastShot) {
+    const b = shot.beats[i];
+    const first = i === 0;
+    const last = i === shot.beats.length - 1;
+    const inAt = first && shot.start > 0 ? b.start + XFADE / 2 : b.start;
+    return {
+      in: { at: inAt, dur: first && shot.start > 0 ? 0.3 : 0.4, dy: first && shot.start > 0 ? 0 : 16 },
+      out: last && lastShot ? null : { end: last ? shot.end : b.end, dur: 0.25 },
+    };
+  }
+  // timing:end
+
+  function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+  function easeOutCubic(x) { return 1 - Math.pow(1 - x, 3); }
+
+  function run(build) {
+    Gob.scene({ palette: "night", scale: "film" }, async (st) => {
+      const segs = [];
+      const local = (a) => Math.round((a - shot.start) * 1000) / 1000;
+      const ctx = {
+        st, shot, W, H, X, BEAT, LID_Y, SLAB, EASE, F: Gob.F, data: st.params.data,
+        /** One tween on absolute film time. */
+        seg(el, from, to, a0, a1, ease) {
+          segs.push({ el, from, to, t0: local(a0), t1: local(a1), ease: ease || EASE.enter });
+          return el;
+        },
+        fadeIn(el, a0, o = {}) {
+          const d = o.dur ?? 0.4;
+          const dy = o.dy ?? 16;
+          const dx = o.dx ?? 0;
+          return ctx.seg(el, { opacity: 0, transform: `translate(${dx}px, ${dy}px)` },
+            { opacity: 1, transform: "translate(0px, 0px)" }, a0, a0 + d, o.ease || EASE.enter);
+        },
+        fadeOut(el, aEnd, o = {}) {
+          const d = o.dur ?? 0.25;
+          const dy = o.dy ?? -8;
+          return ctx.seg(el, { opacity: 1, transform: "translate(0px, 0px)" },
+            { opacity: 0, transform: `translate(0px, ${dy}px)` }, aEnd - d, aEnd, EASE.exit);
+        },
+        frame(fn) { frames.push(fn); },
+        div(css, parent) { return st.el("div", css, parent); },
+        svg(css, parent) {
+          const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+          s.setAttribute("width", String(W));
+          s.setAttribute("height", String(H));
+          s.setAttribute("viewBox", `0 0 ${W} ${H}`);
+          s.style.cssText = `position:absolute;left:0;top:0;overflow:visible;${css || ""}`;
+          (parent || st.root).appendChild(s);
+          return s;
+        },
+        path(svg, d, attrs) {
+          const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          p.setAttribute("d", d);
+          for (const [k, v] of Object.entries(attrs || {})) p.setAttribute(k, String(v));
+          svg.appendChild(p);
+          return p;
+        },
+        /** Stroke-draw a path (pathLength 1) between a0 and a1. */
+        draw(p, a0, a1, ease) {
+          p.setAttribute("pathLength", "1");
+          p.style.strokeDasharray = "1 1";
+          return ctx.seg(p, { strokeDashoffset: 1 }, { strokeDashoffset: 0 }, a0, a1, ease || EASE.linear);
+        },
+        /** Reveal an element left to right with clip-path. */
+        wipe(el, a0, a1, ease, bleed = 0) {
+          const b = `${-bleed}px`;
+          return ctx.seg(el, { clipPath: `inset(${b} 100% ${b} ${b})` }, { clipPath: `inset(${b} 0% ${b} ${b})` }, a0, a1, ease || EASE.linear);
+        },
+        /** Count a number up with an ease-out; fmt(value) returns the string; final is exact. */
+        count(el, a0, a1, to, fmt, final) {
+          ctx.frame((t) => {
+            const p = clamp01((t - a0) / (a1 - a0));
+            el.textContent = p >= 1 ? final : fmt(to * easeOutCubic(p));
+          });
+        },
+        /** Type text between a0 and a1 (linear), with a caret that blinks once typing stops. */
+        type(el, text, a0, a1, caret) {
+          ctx.frame((t) => {
+            const n = Math.floor(clamp01((t - a0) / (a1 - a0)) * text.length + 1e-9);
+            el.textContent = text.slice(0, n);
+            if (caret) {
+              const typing = t >= a0 && t < a1;
+              const on = t >= a0 - 0.6 && (typing || Math.floor((t - a1) * 2) % 2 === 0);
+              caret.style.opacity = on ? "1" : "0";
+            }
+          });
+        },
+        /** Standard beat text for this shot; `skip` lists beat numbers the scene draws itself. */
+        beats(skip = []) {
+          const nodes = {};
+          shot.beats.forEach((b, i) => {
+            if (skip.includes(b.n)) return;
+            const el = st.text("beat", b.text, { x: BEAT.x, y: BEAT.y, w: BEAT.w });
+            const w = beatWindow(shot, i, shot.end >= 75);
+            ctx.fadeIn(el, w.in.at, { dy: w.in.dy, dur: w.in.dur });
+            if (w.out) ctx.fadeOut(el, w.out.end, { dur: w.out.dur });
+            nodes[b.n] = el;
+          });
+          return nodes;
+        },
+        /** The persistent lower-third, drawn identically in every shot that overlaps its window. */
+        lowerThird() {
+          const lt = P.data.lowerThird;
+          const end = shot.end + (shot.handle || 0);
+          if (!lt || end <= lt.from || shot.start >= lt.to) return null;
+          // `hidden` lists [from, to] windows (shot boundaries) where the benchmark scope line
+          // does not apply, such as the replayed session in s4: it leaves before that cut.
+          const gaps = lt.hidden || [];
+          if (gaps.some(([a, b]) => shot.start >= a && shot.end <= b)) return null;
+          const el = st.lowerThird(lt.text);
+          const outAt = Math.min(lt.to, ...gaps.map(([a]) => a).filter((a) => a > shot.start && a <= end));
+          if (lt.from >= shot.start) ctx.seg(el, { opacity: 0 }, { opacity: 1 }, lt.from, lt.from + 0.4, EASE.enter);
+          else if (outAt <= end) ctx.seg(el, { opacity: 1 }, { opacity: 1 }, shot.start, shot.start + 0.01, EASE.linear);
+          if (outAt <= end) ctx.seg(el, { opacity: 1 }, { opacity: 0 }, outAt - 0.25, outAt, EASE.exit);
+          return el;
+        },
+        /** The threshold lid, always at y = 432 and x 120–1800. */
+        lid(label = "threshold") {
+          return st.lid(LID_Y, label, { x0: X, x1: W - X });
+        },
+        /** Wipe the lid in left to right; the bleed keeps its label (above the 2px line) unclipped. */
+        drawLid(lid, a0, a1, ease) {
+          return ctx.wipe(lid, a0, a1, ease || EASE.enter, 56);
+        },
+        /** A stack of slabs from `baseline` upward; returns the slab elements, bottom first. */
+        stack(kinds, x, w, baseline, o = {}) {
+          return kinds.map((kind, i) => {
+            const y = baseline - (i + 1) * SLAB.h - i * SLAB.gap;
+            return st.slab(kind, { x, y, w, h: SLAB.h }, undefined, { tone: o.tone, radius: SLAB.r, parent: o.parent });
+          });
+        },
+        /** An arm's CSS colour. */
+        arm(id) { return ARM_VAR[id]; },
+        /** The text tint of an arm's colour (for labels; fills keep arm()). */
+        armText(id) { return `var(--${id === "no_proxy" ? "noproxy" : id}-text)`; },
+        /** The arm marker (SPEC §1.1): circle r5, square 8, diamond 9, scaled by k. */
+        marker(id, cx, cy, k = 2, parent) {
+          const size = id === "tail0" ? 10 : id === "tail40" ? 8 : 9;
+          const s = size * k;
+          const m = st.el("div", `position:absolute;left:${cx - s / 2}px;top:${cy - s / 2}px;width:${s}px;height:${s}px;background:${ARM_VAR[id]}`, parent);
+          if (id === "tail0") m.style.borderRadius = "50%";
+          if (id === "no_proxy") m.style.rotate = "45deg";
+          return m;
+        },
+        slabY(baseline, i) { return baseline - (i + 1) * SLAB.h - i * SLAB.gap; },
+        label(role, s, box, o) { return st.text(role, s, box, o); },
+      };
+      await build(ctx);
+      st.timeline(segs);
+    });
+  }
+  return { run, W, H, X, BEAT, LID_Y, SLAB, EASE };
+})();
+// film:end
+
+// s4 (31.0–36.0): C-sawtooth from the recorded session. The no-proxy ramp sweeps in over
+// 1.6 s (31.3–32.9); the Gobstopper sawtooth sweeps over 2.0 s (33.0–35.0), linear in
+// request number, so a request's screen time is 33.0 + 2.0 × index / 382. Every rewrite gets
+// a ring on the baseline strip as the sweep passes it; the six cue drops also bloom on their
+// glass tick.
+Film.run((c) => {
+  const { st, EASE, F } = c;
+  c.beats();
+  // The benchmark scope line leaves before this cut (shots.json lowerThird.hidden): this
+  // series is one recorded session replayed offline, not a Terminal-Bench run, and the slot
+  // says so for the whole shot.
+  const S = c.data.sawtooth;
+  const N = S.with.length;
+  const scope = st.lowerThird(`Replay, not the benchmark · one recorded Claude Code session, ${N} requests · estimated tokens, not billed · build f4db57e, calibration on`);
+  c.seg(scope, { opacity: 1 }, { opacity: 0 }, 35.75, 36.0, EASE.exit);
+
+  const PX0 = 240;
+  const PX1 = 1800;
+  const PTOP = 312;
+  const PBASE = 832;
+  const YMAX = 500000;
+  const xOf = (i) => PX0 + ((PX1 - PX0) * i) / (N - 1);
+  const yOf = (v) => PBASE - ((PBASE - PTOP) * v) / YMAX;
+  const RAMP = [31.3, 32.9];
+  const SAW = [33.0, 35.0];
+  const timeOf = (i) => SAW[0] + ((SAW[1] - SAW[0]) * i) / (N - 1);
+
+  // Header row: axis label left, legend right.
+  const axis = c.label("small", "estimated tokens per request · one session, replayed offline", { x: PX0, y: 250 }, { color: "var(--ink-2)", nowrap: true });
+  c.fadeIn(axis, 31.15, { dy: 8, dur: 0.35 });
+  const legend = (arm, text, xRight, at) => {
+    const g = c.div(`position:absolute;top:250px;height:30px;display:flex;align-items:center;gap:12px;white-space:nowrap`);
+    // Colour is never the only channel: the no-proxy swatch is dotted like its line.
+    const fill = arm === "no_proxy" ? `repeating-linear-gradient(90deg, ${c.arm(arm)} 0 4px, transparent 4px 9px)` : c.arm(arm);
+    const sw = c.div(`width:31px;height:4px;border-radius:2px;background:${fill}`, g);
+    sw.style.position = "relative";
+    const t = c.label("small", text, { x: 0, y: 0 }, { parent: g, nowrap: true });
+    t.style.position = "relative";
+    const w = st.measure(g).width;
+    g.style.left = `${Math.round(xRight - w)}px`;
+    c.fadeIn(g, at, { dy: 8, dur: 0.35 });
+    return w;
+  };
+  const w2 = legend("tail0", "Gobstopper, tail 0", PX1, 32.9);
+  legend("no_proxy", "Claude Code, no proxy", PX1 - w2 - 40, 31.3);
+
+  // Grid and tick labels.
+  const grid = c.svg("");
+  for (let v = 0; v <= YMAX; v += 100000) {
+    const y = yOf(v);
+    c.path(grid, `M${PX0},${y} H${PX1}`, { stroke: v === 0 ? "var(--ink-2)" : "var(--rule)", "stroke-width": v === 0 ? 2 : 1.5 });
+    const lab = c.label("mono", v === 0 ? "0" : `${v / 1000}K`, { x: PX0 - 196, y: y - 18, w: 176 }, { align: "right", color: "var(--ink-2)", nowrap: true });
+    lab.style.fontSize = "24px";
+    c.fadeIn(lab, 31.15, { dy: 0, dur: 0.35 });
+  }
+  c.seg(grid, { opacity: 0 }, { opacity: 1 }, 31.15, 31.5, EASE.enter);
+
+  // A series as one wrapper (wash + line) revealed by a right-edge clip in px, linear in x.
+  const pathOf = (vals) => vals.map((v, i) => `${i === 0 ? "M" : "L"}${xOf(i).toFixed(1)},${yOf(v).toFixed(1)}`).join(" ");
+  const series = (vals, color, a0, a1, dotted = false) => {
+    const svg = c.svg("");
+    const d = pathOf(vals);
+    c.path(svg, `${d} L${PX1},${PBASE} L${PX0},${PBASE} Z`, { fill: `color-mix(in oklab, ${color} 16%, transparent)`, stroke: "none" });
+    // SPEC 1.1: no proxy is dotted (2/3 on the site), scaled here to the 3.5 px film stroke.
+    c.path(svg, d, dotted
+      ? { fill: "none", stroke: color, "stroke-width": 3.5, "stroke-linejoin": "round", "stroke-linecap": "butt", "stroke-dasharray": "4 5" }
+      : { fill: "none", stroke: color, "stroke-width": 3.5, "stroke-linejoin": "round", "stroke-linecap": "round" });
+    c.seg(svg, { clipPath: `inset(0px ${1920 - PX0}px 0px 0px)` }, { clipPath: `inset(0px ${1920 - PX1 - 4}px 0px 0px)` }, a0, a1, EASE.linear);
+    // The pen: a dot riding the sweep's leading edge.
+    const pen = c.div(`position:absolute;left:0;top:0;width:14px;height:14px;border-radius:50%;background:${color};opacity:0;box-shadow:0 0 0 5px color-mix(in oklab, ${color} 25%, transparent)`);
+    c.frame((t) => {
+      const u = (t - a0) / (a1 - a0);
+      if (u <= 0 || u >= 1) { pen.style.opacity = "0"; return; }
+      const f = u * (N - 1);
+      const i = Math.floor(f);
+      const v = vals[i] + (vals[Math.min(i + 1, N - 1)] - vals[i]) * (f - i);
+      pen.style.opacity = "1";
+      pen.style.transform = `translate(${(xOf(f) - 7).toFixed(1)}px, ${(yOf(v) - 7).toFixed(1)}px)`;
+    });
+    return svg;
+  };
+  series(S.without, "var(--noproxy)", RAMP[0], RAMP[1], true);
+
+  // Peak annotation, above the ramp's top-left side where the plot is empty.
+  const peak = c.label("small", `no proxy: up to ${F.saw.peak} per request`, { x: 1080, y: PTOP - 4, w: 560 }, { align: "right", color: "var(--ink)", nowrap: true });
+  c.fadeIn(peak, 32.7, { dy: 8, dur: 0.35 });
+
+  // The applied threshold: a solid 2 px ink step line (the lid is never dashed), swept with
+  // the sawtooth.
+  const thr = c.svg("");
+  const steps = S.threshold.map((v, i) => `${i === 0 ? "M" : "H"}${xOf(i).toFixed(1)}${i === 0 ? `,${yOf(v).toFixed(1)}` : ` V${yOf(v).toFixed(1)}`}`).join(" ");
+  c.path(thr, steps, { fill: "none", stroke: "var(--ink)", "stroke-width": 2 });
+  c.seg(thr, { clipPath: `inset(0px ${1920 - PX0}px 0px 0px)` }, { clipPath: `inset(0px ${1920 - PX1 - 4}px 0px 0px)` }, SAW[0], SAW[1], EASE.linear);
+  const thrLabel = c.label("small", "threshold: 45K set, lowered by calibration", { x: 860, y: yOf(45000) - 40 }, { color: "var(--ink)", nowrap: true });
+  c.fadeIn(thrLabel, 33.9, { dy: 8, dur: 0.35 });
+
+  series(S.with, "var(--tail0)", SAW[0], SAW[1]);
+
+  // Strip under the baseline. Rewrites cluster (as close as one request apart, ~4 px), so every
+  // rewrite is a 2 px rug tick that appears as the sweep passes it, and only the six cued rewrites,
+  // spread across the session, carry a ring. The ring, its bloom and the score's glass tick share
+  // the cue's frame-snapped time from shots.json.
+  const STRIP_Y = PBASE + 34;
+  const cues = new Map(c.shot.cues.filter((q) => q.type === "glass").map((q) => [q.request, q.t]));
+  const rug = c.svg("");
+  for (const i of S.compactions) {
+    if (cues.has(i)) continue;
+    const x = xOf(i).toFixed(1);
+    const t = c.path(rug, `M${x},${STRIP_Y - 6} V${STRIP_Y + 6}`, { stroke: "var(--tail0)", "stroke-width": 2, "stroke-linecap": "round", opacity: 0.75 });
+    const a = timeOf(i);
+    c.seg(t, { opacity: 0 }, { opacity: 0.75 }, a, a + 0.12, EASE.enter);
+  }
+  for (const [i, a] of cues) {
+    const x = xOf(i);
+    const holder = c.div(`position:absolute;left:${(x - 9).toFixed(1)}px;top:${STRIP_Y - 9}px;width:18px;height:18px`);
+    st.ring(9, 9, 18, { color: "var(--tail0)", parent: holder, stroke: 1.8 });
+    c.seg(holder, { opacity: 0, transform: "scale(0.3)" }, { opacity: 1, transform: "scale(1)" }, a, a + 0.18, EASE.enter);
+    const bloom = c.div(`position:absolute;left:${(x - 22).toFixed(1)}px;top:${STRIP_Y - 22}px;width:44px;height:44px`);
+    st.ring(22, 22, 44, { color: "var(--tail0)", parent: bloom, stroke: 1.4 });
+    c.seg(bloom, { opacity: 0.9, transform: "scale(0.4)" }, { opacity: 0, transform: "scale(1.25)" }, a, a + 0.55, EASE.enter);
+  }
+
+  // X axis row.
+  const X_Y = STRIP_Y + 26;
+  const first = c.label("small", "request 1", { x: PX0, y: X_Y }, { color: "var(--ink-2)", nowrap: true });
+  const last = c.label("small", `request ${N}`, { x: PX1 - 300, y: X_Y, w: 300 }, { align: "right", color: "var(--ink-2)", nowrap: true });
+  c.fadeIn(first, 31.2, { dy: 0, dur: 0.35 });
+  c.fadeIn(last, 31.2, { dy: 0, dur: 0.35 });
+  const count = c.label("small", `${F.saw.compactions} rewrites`, { x: 760, y: X_Y, w: 400 }, { align: "center", color: c.armText("tail0"), weight: 500, nowrap: true });
+  c.fadeIn(count, 35.0, { dy: 8, dur: 0.35 });
+});
+</script>
+</body>
+</html>

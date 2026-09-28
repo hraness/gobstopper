@@ -1,0 +1,184 @@
+{
+  "kind": "gobstopper.media-render",
+  "renders": [
+    {
+      "job": "shot-s2-route-fuse-draft",
+      "id": "s2-route-fuse",
+      "draft": true,
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T21:16:57.946Z",
+      "seconds": 42,
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1
+      },
+      "durationSeconds": 9.4,
+      "sceneHtmlSha256": "ca880a2fdfc9a6b2a77cb996702a74acefcc8c91dd33b3948783dead441d1db1",
+      "sceneSource": "scenes/film/s2-route-fuse.html",
+      "sceneSourceSha256": "9bfb6871c207baeccd74bf957bda3f38e6baa9eeedf515dc2b3a363a2d6c250e",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "path": "media/out/shots/s2-route-fuse.draft.mp4",
+        "bytes": 236665,
+        "sha256": "c4f6066b9bf5b8f04b9068562d08c756d9d44e9b335afb145f395b2cd20b39c6"
+      }
+    },
+    {
+      "job": "shot-s2-route-fuse-draft",
+      "id": "s2-route-fuse",
+      "draft": true,
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T21:25:31.726Z",
+      "seconds": 48,
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1
+      },
+      "durationSeconds": 9.4,
+      "sceneHtmlSha256": "3b1e765b496b4bc9a029adeb1cc9550e111e388efaf06f9cb37f2be7129f99fa",
+      "sceneSource": "scenes/film/s2-route-fuse.html",
+      "sceneSourceSha256": "3f4fbfa27431596dd18b1d6cabb5dbf892a68d0ec83c0abe48bf2e01903c6fd4",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "path": "media/out/shots/s2-route-fuse.draft.mp4",
+        "bytes": 238924,
+        "sha256": "a07e9b9a2ad9e7674ac36ec53434bde6eb24b9cb54ac3c61e4ee8a03b5c7173d"
+      }
+    },
+    {
+      "job": "shot-s2-route-fuse",
+      "id": "s2-route-fuse",
+      "draft": false,
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T21:51:17.748Z",
+      "seconds": 105,
+      "canvas": {
+        "width": 3840,
+        "height": 2160,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1920,
+        "layoutHeight": 1080,
+        "layoutZoom": 2
+      },
+      "durationSeconds": 9.4,
+      "sceneHtmlSha256": "b694b34f0070763d1f3a24f5c9aadc652e7c036818c1a28f603dca1e5f0672cc",
+      "sceneSource": "scenes/film/s2-route-fuse.html",
+      "sceneSourceSha256": "951d803640e3945a7a72493be4e10cc9b983eb29411ca9aea87ea5a1dfb62c9c",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "path": "media/out/shots/s2-route-fuse.mp4",
+        "bytes": 525672,
+        "sha256": "d909f8c65c174e59c7b24e4c5ed5615f6ef3e125090e23de995007e77999669f"
+      }
+    },
+    {
+      "job": "shot-s2-route-fuse-draft",
+      "id": "s2-route-fuse",
+      "draft": true,
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T23:09:34.597Z",
+      "seconds": 51,
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1920,
+        "layoutHeight": 1080,
+        "layoutZoom": 1
+      },
+      "durationSeconds": 9.4,
+      "sceneHtmlSha256": "31c6c51372a7012bd3e683787707152b878d91806f49edbe7eb473a4340124ea",
+      "sceneSource": "scenes/film/s2-route-fuse.html",
+      "sceneSourceSha256": "a75aa66bcd2ae6c2fc700b4b35ed4acb3db37edd9cd5392f875e3b5e23b73f7b",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "path": "media/out/shots/s2-route-fuse.draft.mp4",
+        "bytes": 240591,
+        "sha256": "02882b9e92a7f51b8eb6fd07f6d69155950c9de663873960249cc14324bcd772"
+      }
+    },
+    {
+      "job": "shot-s2-route-fuse",
+      "id": "s2-route-fuse",
+      "draft": false,
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T23:21:55.182Z",
+      "seconds": 82,
+      "canvas": {
+        "width": 3840,
+        "height": 2160,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1920,
+        "layoutHeight": 1080,
+        "layoutZoom": 2
+      },
+      "durationSeconds": 9.4,
+      "sceneHtmlSha256": "31c6c51372a7012bd3e683787707152b878d91806f49edbe7eb473a4340124ea",
+      "sceneSource": "scenes/film/s2-route-fuse.html",
+      "sceneSourceSha256": "a75aa66bcd2ae6c2fc700b4b35ed4acb3db37edd9cd5392f875e3b5e23b73f7b",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "path": "media/out/shots/s2-route-fuse.mp4",
+        "bytes": 540982,
+        "sha256": "6c55e1f396f539fa4513252cb9cd1469e0d9822fed1d862ca38629b29984b6dc"
+      }
+    }
+  ]
+}

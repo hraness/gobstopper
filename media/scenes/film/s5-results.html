@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Film shot 5: solved about as often, fewer tokens sent</title>
+</head>
+<body>
+<script>
+// film:begin (generated from _film.js by sync.ts; do not edit here)
+// Shared film runtime, inlined into every scenes/film/*.html between the generated-block
+// marker lines by `bun media/scenes/film/sync.ts` (run it after editing this file;
+// `--check` fails when a scene is out of date). render.ts copies a scene's HTML as is, so
+// each shot must be self-contained.
+//
+// Every time in scene code is ABSOLUTE film time in seconds (0–75), the same clock as
+// shots.json. Film.run converts to the shot's local scene clock. Visual state is a pure
+// function of time: tweens go through stage.timeline() (one ease per segment) and
+// per-frame text (counters, typing, carets) goes through ctx.frame().
+const Film = (() => {
+  const api = SlopcameraOverlay;
+  const P = api.parameters;
+  const shot = P.data.shot;
+  const offset = typeof P.timeOffsetSeconds === "number" ? P.timeOffsetSeconds : 0;
+  const frames = [];
+  // Registered synchronously, before the first frame (registration closes there).
+  api.onFrame((f) => {
+    const t = shot.start + f.timeMs / 1000 + offset;
+    for (const fn of frames) fn(t);
+  });
+
+  const W = 1920;
+  const H = 1080;
+  const X = 120; // left and right margin
+  const BEAT = { x: 120, y: 144, w: 1680 };
+  const LID_Y = 432;
+  const SLAB = { h: 44, gap: 6, pitch: 50, r: 12 };
+  const EASE = {
+    enter: "cubic-bezier(.2,.8,.2,1)",
+    exit: "cubic-bezier(.4,0,1,1)",
+    fuse: "cubic-bezier(.65,0,.35,1)",
+    drop: "cubic-bezier(.55,0,.85,.35)",
+    linear: "linear",
+  };
+
+  const ARM_VAR = { tail0: "var(--tail0)", tail40: "var(--tail40)", no_proxy: "var(--noproxy)" };
+  // Arm colours are slab fills. Text set in an arm colour uses a lighter tint of it, so it
+  // reaches at least 6.5:1 on the night background (the tail 0 fill alone is 3.9:1); the
+  // tints are matched in lightness so no arm's label reads dimmer than another's.
+  const ARM_TEXT = { tail0: "#7c9bff", tail40: "#e3924d", no_proxy: "#2fbf98" };
+  for (const [id, v] of Object.entries(ARM_TEXT)) document.documentElement.style.setProperty(`--${id === "no_proxy" ? "noproxy" : id}-text`, v);
+
+  // timing:begin (film.test.ts evaluates this block)
+  const XFADE = 0.4;
+  /**
+   * When beat i of a shot is visible, in absolute film seconds. Headings share one position,
+   * so a cut never dissolves two of them: the last beat of a shot is gone by the shot's end
+   * (before its handle and the cross-fade), and the first beat of the next shot starts
+   * halfway through the cross-fade. Beats inside a shot hand over at the beat boundary.
+   * The final beat of the film never fades.
+   */
+  function beatWindow(shot, i, lastShot) {
+    const b = shot.beats[i];
+    const first = i === 0;
+    const last = i === shot.beats.length - 1;
+    const inAt = first && shot.start > 0 ? b.start + XFADE / 2 : b.start;
+    return {
+      in: { at: inAt, dur: first && shot.start > 0 ? 0.3 : 0.4, dy: first && shot.start > 0 ? 0 : 16 },
+      out: last && lastShot ? null : { end: last ? shot.end : b.end, dur: 0.25 },
+    };
+  }
+  // timing:end
+
+  function clamp01(x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+  function easeOutCubic(x) { return 1 - Math.pow(1 - x, 3); }
+
+  function run(build) {
+    Gob.scene({ palette: "night", scale: "film" }, async (st) => {
+      const segs = [];
+      const local = (a) => Math.round((a - shot.start) * 1000) / 1000;
+      const ctx = {
+        st, shot, W, H, X, BEAT, LID_Y, SLAB, EASE, F: Gob.F, data: st.params.data,
+        /** One tween on absolute film time. */
+        seg(el, from, to, a0, a1, ease) {
+          segs.push({ el, from, to, t0: local(a0), t1: local(a1), ease: ease || EASE.enter });
+          return el;
+        },
+        fadeIn(el, a0, o = {}) {
+          const d = o.dur ?? 0.4;
+          const dy = o.dy ?? 16;
+          const dx = o.dx ?? 0;
+          return ctx.seg(el, { opacity: 0, transform: `translate(${dx}px, ${dy}px)` },
+            { opacity: 1, transform: "translate(0px, 0px)" }, a0, a0 + d, o.ease || EASE.enter);
+        },
+        fadeOut(el, aEnd, o = {}) {
+          const d = o.dur ?? 0.25;
+          const dy = o.dy ?? -8;
+          return ctx.seg(el, { opacity: 1, transform: "translate(0px, 0px)" },
+            { opacity: 0, transform: `translate(0px, ${dy}px)` }, aEnd - d, aEnd, EASE.exit);
+        },
+        frame(fn) { frames.push(fn); },
+        div(css, parent) { return st.el("div", css, parent); },
+        svg(css, parent) {
+          const s = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+          s.setAttribute("width", String(W));
+          s.setAttribute("height", String(H));
+          s.setAttribute("viewBox", `0 0 ${W} ${H}`);
+          s.style.cssText = `position:absolute;left:0;top:0;overflow:visible;${css || ""}`;
+          (parent || st.root).appendChild(s);
+          return s;
+        },
+        path(svg, d, attrs) {
+          const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+          p.setAttribute("d", d);
+          for (const [k, v] of Object.entries(attrs || {})) p.setAttribute(k, String(v));
+          svg.appendChild(p);
+          return p;
+        },
+        /** Stroke-draw a path (pathLength 1) between a0 and a1. */
+        draw(p, a0, a1, ease) {
+          p.setAttribute("pathLength", "1");
+          p.style.strokeDasharray = "1 1";
+          return ctx.seg(p, { strokeDashoffset: 1 }, { strokeDashoffset: 0 }, a0, a1, ease || EASE.linear);
+        },
+        /** Reveal an element left to right with clip-path. */
+        wipe(el, a0, a1, ease, bleed = 0) {
+          const b = `${-bleed}px`;
+          return ctx.seg(el, { clipPath: `inset(${b} 100% ${b} ${b})` }, { clipPath: `inset(${b} 0% ${b} ${b})` }, a0, a1, ease || EASE.linear);
+        },
+        /** Count a number up with an ease-out; fmt(value) returns the string; final is exact. */
+        count(el, a0, a1, to, fmt, final) {
+          ctx.frame((t) => {
+            const p = clamp01((t - a0) / (a1 - a0));
+            el.textContent = p >= 1 ? final : fmt(to * easeOutCubic(p));
+          });
+        },
+        /** Type text between a0 and a1 (linear), with a caret that blinks once typing stops. */
+        type(el, text, a0, a1, caret) {
+          ctx.frame((t) => {
+            const n = Math.floor(clamp01((t - a0) / (a1 - a0)) * text.length + 1e-9);
+            el.textContent = text.slice(0, n);
+            if (caret) {
+              const typing = t >= a0 && t < a1;
+              const on = t >= a0 - 0.6 && (typing || Math.floor((t - a1) * 2) % 2 === 0);
+              caret.style.opacity = on ? "1" : "0";
+            }
+          });
+        },
+        /** Standard beat text for this shot; `skip` lists beat numbers the scene draws itself. */
+        beats(skip = []) {
+          const nodes = {};
+          shot.beats.forEach((b, i) => {
+            if (skip.includes(b.n)) return;
+            const el = st.text("beat", b.text, { x: BEAT.x, y: BEAT.y, w: BEAT.w });
+            const w = beatWindow(shot, i, shot.end >= 75);
+            ctx.fadeIn(el, w.in.at, { dy: w.in.dy, dur: w.in.dur });
+            if (w.out) ctx.fadeOut(el, w.out.end, { dur: w.out.dur });
+            nodes[b.n] = el;
+          });
+          return nodes;
+        },
+        /** The persistent lower-third, drawn identically in every shot that overlaps its window. */
+        lowerThird() {
+          const lt = P.data.lowerThird;
+          const end = shot.end + (shot.handle || 0);
+          if (!lt || end <= lt.from || shot.start >= lt.to) return null;
+          // `hidden` lists [from, to] windows (shot boundaries) where the benchmark scope line
+          // does not apply, such as the replayed session in s4: it leaves before that cut.
+          const gaps = lt.hidden || [];
+          if (gaps.some(([a, b]) => shot.start >= a && shot.end <= b)) return null;
+          const el = st.lowerThird(lt.text);
+          const outAt = Math.min(lt.to, ...gaps.map(([a]) => a).filter((a) => a > shot.start && a <= end));
+          if (lt.from >= shot.start) ctx.seg(el, { opacity: 0 }, { opacity: 1 }, lt.from, lt.from + 0.4, EASE.enter);
+          else if (outAt <= end) ctx.seg(el, { opacity: 1 }, { opacity: 1 }, shot.start, shot.start + 0.01, EASE.linear);
+          if (outAt <= end) ctx.seg(el, { opacity: 1 }, { opacity: 0 }, outAt - 0.25, outAt, EASE.exit);
+          return el;
+        },
+        /** The threshold lid, always at y = 432 and x 120–1800. */
+        lid(label = "threshold") {
+          return st.lid(LID_Y, label, { x0: X, x1: W - X });
+        },
+        /** Wipe the lid in left to right; the bleed keeps its label (above the 2px line) unclipped. */
+        drawLid(lid, a0, a1, ease) {
+          return ctx.wipe(lid, a0, a1, ease || EASE.enter, 56);
+        },
+        /** A stack of slabs from `baseline` upward; returns the slab elements, bottom first. */
+        stack(kinds, x, w, baseline, o = {}) {
+          return kinds.map((kind, i) => {
+            const y = baseline - (i + 1) * SLAB.h - i * SLAB.gap;
+            return st.slab(kind, { x, y, w, h: SLAB.h }, undefined, { tone: o.tone, radius: SLAB.r, parent: o.parent });
+          });
+        },
+        /** An arm's CSS colour. */
+        arm(id) { return ARM_VAR[id]; },
+        /** The text tint of an arm's colour (for labels; fills keep arm()). */
+        armText(id) { return `var(--${id === "no_proxy" ? "noproxy" : id}-text)`; },
+        /** The arm marker (SPEC §1.1): circle r5, square 8, diamond 9, scaled by k. */
+        marker(id, cx, cy, k = 2, parent) {
+          const size = id === "tail0" ? 10 : id === "tail40" ? 8 : 9;
+          const s = size * k;
+          const m = st.el("div", `position:absolute;left:${cx - s / 2}px;top:${cy - s / 2}px;width:${s}px;height:${s}px;background:${ARM_VAR[id]}`, parent);
+          if (id === "tail0") m.style.borderRadius = "50%";
+          if (id === "no_proxy") m.style.rotate = "45deg";
+          return m;
+        },
+        slabY(baseline, i) { return baseline - (i + 1) * SLAB.h - i * SLAB.gap; },
+        label(role, s, box, o) { return st.text(role, s, box, o); },
+      };
+      await build(ctx);
+      st.timeline(segs);
+    });
+  }
+  return { run, W, H, X, BEAT, LID_Y, SLAB, EASE };
+})();
+// film:end
+
+// s5 (36.0–51.0). Beat 9: C-solved, three dot-and-interval rows with intervals growing
+// from their centres. Beat 10: C-tokens for tail 0 and no proxy, hero "29% fewer" landing
+// on the rising two-note at 42.0. Beat 11: the cache-read segments brighten and new input
+// dims. The poster frame is 50.0, so everything is settled by 47.5.
+Film.run((c) => {
+  const { st, EASE, F } = c;
+  c.beats();
+  c.lowerThird();
+  const LABEL = Gob.ARM_LABEL;
+  const nTasks = c.data.solved.arms[0].n;
+
+  // ---------------- Beat 9: solved.
+  const solved = c.div("position:absolute;left:0;top:0;width:1920px;height:1080px");
+  const LX = 120;           // arm-name column
+  const PX0 = 700;          // 50%
+  const PX1 = 1400;         // 80%
+  const RX = 1452;          // direct labels
+  const xOf = (p) => PX0 + ((PX1 - PX0) * (p - 0.5)) / 0.3;
+  const ROWS = [400, 516, 632];
+  const gridSvg = c.svg("", solved);
+  [0.5, 0.6, 0.7, 0.8].forEach((p) => {
+    const x = xOf(p);
+    c.path(gridSvg, `M${x},${ROWS[0] - 48} V${ROWS[2] + 48}`, { stroke: "var(--rule)", "stroke-width": 1.5 });
+    const t = c.label("small", `${Math.round(p * 100)}%`, { x: x - 60, y: ROWS[2] + 64, w: 120 }, { align: "center", color: "var(--ink-2)", nowrap: true, parent: solved });
+    c.fadeIn(t, 36.2, { dy: 0, dur: 0.35 });
+  });
+  c.seg(gridSvg, { opacity: 0 }, { opacity: 1 }, 36.2, 36.55, EASE.enter);
+  const axisLabel = c.label("small", `share of ${nTasks} tasks solved, with 95% intervals (axis starts at 50%)`, { x: PX0, y: ROWS[2] + 104 }, { color: "var(--ink-2)", nowrap: true, parent: solved });
+  c.fadeIn(axisLabel, 36.3, { dy: 0, dur: 0.35 });
+
+  c.data.solved.arms.forEach((a, i) => {
+    const y = ROWS[i];
+    const at = 36.35 + i * 0.16;
+    const [lo, hi] = Gob.wilson(a.resolved, a.n);
+    const p = a.resolved / a.n;
+    const name = c.label("label", LABEL[a.id], { x: LX, y: y - 18, w: PX0 - LX - 48 }, { nowrap: true, parent: solved });
+    c.fadeIn(name, at, { dx: -12, dy: 0, dur: 0.35 });
+    // Interval: grows outward from the point estimate.
+    const x0 = xOf(lo);
+    const x1 = xOf(hi);
+    const line = c.div(`position:absolute;left:${x0}px;top:${y - 2}px;width:${x1 - x0}px;height:4px;background:${c.arm(a.id)};border-radius:2px`, solved);
+    const L = ((p - lo) / (hi - lo)) * 100;
+    c.seg(line, { clipPath: `inset(0px ${(100 - L).toFixed(2)}% 0px ${L.toFixed(2)}%)` }, { clipPath: "inset(0px 0% 0px 0%)" }, at + 0.2, at + 0.8, EASE.enter);
+    [x0, x1].forEach((x) => {
+      const tick = c.div(`position:absolute;left:${x - 2}px;top:${y - 12}px;width:4px;height:24px;background:${c.arm(a.id)};border-radius:2px`, solved);
+      c.seg(tick, { opacity: 0, transform: "scaleY(0.2)" }, { opacity: 1, transform: "scaleY(1)" }, at + 0.7, at + 0.95, EASE.enter);
+    });
+    const m = c.marker(a.id, xOf(p), y, 2.4, solved);
+    c.seg(m, { opacity: 0, scale: "0.2" }, { opacity: 1, scale: "1" }, at + 0.05, at + 0.4, "cubic-bezier(.34,1.56,.64,1)");
+    const right = c.label("mono", `${F.solved[a.id]} of ${a.n} · ${F.ci[a.id]}%`, { x: RX, y: y - 18, w: 1800 - RX }, { align: "right", nowrap: true, parent: solved });
+    c.fadeIn(right, at + 0.8, { dx: -12, dy: 0, dur: 0.35 });
+  });
+  const noise = c.label("label", "within single-trial noise", { x: PX0, y: ROWS[2] + 168 }, { weight: 500, nowrap: true, parent: solved });
+  c.fadeIn(noise, 37.7, { dy: 10 });
+  c.seg(solved, { opacity: 1, transform: "translateY(0px)" }, { opacity: 0, transform: "translateY(-24px)" }, 40.6, 41.0, EASE.exit);
+
+  // ---------------- Beats 10 and 11: tokens.
+  const TX0 = 120;
+  const TMAX = 120e6;
+  const TW = 1440;
+  const wOf = (v) => (TW * v) / TMAX;
+  const hero = c.label("hero", "0% fewer", { x: 120, y: 236 }, { nowrap: true, color: c.armText("tail0") });
+  c.fadeIn(hero, 41.15, { dy: 20, dur: 0.45 });
+  const heroFinal = `${F.inputFewer} fewer`;
+  const heroTo = parseInt(F.inputFewer, 10);
+  c.count(hero, 41.2, 42.0, heroTo, (v) => `${Math.round(v)}% fewer`, heroFinal);
+  const sub = c.label("label", `input tokens sent over ${nTasks} tasks`, { x: 124, y: 408 }, { color: "var(--ink-2)", nowrap: true });
+  c.fadeIn(sub, 41.4, { dy: 8, dur: 0.35 });
+
+  // Key, right-aligned on the subtitle's baseline.
+  const key = c.div("position:absolute;top:408px;height:36px;display:flex;align-items:center;gap:14px;white-space:nowrap");
+  const swatch = (css) => { const s = c.div(`position:relative;width:26px;height:18px;border-radius:4px;${css}`, key); return s; };
+  const keyText = (s) => { const t = c.label("small", s, { x: 0, y: 0 }, { parent: key, color: "var(--ink-2)", nowrap: true }); t.style.position = "relative"; t.style.marginRight = "18px"; };
+  swatch("background:var(--ink-2)");
+  keyText("cache reads (context re-sent)");
+  swatch("background:color-mix(in oklab, var(--ink-2) 35%, transparent);box-shadow:inset 0 0 0 1.5px var(--ink-2)");
+  keyText("new input (not cached)");
+  key.style.left = `${Math.round(1800 - st.measure(key).width + 18)}px`;
+  c.fadeIn(key, 41.6, { dy: 8, dur: 0.35 });
+
+  const BARS = [{ y: 540 }, { y: 684 }];
+  const BAR_H = 72;
+  const newParts = [];
+  const cacheParts = [];
+  // Scale.
+  const scale = c.svg("");
+  [0, 40e6, 80e6, 120e6].forEach((v) => {
+    const x = TX0 + wOf(v);
+    c.path(scale, `M${x},${BARS[0].y - 8} V${BARS[1].y + BAR_H + 8}`, { stroke: "var(--rule)", "stroke-width": 1.5 });
+    const t = c.label("small", v === 0 ? "0" : `${v / 1e6}M`, { x: x - 60, y: BARS[1].y + BAR_H + 22, w: 120 }, { align: "center", color: "var(--ink-2)", nowrap: true });
+    c.fadeIn(t, 41.3, { dy: 0, dur: 0.35 });
+  });
+  c.seg(scale, { opacity: 0 }, { opacity: 1 }, 41.2, 41.55, EASE.enter);
+
+  c.data.tokens.slice(0, 2).forEach((a, i) => {
+    const y = BARS[i].y;
+    const at = 41.3 + i * 0.12;
+    const name = c.label("label", `${LABEL[a.id]} · ${F.solved[a.id]} of ${nTasks} solved`, { x: TX0, y: y - 46 }, { nowrap: true });
+    c.fadeIn(name, at, { dx: -12, dy: 0, dur: 0.35 });
+    const bar = c.div(`position:absolute;left:${TX0}px;top:${y}px;width:${wOf(a.total_input)}px;height:${BAR_H}px;display:flex;background:var(--bg);border-radius:10px`);
+    // SPEC 1.1: colour is never the only channel, so the no-proxy bar carries a 45° hatch.
+    const arm = c.arm(a.id);
+    const hatch = a.id === "no_proxy";
+    const cacheFill = hatch ? `repeating-linear-gradient(45deg, transparent 0 7px, color-mix(in oklab, var(--bg) 42%, transparent) 7px 11px), ${arm}` : arm;
+    const freshFill = hatch
+      ? `repeating-linear-gradient(45deg, color-mix(in oklab, ${arm} 75%, transparent) 0 3px, transparent 3px 11px), color-mix(in oklab, ${arm} 35%, transparent)`
+      : `color-mix(in oklab, ${arm} 35%, transparent)`;
+    const cache = c.div(`position:relative;width:${wOf(a.cache_read)}px;height:100%;background:${cacheFill};border-radius:10px 0 0 10px`, bar);
+    const fresh = c.div(`position:relative;width:${wOf(a.uncached_input)}px;height:100%;background:${freshFill};box-shadow:inset 0 0 0 2px ${arm};border-radius:0 10px 10px 0`, bar);
+    c.wipe(bar, at, at + 0.8, EASE.enter);
+    const tip = c.label("mono", F.input[a.id], { x: TX0 + wOf(a.total_input) + 20, y: y + 18 }, { nowrap: true });
+    c.fadeIn(tip, at + 0.7, { dx: -10, dy: 0, dur: 0.3 });
+    cacheParts.push(cache);
+    newParts.push(fresh);
+  });
+  // Beat 11: cache reads brighten, new input recedes, one comparison line.
+  cacheParts.forEach((el) => c.seg(el, { filter: "brightness(1) saturate(1)" }, { filter: "brightness(1.18) saturate(1.1)" }, 46.2, 46.8, EASE.enter));
+  newParts.forEach((el) => c.seg(el, { opacity: 1 }, { opacity: 0.55 }, 46.2, 46.8, EASE.enter));
+  const cmp = c.label("label", `${F.cache.tail0} vs ${F.cache.no_proxy} cache reads (−${F.cacheFewer})`, { x: TX0, y: BARS[1].y + BAR_H + 84 }, { weight: 500, nowrap: true });
+  c.fadeIn(cmp, 46.5, { dy: 10 });
+});
+</script>
+</body>
+</html>

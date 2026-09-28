@@ -1,0 +1,184 @@
+{
+  "kind": "gobstopper.media-render",
+  "renders": [
+    {
+      "job": "shot-s4-sawtooth-draft",
+      "id": "s4-sawtooth",
+      "draft": true,
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T21:18:25.810Z",
+      "seconds": 40,
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1
+      },
+      "durationSeconds": 5.4,
+      "sceneHtmlSha256": "b90cfdd23249aa7ff1212774860955d078f7652a75536603ec397b414d331d3d",
+      "sceneSource": "scenes/film/s4-sawtooth.html",
+      "sceneSourceSha256": "c5db2ce9798105c45ef6e063b9ffb766e2db057dc4e45e347d1b872ab8bd58fc",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "path": "media/out/shots/s4-sawtooth.draft.mp4",
+        "bytes": 194297,
+        "sha256": "e62e7a96f7915a5ff25ddf7ea8b58b80ce376019d1e2ccb90b2331ee744b8f97"
+      }
+    },
+    {
+      "job": "shot-s4-sawtooth-draft",
+      "id": "s4-sawtooth",
+      "draft": true,
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T21:26:47.787Z",
+      "seconds": 45,
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1
+      },
+      "durationSeconds": 5.4,
+      "sceneHtmlSha256": "d48ef5df090c461c03367d657acdbabc3551fe45ee016f9db8a4431f077c3038",
+      "sceneSource": "scenes/film/s4-sawtooth.html",
+      "sceneSourceSha256": "1b4721ce3f8ec4eb0cfc636b5a283c36272f57986412c05502176edb46f13e8a",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "path": "media/out/shots/s4-sawtooth.draft.mp4",
+        "bytes": 177660,
+        "sha256": "b63279ccb3b3b972eb4cc1f2bb529500919ac05151f3d544861baf2ab4baaacc"
+      }
+    },
+    {
+      "job": "shot-s4-sawtooth",
+      "id": "s4-sawtooth",
+      "draft": false,
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T21:54:14.179Z",
+      "seconds": 74,
+      "canvas": {
+        "width": 3840,
+        "height": 2160,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1920,
+        "layoutHeight": 1080,
+        "layoutZoom": 2
+      },
+      "durationSeconds": 5.4,
+      "sceneHtmlSha256": "3890129e1b6106b19fbd63cd95f0fb143d83e206b7628446f9042802fa606efe",
+      "sceneSource": "scenes/film/s4-sawtooth.html",
+      "sceneSourceSha256": "105500147c3d0c86cc80496a58402c49945a63b94dc5f4bc1077e0b3136778e4",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "path": "media/out/shots/s4-sawtooth.mp4",
+        "bytes": 402059,
+        "sha256": "9aeda3f97f0576ac10b6afbe4d37356e354f0ba308b02e769caf359c678068ef"
+      }
+    },
+    {
+      "job": "shot-s4-sawtooth-draft",
+      "id": "s4-sawtooth",
+      "draft": true,
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T23:11:15.754Z",
+      "seconds": 44,
+      "canvas": {
+        "width": 1920,
+        "height": 1080,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1920,
+        "layoutHeight": 1080,
+        "layoutZoom": 1
+      },
+      "durationSeconds": 5.4,
+      "sceneHtmlSha256": "98fb4a929d034b0dcbda3ebcbacb192335b549db300146d27b1706da92c8be72",
+      "sceneSource": "scenes/film/s4-sawtooth.html",
+      "sceneSourceSha256": "ead7c65e430bc6ead21e6a06fe9ffd300d2ab38b4b63d84f23b6d9caeca08c46",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "path": "media/out/shots/s4-sawtooth.draft.mp4",
+        "bytes": 190742,
+        "sha256": "a22efa3a1f8a397220f014746e96369f8dd6db5bd991c1b8730b742b7e13efa6"
+      }
+    },
+    {
+      "job": "shot-s4-sawtooth",
+      "id": "s4-sawtooth",
+      "draft": false,
+      "slopcamera": "3.4.0",
+      "renderedAt": "2026-09-28T23:24:27.126Z",
+      "seconds": 60,
+      "canvas": {
+        "width": 3840,
+        "height": 2160,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1920,
+        "layoutHeight": 1080,
+        "layoutZoom": 2
+      },
+      "durationSeconds": 5.4,
+      "sceneHtmlSha256": "98fb4a929d034b0dcbda3ebcbacb192335b549db300146d27b1706da92c8be72",
+      "sceneSource": "scenes/film/s4-sawtooth.html",
+      "sceneSourceSha256": "ead7c65e430bc6ead21e6a06fe9ffd300d2ab38b4b63d84f23b6d9caeca08c46",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "path": "media/out/shots/s4-sawtooth.mp4",
+        "bytes": 443131,
+        "sha256": "0bd50a22802287277d489637b2d092a04bf903bb9f638d85170ec5ee2be04cc5"
+      }
+    }
+  ]
+}

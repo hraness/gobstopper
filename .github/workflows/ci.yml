@@ -220,6 +220,9 @@ jobs:
       - name: Check the launch stills against their receipts
         working-directory: .
         run: bun test media/stills.test.ts
+      - name: Check the launch film shot list and scene runtime copies
+        working-directory: .
+        run: bun test media/film.test.ts && bun media/scenes/film/sync.ts --check
       - name: Run the complete site gate and production build
         run: bun run check
       - name: Verify public routes and appearance

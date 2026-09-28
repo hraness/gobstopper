@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 import type { ReactElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -209,12 +209,24 @@ describe("launch data files", () => {
     expect(replayGrid.pairing_violations_total.proxy_introduced).toBe(0);
   });
 
-  test("the film manifest, when set, names the three fixed media paths", () => {
-    // The files themselves (size, hash) are checked in source.test.ts.
+  test("the film manifest, when set, names the three fixed media paths and times its captions", async () => {
+    // The files themselves (bytes, hash) are checked in source.test.ts.
     if (gobFilm === null) return;
     expect(gobFilm.src).toBe("/media/gobstopper-film-1080p.mp4");
     expect(gobFilm.sha256).toMatch(/^[0-9a-f]{64}$/u);
-    expect(gobFilm.beats.length).toBeGreaterThan(0);
+    expect(gobFilm.beats).toHaveLength(16);
+    expect((await stat(join(site, "public", gobFilm.poster))).size).toBeLessThanOrEqual(300 * 1024);
+    const vtt = await read(join("public", gobFilm.captions));
+    const stamp = (seconds: number) => {
+      const ms = Math.round(seconds * 1000);
+      const pad = (n: number, w = 2) => String(n).padStart(w, "0");
+      return `${pad(Math.floor(ms / 3_600_000))}:${pad(Math.floor(ms / 60_000) % 60)}:${pad(Math.floor(ms / 1000) % 60)}.${pad(ms % 1000, 3)}`;
+    };
+    expect(vtt.startsWith("WEBVTT\n\n")).toBe(true);
+    expect(vtt.match(/ --> /gu)).toHaveLength(16);
+    for (const beat of gobFilm.beats) {
+      expect(vtt).toMatch(new RegExp(`${stamp(beat.start)} --> ${stamp(beat.end)}[^\n]*\n${beat.text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}\n`, "u"));
+    }
   });
 
   const PRIVATE: readonly RegExp[] = [
@@ -340,6 +352,14 @@ describe("launch figures render", () => {
       }
     }
   });
+
+  test("the film embed renders the listed film with captions and its text", () => {
+    if (gobFilm === null) return;
+    const html = renderToStaticMarkup(<GobFilm film={gobFilm} />);
+    expect(html).toContain(`<source src="${gobFilm.src}" type="video/mp4"/>`);
+    expect(html).toContain('aria-describedby="film-text"');
+    for (const beat of gobFilm.beats) expect(html).toContain(beat.text);
+  });
 });
 
 describe("launch pages", () => {
@@ -371,6 +391,30 @@ describe("launch pages", () => {
       expect(html.match(/<video\b/gu)).toHaveLength(1);
       expect(html).toContain(gobFilmHtml(gobFilm));
     }
+  });
+
+  test("the homepage embeds the film once when the manifest lists it (§7)", () => {
+    const html = renderToStaticMarkup(<Home />);
+    if (gobFilm === null) {
+      expect(html).not.toContain('id="film"');
+      expect(html).not.toContain("<video");
+      return;
+    }
+    expect(html.match(/id="film"/gu)).toHaveLength(1);
+    const videos = html.match(/<video\b[^>]*>/gu) ?? [];
+    expect(videos).toHaveLength(1);
+    const video = videos[0]!;
+    for (const attribute of ['preload="none"', "controls", "playsInline", `poster="${gobFilm.poster}"`]) {
+      expect(video.toLowerCase()).toContain(attribute.toLowerCase());
+    }
+    for (const attribute of ["autoplay", "muted", "loop"]) expect(video.toLowerCase()).not.toContain(attribute);
+    const tracks = html.match(/<track\b[^>]*>/gu) ?? [];
+    expect(tracks).toHaveLength(1);
+    expect(tracks[0]).toContain('kind="captions"');
+    expect(tracks[0]).toContain(`src="${gobFilm.captions}"`);
+    expect(tracks[0]).toContain("default");
+    const text = /<details id="film-text">([\s\S]*?)<\/details>/u.exec(html)?.[1] ?? "";
+    expect(text.match(/<li>/gu)).toHaveLength(16);
   });
 
   test("the benchmarks page leads with the Terminal-Bench run and keeps the archived anchors", () => {
