@@ -1,3 +1,6 @@
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { Terminal } from "../app/_components/code-block.tsx";
 import { highlightCode } from "@hraness/design-kit/syntax-highlighting";
 
 const REPOSITORY_BLOB_ROOT = "https://github.com/hraness/gobstopper/blob/main/";
@@ -134,7 +137,11 @@ export function highlightCodeBlocks(html: string): string {
         classAttribute === undefined ? undefined : classAttribute,
         { styles: "classes" },
       );
-      return `<pre><code class="${highlighted.className}" data-language="${highlighted.language}">${highlighted.html}</code></pre>`;
+      const code = `<code class="${highlighted.className}" data-language="${highlighted.language}">${highlighted.html}</code>`;
+      if (highlighted.language === "shell") {
+        return renderToStaticMarkup(createElement(Terminal, { code: decodeCodeText(body) }));
+      }
+      return `<pre>${code}</pre>`;
     },
   );
 }

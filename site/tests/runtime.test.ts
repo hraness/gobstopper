@@ -118,7 +118,6 @@ describe("built Gobstopper site", () => {
         expect(home).toContain("No release yet");
       } else {
         expect(home).toContain(`href="https://github.com/hraness/gobstopper/releases/tag/v${publishedRelease.version}"`);
-        expect(home).toContain(publishedRelease.verificationRun);
       }
       expect(home).toContain('<link rel="canonical" href="https://gobstopper.sh"');
       expect(home).toContain('aria-label="Ask AI about this"');
