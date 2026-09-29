@@ -14,9 +14,6 @@ import {
 } from "../_lib/site";
 import { supportProfile } from "../support-profile";
 
-// eslint-disable-next-line @next/next/no-img-element
-const productMark = <img alt="" height={20} src="/icon.png" width={20} />;
-
 const headerLinks: readonly { href: string; label: string; section?: string }[] = [
   { href: "/docs", label: "Docs", section: "/docs" },
   { href: "/benchmarks", label: "Benchmarks", section: "/benchmarks" },
@@ -57,7 +54,8 @@ export function SiteFooter({ path }: Readonly<{ path?: CanonicalPagePath }>) {
       )}
       <MarketingSiteFooter
         ariaLabel="Gobstopper"
-        brand={productMark}
+        brand={undefined}
+        brandMark="/marks/gobstopper.svg"
         brandHref="/"
         brandLabel="Gobstopper home"
         links={[

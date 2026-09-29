@@ -78,12 +78,6 @@ a:focus-visible {
   outline-offset: 3px;
 }
 
-.brand-mark img {
-  display: inline-block;
-  inline-size: 1.25em;
-  block-size: 1.25em;
-}
-
 /* Links inside body copy stay underlined; the grammar's buttons do not. */
 .install-note a,
 .gob-proof__note a,
