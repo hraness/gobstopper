@@ -66,7 +66,7 @@ describe("Gobstopper site source contract", () => {
       read("app/readme.generated.ts"),
     ]);
     expect(packageJson).toContain('"@hraness/ui": "github:hraness/ui#v0.5.18"');
-    expect(packageJson).toContain('"@hraness/design-kit": "github:hraness/design-kit#a4e30f15dd6d50b3d78cdffadffd026c0b65f072"');
+    expect(packageJson).toContain('"@hraness/design-kit": "github:hraness/design-kit#v0.27.0"');
     expect(chrome).toContain('import { AskAiAboutThis } from "@hraness/ui"');
     expect(chrome).toContain('url={absoluteUrl(path)}');
     expect(generated).toContain('export const readmeTitle = "Gobstopper";');
