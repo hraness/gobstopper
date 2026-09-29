@@ -155,7 +155,7 @@ export default function RootLayout({
         {/* eslint-disable-next-line @next/next/no-sync-scripts */}
         <script src="/theme-bootstrap.js" />
       </head>
-      <body>
+      <body className="hraness-site-shell">
         <DesignPaletteProvider defaultPreference={siteDefaultPalette}>
         <ThemeColorSync />
         <FoilController />
