@@ -12,7 +12,13 @@ import release_notes as rn
 
 ROOT = Path(__file__).resolve().parents[1]
 COMMIT = "faf03fe4f4e895ea1aae7cbeb8d8c2725fd7e959"
-DIGESTS = {"gobstopper": "6c7f2f9de853991012b3ffcd49ae086ea6c4a7d5b73d69af8f706b3169e7435c"}
+DIGESTS = {
+    "gobstopper-1.2.3-darwin-aarch64.tar.gz": "6c7f2f9de853991012b3ffcd49ae086ea6c4a7d5b73d69af8f706b3169e7435c",
+    "gobstopper-1.2.3-linux-x86_64.tar.gz": "1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708",
+    "gobstopper-1.2.3-linux-aarch64.tar.gz": "2e3f4a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6071",
+    "gobstopper-1.2.3-windows-x86_64.zip": "3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80",
+}
+SUMS = "".join(f"{digest}  {name}\n" for name, digest in DIGESTS.items())
 CHANGELOG = """# Changelog
 
 ## Unreleased
@@ -96,9 +102,12 @@ class BodyTests(unittest.TestCase):
         headings = [line for line in body.splitlines() if line.startswith("## ")]
         self.assertEqual(headings, ["## Changes", "## Install", "## Verify"])
         self.assertTrue(body.startswith("`watch` skips idle sessions.\n\n## Changes\n\n- `watch --max-age"))
-        self.assertIn("gh release download v1.2.3 --repo hraness/gobstopper --pattern gobstopper", body)
+        self.assertIn("curl -fsSL https://gobstopper.sh/install.sh | GOBSTOPPER_VERSION=1.2.3 sh", body)
+        self.assertIn('$env:GOBSTOPPER_VERSION = "1.2.3"; irm https://gobstopper.sh/install.ps1 | iex', body)
+        self.assertIn("gh attestation verify gobstopper-1.2.3-linux-x86_64.tar.gz --repo hraness/gobstopper", body)
         self.assertIn("cargo install --git https://github.com/hraness/gobstopper --tag v1.2.3 --locked gobstopper", body)
-        self.assertIn(f"`gobstopper`: `{DIGESTS['gobstopper']}`", body)
+        for name, digest in DIGESTS.items():
+            self.assertIn(f"`{name}`: `{digest}`", body)
         self.assertIn(f"https://github.com/hraness/gobstopper/commit/{COMMIT}", body)
         self.assertIn("/blob/v1.2.3/docs/release.md#check-a-download", body)
         self.assertNotIn("latest", body.lower())
@@ -144,7 +153,7 @@ class BodyTests(unittest.TestCase):
         with self.assertRaisesRegex(rn.ReleaseNotesError, "identity record differs"):
             rn.check_body(body.replace(COMMIT, "0" * 40), CHANGELOG, "v1.2.3", COMMIT, DIGESTS)
         with self.assertRaisesRegex(rn.ReleaseNotesError, "identity record differs"):
-            rn.check_body(body, CHANGELOG, "v1.2.3", COMMIT, {"gobstopper": "0" * 64})
+            rn.check_body(body, CHANGELOG, "v1.2.3", COMMIT, dict(DIGESTS, **{"gobstopper-1.2.3-windows-x86_64.zip": "0" * 64}))
 
     def test_body_must_end_with_identity(self):
         body = self.body()
@@ -161,11 +170,16 @@ class BodyTests(unittest.TestCase):
             self.body(commit="faf03fe")
         with self.assertRaisesRegex(rn.ReleaseNotesError, "not vX.Y.Z"):
             self.body(tag="1.2.3")
-        with self.assertRaisesRegex(rn.ReleaseNotesError, "does not list gobstopper"):
-            rn.parse_sha256sums(f"{'a' * 64}  other\n")
+        missing = "".join(line + "\n" for line in SUMS.splitlines() if "windows" not in line)
+        with self.assertRaisesRegex(rn.ReleaseNotesError, "does not list gobstopper-1.2.3-windows-x86_64.zip"):
+            rn.parse_sha256sums(missing, "v1.2.3")
+        with self.assertRaisesRegex(rn.ReleaseNotesError, "not release archives: other"):
+            rn.parse_sha256sums(SUMS + f"{'a' * 64}  other\n", "v1.2.3")
+        with self.assertRaisesRegex(rn.ReleaseNotesError, "does not list gobstopper-1.2.4"):
+            rn.parse_sha256sums(SUMS, "v1.2.4")
         with self.assertRaisesRegex(rn.ReleaseNotesError, "SHA256SUMS line"):
-            rn.parse_sha256sums("nonsense\n")
-        self.assertEqual(rn.parse_sha256sums(f"{DIGESTS['gobstopper']}  gobstopper\n"), DIGESTS)
+            rn.parse_sha256sums("nonsense\n", "v1.2.3")
+        self.assertEqual(rn.parse_sha256sums(SUMS, "v1.2.3"), DIGESTS)
 
 
 class CommandTests(unittest.TestCase):
@@ -180,7 +194,7 @@ class CommandTests(unittest.TestCase):
             d = Path(directory)
             (d / "Cargo.toml").write_text('[workspace.package]\nversion = "1.2.3"\nedition = "2021"\n')
             (d / "CHANGELOG.md").write_text(CHANGELOG)
-            (d / "SHA256SUMS").write_text(f"{DIGESTS['gobstopper']}  gobstopper\n")
+            (d / "SHA256SUMS").write_text(SUMS)
             common = ["--tag", "v1.2.3", "--commit", COMMIT, "--sha256sums", str(d / "SHA256SUMS"),
                       "--changelog", str(d / "CHANGELOG.md"), "--root", str(d)]
             code, body, _ = self.run_main("render", *common)
@@ -189,7 +203,7 @@ class CommandTests(unittest.TestCase):
             code, out, err = self.run_main("check", *common, "--body-json", str(d / "body.json"))
             self.assertEqual((code, err), (0, ""))
             self.assertIn("Gobstopper v1.2.3: release body matches", out)
-            (d / "body.json").write_text(json.dumps({"body": body.replace("window", "range")}))
+            (d / "body.json").write_text(json.dumps({"body": body.replace("sets the window", "sets the range")}))
             code, _, err = self.run_main("check", *common, "--body-json", str(d / "body.json"))
             self.assertEqual(code, 1)
             self.assertIn("release notes differ", err)

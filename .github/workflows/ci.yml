@@ -130,6 +130,24 @@ jobs:
         with:
           tool: cargo-nextest@0.9.146
       - run: cargo nextest run --workspace --all-targets --all-features --locked --profile ci
+      # Package the debug binary the tests built exactly as a release does,
+      # then install it with scripts/install.ps1 from a loopback server.
+      - name: Package and install with the hosted installer
+        shell: pwsh
+        run: |
+          $env:GOBSTOPPER_BINARY = (Resolve-Path 'target\debug\gobstopper.exe').Path
+          ./scripts/build-release.ps1
+          $server = Start-Process python -ArgumentList '-m', 'http.server', '8765', '--bind', '127.0.0.1', '--directory', 'artifacts' -PassThru -WindowStyle Hidden
+          Start-Sleep -Seconds 2
+          $version = ((& $env:GOBSTOPPER_BINARY --version) | Out-String).Trim().Split(' ')[1]
+          $prefix = Join-Path $env:RUNNER_TEMP 'install-check'
+          $env:GOBSTOPPER_VERSION = $version
+          $env:GOBSTOPPER_RELEASE_BASE_URL = 'http://127.0.0.1:8765'
+          $env:GOBSTOPPER_INSTALL_PREFIX = $prefix
+          $env:GOBSTOPPER_ADD_PATH = 'no'
+          try { & ./scripts/install.ps1 } finally { Stop-Process -Id $server.Id -Force }
+          $reported = ((& (Join-Path $prefix 'bin\gobstopper.exe') --version) | Out-String).Trim()
+          if ($reported -cne "gobstopper $version") { throw "installed binary reports '$reported'" }
 
   msrv:
     name: MSRV 1.85.0
