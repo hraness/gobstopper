@@ -446,7 +446,7 @@ cover edit structure and size, not semantic preservation or provider acceptance.
 
 ## Install & use
 
-This builds the current `main` branch, which the commands below describe.
+The commands below describe the current `main` branch.
 The proxy is in every release since v0.3.1; the tail budget and the 1M-window
 threshold shipped in v0.5.0, the carried conversation in v0.6.0, estimate
 calibration in v0.7.0, and the tail-0 default in v0.7.3. Check the [release
