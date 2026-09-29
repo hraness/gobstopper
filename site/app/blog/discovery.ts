@@ -47,7 +47,7 @@ const publisher: ArticleParty = hraness;
 
 /** Copy for a post's share card; the site declaration in app/social.ts supplies the rest. */
 export function postSocialPage(post: BlogPost): SocialImagePage {
-  return { description: post.shareLine, eyebrow: post.eyebrow, headline: post.title };
+  return { description: post.shareLine, eyebrow: post.eyebrow, headline: post.shareHeadline ?? post.title };
 }
 
 export function postDiscovery(post: BlogPost): ArticleDiscovery {
