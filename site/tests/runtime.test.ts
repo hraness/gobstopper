@@ -114,6 +114,7 @@ describe("built Gobstopper site", () => {
       expect(homeResponse.status).toBe(200);
       // Code blocks are syntax-highlighted, so command text carries token spans.
       expect(home.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ")).toContain("cargo install --git https://github.com/hraness/gobstopper gobstopper --locked");
+      expect(home.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ")).toContain("curl -fsSL https://gobstopper.sh/install.sh | sh");
       if (publishedRelease === null) {
         expect(home).toContain("No release yet");
       } else {
