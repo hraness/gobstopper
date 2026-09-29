@@ -770,3 +770,9 @@ main:has(> .plain-publication--embedded) {
     box-shadow: none;
   }
 }
+
+@media (forced-colors: active) {
+  .hraness-platform-install__tab[aria-selected="true"] {
+    forced-color-adjust: none;
+  }
+}
