@@ -12,7 +12,11 @@ python3 verify/stress/check.py --output "$NEW_EVIDENCE_DIR"
 
 Cargo dependencies must already be fetched; execution is offline. Supported
 platforms are Linux and macOS. The exact commands and 159 expected test names are
-in `suites.json`. Tests run serially and Cargo uses two build jobs. The gate
+in `suites.json`. Suites run on three workers. Every suite in the `gobstopper`
+package runs in one serial lane, because each `cargo test -p gobstopper` re-links
+the CLI binary that running fixtures bind; the other suites share the remaining
+workers. Each suite runs one libtest thread, except `watch`, which runs two.
+Cargo uses two build jobs. The gate
 rejects missing, duplicated, ignored, failed or unexpected test results. A zero
 process exit with an empty or filtered-away suite is not evidence. The receipt
 lists every passed test, each exact command, source/tool hashes, durations, logs
@@ -49,7 +53,7 @@ the complete debug binary at each CLI startup, and these tests start many CLI
 processes. The unchanged suite passed in 152 seconds locally and 163 seconds in
 Linux CI; a later CI run exhausted the former 180-second aggregate suite limit
 near its final tests. A focused rerun and a timed full rerun found no stalled
-test. The larger suite budget preserves every test, serial execution, child
+test. The larger suite budget preserves every test, its thread count, child
 cleanup, and the 900-second overall limit. It is not a production latency target.
 
 The sequence itself must finish in less than 90 seconds with the exact seed,
@@ -63,8 +67,9 @@ whole-tree RSS; it is checked after each suite, not enforced as an OS memory
 allocation limit. Compilation is included in that observation.
 
 Fixtures assert collection of the particular descendants they own and bound
-provider frames, queues, I/O and deadlines. Serial test execution and fixed
-fixture fan-out bound this workload; this is not a hard process-count sandbox
+provider frames, queues, I/O and deadlines. At most three concurrent suites,
+each with its reviewed libtest thread count, and fixed fixture fan-out bound this
+workload; this is not a hard process-count sandbox
 for arbitrary escaped or privilege-changing programs. No claim is made that
 SIGKILL or a userspace watchdog can preempt an uninterruptible kernel filesystem
 operation. Cleanup/wait failure leaves a failed receipt and can require host
