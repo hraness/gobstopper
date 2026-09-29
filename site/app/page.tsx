@@ -253,10 +253,11 @@ export default function Home() {
                 { label: "Per 1M", numeric: true },
                 { label: "Cost", numeric: true },
               ]}
-              meta={`OpenAI list prices, checked ${pricingCheckedOn}`}
+              meta={`OpenAI prices, checked ${pricingCheckedOn}`}
               note={
                 <>
-                  OpenAI prices GPT-5.6 Sol input at $4 per million tokens and output at $20.
+                  OpenAI prices GPT-5.6 Sol input at $4 per million tokens and output at $20, a
+                  promotional rate it says runs at least through November 21, 2026.
                   Its <a href={OPENAI_MODEL_PAGE}>model page</a> says prompts over 272K input
                   tokens are priced at 2x input and 1.5x output for the full request. Crossing
                   the line by 8,000 tokens doubles the rate on all 280,000. Gobstopper&apos;s
@@ -269,7 +270,7 @@ export default function Home() {
               rows={[
                 ["Under the line", "270K", "$4", "$1.08"],
                 ["Over the line", "280K", { content: "$8", tone: "negative" }, { content: "$2.24", tone: "negative" }],
-                ["Compacted", "~128K", "$4", { content: "~$0.51", tone: "positive" }],
+                ["Compacted", "≤128K", "$4", { content: "≤$0.52", tone: "positive" }],
               ]}
             />
             <p>
