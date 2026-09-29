@@ -102,9 +102,17 @@ fn launchctl() -> Command {
     Command::new(std::env::var_os(LAUNCHCTL_ENV).unwrap_or_else(|| "launchctl".into()))
 }
 
+#[cfg(unix)]
 fn domain() -> String {
     // SAFETY: getuid has no preconditions and cannot fail.
     format!("gui/{}", unsafe { libc::getuid() })
+}
+
+/// LaunchAgents exist only on macOS; `install` refuses elsewhere before any
+/// launchctl call, so this name is never used to reach a real service.
+#[cfg(not(unix))]
+fn domain() -> String {
+    "gui".to_string()
 }
 
 /// `gobstopper proxy install`: write the agent, load it, and wait for the
