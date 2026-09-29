@@ -1,0 +1,7 @@
+# CI runs `cargo nextest run --profile ci` in the quality job. Each test runs in
+# its own process, so wait-bound suites overlap instead of running binary after
+# binary. Doctests stay on `cargo test --doc`.
+[profile.ci]
+fail-fast = false
+failure-output = "immediate-final"
+slow-timeout = { period = "60s", terminate-after = 5 }

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 import importlib.util
 import json
@@ -13,6 +14,7 @@ import resource
 import shutil
 import subprocess
 import sys
+import threading
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -27,18 +29,25 @@ TOTAL_SECONDS = 900
 MAX_LOG_BYTES = 8 * 1024 * 1024
 MAX_CHILD_RSS_BYTES = 2 * 1024 * 1024 * 1024
 SEED = 0x6a09e667f3bcc909
+# Suites run on SUITE_WORKERS threads. Every `gobstopper` package suite runs
+# in one serial CLI lane: each `cargo test -p gobstopper` invocation re-links
+# target/debug/gobstopper, which changes the ctime that running CLI fixtures
+# bind as their artifact identity. The other suites share the remaining
+# workers. The fifth field is the libtest thread count inside a suite.
+SUITE_WORKERS = 3
+CLI_LANE_PACKAGE = "gobstopper"
 SUITES = {
-    "sequence": ("gobstopper-adapters", ["--test", "sequence"], 1, 150),
-    "storage": ("gobstopper-adapters", ["--lib", "storage_tests::"], 16, 180),
-    "vault-metadata": ("gobstopper-adapters", ["--lib", "vault::accounting::tests::"], 13, 90),
-    "vault-accounting-cli": ("gobstopper", ["--test", "vault_accounting"], 2, 90),
-    "journal": ("gobstopper", ["--bin", "gobstopper", "native_operations::tests::"], 10, 180),
-    "watch": ("gobstopper", ["--test", "watch"], 28, 360),
-    "claude-process": ("gobstopper-adapters", ["--test", "native_process"], 2, 60),
-    "codex-process": ("gobstopper", ["--bin", "gobstopper", "tests::codex_"], 11, 90),
-    "plugins": ("gobstopper-adapters", ["--test", "plugin_contract"], 11, 90),
-    "events": ("gobstopper-core", ["--lib", "events::tests::"], 15, 60),
-    "monitor": (None, ["scripts/test_monitor.py", "-v"], 42, 90),
+    "sequence": ("gobstopper-adapters", ["--test", "sequence"], 1, 150, 1),
+    "storage": ("gobstopper-adapters", ["--lib", "storage_tests::"], 16, 180, 1),
+    "vault-metadata": ("gobstopper-adapters", ["--lib", "vault::accounting::tests::"], 13, 90, 1),
+    "vault-accounting-cli": ("gobstopper", ["--test", "vault_accounting"], 2, 90, 1),
+    "journal": ("gobstopper", ["--bin", "gobstopper", "native_operations::tests::"], 10, 180, 1),
+    "watch": ("gobstopper", ["--test", "watch"], 28, 360, 2),
+    "claude-process": ("gobstopper-adapters", ["--test", "native_process"], 2, 60, 1),
+    "codex-process": ("gobstopper", ["--bin", "gobstopper", "tests::codex_"], 11, 90, 1),
+    "plugins": ("gobstopper-adapters", ["--test", "plugin_contract"], 11, 90, 1),
+    "events": ("gobstopper-core", ["--lib", "events::tests::"], 15, 60, 1),
+    "monitor": (None, ["scripts/test_monitor.py", "-v"], 42, 90, 1),
 }
 
 
@@ -49,9 +58,9 @@ def admitted_inventory(document: dict) -> list[dict]:
     if [suite["name"] for suite in suites] != list(SUITES):
         raise ValueError("unreviewed stress suite order or names")
     for suite in suites:
-        package, targets, count, seconds = SUITES[suite["name"]]
+        package, targets, count, seconds, threads = SUITES[suite["name"]]
         expected = (["cargo", "test", "-p", package, "--locked", *targets,
-                     "--", "--nocapture", "--test-threads=1"] if package
+                     "--", "--nocapture", f"--test-threads={threads}"] if package
                     else ["python3", *targets])
         name_pattern = r"MonitorTests\.test_[A-Za-z0-9_]+" if not package else r"[A-Za-z_][A-Za-z0-9_:]*"
         source_prefix = "crates/" if package else "scripts/"
@@ -166,7 +175,7 @@ def main() -> int:
                "source_sha256": source_hashes, "tool_sha256": tool_hashes, "platform": sys.platform,
                "passed": False, "results": results, "identity_log_sha256": identity_logs,
                "bounds": {"total_seconds": TOTAL_SECONDS, "max_log_bytes_per_command": MAX_LOG_BYTES,
-                          "cargo_jobs": 2, "test_threads": 1, "max_observed_single_child_rss_bytes": MAX_CHILD_RSS_BYTES,
+                          "cargo_jobs": 2, "test_threads": 1, "suite_workers": SUITE_WORKERS, "max_observed_single_child_rss_bytes": MAX_CHILD_RSS_BYTES,
                           "sequence_steps": 64, "sequence_corruption_recoveries": 16,
                           "sequence_post_step_file_limit": 1200, "sequence_post_step_bytes_limit": 16 * 1024 * 1024,
                           "sequence_elapsed_ms_limit": 90_000},
@@ -198,10 +207,16 @@ def main() -> int:
             identity_logs[identity_path.name] = runner.digest(identity_path)
             if code or timeout or capped:
                 raise ValueError(f"cannot identify {name}")
-        for suite in suites:
+        rusage_lock = threading.Lock()
+        failed = threading.Event()
+
+        def run_suite(suite: dict) -> dict | None:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                failed.set()
                 raise TimeoutError("stress aggregate deadline exceeded")
+            if failed.is_set():
+                return None
             executable = cargo if suite["argv"][0] == "cargo" else Path(sys.executable).resolve()
             argv = [str(executable), *suite["argv"][1:]]
             before = time.monotonic()
@@ -210,16 +225,44 @@ def main() -> int:
             log_path = output / f"{suite['name']}.log"
             log_path.write_text(log)
             result = admit_tests(suite, code, log, timeout, capped)
-            rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
+            with rusage_lock:
+                rss = resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss
             rss_bytes = int(rss if sys.platform == "darwin" else rss * 1024)
             result["passed"] &= rss_bytes <= MAX_CHILD_RSS_BYTES and time.monotonic() <= deadline
             result.update(case=suite["name"], argv=argv, exit_code=code, timeout=timeout, log_limit=capped,
                           log_sha256=runner.digest(log_path), elapsed_seconds=elapsed,
                           largest_reaped_child_rss_bytes=rss_bytes)
-            results.append(result)
-            print(f"{suite['name']}: {'PASS' if result['passed'] else 'FAIL'} ({len(result['passed_tests'])} passed)", flush=True)
+            print(f"{suite['name']}: {'PASS' if result['passed'] else 'FAIL'} "
+                  f"({len(result['passed_tests'])} passed, {elapsed:.1f}s)", flush=True)
             if not result["passed"]:
-                raise ValueError(f"stress admission failed: {suite['name']}")
+                failed.set()
+            return result
+
+        def run_lane(lane: list[dict]) -> list[dict | None]:
+            return [run_suite(suite) for suite in lane]
+
+        cli_lane = [suite for suite in suites if SUITES[suite["name"]][0] == CLI_LANE_PACKAGE]
+        # The CLI lane holds one worker for its whole run; the rest start
+        # longest reviewed budget first on the other workers.
+        shared = sorted((suite for suite in suites if suite not in cli_lane), key=lambda suite: -suite["seconds"])
+        finished = {}
+        errors = []
+        with ThreadPoolExecutor(max_workers=SUITE_WORKERS) as pool:
+            futures = [pool.submit(run_lane, cli_lane)]
+            futures += [pool.submit(run_lane, [suite]) for suite in shared]
+            for future in futures:
+                try:
+                    for result in future.result():
+                        if result is not None:
+                            finished[result["case"]] = result
+                except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError) as error:
+                    errors.append(str(error))
+                    failed.set()
+        # Receipt rows keep inventory order whatever the finish order.
+        results.extend(finished[suite["name"]] for suite in suites if suite["name"] in finished)
+        failures = [result["case"] for result in results if not result["passed"]]
+        if errors or failures or len(results) != len(suites):
+            raise ValueError("stress admission failed: " + ", ".join(failures + errors or ["incomplete suites"]))
         receipt["inputs_unchanged"] = (
             all(runner.digest(ROOT / name) == value for name, value in source_hashes.items())
             and all(runner.digest(Path(name)) == value for name, value in tool_hashes.items()))

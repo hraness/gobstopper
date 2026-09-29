@@ -18,7 +18,8 @@ const records = [];
 const startedAt = Date.now();
 let server;
 let browser;
-let activePage;
+const activePages = new Map();
+const CONTEXT_POOL = Math.max(1, Number.parseInt(process.env.GOBSTOPPER_BROWSER_CONTEXTS ?? '3', 10) || 3);
 let cleanupPromise;
 let origin = 'https://gobstopper.sh';
 const pause = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -57,13 +58,19 @@ try {
   const executablePath = process.env.GOBSTOPPER_BROWSER_EXECUTABLE;
   if (executablePath) assert.ok(isAbsolute(executablePath), 'Explicit browser executable must be absolute');
   browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : { channel: 'chrome' }) });
-  for (const width of [360, 390, 1440]) for (const theme of ['light', 'dark']) {
+  // Six (width, theme) contexts share one browser; a small pool keeps the
+  // run short without starving the one CI runner. Each context has its own
+  // page, records and failure screenshot; results are merged in fixed order.
+  const combos = [360, 390, 1440].flatMap(width => ['light', 'dark'].map(theme => ({ width, theme })));
+  const comboRecords = combos.map(() => []);
+  const failures = [];
+  async function checkCombo({ width, theme }, comboRecords, index) {
     const context = await browser.newContext({ viewport: { width, height: width === 360 ? 740 : width === 390 ? 844 : 900 }, colorScheme: theme, reducedMotion: 'reduce', serviceWorkers: 'block' });
-    const page = await context.newPage(); activePage = page;
+    const page = await context.newPage(); activePages.set(index, page);
     page.setDefaultTimeout(10000);
-    page.on('pageerror', error => errors.push(error.message));
-    page.on('console', message => { if (message.type() === 'error' && !message.location().url.includes('/missing-public-verification')) errors.push(message.text()); });
-    page.on('response', response => { if (response.status() >= 400 && !response.url().includes('/missing-public-verification')) errors.push(`HTTP ${response.status()} ${new URL(response.url()).pathname}`); });
+    page.on('pageerror', error => errors.push(`${width}-${theme}: ${error.message}`));
+    page.on('console', message => { if (message.type() === 'error' && !message.location().url.includes('/missing-public-verification')) errors.push(`${width}-${theme}: ${message.text()}`); });
+    page.on('response', response => { if (response.status() >= 400 && !response.url().includes('/missing-public-verification')) errors.push(`${width}-${theme}: HTTP ${response.status()} ${new URL(response.url()).pathname}`); });
     for (const path of routes) {
       const label = `${path === '/' ? 'home' : path.slice(1).replaceAll('/', '-')}-${width}-${theme}`;
       const response = await page.goto(origin + path, { waitUntil: 'load' });
@@ -103,7 +110,7 @@ try {
       const moved = await page.evaluate(() => ({ scroll: scrollY, header: document.querySelector('.hraness-marketing-header').getBoundingClientRect().top, footer: document.querySelector('#hraness-site-footer').getBoundingClientRect().top }));
       assert.ok(Math.abs(moved.header) <= 1, `${label}: sticky chrome`);
       assert.ok(Math.abs(moved.footer + moved.scroll - metrics.footer.top) <= 2, `${label}: footer scrolls with document`);
-      records.push({ route: path, width, theme, status: response.status(), metrics });
+      comboRecords.push({ route: path, width, theme, status: response.status(), metrics });
       const figures = await page.evaluate(() => [...document.querySelectorAll('.gob-figure')].map(figure => {
         const box = figure.getBoundingClientRect();
         const small = [...figure.querySelectorAll('*')].filter(element => element.childNodes.length > 0 && [...element.childNodes].some(node => node.nodeType === 3 && node.textContent.trim() !== '') && element.checkVisibility() && parseFloat(getComputedStyle(element).fontSize) < 11.5).map(element => element.textContent.trim().slice(0, 40));
@@ -147,14 +154,28 @@ try {
     await page.locator('.hraness-marketing-header a[href="/#install"]').click();
     await page.waitForURL(origin + '/#install');
     await until(() => page.locator('#install').evaluate(element => element.getBoundingClientRect().top >= document.querySelector('.hraness-marketing-header').getBoundingClientRect().bottom - 1), 'install anchor clears sticky chrome');
-    await context.close();
+    await context.close(); activePages.delete(index);
   }
+  let next = 0;
+  await Promise.all(Array.from({ length: Math.min(CONTEXT_POOL, combos.length) }, async () => {
+    while (next < combos.length) {
+      const index = next++;
+      const { width, theme } = combos[index];
+      try { await checkCombo(combos[index], comboRecords[index], index); } catch (error) {
+        const page = activePages.get(index);
+        if (page && !page.isClosed()) await page.screenshot({ path: resolve(artifacts, `failure-${width}-${theme}.png`), fullPage: true }).catch(() => {});
+        failures.push(`${width}-${theme}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }));
+  records.push(...comboRecords.flat());
+  if (failures.length) throw new Error(`Public browser checks failed:\n${failures.sort().join('\n')}`);
   assert.deepEqual(errors, [], 'No browser runtime or resource errors');
   const receipt = { origin, production: values.production, sourceSha: process.env.GITHUB_SHA ?? null, startedAt: new Date(startedAt).toISOString(), completedAt: new Date().toISOString(), durationMs: Date.now() - startedAt, browserErrors: errors, pagesChecked: records.length, records };
   await writeFile(resolve(artifacts, 'verification.json'), JSON.stringify(receipt, null, 2));
   console.log(JSON.stringify({ ...receipt, records: undefined, artifacts }, null, 2));
 } catch (error) {
-  if (activePage && !activePage.isClosed()) await activePage.screenshot({ path: resolve(artifacts, 'failure.png'), fullPage: true }).catch(() => {});
+  for (const [index, page] of activePages) if (!page.isClosed()) await page.screenshot({ path: resolve(artifacts, `failure-context-${index}.png`), fullPage: true }).catch(() => {});
   await writeFile(resolve(artifacts, 'failure.json'), JSON.stringify({ message: String(error), origin, errors, records }, null, 2));
   throw error;
 } finally {
