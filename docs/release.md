@@ -54,7 +54,7 @@ gh release verify-asset v0.0.0 gobstopper-0.0.0-linux-x86_64.tar.gz --repo hrane
 
 1. In the version bump pull request, set `version` under `[workspace.package]` in `Cargo.toml` and turn the `## Unreleased` section of `CHANGELOG.md` into `## vX.Y.Z - YYYY-MM-DD`. The section needs a summary paragraph and at least one bullet. Start a new empty `## Unreleased` section only when there is something to put in it.
 2. After it merges, tag the merge commit and push the tag: `git tag -a vX.Y.Z -m vX.Y.Z <commit> && git push origin vX.Y.Z`.
-3. The release workflow checks the tag against `Cargo.toml` and `CHANGELOG.md`, builds and packages each platform with [`scripts/build-release.sh`](../scripts/build-release.sh) or [`scripts/build-release.ps1`](../scripts/build-release.ps1), installs each archive with the hosted installer from a loopback server, attests the archives, writes `SHA256SUMS`, renders the page with `scripts/release_notes.py`, publishes the release, and checks the published page against the release record. Nothing needs a person after the tag push.
+3. The release workflow checks the tag against `Cargo.toml` and `CHANGELOG.md`, builds and packages each platform with [`scripts/build-release.sh`](../scripts/build-release.sh) or [`scripts/build-release.ps1`](../scripts/build-release.ps1), installs each archive with the hosted installer from a loopback server, attests the archives, writes `SHA256SUMS`, renders the page with `scripts/release_notes.py`, publishes the release, checks the published page against the release record, and, once it is set up, publishes the crates to crates.io. Nothing needs a person after the tag push.
 4. Check the assets from any machine:
 
    ```sh
@@ -83,3 +83,15 @@ The title is `Gobstopper vX.Y.Z`. The body is the changelog summary, `## Changes
 ```
 
 `check` reads this record from the last `<!-- gobstopper-release ` marker, requires the body to end with `-->`, and compares everything above it byte for byte with a fresh render. To correct a published page, change the changelog section and the page in the same pull request, then re-render and run `gh release edit vX.Y.Z --notes-file notes.md`.
+
+## crates.io
+
+The release workflow's `crates` job publishes `gobstopper-core`, `gobstopper-adapters` and `gobstopper` to crates.io after the GitHub Release. It uses crates.io trusted publishing through [`rust-lang/crates-io-auth-action`](https://github.com/rust-lang/crates-io-auth-action): GitHub Actions proves the workflow's identity, crates.io returns a short-lived token, and the action revokes it when the job ends. No token is stored and no one approves a release. The job skips a crate version crates.io already has, so rerunning a failed run finishes the set.
+
+The job is off until the `CRATES_IO_PUBLISH` repository variable is `true`, because these have to happen first, once:
+
+1. `gobstopper` depends on `apple-foundation` and `hraness-cli-kit` through Git tags. crates.io rejects Git dependencies, so both need crates.io releases, and `crates/gobstopper-cli/Cargo.toml` needs to use those versions.
+2. crates.io also needs a version on each path dependency. In a version bump pull request, which already rebinds the assurance receipts that hash `Cargo.toml`, add `gobstopper-core` and `gobstopper-adapters` to `[workspace.dependencies]` with `path` and `version = "=X.Y.Z"`, point the crates at them with `workspace = true`, and keep those versions equal to the workspace version in every later bump.
+3. crates.io only lets trusted publishing update a crate that exists. A maintainer publishes the first version of each crate from the release tag with a short-lived API token scoped to publishing new crates, in order: `cargo publish --locked -p gobstopper-core`, then `-p gobstopper-adapters`, then `-p gobstopper`. Revoke the token afterwards.
+4. On crates.io, open each crate's Settings, add a trusted publisher for GitHub with owner `hraness`, repository `gobstopper` and workflow `release.yml`, and leave the environment empty.
+5. `gh variable set CRATES_IO_PUBLISH --repo hraness/gobstopper --body true`.
