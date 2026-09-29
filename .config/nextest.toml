@@ -16,3 +16,178 @@ priority = 100
 [[profile.ci.overrides]]
 filter = 'binary(sequence) | binary(watch)'
 priority = 50
+
+# CI's Windows job runs `cargo nextest run --profile windows`. Gobstopper's
+# vault, compaction event log, plugin process custody, native provider control
+# and Claude usage identity rely on Unix guarantees (directory fsync, flock,
+# O_NOFOLLOW, inode and ctime identity, process groups). On Windows those paths
+# refuse with an error that names the missing guarantee, or report the value
+# as unknown, instead of being ported. The tests below assert the Unix
+# behavior of those paths, or drive them through POSIX shell fixtures, so
+# Windows skips them; Linux and macOS still run every one. `watch`, `recovery`
+# and `sequence` are skipped whole: they exercise the vault and native
+# providers end to end. Everything else, including the proxy, runs.
+[profile.windows]
+fail-fast = false
+failure-output = "immediate-final"
+slow-timeout = { period = "60s", terminate-after = 5 }
+default-filter = '''
+not (
+  binary_id(gobstopper::watch)
+  | binary_id(gobstopper-adapters::recovery)
+  | binary_id(gobstopper-adapters::sequence)
+  | (binary_id(gobstopper-adapters) & (
+        test(=claude::tests::complete_projection_rejects_ambiguous_and_invalid_linkage)
+      | test(=claude::tests::long_valid_history_recovers_complete_ancestry_and_lifetime)
+      | test(=claude::tests::missing_metrics_and_overflow_cannot_establish_full_usage)
+      | test(=claude::tests::reset_and_partial_readings_follow_the_selected_branch)
+      | test(=claude::tests::selected_leaf_without_any_graph_is_unknown_not_absent)
+      | test(=claude::tests::source_change_or_replacement_invalidates_the_whole_reading)
+      | test(=claude::tests::unlinked_attachments_preserve_valid_graph_and_discovery_usage)
+      | test(=claude::tests::usage_scan_enforces_total_record_and_count_limits)
+      | test(=detect::tests::quiet_live_claude_session_survives_age_filter_without_scanning_old_usage)
+      | test(=fork::tests::claude_fork_refuses_existing_target)
+      | test(=fork::tests::claude_fork_rewrites_session_id_and_keeps_chain)
+      | test(=fork::tests::codex_fork_rewrites_meta_id_and_names_like_siblings)
+      | test(=fork::tests::codex_fork_rewrites_session_id_variant)
+      | test(=storage_tests::completed_publication_does_not_overwrite_conflicting_output)
+      | test(=storage_tests::damaged_roots_never_authorize_deletion_or_append)
+      | test(=storage_tests::duplicate_recovery_fields_never_authorize_deletion)
+      | test(=storage_tests::failed_manifest_unlink_never_collects_its_chunks)
+      | test(=storage_tests::legacy_completed_receipt_reconciles_after_source_change_and_pruning)
+      | test(=storage_tests::native_recovery_pin_is_idempotent_and_never_automatically_retired)
+      | test(=storage_tests::prepared_output_recovers_exactly_after_source_changes_and_index_retirement)
+      | test(=storage_tests::publication_faults_preserve_actual_visibility_and_io_cause)
+      | test(=storage_tests::retention_uses_append_order_and_exact_store_identity)
+      | test(=storage_tests::reused_objects_require_publication_confirmation_before_index_reference)
+      | test(=storage_tests::torn_index_append_reports_unknown_effect_and_blocks_collection)
+      | test(=tests::write_if_unchanged_swaps_when_source_is_stable)
+      | test(=vault::tests::identical_content_dedups_object_but_appends_index)
+      | test(=vault::tests::latest_for_returns_newest_snapshot)
+      | test(=vault::tests::legacy_provider_labels_in_index_stay_readable)
+      | test(=vault::tests::legacy_reads_and_dry_run_create_no_control_files)
+      | test(=vault::tests::list_is_newest_first_and_rejects_incomplete_history)
+      | test(=vault::tests::prune_keeps_last_appended_snapshot_when_timestamps_tie)
+      | test(=vault::tests::prune_keeps_newest_per_stream_and_drops_unreachable_objects)
+      | test(=vault::tests::prune_preserves_a_manifest_shared_by_kept_and_dropped_entries)
+      | test(=vault::tests::prune_refuses_corrupt_retained_manifest_without_deleting_anything)
+      | test(=vault::tests::restore_refuses_corrupt_object)
+      | test(=vault::tests::snapshot_then_restore_round_trips_bytes)
+      | test(=vault::tests::stable_custody_excludes_prune_until_snapshot_and_reader_finish)
+    ))
+  | (binary_id(gobstopper-adapters::audit_regressions) & (
+        test(=claude_digest_and_usage_follow_the_canonical_leaf)
+      | test(=compact_copy_keeps_open_writer_and_is_idempotent)
+      | test(=compacted_copy_identity_binds_digest_and_retained_tail)
+      | test(=corrupt_existing_snapshot_aborts_admission)
+      | test(=incomplete_copy_intent_recovers_without_touching_source)
+    ))
+  | (binary_id(gobstopper-adapters::measurement) & (
+        test(=ambiguous_graphs_cannot_export_additive_session_totals)
+      | test(=complete_claude_projection_and_cumulative_codex_tail_totals_are_full)
+    ))
+  | (binary_id(gobstopper-adapters::surgery_hegel) & (
+        test(=fork_is_additive_and_linkage_preserving)
+      | test(=scan_usage_agrees_with_load)
+      | test(=surgery_preserves_linkage_and_verify_clean)
+      | test(=surgery_survives_drawn_faults)
+      | test(=vault_roundtrip_dedups_and_restores_exactly)
+    ))
+  | (binary_id(gobstopper-core) & (
+        test(=events::tests::append_and_read_events_jsonl)
+      | test(=events::tests::event_reader_caps_actual_bytes_after_admission)
+      | test(=events::tests::event_reader_reports_invalid_and_oversized_records)
+      | test(=events::tests::oversize_log_rotates_and_read_events_stitches_generations)
+    ))
+  | (binary_id(gobstopper::apple) & (
+        test(=status_json_for_flag_and_for_agents)
+      | test(=status_reports_the_reason_and_one_next_step)
+    ))
+  | (binary_id(gobstopper::bin/gobstopper) & (
+        test(=apple::tests::bounded_bridge_rejects_malformed_flood_hang_and_private_errors)
+      | test(=apple::tests::model_unavailable_keeps_its_reason_and_nothing_else)
+      | test(=apple_cmd::tests::status_and_install_match_golden)
+      | test(=apple_scorer::tests::invalid_generation_never_populates_score_cache)
+      | test(=config::tests::inspection_rejects_external_strategies_without_loading_them)
+      | test(=hooks::tests::advisory_throttle_suppresses_repeat_until_growth_or_age)
+      | test(=hooks::tests::callbacks_require_exact_source_identity_and_do_not_pair_foreign_archives)
+      | test(=hooks::tests::handle_precompact_snapshots_and_logs)
+      | test(=hooks::tests::handle_session_start_compact_returns_context)
+      | test(=hooks::tests::handle_session_start_compact_without_precompact_is_honest)
+      | test(=hooks::tests::prompt_policy_blocks_over_hard_ceiling)
+      | test(=hooks::tests::prompt_policy_claude_advises_only_over_trigger)
+      | test(=hooks::tests::prompt_policy_distinguishes_reported_zero_from_missing_usage)
+      | test(=hooks::tests::prompt_policy_marks_unresolved_context)
+      | test(=hooks::tests::prompt_policy_never_blocks_control_cohort)
+      | test(=hooks::tests::prompt_policy_rollout_control_suppresses_but_logs)
+      | test(=hooks::tests::throttle_requires_exact_store_and_provider_and_rearms_on_clock_or_context_reset)
+      | test(=jev::tests::call_jev_never_retries_auth_rejection)
+      | test(=jev::tests::call_jev_retries_transient_5xx_once_then_serves_from_cache)
+      | test(=jev::tests::fetch_chunk_rescores_identical_question_when_task_context_changes)
+      | test(=jev::tests::fetch_chunk_sends_only_uncached_questions)
+      | test(=jev::tests::malformed_responses_fail_and_are_never_cached)
+      | test(=jev::tests::partial_and_foreign_answers_never_poison_exact_request_cache)
+      | test(=jev::tests::scorer_dedups_questions_and_reuses_them_next_pass)
+      | test(=llm_scorer::tests::llm_http_auth_expands_from_environment_with_short_local_key)
+      | test(=native_operations::tests::failed_dispatch_persistence_never_authorizes_a_provider_call)
+      | test(=native_operations::tests::independent_openers_share_custody_until_owner_releases)
+      | test(=native_operations::tests::journal_accepts_terminal_history_but_rejects_uncertain_replay)
+      | test(=native_operations::tests::journal_rejects_fabricated_success_reconciliation_and_identity_changes)
+      | test(=native_operations::tests::persistence_faults_at_every_record_state_leave_old_complete_or_repair_state)
+      | test(=native_operations::tests::registry_preserves_target_binding_after_rename_or_missing_file)
+      | test(=telemetry::tests::provenance_records_actual_gate_and_frozen_configuration)
+      | test(=tests::codex_compact_bounds_frames_and_treats_lost_ack_as_unknown)
+      | test(=tests::codex_compact_classifies_structural_failures_without_echoing_provider_text)
+      | test(=tests::codex_compact_initializes_resumes_then_compacts)
+      | test(=tests::codex_compact_observes_completion_before_dispatch_ack)
+      | test(=tests::codex_compact_propagates_request_errors)
+      | test(=tests::codex_compact_reports_failed_turn_as_error)
+      | test(=tests::codex_compact_requires_the_compaction_items_terminal_turn)
+      | test(=tests::codex_terminal_order_duplicates_and_ambiguity_are_explicit)
+      | test(=tests::preset_command_edits_flow_into_a_plan)
+      | test(=tests::preset_command_empty_edits_defers_without_a_plan)
+    ))
+  | (binary_id(gobstopper::cli_ux) & (
+        test(=proxy_install_says_what_macos_will_show_then_loads_the_agent)
+      | test(=proxy_status_says_how_to_start_the_proxy)
+    ))
+  | (binary_id(gobstopper::custody) & (
+        test(=hooks_refuse_settings_mutation_and_export_one_private_candidate)
+      | test(=legacy_claude_inplace_setting_cannot_mutate_or_fall_back_to_a_copy)
+      | test(=undo_refuses_contradictory_snapshot_binding_before_recording_or_publishing)
+    ))
+  | (binary_id(gobstopper::eval_score) & (
+        test(=bench_keeps_discovered_sessions_with_invalid_policy)
+      | test(=benchmark_output_is_private_and_never_replaces_existing_data)
+      | test(=eval_and_bench_report_the_cubic_auto_score)
+      | test(=evaluation_overrides_must_remain_in_the_admitted_policy_domain)
+    ))
+  | (binary_id(gobstopper::eval_study) & (
+        test(=audit_scores_realized_after_and_vault_specs)
+      | test(=heuristic_manifest_is_metadata_only_and_no_clobber)
+      | test(=inherited_verification_warnings_are_distinct_from_new_errors)
+      | test(=replay_with_intervening_work_counts_real_mutations)
+      | test(=study_rejects_ambiguous_source_even_with_current_annotations_hash)
+    ))
+  | (binary_id(gobstopper::mcp) & (
+        test(=history_and_vault_keep_same_provider_sessions_separate)
+      | test(=show_and_recall_bind_provider_session_and_store_after_prefix_resolution)
+    ))
+  | (binary_id(gobstopper::plan) & (
+        test(=trusted_empty_extension_runs_once_to_produce_no_plan_json)
+    ))
+  | (binary_id(gobstopper::report) & (
+        test(=context_only_preserves_provider_context_and_lifetime_missingness)
+      | test(=detect_and_session_policy_preserve_complete_partial_and_zero_usage)
+      | test(=lossy_event_history_cannot_qualify_report_cohort_retention_or_adaptive_input)
+      | test(=report_discovery_window_filters_stale_sessions_and_all_overrides)
+    ))
+  | (binary_id(gobstopper::session_display) & (
+        test(=ascii_display_widths_remain_unchanged)
+      | test(=custom_home_filename_lookup_and_path_agree_on_provider)
+      | test(=history_handles_id_crossing_its_byte_limit)
+      | test(=json_and_archived_ids_remain_complete)
+      | test(=vault_handles_id_crossing_its_byte_limit)
+    ))
+)
+'''

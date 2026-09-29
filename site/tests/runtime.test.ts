@@ -186,4 +186,17 @@ describe("built Gobstopper site", () => {
       await stopBuiltSite(server);
     }
   }, 20_000);
+  test("serves the release installers from the deployed commit as text", async () => {
+    const server = await startBuiltSite();
+    try {
+      for (const name of ["install.sh", "install.ps1"]) {
+        const response = await fetch(`${server.origin}/${name}`, { redirect: "manual" });
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-type")).toBe("text/plain; charset=utf-8");
+        expect(await response.text()).toBe(await Bun.file(join(import.meta.dir, "..", "..", "scripts", name)).text());
+      }
+    } finally {
+      await stopBuiltSite(server);
+    }
+  }, 20_000);
 });

@@ -30,7 +30,7 @@ jobs:
       pull-requests: read
     outputs:
       rust: ${{ github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.benchmarks == 'true' }}
-      site: ${{ github.event_name != 'pull_request' || steps.filter.outputs.site == 'true' }}
+      site: ${{ github.event_name != 'pull_request' || steps.filter.outputs.site == 'true' || steps.filter.outputs.installers == 'true' }}
     steps:
       - id: filter
         if: github.event_name == 'pull_request'
@@ -51,6 +51,10 @@ jobs:
               - '!hf/**'
               - '!scripts/**'
               - '!Cargo.lock'
+            # The site serves the installers, so they run the site gate too.
+            # One pattern: every filter here must match all of its patterns.
+            installers:
+              - 'scripts/install.{sh,ps1}'
 
   quality:
     needs: changes
@@ -129,7 +133,9 @@ jobs:
       - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
           tool: cargo-nextest@0.9.146
-      - run: cargo nextest run --workspace --all-targets --all-features --locked --profile ci
+      # The windows profile skips the tests of Unix-only features; see
+      # .config/nextest.toml.
+      - run: cargo nextest run --workspace --all-targets --all-features --locked --profile windows
       # Package the debug binary the tests built exactly as a release does,
       # then install it with scripts/install.ps1 from a loopback server.
       - name: Package and install with the hosted installer
