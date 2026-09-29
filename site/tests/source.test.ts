@@ -92,6 +92,9 @@ describe("Gobstopper site source contract", () => {
     // heading scale, measure, code, and table presentation.
     expect(globals).toContain('@import "@hraness/design-kit/plain-publication.css"');
     expect(globals).toContain("main:has(> .plain-publication--embedded)");
+    // The grammar reads the shell gutter but declares its default only in
+    // plain-site.css; without one, document routes lose their inline gutter.
+    expect(globals).toMatch(/:where\(\.plain-site\.plain-publication\)\s*\{\s*--plain-shell-gutter:\s*1\.25rem;/u);
     expect(globals).not.toContain(".document-page");
     expect(home).toContain("data-hraness-marketing-preset=\"editorial\"");
     expect(home).not.toContain("relationship:");
