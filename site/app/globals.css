@@ -165,6 +165,15 @@ main:has(> .plain-publication--embedded) {
   padding-block: 3rem 5rem;
 }
 
+/* plain-publication.css reads --plain-shell-gutter but only sets it below 42rem;
+   plain-site.css, which declares the default, is not imported here. Without a
+   default the gutter and the centred measure resolve to nothing and document
+   routes sit flush against the left edge on wide screens. :where() keeps this
+   default below the grammar's own narrow-screen value. */
+:where(.plain-site.plain-publication) {
+  --plain-shell-gutter: 1.25rem;
+}
+
 /* The existing grammar owns layout and controls. Lantern supplies only material
    paint; these bridges keep old compiled peers and their focus rules intact. */
 [data-hraness-material="lantern"] .hraness-marketing-header.hraness-material-chrome {
