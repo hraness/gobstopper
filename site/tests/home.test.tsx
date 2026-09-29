@@ -98,7 +98,7 @@ test("scopes the editorial preset to the homepage header and real command exampl
       element() { elements.push("proof"); },
     })
     .transform(html);
-  expect(elements).toEqual(["header", "proof"]);
+  expect(elements).toEqual(["header", "proof", "proof"]);
   expect(html).toMatch(/autocompact 100<\/th>[\s\S]*?56,300[\s\S]*?data-tone="negative"/u);
   expect(html).not.toContain("--in-place");
   // Retired or nonexistent flags must not appear in homepage examples.
@@ -211,4 +211,27 @@ test("each benchmark Dataset points at a section the benchmarks page renders", (
     expect(html).toContain(`id="${study.anchor.slice(1)}"`);
   }
   expect(html).toContain('"@type":"Dataset"');
+});
+
+test("leads with the owner's hero line and explains the long-context price line", () => {
+  const html = renderToStaticMarkup(<Home />);
+  expect(html).toContain("Ozempic for Claude and Codex");
+  expect(html).toContain("The missing compaction tool. Set up the proxy. Save tokens.");
+  const start = html.indexOf('id="price-threshold"');
+  const end = html.indexOf('id="preserving-context"');
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  const section = html.slice(start, end);
+  // Facts from the provider pages, checked 2026-09-28.
+  expect(section).toContain("272K input tokens");
+  expect(section).toContain("$2.24");
+  expect(section).toContain("128,000");
+  expect(section).toContain("https://developers.openai.com/api/docs/models/gpt-5.6-sol");
+  expect(section).toContain("https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing");
+  expect(section).toContain("Claude 4.6 and later models");
+  const context = html.slice(end);
+  expect(context).toContain("https://arxiv.org/abs/2609.26779");
+  expect(context).toContain("perfect prompt caching");
+  const sections = html.slice(start, html.indexOf("Resume trial on one"));
+  expect(sections).not.toContain("\u2014");
 });

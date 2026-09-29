@@ -29,9 +29,16 @@ import { publishedRelease } from "./publication";
 const releaseVersion = publishedRelease?.version;
 const repository = "https://github.com/hraness/gobstopper";
 
-const heading = "Context compaction you can undo.";
-const summary =
-  "Gobstopper is a free, open-source command-line tool that makes long coding sessions smaller. Its local proxy keeps each request from Claude Code, Codex, and other agents under a token threshold by summarizing older turns and sending the newest ones word for word. On saved sessions it writes a smaller copy, and every original byte stays in a local vault you can search and restore from.";
+const heading = "Ozempic for Claude and Codex";
+const summary = "The missing compaction tool. Set up the proxy. Save tokens.";
+const example =
+  "Gobstopper is a free, open-source command-line tool. Its local proxy sits between your agent and the provider and keeps each request under a token threshold by summarizing older turns and sending the newest ones word for word. On saved sessions it writes a smaller copy, and every original byte stays in a local vault you can search and restore from.";
+
+/** Long-context prices, checked on the providers' pricing pages. */
+const pricingCheckedOn = "September 28, 2026";
+const OPENAI_MODEL_PAGE = "https://developers.openai.com/api/docs/models/gpt-5.6-sol";
+const ANTHROPIC_PRICING = "https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing";
+const CLIFF_PAPER = "https://arxiv.org/abs/2609.26779";
 const facts =
   "MIT or Apache-2.0 · Installs with Cargo (Rust 1.85 or newer) · The proxy needs curl 8.3 or newer · Runs on your machine, no account";
 
@@ -223,12 +230,97 @@ export default function Home() {
               { href: "/benchmarks", label: "See the benchmarks", emphasis: "secondary" },
             ]}
             boundary={facts}
-            eyebrow="Session compaction tool"
+            eyebrow="Context compaction proxy"
+            example={example}
             heading={heading}
             headingId="hero-title"
             name=""
             summary={summary}
           />
+
+          <MarketingSection
+            heading="Compact early and stay under the 2x price line."
+            headingId="price-title"
+            id="price-threshold"
+            label="Long-context pricing"
+            summary="Some providers charge more per token once a single request passes a size limit, and the higher rate covers the whole request, not only the tokens past the limit. An agent resends its full history on every turn, so a long session crosses that line on its own. Gobstopper compacts well before the line."
+          >
+            <MarketingDataTable
+              caption="Input cost of one GPT-5.6 Sol request, uncached"
+              columns={[
+                { label: "Request" },
+                { label: "Tokens", numeric: true },
+                { label: "Per 1M", numeric: true },
+                { label: "Cost", numeric: true },
+              ]}
+              meta={`OpenAI list prices, checked ${pricingCheckedOn}`}
+              note={
+                <>
+                  OpenAI prices GPT-5.6 Sol input at $4 per million tokens and output at $20.
+                  Its <a href={OPENAI_MODEL_PAGE}>model page</a> says prompts over 272K input
+                  tokens are priced at 2x input and 1.5x output for the full request. Crossing
+                  the line by 8,000 tokens doubles the rate on all 280,000. Gobstopper&apos;s
+                  default threshold is 128,000 estimated tokens, so a compacted request lands
+                  far below the line. The threshold is an estimate that the proxy corrects
+                  from the counts the provider reports, and a single very large turn can still
+                  cross the line, because the newest turns are always sent in full.
+                </>
+              }
+              rows={[
+                ["Under the line", "270K", "$4", "$1.08"],
+                ["Over the line", "280K", { content: "$8", tone: "negative" }, { content: "$2.24", tone: "negative" }],
+                ["Compacted", "~128K", "$4", { content: "~$0.51", tone: "positive" }],
+              ]}
+            />
+            <p>
+              Not every model has this tier. Anthropic&apos;s{" "}
+              <a href={ANTHROPIC_PRICING}>pricing page</a> says Claude 4.6 and later models
+              bill the full 1M-token window at standard rates, so a 900K-token request costs
+              the same per token as a 9K one. On those models, compaction saves tokens because
+              each request is smaller, not because it avoids a higher rate. On a ChatGPT or
+              Claude subscription you are not billed per token, so this price line does not
+              apply.
+            </p>
+          </MarketingSection>
+
+          <MarketingSection
+            heading="Trim the fat, keep the thread."
+            headingId="context-title"
+            id="preserving-context"
+            label="Preserving context"
+            summary="Cutting too much makes an agent forget what it was doing, and cutting too little saves nothing. Gobstopper's proxy uses the rule from CliffCompaction, a 2026 research proxy, to cut the parts an agent can get back and keep the parts it cannot."
+          >
+            <MarketingFlow
+              ariaLabel="What a compacted request keeps"
+              steps={[
+                {
+                  label: "Kept word for word",
+                  detail: "The system prompt, your first task, and the newest three turns.",
+                },
+                {
+                  label: "Kept in a summary",
+                  detail: "What you and the agent wrote in older turns, tool results up to 500 characters, and each tool call as its name and up to 150 characters of arguments. Gobstopper also carries your words and the agent's visible replies across compactions, up to 24,000 characters.",
+                },
+                {
+                  label: "Dropped",
+                  detail: "Older tool results over 500 characters, and images. The files and commands behind them are still there, so the agent can read or rerun them. The client's own transcript keeps the full history.",
+                },
+              ]}
+            />
+            <p>
+              No model writes the summary, and each compaction starts again from the full
+              history your agent resends, so a summary is never summarized. Between
+              compactions every request repeats the same compacted prefix, so the
+              provider&apos;s prompt cache keeps matching. CliffCompaction&apos;s authors report
+              up to 50% lower cost with maintained or better Terminal-Bench 2.0 results on the
+              Kimi and GLM models they tested (<a href={CLIFF_PAPER}>arXiv:2609.26779</a>).
+              Their cost figures model perfect prompt caching, and they say the benefit
+              depends on the agent and the task. Those are their numbers for their proxy.
+              Gobstopper&apos;s own run is below, and{" "}
+              <a href="/compare/cliffcompaction">the comparison page</a> lists where the port
+              departs from the original.
+            </p>
+          </MarketingSection>
 
           <MarketingDataTable
             caption="Resume trial on one 333k-token Claude Code session"
