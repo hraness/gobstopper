@@ -279,8 +279,12 @@ consumers need the same interface — is met.
 - Agent-skill packaging (the retired runtime's marketplace pattern):
   `gobstopper` presets + SKILL.md so any agent session can reason about
   its own context policy.
-- Menubar presence later via `hraness/desktop-foundation` (aicharts
-  precedent): live context occupancy + last-compaction savings.
+- No menu bar. Hraness products replaced their menu bars with
+  commands and a terminal view on `hraness/desktop-foundation` 0.9.0.
+  Live context occupancy already comes from `detect --json` and
+  last-compaction savings from `events`; a `tui --snapshot` view on its
+  registry, run per invocation with no background process, is the
+  place to show both together if it is ever needed.
 
 ## 9. Open questions
 
