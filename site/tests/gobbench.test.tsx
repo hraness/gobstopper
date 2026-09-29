@@ -372,8 +372,8 @@ describe("launch pages", () => {
 
   test("the homepage places the Terminal-Bench result before How it works, without dollars, and the film only once it exists", () => {
     const html = renderToStaticMarkup(<Home />);
-    // One marketing data table; the figures' own tables sit behind "Show the numbers".
-    expect(html.match(/<table\b(?![^>]*gob-table)/gu)).toHaveLength(1);
+    // Two marketing data tables (long-context pricing and the proof); the figures' own tables sit behind "Show the numbers".
+    expect(html.match(/<table\b(?![^>]*gob-table)/gu)).toHaveLength(2);
     const bench = html.indexOf('id="terminal-bench"');
     const how = html.indexOf('id="how"');
     expect(bench).toBeGreaterThan(-1);

@@ -5,6 +5,7 @@ import { siteDefaultPalette } from "../palette";
 
 import { socialImageAlt } from "@hraness/web-discovery/social-image";
 
+import { Analytics } from "./_components/analytics";
 import { FoilController } from "./foil-controller";
 import { socialSite } from "./social";
 
@@ -158,6 +159,7 @@ export default function RootLayout({
         <DesignPaletteProvider defaultPreference={siteDefaultPalette}>
         <ThemeColorSync />
         <FoilController />
+        <Analytics apiKey={process.env.NEXT_PUBLIC_POSTHOG_KEY} />
         <script
           dangerouslySetInnerHTML={{ __html: serializeJsonLd(structuredData) }}
           type="application/ld+json"
