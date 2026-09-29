@@ -7,9 +7,10 @@ on:
 permissions:
   contents: read
 # One live check at a time; a newer deployment queues behind the running one
-# instead of cancelling it.
+# instead of cancelling it. Only Production-success and manual runs share the
+# group, so a Preview or non-success event cannot replace a queued live check.
 concurrency:
-  group: production-public-browser
+  group: production-public-browser-${{ (github.event_name == 'workflow_dispatch' || (github.event.deployment.environment == 'Production' && github.event.deployment_status.state == 'success')) && 'live' || github.run_id }}
   cancel-in-progress: false
 jobs:
   browser:
