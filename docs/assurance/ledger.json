@@ -469,8 +469,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-28-stress-073.json",
-        "sha256": "addd310da92d0ed3dc9c3848878a01da72e187329cce90f96b136568892e4578"
+        "path": "docs/assurance/receipts/2026-09-29-stress-velocity.json",
+        "sha256": "5f7ba27aea90e177a43a924d2fbf865f2e0655574e89310d3dce520a9f961827"
       }
     }
   ],

@@ -73,7 +73,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
       - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
         with:
-          tool: cargo-nextest
+          tool: cargo-nextest@0.9.146
       # One process per test: wait-bound suites overlap instead of running
       # binary after binary. Doctests stay on cargo test below.
       - run: cargo nextest run --workspace --all-targets --all-features --locked --profile ci
