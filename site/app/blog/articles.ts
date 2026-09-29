@@ -41,6 +41,8 @@ export type BlogPost = Readonly<{
   dek: string;
   /** The dek shortened to fit two lines on the share card. */
   shareLine: string;
+  /** A shorter card headline when the title does not fit two lines at the share card's standard size. */
+  shareHeadline?: string;
   eyebrow: string;
   published: ArticleIsoDate;
   keywords: readonly string[];
@@ -52,7 +54,7 @@ const introducing: BlogPost = {
   title: "Introducing Gobstopper",
   dek: "On Terminal-Bench 2.1 (one trial per arm, 45,000-token threshold), Claude Code behind gobstopper proxy solved about as many tasks as without it (61 vs 60 of 89, within single-trial noise) and sent 29% fewer input tokens.",
   shareLine: "About as many Terminal-Bench tasks solved, with 29% fewer input tokens sent.",
-  eyebrow: "Introducing",
+  eyebrow: "Release",
   published: "2026-09-24",
   keywords: ["context compaction", "coding agents", "Claude Code", "Terminal-Bench", "prompt caching", "CliffCompaction"],
   admission: {
@@ -110,6 +112,7 @@ const proofs: BlogPost = {
   title: "What Kani and Lean prove about Gobstopper's compaction",
   dek: "Gobstopper uses Kani to check its edit limits and token sums for every value of their numeric inputs, and Lean to prove that masking keeps each record's ID, order, and tool links.",
   shareLine: "Kani checks the edit limits and token sums; Lean proves masking keeps record links.",
+  shareHeadline: "What Kani and Lean prove about compaction",
   eyebrow: "Technique",
   published: "2026-09-24",
   keywords: ["Kani", "Lean", "Rust", "formal proofs", "context compaction", "coding agents"],
@@ -166,6 +169,7 @@ const vault: BlogPost = {
   title: "How Gobstopper model-checks its archive against crashes",
   dek: "Gobstopper model-checks its archive design with a crash allowed at every step, and each model has broken copies, each with one safety rule switched off, that must reproduce the loss that rule prevents.",
   shareLine: "Every model allows a crash at each step, and broken copies must reproduce the loss.",
+  shareHeadline: "Model-checking the archive for crashes",
   eyebrow: "Technique",
   published: "2026-09-24",
   keywords: ["Gobstopper", "TLA+", "model checking", "property testing", "crash recovery", "transcripts"],

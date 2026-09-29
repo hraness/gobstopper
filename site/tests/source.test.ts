@@ -560,4 +560,25 @@ describe("share card declaration", () => {
       expect(page.description?.length ?? 0).toBeLessThanOrEqual(100);
     }
   });
+
+  test("every declared card fits as written, with nothing cut, shrunk, or removed", async () => {
+    const { socialSite } = await import("../app/social");
+    const { blogPosts } = await import("../app/blog/articles");
+    const { postSocialPage } = await import("../app/blog/discovery");
+    const { docsSocialPage } = await import("../app/docs/social-page");
+    const { socialImageFit, socialImageSiteDetails } = await import("@hraness/web-discovery/social-image/card");
+    const cards = [
+      ["home", undefined],
+      ["docs", docsSocialPage],
+      ...blogPosts.map((post) => [`blog/${post.slug}`, postSocialPage(post)] as const),
+    ] as const;
+    for (const [name, page] of cards) {
+      const fit = socialImageFit(socialImageSiteDetails(socialSite, page));
+      expect({ name, issues: fit.issues }).toEqual({ name, issues: [] });
+      // The card drops an eyebrow that repeats the headline's opening; keep eyebrows that add a category.
+      if (page !== undefined) {
+        expect((page.headline ?? "").toLowerCase().startsWith((page.eyebrow ?? "").toLowerCase())).toBe(false);
+      }
+    }
+  });
 });
