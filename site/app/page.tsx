@@ -9,6 +9,7 @@ import {
   ProviderMarkChip,
 } from "@hraness/design-kit/react/server";
 import { relatedFor } from "@hraness/design-kit/portfolio";
+import { PlatformBadges, PlatformInstall } from "@hraness/design-kit/react";
 
 import { Terminal } from "./_components/code-block";
 import { GobFilm } from "./_components/gob-film";
@@ -25,6 +26,20 @@ const heading = "Context compaction you can undo.";
 const summary = "Gobstopper keeps long coding sessions smaller. Run your agent through a local proxy, or make a smaller copy of a saved session while keeping the original for recovery.";
 const facts = "Free and open source · Runs on your machine · No account";
 const agents = ["claudecode", "codex", "opencode", "crush", "aider", "goose"] as const;
+
+const installSh = "curl -fsSL https://gobstopper.sh/install.sh | sh";
+const buildFromSource = { label: "Build from source (Rust 1.85+)", command: `cargo install --git ${repository} gobstopper --locked` };
+const installPlatforms = [
+  { id: "macos", command: installSh, shell: "Terminal", note: "Apple silicon", alternatives: [buildFromSource] },
+  { id: "linux", command: installSh, shell: "Terminal", note: "x86_64 and ARM64, glibc 2.34+", alternatives: [buildFromSource] },
+  {
+    id: "windows",
+    command: "irm https://gobstopper.sh/install.ps1 | iex",
+    shell: "PowerShell",
+    note: "x86_64 · the proxy works; the vault, watch and provider hooks need macOS or Linux",
+    alternatives: [buildFromSource],
+  },
+] as const;
 
 const questions = [
   {
@@ -159,9 +174,13 @@ export default function Home() {
             heading="Start with one session."
             headingId="install-title"
             id="install"
-            note={<p>This installs the current source build described here. It needs Rust 1.85 or newer; the proxy also needs curl 8.3 or newer.</p>}
+            note={<p>Each installer downloads the latest release for your platform, checks its SHA-256, and installs it for your user only. The proxy needs curl 8.3 or newer.</p>}
           >
-            <Terminal title="Install and run" code={`cargo install --git ${repository} gobstopper --locked\ngobstopper proxy run -- claude`} />
+            <PlatformBadges platforms={["macos", "linux", { id: "windows", note: "partial" }]} />
+            <PlatformInstall platforms={installPlatforms} />
+            <p className="install-note">
+              Then run one Claude Code session through the proxy: <code>gobstopper proxy run -- claude</code>.
+            </p>
             {publishedRelease === null ? (
               <p className="install-note">No release yet.</p>
             ) : (

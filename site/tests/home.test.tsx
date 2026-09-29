@@ -34,12 +34,15 @@ test("every public route has one optional support footer without product signup"
   }
 });
 
-test("the homepage shares the README identity and installs the guarded source build", () => {
+test("the homepage shares the README identity and installs the release for each platform", () => {
   const html = renderToStaticMarkup(<Home />);
   // Syntax highlighting wraps command tokens in spans; compare visible text.
   const text = html.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ");
   expect(html.match(/<h1\b/gu)).toHaveLength(1);
   expect(html).toContain("Before writing a separate Claude Code or Codex copy, Gobstopper archives the original and prepared bytes.");
+  expect(text).toContain("curl -fsSL https://gobstopper.sh/install.sh | sh");
+  expect(text).toContain("irm https://gobstopper.sh/install.ps1 | iex");
+  expect(text).toContain("x86_64 and ARM64, glibc 2.34+");
   expect(text).toContain("cargo install --git https://github.com/hraness/gobstopper gobstopper --locked");
   expect(text).not.toContain("--tag v");
   if (publishedRelease === null) {
@@ -93,7 +96,8 @@ test("the homepage gives framed commands and keeps retired flags out of examples
       element() { commands.push("command"); },
     })
     .transform(html);
-  expect(commands.length).toBeGreaterThanOrEqual(3);
+  // Two framed examples; the install commands render in PlatformInstall.
+  expect(commands.length).toBeGreaterThanOrEqual(2);
   expect(html).not.toContain("--in-place");
   expect(html).not.toContain("--double-buffer");
   expect(html).not.toMatch(/gobstopper watch[^\n<]*--trigger/u);
