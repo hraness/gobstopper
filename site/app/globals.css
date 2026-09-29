@@ -1,3 +1,4 @@
+@import "./vendor/hraness-site-shell/site-shell.css";
 @import "tailwindcss";
 @import "@hraness/ui/styles.css";
 @import "@hraness/design-kit/fonts.css";
