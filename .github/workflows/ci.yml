@@ -78,6 +78,20 @@ jobs:
       # binary after binary. Doctests stay on cargo test below.
       - run: cargo nextest run --workspace --all-targets --all-features --locked --profile ci
       - run: cargo test --workspace --doc --all-features --locked
+      - run: python3 scripts/check-dialects.py --cases 512 --seed 78422376057123
+
+  # The Python gates need no Rust build, so they run beside quality instead
+  # of after its test step.
+  python:
+    name: Assurance and Python checks
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - run: python3 scripts/check_assurance.py
       - name: Validate public benchmark export
         run: |
@@ -90,7 +104,6 @@ jobs:
       - run: python3 -m unittest discover -s verify/core -p 'test_*.py' -v
       - run: python3 -m unittest discover -s verify/transcript -p 'test_*.py' -v
       - run: python3 -m unittest discover -s verify/stress -p 'test_*.py' -v
-      - run: python3 scripts/check-dialects.py --cases 512 --seed 78422376057123
 
   msrv:
     name: MSRV 1.85.0
@@ -324,7 +337,7 @@ jobs:
   required:
     name: Required
     if: always()
-    needs: [changes, quality, msrv, formal, core-proofs, transcript-proofs, bounded-stress, site]
+    needs: [changes, quality, python, msrv, formal, core-proofs, transcript-proofs, bounded-stress, site]
     runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:
@@ -336,6 +349,7 @@ jobs:
           SITE_CHANGED: ${{ needs.changes.outputs.site }}
           SITE: ${{ needs.site.result }}
           QUALITY: ${{ needs.quality.result }}
+          PYTHON: ${{ needs.python.result }}
           MSRV: ${{ needs.msrv.result }}
           FORMAL: ${{ needs.formal.result }}
           CORE_PROOFS: ${{ needs.core-proofs.result }}
@@ -345,6 +359,6 @@ jobs:
           gate() { test "$1" = success || { test "$1" = skipped && test "$2" = false; }; }
           test "$CHANGES" = success
           gate "$SITE" "$SITE_CHANGED"
-          for result in "$QUALITY" "$MSRV" "$FORMAL" "$CORE_PROOFS" "$TRANSCRIPT_PROOFS" "$BOUNDED_STRESS"; do
+          for result in "$QUALITY" "$PYTHON" "$MSRV" "$FORMAL" "$CORE_PROOFS" "$TRANSCRIPT_PROOFS" "$BOUNDED_STRESS"; do
             gate "$result" "$RUST"
           done
