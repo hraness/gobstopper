@@ -11,7 +11,11 @@ import {
 import { relatedFor } from "@hraness/design-kit/portfolio";
 
 import { Terminal } from "./_components/code-block";
+import { GobFilm } from "./_components/gob-film";
+import { GobTokens } from "./_components/gob-tokens";
 import { SiteHeader, SiteFooter } from "./_components/site-chrome";
+import { gobFilm } from "./_data/gob-film";
+import { F } from "./_lib/gobbench-format";
 import { plainInline, renderInline } from "./_lib/inline";
 import { publishedRelease } from "./publication";
 
@@ -123,6 +127,32 @@ export default function Home() {
               <a href="/benchmarks">See the dated measurements and their limits</a>.
             </p>
           </MarketingSection>
+
+          <MarketingSection
+            heading={`About as many tasks solved, ${F.inputFewer} fewer tokens sent.`}
+            headingId="terminal-bench-title"
+            id="terminal-bench"
+            label="Terminal-Bench 2.1"
+            summary={`One recorded run: Gobstopper at tail 0 resolved ${F.solved.tail0} of 89 tasks against ${F.solved.no_proxy} with no proxy, within single-trial noise, and sent ${F.inputFewer} fewer input tokens. The benchmarks page has the setup and limits.`}
+          >
+            <GobTokens variant="home" />
+            <p>
+              These results cover one model and setup; they do not establish task-quality or billing improvements for other agents.{" "}
+              <a href="/benchmarks#terminal-bench-2026-09-28">Setup, statistics and downloads</a>.
+            </p>
+          </MarketingSection>
+
+          {gobFilm === null ? null : (
+            <MarketingSection
+              heading="Watch it in 75 seconds."
+              headingId="film-title"
+              id="film"
+              label="Film"
+              summary="No narration. Captions carry every line. The film never plays until you press play."
+            >
+              <GobFilm film={gobFilm} />
+            </MarketingSection>
+          )}
 
           <MarketingInstallPanel
             eyebrow="Install"

@@ -382,8 +382,7 @@ describe("launch pages", () => {
     expect(section).toContain('href="/benchmarks#terminal-bench-2026-09-28"');
     expect(section).not.toContain("$");
     expect(section).toContain(`${F.inputFewer} fewer input tokens`);
-    expect(html.slice(how)).toContain('id="fig-fuse"');
-    expect(html).toContain('id="fig-sawtooth"');
+    expect(html.slice(how)).toContain("gobstopper proxy run -- claude");
     if (gobFilm === null) {
       expect(html).not.toContain('id="film"');
       expect(html).not.toContain("<video");
