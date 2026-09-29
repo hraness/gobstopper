@@ -24,8 +24,16 @@ import sys
 PRODUCT = "Gobstopper"
 REPOSITORY = "hraness/gobstopper"
 BINARY = "gobstopper"
-PLATFORM = "macOS arm64"
+SITE = "https://gobstopper.sh"
 GUIDE = "docs/release.md"
+# The release platforms. Each archive holds exactly one binary and has a
+# `<archive>.sha256` file beside it.
+PLATFORMS = (
+    ("darwin-aarch64", "tar.gz"),
+    ("linux-x86_64", "tar.gz"),
+    ("linux-aarch64", "tar.gz"),
+    ("windows-x86_64", "zip"),
+)
 IDENTITY_MARKER = "<!-- gobstopper-release "
 IDENTITY_SCHEMA = 1
 
@@ -88,7 +96,12 @@ def changelog_section(text, tag):
     return summary, bullets
 
 
-def parse_sha256sums(text):
+def archive_names(tag):
+    version = version_of(tag)
+    return [f"{BINARY}-{version}-{platform}.{extension}" for platform, extension in PLATFORMS]
+
+
+def parse_sha256sums(text, tag):
     digests = {}
     for line in text.splitlines():
         if not line.strip():
@@ -99,8 +112,13 @@ def parse_sha256sums(text):
         if match.group(2) in digests:
             raise ReleaseNotesError(f"SHA256SUMS lists {match.group(2)} twice")
         digests[match.group(2)] = match.group(1)
-    if BINARY not in digests:
-        raise ReleaseNotesError(f"SHA256SUMS does not list {BINARY}")
+    expected = archive_names(tag)
+    for name in expected:
+        if name not in digests:
+            raise ReleaseNotesError(f"SHA256SUMS does not list {name}")
+    extra = sorted(set(digests) - set(expected))
+    if extra:
+        raise ReleaseNotesError(f"SHA256SUMS lists files that are not release archives: {', '.join(extra)}")
     return digests
 
 
@@ -119,6 +137,8 @@ def render_notes(changelog, tag, commit, digests, guide_ref=None):
     if not COMMIT.fullmatch(commit):
         raise ReleaseNotesError(f"commit {commit!r} is not a full 40-character SHA")
     guide_ref = guide_ref or tag
+    version = version_of(tag)
+    example = archive_names(tag)[1]
     base = f"https://github.com/{REPOSITORY}"
     checksums = "\n".join(f"- `{name}`: `{digest}`" for name, digest in sorted(digests.items()))
     return f"""{summary}
@@ -129,13 +149,19 @@ def render_notes(changelog, tag, commit, digests, guide_ref=None):
 
 ## Install
 
-The attached `{BINARY}` binary is built for {PLATFORM}:
+On macOS (Apple silicon) or Linux (x86_64 or arm64):
 
 ```sh
-gh release download {tag} --repo {REPOSITORY} --pattern {BINARY} --pattern SHA256SUMS
-shasum -a 256 -c SHA256SUMS
-chmod +x {BINARY}
+curl -fsSL {SITE}/install.sh | GOBSTOPPER_VERSION={version} sh
 ```
+
+On Windows (x86_64), in PowerShell:
+
+```powershell
+$env:GOBSTOPPER_VERSION = "{version}"; irm {SITE}/install.ps1 | iex
+```
+
+Each installer downloads the archive for your platform from this release, checks it against its `.sha256` file, and installs `{BINARY}` for your user only: `~/.local/bin` on macOS and Linux, `%LOCALAPPDATA%\\Programs\\{BINARY}\\bin` on Windows. Nothing runs as root or administrator.
 
 On other platforms, build this version from source with Cargo:
 
@@ -145,17 +171,18 @@ cargo install --git {base} --tag {tag} --locked {BINARY}
 
 ## Verify
 
-`SHA256SUMS` on this release lists the SHA-256 of each attached file:
+`SHA256SUMS` on this release lists the SHA-256 of each archive:
 
 {checksums}
 
 Source commit: [`{commit}`]({base}/commit/{commit})
 
-GitHub signs an attestation for this release. Check it and a downloaded binary with:
+The release workflow signed a build provenance attestation for each archive, and GitHub signs an attestation for the release itself. Check both for a downloaded archive with:
 
 ```sh
+gh attestation verify {example} --repo {REPOSITORY}
 gh release verify {tag} --repo {REPOSITORY}
-gh release verify-asset {tag} {BINARY} --repo {REPOSITORY}
+gh release verify-asset {tag} {example} --repo {REPOSITORY}
 ```
 
 [How to check a {PRODUCT} release]({base}/blob/{guide_ref}/{GUIDE}#check-a-download)
@@ -227,7 +254,7 @@ def main(argv=None):
         if version != version_of(args.tag):
             raise ReleaseNotesError(f"tag {args.tag} does not match Cargo.toml version {version}")
         changelog = args.changelog.read_text()
-        digests = parse_sha256sums(args.sha256sums.read_text())
+        digests = parse_sha256sums(args.sha256sums.read_text(), args.tag)
         if args.action == "render":
             sys.stdout.write(render_body(changelog, args.tag, args.commit, digests, args.guide_ref))
             return 0

@@ -2,6 +2,14 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## v0.7.4 - 2026-09-29
+
+Gobstopper now ships prebuilt binaries for macOS on Apple silicon, Linux x86_64 and arm64, and Windows x86_64, with one-line installers that check each download's SHA-256.
+
+- `curl -fsSL https://gobstopper.sh/install.sh | sh` installs the latest release into `~/.local/bin` on macOS and Linux, and `irm https://gobstopper.sh/install.ps1 | iex` installs it for the current user on Windows without administrator rights. `GOBSTOPPER_VERSION` pins a release.
+- Each release archive is built by the release workflow on GitHub Actions and carries a `.sha256` file and a build provenance attestation that `gh attestation verify` checks.
+- On Windows, `detect`, `plan`, `verify`, `mcp` and the proxy run, though Claude Code session usage reads as unknown because Windows lacks the file identity the scan binds to. The vault, `apply`, `watch`, the provider hooks and `proxy install` rely on Unix guarantees and refuse with an error that names what is missing.
+
 ## v0.7.3 - 2026-09-28
 
 The request proxy now keeps exactly the newest three turns after a compaction by default, as CliffCompaction does, because the larger tail cost more on a Terminal-Bench 2.1 run without resolving more tasks.

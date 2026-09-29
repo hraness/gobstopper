@@ -1,0 +1,173 @@
+name: Release
+
+# A pushed vX.Y.Z tag builds the four release archives on their own runners,
+# attests each one, checks the installers against them, and publishes the
+# GitHub Release with notes rendered from CHANGELOG.md. See docs/release.md.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_TERM_COLOR: always
+  CARGO_NET_RETRY: "10"
+
+jobs:
+  identity:
+    name: Check the tag
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      version: ${{ steps.tag.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Fails before any build when the tag is not vX.Y.Z, does not match
+      # Cargo.toml, or CHANGELOG.md has no finished section for it.
+      - id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+          COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || { echo "::error::$TAG is not vX.Y.Z"; exit 1; }
+          version="${TAG#v}"
+          sums="$RUNNER_TEMP/SHA256SUMS"
+          for asset in darwin-aarch64.tar.gz linux-x86_64.tar.gz linux-aarch64.tar.gz windows-x86_64.zip; do
+            printf '%064d  gobstopper-%s-%s\n' 0 "$version" "$asset" >> "$sums"
+          done
+          python3 scripts/release_notes.py render --tag "$TAG" --commit "$COMMIT" --sha256sums "$sums" > /dev/null
+          printf 'tag=%s\nversion=%s\n' "$TAG" "$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: identity
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            platform: darwin-aarch64
+          # Ubuntu 22.04 links against glibc 2.35, so the Linux builds run on
+          # older distributions than a 24.04 build would.
+          - os: ubuntu-22.04
+            platform: linux-x86_64
+          - os: ubuntu-22.04-arm
+            platform: linux-aarch64
+          # Not Authenticode-signed; the zip is attested like the tarballs.
+          - os: windows-2025
+            platform: windows-x86_64
+    env:
+      GOBSTOPPER_VERSION: ${{ needs.identity.outputs.version }}
+    steps:
+      - if: runner.os == 'Windows'
+        run: git config --global core.autocrlf false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
+        with:
+          toolchain: 1.97.1
+      # No dependency cache: a release build is a cold build from the tag.
+      - name: Build and package
+        if: runner.os != 'Windows'
+        run: ./scripts/build-release.sh
+      - name: Build and package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/build-release.ps1
+      - name: Install from the packaged archive with the hosted installer
+        if: runner.os != 'Windows'
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8765 --bind 127.0.0.1 --directory artifacts >/dev/null 2>&1 &
+          for _ in $(seq 1 120); do curl -fsS -o /dev/null http://127.0.0.1:8765/ && break; sleep 0.5; done
+          prefix="$RUNNER_TEMP/install-check"
+          GOBSTOPPER_RELEASE_BASE_URL=http://127.0.0.1:8765 GOBSTOPPER_INSTALL_PREFIX="$prefix" sh scripts/install.sh
+          test "$("$prefix/bin/gobstopper" --version)" = "gobstopper $GOBSTOPPER_VERSION"
+      - name: Install from the packaged archive with the hosted installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $server = Start-Process python -ArgumentList '-m', 'http.server', '8765', '--bind', '127.0.0.1', '--directory', 'artifacts' -PassThru -WindowStyle Hidden
+          $deadline = (Get-Date).AddSeconds(60)
+          while ($true) {
+            try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8765/' -TimeoutSec 2 | Out-Null; break }
+            catch { if ((Get-Date) -gt $deadline) { throw 'the loopback release server did not start' }; Start-Sleep -Milliseconds 250 }
+          }
+          $prefix = Join-Path $env:RUNNER_TEMP 'install-check'
+          $env:GOBSTOPPER_RELEASE_BASE_URL = 'http://127.0.0.1:8765'
+          $env:GOBSTOPPER_INSTALL_PREFIX = $prefix
+          $env:GOBSTOPPER_ADD_PATH = 'no'
+          try { & ./scripts/install.ps1 } finally { Stop-Process -Id $server.Id -Force }
+          $reported = ((& (Join-Path $prefix 'bin\gobstopper.exe') --version) | Out-String).Trim()
+          if ($reported -cne "gobstopper $env:GOBSTOPPER_VERSION") { throw "installed binary reports '$reported'" }
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ runner.os == 'Windows' && 'artifacts/*.zip' || 'artifacts/*.tar.gz' }}
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-${{ matrix.platform }}
+          path: artifacts/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    name: Publish the GitHub Release
+    needs: [identity, build]
+    permissions:
+      contents: write
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ needs.identity.outputs.tag }}
+      COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: release-*
+          merge-multiple: true
+          path: artifacts
+      - name: Check each archive against its checksum and write SHA256SUMS
+        working-directory: artifacts
+        run: |
+          set -euo pipefail
+          test "$(ls | wc -l)" = 8
+          sha256sum -c ./*.sha256
+          cat ./*.sha256 | LC_ALL=C sort -k 2 > SHA256SUMS
+          cat SHA256SUMS
+      - name: Render the release page
+        run: |
+          python3 scripts/release_notes.py render --tag "$TAG" --commit "$COMMIT" \
+            --sha256sums artifacts/SHA256SUMS > "$RUNNER_TEMP/notes.md"
+      - name: Publish
+        run: |
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
+            --title "$(python3 scripts/release_notes.py title --tag "$TAG")" \
+            --notes-file "$RUNNER_TEMP/notes.md" artifacts/*
+      - name: Check the published page against the release record
+        run: |
+          gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body > "$RUNNER_TEMP/published.json"
+          python3 scripts/release_notes.py check --tag "$TAG" --commit "$COMMIT" \
+            --sha256sums artifacts/SHA256SUMS --body-json "$RUNNER_TEMP/published.json"

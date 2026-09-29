@@ -49,16 +49,19 @@ Website: [gobstopper.sh](https://gobstopper.sh) · Compared with [Claude Code /c
 ## Quick start
 
 ```sh
-cargo install --git https://github.com/hraness/gobstopper gobstopper --locked
+curl -fsSL https://gobstopper.sh/install.sh | sh   # macOS (Apple silicon) and Linux
 gobstopper proxy run -- claude   # one Claude Code session through a temporary proxy
 ```
 
+On Windows, install from PowerShell with `irm https://gobstopper.sh/install.ps1 | iex`.
+Both installers download the latest release for your platform, check its
+SHA-256, and install it for your user only. To build from source instead, run
+`cargo install --git https://github.com/hraness/gobstopper gobstopper --locked`.
+
 When the session ends, `proxy run` prints how many requests it compacted. For
 a proxy that stays up, with `gobstopper proxy status` counters, see [Compact
-live coding-agent requests](#compact-live-coding-agent-requests). On macOS
-arm64, you can download the prebuilt binary from the [latest
-release](https://github.com/hraness/gobstopper/releases/latest) instead. For
-Codex, see [Set up Gobstopper for Claude Code and
+live coding-agent requests](#compact-live-coding-agent-requests). For Codex,
+see [Set up Gobstopper for Claude Code and
 Codex](#set-up-gobstopper-for-claude-code-and-codex).
 
 ## Why
@@ -443,17 +446,39 @@ cover edit structure and size, not semantic preservation or provider acceptance.
 
 ## Install & use
 
-This builds the current `main` branch, which the commands below describe.
+The commands below describe the current `main` branch.
 The proxy is in every release since v0.3.1; the tail budget and the 1M-window
 threshold shipped in v0.5.0, the carried conversation in v0.6.0, estimate
 calibration in v0.7.0, and the tail-0 default in v0.7.3. Check the [release
 notes](https://github.com/hraness/gobstopper/releases) for what a tagged
 release includes.
 
+Install the latest release:
+
+```sh
+# macOS (Apple silicon) and Linux (x86_64, arm64): installs ~/.local/bin/gobstopper
+curl -fsSL https://gobstopper.sh/install.sh | sh
+```
+
+```powershell
+# Windows (x86_64), in PowerShell: installs to %LOCALAPPDATA%\Programs\gobstopper\bin, no administrator rights
+irm https://gobstopper.sh/install.ps1 | iex
+```
+
+Set `GOBSTOPPER_VERSION=X.Y.Z` to install one exact release. The installers
+check each download against the release's SHA-256 file; [docs/release.md](docs/release.md)
+shows how to check a download's build provenance attestation yourself. On
+Windows, the vault, `apply`, `watch` and the provider hooks are Unix-only and
+refuse with an error; `detect`, `plan`, `verify`, `mcp` and the proxy work.
+
+To build `main` or another platform from source:
+
 ```sh
 cargo install --git https://github.com/hraness/gobstopper gobstopper
 # or from a checkout: cargo build --release
+```
 
+```sh
 gobstopper proxy run -- claude     # one Claude Code session through the proxy
 gobstopper proxy serve             # background proxy on http://127.0.0.1:8260
 gobstopper proxy status            # requests compacted, estimated tokens saved
