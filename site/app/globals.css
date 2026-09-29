@@ -13,6 +13,7 @@
 @import "../vendor/hraness-marketing/product-marketing-preset.css";
 @import "../vendor/hraness-lantern/lantern-material.css";
 @import "@hraness/site-footer/styles.css";
+@import "../vendor/hraness-forced-colors/marketing-forced-colors.css";
 
 :root {
   --hraness-site-accent: var(--primary);
@@ -758,4 +759,14 @@ main:has(> .plain-publication--embedded) {
   .gob-bar__seg[data-part="cache"][data-arm="no_proxy"] { background: repeating-linear-gradient(45deg, GrayText 0 2px, Canvas 2px 6px); }
   .gob-bar__seg[data-part="new"] { background: Canvas; }
   .gob-figure__table > summary:focus-visible { outline-color: Highlight; }
+}
+
+/* Preserve system action colors over product-owned accent ink. */
+@media (forced-colors: active) {
+  .hraness-marketing-action[data-emphasis="primary"] {
+    background: ButtonFace;
+    border-color: ButtonText;
+    color: ButtonText;
+    box-shadow: none;
+  }
 }
