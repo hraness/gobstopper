@@ -144,7 +144,11 @@ jobs:
           $env:GOBSTOPPER_BINARY = (Resolve-Path 'target\debug\gobstopper.exe').Path
           ./scripts/build-release.ps1
           $server = Start-Process python -ArgumentList '-m', 'http.server', '8765', '--bind', '127.0.0.1', '--directory', 'artifacts' -PassThru -WindowStyle Hidden
-          Start-Sleep -Seconds 2
+          $deadline = (Get-Date).AddSeconds(60)
+          while ($true) {
+            try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8765/' -TimeoutSec 2 | Out-Null; break }
+            catch { if ((Get-Date) -gt $deadline) { throw 'the loopback release server did not start' }; Start-Sleep -Milliseconds 250 }
+          }
           $version = ((& $env:GOBSTOPPER_BINARY --version) | Out-String).Trim().Split(' ')[1]
           $prefix = Join-Path $env:RUNNER_TEMP 'install-check'
           $env:GOBSTOPPER_VERSION = $version

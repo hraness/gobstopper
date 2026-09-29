@@ -97,7 +97,7 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m http.server 8765 --bind 127.0.0.1 --directory artifacts >/dev/null 2>&1 &
-          sleep 1
+          for _ in $(seq 1 120); do curl -fsS -o /dev/null http://127.0.0.1:8765/ && break; sleep 0.5; done
           prefix="$RUNNER_TEMP/install-check"
           GOBSTOPPER_RELEASE_BASE_URL=http://127.0.0.1:8765 GOBSTOPPER_INSTALL_PREFIX="$prefix" sh scripts/install.sh
           test "$("$prefix/bin/gobstopper" --version)" = "gobstopper $GOBSTOPPER_VERSION"
@@ -106,7 +106,11 @@ jobs:
         shell: pwsh
         run: |
           $server = Start-Process python -ArgumentList '-m', 'http.server', '8765', '--bind', '127.0.0.1', '--directory', 'artifacts' -PassThru -WindowStyle Hidden
-          Start-Sleep -Seconds 2
+          $deadline = (Get-Date).AddSeconds(60)
+          while ($true) {
+            try { Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8765/' -TimeoutSec 2 | Out-Null; break }
+            catch { if ((Get-Date) -gt $deadline) { throw 'the loopback release server did not start' }; Start-Sleep -Milliseconds 250 }
+          }
           $prefix = Join-Path $env:RUNNER_TEMP 'install-check'
           $env:GOBSTOPPER_RELEASE_BASE_URL = 'http://127.0.0.1:8765'
           $env:GOBSTOPPER_INSTALL_PREFIX = $prefix
