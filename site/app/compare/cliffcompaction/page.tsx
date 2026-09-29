@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { socialImageAlt } from "@hraness/web-discovery/social-image";
 import { SyntaxCode } from "@hraness/design-kit/react/server";
+import { Terminal } from "../../_components/code-block";
 
 import { SiteDocument } from "../../_components/site-document";
 import { SiteHeader, SiteFooter } from "../../_components/site-chrome";
@@ -161,9 +162,9 @@ export default function CompareCliffCompaction() {
             auto-compaction does not reach its trigger. The session files
             stay unchanged.
           </p>
-          <pre><SyntaxCode code={`gobstopper proxy run -- claude       # one session through a temporary proxy
+          <Terminal code={`gobstopper proxy run -- claude       # one session through a temporary proxy
 gobstopper proxy serve               # background proxy on http://127.0.0.1:8260
-gobstopper proxy replay <session>    # what the proxy would have sent; calls no provider`} language="sh" /></pre>
+gobstopper proxy replay <session>    # what the proxy would have sent; calls no provider`} />
 
           <h2 id="departures">Seven departures, six on by default</h2>
           <p>
@@ -241,15 +242,14 @@ gobstopper proxy replay <session>    # what the proxy would have sent; calls no 
             Gobstopper&apos;s copy transforms replace tool-result payloads only.
             Codex <code>compacted</code> records count as one result.
           </p>
-          <pre><SyntaxCode code={`gobstopper plan <session> --strategy cliff
-gobstopper eval <session>      # cliff appears beside the other strategies
-
-# ~/.config/gobstopper/config.toml
-[presets.cliff]
+          <Terminal code={`gobstopper plan <session> --strategy cliff
+gobstopper eval <session>`} />
+          <p>Save the same choices in <code>~/.config/gobstopper/config.toml</code>:</p>
+          <pre><SyntaxCode code={`[presets.cliff]
 strategy = "cliff"
 keep_recent_turns = 3
 result_max_bytes = 500
-keep_recent_tool_outputs = 0`} language="sh" /></pre>
+keep_recent_tool_outputs = 0`} language="text" styles="classes" /></pre>
 
           <h2 id="when-to-use-each">When to use each</h2>
           <p>

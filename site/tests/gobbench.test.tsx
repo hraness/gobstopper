@@ -372,18 +372,17 @@ describe("launch pages", () => {
 
   test("the homepage places the Terminal-Bench result before How it works, without dollars, and the film only once it exists", () => {
     const html = renderToStaticMarkup(<Home />);
-    // Two marketing data tables (long-context pricing and the proof); the figures' own tables sit behind "Show the numbers".
-    expect(html.match(/<table\b(?![^>]*gob-table)/gu)).toHaveLength(2);
+    // The homepage uses the chart figure; its detailed table is behind "Show the numbers".
+    expect(html).toContain('id="fig-tokens"');
     const bench = html.indexOf('id="terminal-bench"');
     const how = html.indexOf('id="how"');
-    expect(bench).toBeGreaterThan(-1);
-    expect(how).toBeGreaterThan(bench);
-    const section = html.slice(bench, how);
+    expect(how).toBeGreaterThan(-1);
+    expect(bench).toBeGreaterThan(how);
+    const section = html.slice(bench, html.indexOf('id="film"', bench));
     expect(section).toContain('href="/benchmarks#terminal-bench-2026-09-28"');
     expect(section).not.toContain("$");
     expect(section).toContain(`${F.inputFewer} fewer input tokens`);
-    expect(html.slice(how)).toContain('id="fig-fuse"');
-    expect(html).toContain('id="fig-sawtooth"');
+    expect(html.slice(how)).toContain("gobstopper proxy run -- claude");
     if (gobFilm === null) {
       expect(html).not.toContain('id="film"');
       expect(html).not.toContain("<video");

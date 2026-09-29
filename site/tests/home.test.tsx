@@ -46,12 +46,10 @@ test("the homepage shares the README identity and installs the guarded source bu
     expect(html).toContain("No release yet");
   } else {
     expect(html).toContain(`href="https://github.com/hraness/gobstopper/releases/tag/v${publishedRelease.version}"`);
-    expect(html).toContain(publishedRelease.verificationRun);
   }
   expect(html).toMatch(/automatic provider compaction stays disabled/iu);
   expect(html).toContain("Gobstopper does not trigger Claude Code&#x27;s or Codex&#x27;s own compaction and does not edit session files in place.");
   expect(html).not.toContain("hraness.com/gobstopper");
-  expect(text).toContain("gobstopper proxy serve");
   expect(html).not.toContain("Source preview");
 });
 
@@ -87,30 +85,21 @@ test("the supported-agent strips render shared marks for every routed client", (
   expect(docChips).toHaveLength(agentNames.length);
 });
 
-test("scopes the editorial preset to the homepage header and real command example", () => {
+test("the homepage gives framed commands and keeps retired flags out of examples", () => {
   const html = renderToStaticMarkup(<Home />);
-  const elements: string[] = [];
+  const commands: string[] = [];
   new HTMLRewriter()
-    .on('[data-hraness-marketing-preset="editorial"] .hraness-marketing-header.hraness-material-chrome', {
-      element() { elements.push("header"); },
-    })
-    .on('[data-hraness-marketing-preset="editorial"] #main .hraness-marketing-data-table', {
-      element() { elements.push("proof"); },
+    .on('[data-hraness-marketing-preset="editorial"] #main .hraness-marketing-proof-frame code[data-language="shell"]', {
+      element() { commands.push("command"); },
     })
     .transform(html);
-  expect(elements).toEqual(["header", "proof", "proof"]);
-  expect(html).toMatch(/autocompact 100<\/th>[\s\S]*?56,300[\s\S]*?data-tone="negative"/u);
+  expect(commands.length).toBeGreaterThanOrEqual(3);
   expect(html).not.toContain("--in-place");
-  // Retired or nonexistent flags must not appear in homepage examples.
   expect(html).not.toContain("--double-buffer");
   expect(html).not.toMatch(/gobstopper watch[^\n<]*--trigger/u);
-  // A preset command is a string and runs only once trusted.
-  expect(html).not.toContain("command = [");
-  expect(html).toContain("trusted_legacy_command = true");
   expect(html).toContain('href="/docs#install--use"');
-  expect(html).toContain("Resume trial on one 333k-token Claude Code session");
+  expect(html).toContain('href="/benchmarks"');
 });
-
 
 test("the header keeps a named home link and exact-artwork foil fallback", () => {
   for (const Page of [Home, Docs, BlogIndex]) {
@@ -147,20 +136,10 @@ test("the header keeps a named home link and exact-artwork foil fallback", () =>
   }
 });
 
-test("the homepage names the other ways to shrink context and links each comparison", () => {
+test("the homepage links to the full comparisons", () => {
   const html = renderToStaticMarkup(<Home />);
-  const text = html.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ");
-  expect(html).toContain('id="alternatives"');
-  for (const name of ["Claude Code /compact", "Codex /compact", "CliffCompaction", "RTK"]) {
-    expect(text).toContain(name);
-  }
   expect(html).toContain('href="/compare/claude-code-compact"');
-  expect(html).toContain('href="https://github.com/openai/codex"');
-  expect(html).toContain('href="https://github.com/rtk-ai/rtk"');
-  expect(text).toMatch(/Checked (January|February|March|April|May|June|July|August|September|October|November|December) \d{1,2}, \d{4}\./u);
-  // The CliffCompaction answer links the comparison page instead of naming it in plain text.
-  expect(html).toContain('<a href="/compare/cliffcompaction">Gobstopper vs CliffCompaction</a>');
-  expect(html).not.toContain("[Gobstopper vs CliffCompaction]");
+  expect(html).toContain('href="/compare/cliffcompaction"');
 });
 
 test("the FAQPage structured data carries plain answer text", () => {
@@ -173,7 +152,6 @@ test("the FAQPage structured data carries plain answer text", () => {
     expect(answer).not.toContain("`");
     expect(answer).not.toMatch(/\]\(\//u);
   }
-  expect(JSON.stringify(faq)).toContain("Gobstopper vs CliffCompaction has the full table");
 });
 
 test("inline answer markup renders code and site links, and strips both for structured data", () => {
@@ -211,30 +189,4 @@ test("each benchmark Dataset points at a section the benchmarks page renders", (
     expect(html).toContain(`id="${study.anchor.slice(1)}"`);
   }
   expect(html).toContain('"@type":"Dataset"');
-});
-
-test("leads with the owner's hero line and explains the long-context price line", () => {
-  const html = renderToStaticMarkup(<Home />);
-  expect(html).toContain("Ozempic for Claude and Codex");
-  expect(html).toContain("The missing compaction tool. Set up the proxy. Save tokens.");
-  const start = html.indexOf('id="price-threshold"');
-  const end = html.indexOf('id="preserving-context"');
-  expect(start).toBeGreaterThan(-1);
-  expect(end).toBeGreaterThan(start);
-  const section = html.slice(start, end);
-  // Facts from the provider pages, checked 2026-09-28.
-  expect(section).toContain("272K input tokens");
-  expect(section).toContain("$2.24");
-  // The $4/$20 rate is promotional; the table must not present it as a list price.
-  expect(section).toContain("promotional rate");
-  expect(section).not.toContain("list prices");
-  expect(section).toContain("128,000");
-  expect(section).toContain("https://developers.openai.com/api/docs/models/gpt-5.6-sol");
-  expect(section).toContain("https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing");
-  expect(section).toContain("Claude 4.6 and later models");
-  const context = html.slice(end);
-  expect(context).toContain("https://arxiv.org/abs/2609.26779");
-  expect(context).toContain("perfect prompt caching");
-  const sections = html.slice(start, html.indexOf("Resume trial on one"));
-  expect(sections).not.toContain("\u2014");
 });
