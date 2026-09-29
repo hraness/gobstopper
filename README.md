@@ -8,6 +8,15 @@ threshold, the proxy replaces the older turns with one mechanical summary and
 sends the newest turns word for word, so the provider sees a smaller context
 and the agent's own auto-compaction does not reach its trigger.
 
+On Terminal-Bench 2.1 through Claude Code, Gobstopper at its default tail
+and a 45,000-token threshold (the default threshold is 128,000) solved as
+many tasks as Claude Code with no proxy, 61 and 60 of 89, and sent 29%
+fewer input tokens. That is one trial per arm with GLM 5.3 Flash on
+September 27 and 28, 2026, so the solved counts are within single-trial
+noise; see [Benchmark results](#benchmark-results).
+
+[![Play the 75-second Gobstopper film on gobstopper.sh](docs/assets/gob-film-card.png)](https://gobstopper.sh/#film)
+
 The summary rule comes from CliffCompaction, an open-source proxy described
 in a September 2026 paper by Trang Nguyen, Eulrang Cho, Bingqing Chen, and
 Tim Dettmers. `gobstopper proxy` is a Rust port of it for the three dialects
@@ -61,6 +70,12 @@ nears the model's window, the agent asks a model to summarize it. That call
 is itself a large request, the summary can leave out an exact error or
 constraint, and each later summary summarizes the one before.
 
+![Diagram: five columns of stacked blocks, one per step. Each column is one block taller than the last, because every request resends all earlier steps.](docs/assets/gob-resend.png)
+
+*A coding agent has no memory between steps, so each request carries your
+first message and every file and command output since. By step 40 it
+resends 39 steps it has already sent.*
+
 `gobstopper proxy` keeps each request under a threshold you choose, without
 a model call:
 
@@ -71,7 +86,9 @@ a model call:
   reduces each tool call to a one-line signature. Longer tool results are
   dropped, because the agent can read the file or rerun the command.
 - **A summary is never summarized.** Each compaction starts again from the
-  original history the client resends and discards the previous summary.
+  original history the client resends and discards the previous summary;
+  the human's words and the assistant's replies carry forward, up to 24,000
+  characters.
 - **The prompt cache keeps matching.** Between compactions, every request
   reuses the same compacted prefix byte for byte, so the provider's prompt
   cache stays valid until the next compaction.
@@ -82,6 +99,15 @@ a model call:
   the engine fails, or the provider rejects the rewritten request for a
   reason other than length, the proxy forwards the client's original bytes.
   A length rejection gets a further compaction and a retry.
+
+![Line chart of estimated tokens per request over 383 requests of one session. Without the proxy, request size climbs steadily to about 491,000. With Gobstopper at a 45,000-token threshold, it stays under 40,000 in a sawtooth, and total input falls from 116.7 million to 12.9 million estimated tokens.](docs/assets/gob-sawtooth.png)
+
+*A sawtooth, not a ramp. One recorded Claude Code session replayed at a
+45,000-token threshold (the default is 128,000). The shaded areas are what
+each request resends; with Gobstopper the area is about a ninth as large.
+Estimated tokens (4 characters per token), not billed · one recorded Claude
+Code session, 383 requests · estimate, replay, build f4db57e (request
+engine identical to v0.7.2) · calibration on*
 
 ### What CliffCompaction's authors report
 
@@ -96,15 +122,45 @@ metered bills. The authors also report that the benefit depends on the agent
 and the task, and that it matters only for medium-to-long tasks.
 
 These are the authors' measurements of their own proxy. `gobstopper proxy`
-shares its summary rule and departs from it in five places, listed in [How
-Gobstopper compares with
+shares its summary rule and departs from it in seven places, six on by
+default, listed in [How Gobstopper compares with
 CliffCompaction](#how-gobstopper-compares-with-cliffcompaction). Gobstopper
-has not rerun those benchmarks, and it has not measured task quality or
-billed cost under the proxy.
+has not rerun the authors' benchmarks as published; its own Terminal-Bench
+2.1 run is under [What Gobstopper has measured](#what-gobstopper-has-measured).
 
 ### What Gobstopper has measured
 
-Replays of nine recorded sessions through the proxy engine, built from
+On September 27 and 28, 2026, Gobstopper ran the 89 tasks of Terminal-Bench
+2.1 through Claude Code 2.1.283 with GLM 5.3 Flash via Vercel AI Gateway,
+one trial per arm, at a 45,000-token threshold (the default is 128,000).
+`gobstopper proxy` v0.7.2 at tail 0 (`--keep-tail-percent 0`, the default
+since v0.7.3) solved 61 tasks, Claude Code with no proxy 60, and tail 40, the old
+default, 59. Those counts are within single-trial noise (McNemar p = 1.0
+against no proxy; 31 of 89 tasks changed outcome between arms). The tail-0
+arm sent 29% fewer provider-reported input tokens than no proxy, 84.3
+million against 118.6 million, and almost all of the difference was cache
+reads. Its provider-reported cost for this model, metered through Vercel
+AI Gateway, was about 16% lower ($5.72 against $6.82 over 89 tasks), which
+is not statistically significant (95% interval −32% to +2%). Tail 40 cost
+39% more than tail 0 in total; put the other way, tail 0 cost 28% less (95%
+interval 1.6% to 46.5% less), and five tasks drive most of that gap. v0.7.3
+made tail 0 the default. The [benchmarks
+page](https://gobstopper.sh/benchmarks#terminal-bench-2026-09-28) has the
+setup, per-arm tables, paired statistics, limits, and downloadable
+aggregates.
+
+![Bar chart of total input tokens over 89 Terminal-Bench tasks. Gobstopper, tail 0: 84.3 million, 61 solved. Claude Code, no proxy: 118.6 million, 60 solved. Gobstopper, tail 40 (old default): 118.5 million, 59 solved. Cache reads make up most of each bar.](docs/assets/gob-tokens.png)
+
+*Same tasks solved, 29% fewer tokens sent. Total input over 89 tasks.
+Almost all of the difference is cache reads, the context resent on every
+step: 68.7M vs 102.6M. New input and output were about equal.
+Terminal-Bench 2.1 · 89 tasks · one trial per arm · Claude Code 2.1.283
+with GLM 5.3 Flash via Vercel AI Gateway · Gobstopper v0.7.2,
+45,000-token threshold (default 128,000) · September 27–28, 2026 · 21 of
+89 tail-0 trials may have run an earlier build*
+
+Two earlier measurements are estimates, not task results. Replays of nine
+recorded sessions through the proxy engine, built from
 `main` on September 25, 2026, kept Claude Code sessions whose requests peaked at 273k to 652k
 estimated tokens at or under about 127k; see [Compact live coding-agent
 requests](#compact-live-coding-agent-requests). On September 26, 2026, one
@@ -139,19 +195,33 @@ Gobstopper keeps the exact source in a local vault before any compaction changes
 `gobstopper proxy` is a local HTTP proxy that sits between a coding agent
 and its model provider. It has shipped in tagged releases since v0.3.1 and
 gained the Chat Completions dialect in v0.4.0, the tail budget and the
-separate 1M-token threshold in v0.5.0, and the carried conversation in
-v0.6.0, and estimate calibration in v0.7.0. Each time the
-client resends its history, the proxy estimates the request size. Past the
-threshold (128,000 tokens by default), it sends the system prompt and the
-first task verbatim, one mechanical summary of the older turns, and the
-newest three turns verbatim. With `--keep-tail-percent`, it also keeps older
-whole turns while the summary and the kept turns fit in that share of the
-room left under the threshold after the system prompt and the first task.
-The provider then reports the
-compacted size back to the client, so the client's own auto-compaction does
-not reach its trigger. The summary rule is CliffCompaction's; see [How
-Gobstopper compares with
+separate 1M-token threshold in v0.5.0, the carried conversation in
+v0.6.0, estimate calibration in v0.7.0, and the tail-0 default in v0.7.3.
+Each time the client resends its history, the proxy estimates the request
+size. Past the threshold (128,000 tokens by default), it sends the system
+prompt and the first task verbatim, one mechanical summary of the older
+turns, and the last three turns verbatim. At the default tail of 0, the kept
+turns are exactly `--keep-recent`; a positive `--keep-tail-percent` lets the
+summary and older whole turns fill that share of the room left under the
+threshold after the system prompt and the first task. The provider then
+reports the compacted size back to the client, so the client's own
+auto-compaction does not reach its trigger. The summary rule is
+CliffCompaction's; see [How Gobstopper compares with
 CliffCompaction](#how-gobstopper-compares-with-cliffcompaction).
+
+![Diagram: a tall stack of nine blocks crosses a threshold line. Beside it, with Gobstopper, five blocks sit under the line: your task, one summary block, and the last three turns.](docs/assets/gob-fuse.png)
+
+*When a request passes the threshold, the middle becomes one summary.
+Gobstopper keeps the start and the last three turns word for word and
+replaces the middle with a mechanical summary. No model writes it. Your
+files and your saved session are not changed.*
+
+![Diagram: a full-width bar labelled original request, and below it a shorter bar of six parts: head, summary, carry, and the last three turns.](docs/assets/gob-anatomy.png)
+
+*Inside a rewritten request. In the logged part of the tail-0
+Terminal-Bench arm (about 68 of the 89 trials), compacted requests had a
+median of 31.5K estimated tokens, against a median of 55K before
+compaction. The example lines are illustrative.*
 
 It speaks the three dialects coding agents use:
 
@@ -187,9 +257,15 @@ the proxy keeps exactly the newest `--keep-recent` turns, as CliffCompaction
 does. `--keep-tail-percent` (0 to 60, default 0 since v0.7.3; 40 before)
 keeps older whole turns too while the summary and the kept turns fit in that
 share of the room, and leaves the rest for new turns before the next
-compaction. In one Terminal-Bench 2.1 trial, tail 0 cost 28% less than
-tail 40 at a resolution rate within noise; see the v0.7.3 entry in
-[CHANGELOG.md](CHANGELOG.md). The carried words keep earlier instructions in view
+compaction. A higher floor leaves less room before the next compaction, so
+we expect more compactions and larger requests in between; in replay of 24
+recorded sessions, tail 40 compacted 369 times against 343 at 32,000
+tokens and 50 against 38 at 128,000 (estimates). In the Terminal-Bench 2.1
+run at a 45,000-token threshold, tail 40 sent 118.5 million input tokens
+against 84.3 million at tail 0 and cost 39% more in total in
+provider-reported terms (tail 0 cost 28% less, 95% interval 1.6% to 46.5%
+less, with five tasks driving most of the gap), with solved counts within
+single-trial noise; see [Benchmark results](#benchmark-results). The carried words keep earlier instructions in view
 after the summary that held them is discarded; they use at most a quarter of
 that room, and `--carry-max-chars 0` turns carrying off. Anthropic Messages
 requests that declare a 1M-token context window use a separate threshold,
@@ -210,9 +286,20 @@ gobstopper proxy replay <session>         # what the proxy would have sent; call
 gobstopper proxy status                   # counters and estimated-token totals, this run and all time
 ```
 
+The Terminal-Bench run used `--threshold 45000`; the default 128,000
+compacts later, and in replays most recorded Claude Code sessions never
+reach it (the replay grid in [Benchmark results](#benchmark-results)
+compares thresholds).
 See [docs/proxy.md](docs/proxy.md) for per-agent setup (Claude Code, Codex,
-opencode, Crush, Aider, Goose), `proxy install` and `proxy uninstall`, and
-every setting.
+opencode, Crush, Aider, Goose), `proxy install` and `proxy uninstall`,
+choosing a threshold, and every setting.
+
+![Diagram: Claude Code sends to gobstopper proxy on 127.0.0.1 port 8260, which sends to the model provider. Small requests pass unchanged, large ones are rewritten, and on any error the original request is sent.](docs/assets/gob-route.png)
+
+*It sits between your agent and the provider. If a rewrite fails or the
+provider rejects it for any reason other than length, Gobstopper sends the
+original bytes. A length rejection gets one more trim and a retry.*
+
 Flags: `--threshold` (keep it below the client's auto-compaction point),
 `--threshold-1m`, `--keep-recent`, `--keep-tail-percent`,
 `--result-max-chars`, `--carry-max-chars`, `--drop-thinking`,
@@ -233,7 +320,7 @@ unchanged), and `--strict`.
   file commands below.
 - Sizes are estimates at four characters per token, with images priced by
   their dimensions. Claude models count more tokens than that, so the proxy
-  reads the input count the provider reports in each Anthropic response.
+  reads the input count the provider reports in each response.
   After five responses from one upstream and model, it divides the threshold
   by the running ratio of reported to estimated input, between 1.0 and 2.0,
   and compaction starts earlier. It never starts later. `--no-calibrate`
@@ -358,8 +445,8 @@ cover edit structure and size, not semantic preservation or provider acceptance.
 
 This builds the current `main` branch, which the commands below describe.
 The proxy is in every release since v0.3.1; the tail budget and the 1M-window
-threshold shipped in v0.5.0, and estimate calibration shipped in v0.7.0.
-Check the [release
+threshold shipped in v0.5.0, the carried conversation in v0.6.0, estimate
+calibration in v0.7.0, and the tail-0 default in v0.7.3. Check the [release
 notes](https://github.com/hraness/gobstopper/releases) for what a tagged
 release includes.
 
@@ -895,28 +982,30 @@ bounded context with maintained or improved Terminal-Bench 2.0 results for the
 Kimi and GLM models they tested; those are the authors' benchmark figures, not
 measurements of Gobstopper.
 
-Gobstopper runs the same summary rule in its own proxy, keeps a larger recent
-tail and, by default, the conversation's words from the turns earlier
-compactions summarized, and also works on saved session files:
+Gobstopper runs the same summary rule in its own proxy, carries the
+conversation's words from the turns earlier compactions summarized, keeps a
+larger recent tail only if you set one, and also works on saved session
+files:
 
 | | CliffCompaction | Gobstopper |
 |---|---|---|
 | Where it runs | A local HTTP proxy between the agent and the Anthropic or OpenAI API | A local HTTP proxy between the agent and its model provider, plus a CLI over the session files Claude Code and Codex write |
 | Clients | Any client of the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses API | Any client of the same three dialects that accepts a custom provider address: Claude Code, Codex, opencode, Crush, Aider, Goose, and more |
 | What it changes | Each outgoing request, transparently, while the session runs | The proxy rewrites outgoing requests over the threshold; file commands publish a separate compacted copy and leave the source unchanged |
-| How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy applies the same summary rule and keeps the last three turns verbatim, plus, with `--keep-tail-percent`, older whole turns that fit in that share of the room under the threshold; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
+| How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy applies the same summary rule and keeps the last three turns verbatim by default, and older whole turns within a tail budget if you set one; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
 | Recompaction | Rebuilt from the original history; the prior summary is discarded | The proxy rebuilds from the original history, and each summary keeps the human's words and the assistant's visible replies from the turns earlier compactions summarized, up to 24,000 characters (since v0.6.0); `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy |
 | What holds the originals | The agent's own history and the files on disk; the proxy keeps only an in-memory cache of compacted prefixes | For proxied requests, the agent's own transcript and an in-memory cache; for copies, a content-addressed vault with `search-snapshot` and `read-snapshot` |
-| Evidence published | Terminal-Bench 2.0 and 2.1 (including a run through Claude Code), SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models | Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, one dated afternoon of live proxy counters, literal retention probes, dated single-session trials, and one Terminal-Bench 2.1 trial of 89 tasks (v0.7.3 changelog) whose resolution rates with and without the proxy were within noise |
+| Evidence published | Terminal-Bench 2.0 and 2.1 (including a run through Claude Code), SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models | Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, one dated afternoon of live proxy counters, literal retention probes, dated single-session trials, and one live Terminal-Bench 2.1 run (89 tasks, three arms, one trial each, September 27 and 28, 2026): resolution within noise of Claude Code alone, 29% fewer provider-reported input tokens at the default tail and a 45,000-token threshold |
 | Model needed | None; the summary is mechanical | None for the proxy or the built-in strategies; optional model scorers |
 
 `gobstopper proxy` is a Rust port of CliffCompaction's request engine: the
 same summary format and header, prefix reuse between compactions, harsher
 settings when one pass leaves a request over the threshold, and a retry when
 the provider rejects a request for length. It departs from the reference in
-six ways. With `--keep-tail-percent` above 0 it keeps older whole turns
-verbatim beyond the last three while they fit that tail budget; the default,
-0, keeps the reference tail, except for the next rule. It counts a run of consecutive assistant messages
+seven ways, six of them on by default. With `--keep-tail-percent` above 0 it
+keeps older whole turns verbatim beyond the last three while they fit that
+tail budget; the default since v0.7.3, 0, keeps the reference tail, except
+for the next rule. It counts a run of consecutive assistant messages
 as one turn in every dialect, where the reference does so only for
 Responses. Claude Code can record one step as two assistant messages, tool
 calls and then text; the Anthropic API merges them, so a split between them
@@ -928,7 +1017,12 @@ the threshold instead of compacting every request. Each summary also carries
 the human's words and the assistant's visible replies from the turns earlier
 compactions summarized, up to 24,000 characters, where the reference keeps
 only the turns since the previous compaction; `--carry-max-chars 0` restores
-the reference rule. The port's MIT notice is in
+the reference rule. With calibration on, the default since v0.7.0, it
+divides the threshold by a learned ratio of provider-reported to estimated
+input tokens, between 1.0 and 2.0, so it compacts earlier when its estimates
+run low; `--no-calibrate` restores the reference threshold.
+
+The port's MIT notice is in
 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 The `cliff` strategy applies the drop rule to a transcript copy instead:
@@ -1071,6 +1165,84 @@ The compatibility settings `auto_apply_inplace`, `auto_apply_store`, and
   server.
 
 ## Benchmark results
+
+### Terminal-Bench 2.1 through Claude Code, September 27 and 28, 2026
+
+Three arms ran the 89 tasks of Terminal-Bench 2.1 once each through Claude
+Code 2.1.283 with GLM 5.3 Flash via Vercel AI Gateway: `gobstopper proxy`
+v0.7.2 at tail 0 and at tail 40, both at a 45,000-token threshold with
+calibration and carry on, and Claude Code with no proxy. Tasks ran with
+harbor 0.23.0 as x86 images under emulation on one Apple Mac, three at a
+time. Token counts are provider-reported and summed per trial. Costs are
+provider-reported, metered through Vercel AI Gateway, for this model; other
+providers price cache reads differently, and subscriptions are not billed
+per token.
+
+![Dot plot of tasks solved out of 89 with 95% intervals: Gobstopper, tail 0, 61 (58.3 to 77.2%); Claude Code, no proxy, 60 (57.1 to 76.3%); Gobstopper, tail 40 (old default), 59 (56.0 to 75.3%). The intervals overlap almost completely.](docs/assets/gob-solved.png)
+
+*Solved about as often. Share of 89 tasks resolved, with Wilson 95%
+intervals. One trial per arm. Terminal-Bench 2.1 · 89 tasks · one trial per
+arm · Claude Code 2.1.283 with GLM 5.3 Flash via Vercel AI Gateway ·
+Gobstopper v0.7.2, 45,000-token threshold (default 128,000) · September
+27–28, 2026 · 21 of 89 tail-0 trials may have run an earlier build*
+
+| Arm | Solved of 89 (95% interval) | Total input | Cache reads | New input | Output | Provider-reported cost |
+|---|---|---|---|---|---|---|
+| Gobstopper, tail 0 (the new default) | 61, 68.5% (58.3–77.2%) | 84.3M | 68.7M | 15.6M | 2.64M | $5.72 ($0.064 per task) |
+| Claude Code, no proxy | 60, 67.4% (57.1–76.3%) | 118.6M | 102.6M | 15.9M | 2.71M | $6.82 ($0.077 per task) |
+| Gobstopper, tail 40 (old default) | 59, 66.3% (56.0–75.3%) | 118.5M | 98.2M | 20.3M | 3.97M | $7.97 ($0.090 per task) |
+
+- **Solved.** The counts are within single-trial noise: McNemar p = 1.0 for
+  tail 0 against no proxy and 0.82 for tail 0 against tail 40. 43 tasks
+  were solved by all three arms, 15 by none, and 31 changed outcome between
+  arms.
+- **Tokens.** Tail 0 sent 29% fewer input tokens than no proxy and 33%
+  fewer cache reads. New input and output were about equal, so the
+  difference is the resent context.
+- **Cost.** Tail 0 cost 16% less than no proxy, which is not significant
+  (95% interval −32% to +2%). Tail 40 cost 39% more than tail 0; put the
+  other way, tail 0 cost 28% less (95% interval −46.5% to −1.6%), the only
+  cost comparison whose interval excludes zero. Five tasks account for 105%
+  of that $2.25 gap, and the other 84 net slightly negative. Tail 40 cost
+  17% more than no proxy in this run, which is not significant (95%
+  interval −14% to +60%). v0.7.3 made tail 0 the default.
+- **Proxy behavior.** No request fell back to its original bytes over the
+  logged part of the run; there were 3 upstream faults.
+- **Limits.** One trial per arm, one model, and one host. Timeouts (18, 19
+  and 18 per arm) and emulation likely lower every arm's rate; the tail-40
+  arm ran while host load was about 58 to 68, which may have stretched some
+  of its tasks. 21 of the 89 tail-0 trials may have
+  run an earlier build. No Anthropic model was tested, and the run does not
+  establish results for other agents, thresholds, or providers.
+
+CliffCompaction's authors report 76.69% for their proxy at about 45,000
+tokens, 73.03% for Claude Code's 200,000-token default, and 70.97% for its
+45,000-token auto-compaction on GLM 5.3 Flash (their figures, on their
+setup). This run had no CliffCompaction arm and no 45,000-token
+auto-compaction arm, so the two sets of figures are not a head-to-head. The
+[benchmarks page](https://gobstopper.sh/benchmarks#terminal-bench-2026-09-28)
+has the paired statistics, per-task cost concentration, and downloadable
+aggregate results.
+
+### Replays at four thresholds, September 26, 2026
+
+Replaying 24 recorded sessions (12 Claude Code, 12 Codex; 665 million
+estimated tokens) through the proxy engine on `main` at `fdeb099`, tail 0
+cut cumulative estimated input by 78% at a 32K threshold, 73% at 64K, 61%
+at 128K and 38% at 256K, with 0 unpaired tool calls in 288 replays. Three
+large sessions hold 476 million of the 665 million tokens, so a typical
+session's cut at 32K is about 46%, and at 128K most Claude Code sessions
+never cross the threshold. These are estimates at four characters per
+token, not billed tokens.
+
+![Line chart: estimated input cut across 24 recorded sessions. Tail 0 cuts 78% at 32K, 73% at 64K, 61% at 128K and 38% at 256K. Tail 40 is a little lower at every threshold.](docs/assets/gob-grid.png)
+
+*Lower thresholds cut more. Pooled cut in estimated input across 24
+recorded sessions, by threshold. Estimates, not billed · 24 recorded
+sessions (12 Claude Code, 12 Codex), 665M tokens · main fdeb099 · September
+26, 2026*
+
+### Saved-session retrospective, September 19, 2026
 
 The [September 19, 2026 retrospective](https://gobstopper.sh/benchmarks#retrospective-2026-09-19)
 evaluated 729 frozen sessions on one Mac. Portable `compacted` projected a

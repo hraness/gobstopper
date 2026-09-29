@@ -23,7 +23,9 @@ images or runtime package dependency.
 ## STORY
 
 Hero with a dated proof frame (the September 17, 2026 resume trial, labeled
-as one historical session) over the sawtooth graphic; the six topics a reader
+as one historical session) over the sawtooth graphic; a dated Terminal-Bench
+result section after the proof frame (September 27 and 28, 2026, one trial
+per arm, with its scope line and arm names as STYLE.md fixes them); the six topics a reader
 needs (session detection, edits, strategies, presets and plugins, undo vault,
 telemetry and eval); three ways to run it (CLI, watcher and hooks, your own
 program); what Gobstopper won't do; installation; questions; maker; related

@@ -6,7 +6,10 @@ import {
   type ArticleSourceRecord,
 } from "@hraness/design-kit";
 
+import { gobFilm, type GobFilm } from "../_data/gob-film";
+import { gobFilmHtml } from "../_lib/gobbench-film-html";
 import { publishedRelease } from "../publication";
+import { FILM_TOKEN } from "./film-token";
 import { postBodies } from "./posts.generated";
 
 export const BLOG_PATH = "/blog";
@@ -18,6 +21,9 @@ export const BLOG_DESCRIPTION =
 const REVIEWER = "Claude Opus 5.5 (claude-opus-5-5) editorial review";
 const REVIEWED_ON: ArticleIsoDate = "2026-09-27";
 const REASSESS_ON: ArticleIsoDate = "2026-11-05";
+// The introduction was rewritten around the Terminal-Bench study and reviewed again.
+const INTRO_REVIEWED_ON: ArticleIsoDate = "2026-09-28";
+const INTRO_REASSESS_ON: ArticleIsoDate = "2026-11-09";
 
 function repo(path: string, name = "gobstopper"): string {
   return `https://github.com/hraness/${name}/blob/main/${path}`;
@@ -44,53 +50,56 @@ export type BlogPost = Readonly<{
 const introducing: BlogPost = {
   slug: "introducing-gobstopper",
   title: "Introducing Gobstopper",
-  dek: "Gobstopper replaces stale tool output in saved Claude Code and Codex sessions by a rule you set, after archiving the original so you can search or restore it.",
-  shareLine: "Replaces stale tool output in saved sessions, after archiving the original.",
+  dek: "On Terminal-Bench 2.1 (one trial per arm, 45,000-token threshold), Claude Code behind gobstopper proxy solved about as many tasks as without it (61 vs 60 of 89, within single-trial noise) and sent 29% fewer input tokens.",
+  shareLine: "About as many Terminal-Bench tasks solved, with 29% fewer input tokens sent.",
   eyebrow: "Introducing",
   published: "2026-09-24",
-  keywords: ["context compaction", "coding agents", "Claude Code", "Codex", "transcripts", "recovery"],
+  keywords: ["context compaction", "coding agents", "Claude Code", "Terminal-Bench", "prompt caching", "CliffCompaction"],
   admission: {
     href: "/blog/introducing-gobstopper",
     lifecycle: "indexable",
-    readerJob: "Decide whether to use Gobstopper to shrink long Claude Code or Codex sessions without losing details the next turn needs, and learn how to try it.",
-    nonObviousAnswer: "Gobstopper's file commands do not shrink a live session (its proxy handles running sessions); they write a separate compacted copy after archiving the original bytes, and a detail dropped by compaction comes back only when you or your agent search the hash-checked archive for it.",
-    originalContribution: "Explains the separate-copy and archive model from the source, with the commands, the default stub text, the no-plan reason codes, and the dated benchmark figures including the sessions that produced no plan.",
-    hostFit: "The product's own introduction on its own host.",
+    readerJob: "Decide whether to put gobstopper proxy between a coding agent and its provider, knowing what one Terminal-Bench run measured, what it did not, and how to try it.",
+    nonObviousAnswer: "The tool's own default lost its benchmark, so the default changed: keeping more recent context verbatim cost more tokens on forward-moving tasks, and the token cut against no proxy is almost entirely cache reads, not new input.",
+    originalContribution: "The first live task-success and token measurement of the Rust port of CliffCompaction's summary rule, with three arms (tail 0, tail 40, no proxy) on 89 Terminal-Bench 2.1 tasks, published aggregates, intervals, per-task churn, and the tasks that drive the cost gap.",
+    hostFit: "The product's own introduction and first benchmark, on its own host.",
     nearestUrls: [
-      { url: "/", distinction: "The homepage lists features and install steps; this post explains why the product exists and who should use something else." },
-      { url: "/docs", distinction: "The docs are the full command reference; this post walks one path from preview to recovery." },
+      { url: "/", distinction: "The homepage lists features and install steps; this post explains the mechanism and reads one benchmark with its limits." },
+      { url: "/benchmarks", distinction: "The benchmarks page holds every study's setup, statistics, and downloads; this post interprets the Terminal-Bench run and why it changed the default." },
+      { url: "/docs", distinction: "The docs are the full command reference; this post walks the proxy and the vault at the level a first reader needs." },
     ],
     sources: [
-      source("Gobstopper README: purpose, strategies, recoverable history, install, status", repo("README.md")),
-      source("Gobstopper roadmap: stack role and planned work", repo("docs/roadmap.md")),
-      source("Gobstopper public writing rules and facts public copy must keep", repo("STYLE.md")),
-      source("Edit plan limits and Kani proof harnesses", repo("crates/gobstopper-core/src/admission.rs")),
-      source("Assurance ledger: what each check covers and excludes", repo("docs/assurance/ledger.json")),
+      source("Terminal-Bench 2.1 study, September 27 and 28, 2026", "https://gobstopper.sh/benchmarks#terminal-bench-2026-09-28", INTRO_REVIEWED_ON),
+      source("Terminal-Bench aggregate results (JSON)", "https://gobstopper.sh/benchmarks/2026-09-28/terminal-bench-results.json", INTRO_REVIEWED_ON),
+      source("Replay grid over 24 recorded sessions (JSON)", "https://gobstopper.sh/benchmarks/2026-09-28/replay-grid.json", INTRO_REVIEWED_ON),
+      source("CliffCompaction paper, arXiv:2609.26779", "https://arxiv.org/abs/2609.26779", INTRO_REVIEWED_ON),
+      source("Gobstopper README: proxy, departures, recoverable history, install", repo("README.md"), INTRO_REVIEWED_ON),
+      source("gobstopper proxy reference: prefix reuse, retry ladder, departures", repo("docs/proxy.md"), INTRO_REVIEWED_ON),
+      source("v0.7.3 changelog entry: tail 0 by default", repo("CHANGELOG.md"), INTRO_REVIEWED_ON),
+      source("Gobstopper roadmap: stack role and planned work", repo("docs/roadmap.md"), INTRO_REVIEWED_ON),
+      source("Gobstopper public writing rules and facts public copy must keep", repo("STYLE.md"), INTRO_REVIEWED_ON),
       source("Default elision stub text", repo("crates/gobstopper-core/src/strategy/elide.rs")),
-      source("Vault concurrency models and their failing variants", repo("verify/vault/README.md")),
-      source("September 19, 2026 offline retrospective", "https://gobstopper.sh/benchmarks#retrospective-2026-09-19"),
       source("Registered xcb relation sentence", repo("src/portfolio.generated.json", "design-kit")),
-      source("Loopback request proxy for running sessions", repo("crates/gobstopper-cli/src/proxy.rs"), "2026-09-26"),
     ],
     observations: [
-      "The current release includes the safeguards the post describes, so the tagged release and the main branch install paths now agree.",
-      "The earlier draft told readers that wanted a running session shrunk to use something else, while its status line announced the request proxy; the September 26 edit points those readers to gobstopper proxy, which the v0.5.0 release ships.",
-      "In the September 19, 2026 replay, 637 of 729 sessions produced no plan, so the all-session median reduction was 0% while the 73 high-context Codex root tasks had a 36.4% median.",
+      "Total input was 84.31M tokens for tail 0 against 118.55M with no proxy, while uncached input (15.6M against 15.9M) and output (2.64M against 2.71M) were about equal, so the difference is cache reads of resent context.",
+      "Tail 40, the default until v0.7.3, cost 39% more than tail 0 in provider-reported terms, the only cost interval that excludes zero, and five tasks carry 105% of that $2.25 gap.",
+      "The benchmark ran at a 45,000-token threshold while the shipped default is 128,000, so every default claim in the post is limited to the tail setting and says how to match the run.",
     ],
     scores: { readerUtility: 2, originalEvidence: 2, factualConfidence: 1, hostFit: 2, voiceIntegrity: 2, maintenanceValue: 1 },
     owner: "Hraness",
     drafting: "ai-from-source",
-    review: { reviewer: REVIEWER, reviewerType: "ai", reviewedOn: REVIEWED_ON },
+    review: { reviewer: REVIEWER, reviewerType: "ai", reviewedOn: INTRO_REVIEWED_ON },
     humanReview: null,
-    reassessOn: REASSESS_ON,
-    harmIfWrong: "A reader could run a command that does not exist on the release they installed, or trust the archive to return a detail it does not hold.",
+    reassessOn: INTRO_REASSESS_ON,
+    harmIfWrong: "A reader could trust a single-trial resolution or cost difference as a ranking, read gateway dollars for one model as their own bill, or assume the 128,000-token default behaves like the 45,000-token benchmark.",
     refreshTriggers: [
-      "A new gobstopper release tag (the status line and the 'predates the safeguards' sentence must be rechecked)",
-      "Change to the CLI commands or flags shown: detect, plan --trigger/--floor/--json, eval, apply --strategy, search-snapshot, read-snapshot, undo, mcp --allow-transcript-content",
-      "Change to the elide stub text, keep_recent_tool_outputs default, the 64-edit or one-state-card limits, or the vault path",
-      "Native provider dispatch enabled in released builds",
-      "A newer benchmarks retrospective replacing the September 19, 2026 figures",
-      "Change to the registered xcb relation detail sentence, or the xcb post going live (add the body link)",
+      "A new gobstopper release tag (the status line must be rechecked)",
+      "A multi-trial Terminal-Bench rerun",
+      "A default threshold or tail change",
+      "An Anthropic-model benchmark",
+      "Change to the proxy commands or flags shown: proxy run, install, status, --threshold, --keep-tail-percent, --carry-max-chars, --no-calibrate, --threshold-1m",
+      "Change to the CLI file commands shown: detect, plan --trigger/--floor/--json, eval, apply --strategy, search-snapshot, read-snapshot, undo, mcp --allow-transcript-content",
+      "The launch film shipping or changing (the film line in the body renders it)",
       "gobstopper or xcb rename",
     ],
   },
@@ -234,9 +243,19 @@ export function releaseLabel(): string {
   return `v${publishedRelease.version}`;
 }
 
-/** Post body HTML with release data filled in from published-release.json. */
+/**
+ * The launch film for a post body: exactly the homepage's `<GobFilm>` markup
+ * (controls, no autoplay, captions, poster, and the film's text and scope as
+ * the alternative), from one helper so the two cannot drift. Empty until the
+ * film ships.
+ */
+export const filmHtml: (film: GobFilm | null) => string = gobFilmHtml;
+
+/** Post body HTML with release data and the film filled in. */
 export function postHtml(post: Pick<BlogPost, "slug">): string {
-  const html = postBodies[post.slug].html.replaceAll("{{release.version}}", releaseLabel());
+  const html = postBodies[post.slug].html
+    .replaceAll("{{release.version}}", releaseLabel())
+    .replace(FILM_TOKEN, () => filmHtml(gobFilm));
   if (html.includes("{{")) throw new Error(`Post ${post.slug} has an unfilled template value.`);
   return html;
 }

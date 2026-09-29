@@ -2,8 +2,9 @@
 
 `gobstopper proxy` sits on 127.0.0.1 between a coding agent and its model
 provider. When a request passes the threshold, it sends the head verbatim,
-one mechanical summary of the older turns, and the newest three turns
-verbatim; `--keep-tail-percent` can keep older whole turns too. The provider then reports the smaller
+one mechanical summary of the older turns, and the last three turns
+verbatim; a positive `--keep-tail-percent` can keep older whole turns too.
+The provider then reports the smaller
 size back to the client, so the client's own auto-compaction does not reach
 its trigger. Session files are not changed. The summary rule is
 CliffCompaction's (Nguyen, Cho, Chen and Dettmers,
@@ -55,9 +56,17 @@ models they tested. In one run through Claude Code, their proxy scored above
 Claude Code's own auto-compaction. Those are their
 measurements of their proxy, computed with a model of perfect prompt caching;
 they report that the benefit depends on the agent and the task and matters
-only for medium-to-long tasks. Gobstopper has not rerun those benchmarks or
-measured task quality or billed cost under its proxy. Its own replays and
-local counters, which are estimates, are in the
+only for medium-to-long tasks.
+
+Gobstopper's own run, on September 27 and 28, 2026, put the 89 tasks of
+Terminal-Bench 2.1 through Claude Code 2.1.283 with GLM 5.3 Flash via
+Vercel AI Gateway, one trial per arm, at a 45,000-token threshold (the
+default is 128,000). At tail 0, the proxy solved 61 tasks against 60 with no
+proxy, within single-trial noise, and sent 29% fewer provider-reported input
+tokens (84.3 million against 118.6 million). Its provider-reported cost for
+that model was 16% lower, which is not statistically significant. The
+[benchmarks page](https://gobstopper.sh/benchmarks#terminal-bench-2026-09-28)
+has the full study; replays and estimates are in the
 [README](../README.md#what-gobstopper-has-measured).
 
 ## Try it on one session
@@ -267,6 +276,20 @@ declares a 1M-token window, pass `--threshold 256000`.
 
 ## How it works
 
+![Diagram: Claude Code sends to gobstopper proxy on 127.0.0.1 port 8260, which sends to the model provider. Small requests pass unchanged, large ones are rewritten, and on any error the original request is sent.](assets/gob-route.png)
+
+*It sits between your agent and the provider. If a rewrite fails or the
+provider rejects it for any reason other than length, Gobstopper sends the
+original bytes. A length rejection gets one more trim and a retry.*
+
+![Diagram: a full-width bar labelled original request, and below it a shorter bar of six parts: head, summary, carry, and the last three turns.](assets/gob-anatomy.png)
+
+*Inside a rewritten request: the head, one summary, the carried words, and
+the last three turns. In the logged part of the tail-0 Terminal-Bench arm
+(about 68 of the 89 trials), compacted requests had a median of 31.5K
+estimated tokens, against a median of 55K before compaction. The example
+lines are illustrative.*
+
 - The proxy compacts Anthropic Messages (`.../messages`), OpenAI Responses
   (`.../responses`), and OpenAI Chat Completions (`.../chat/completions`)
   requests. Token counts, provider-side compaction endpoints, and every
@@ -294,9 +317,26 @@ declares a 1M-token window, pass `--threshold 256000`.
   `--keep-tail-percent` of the room under the threshold, the threshold minus
   the system prompt, tool definitions, and head. The kept turns hold the
   files and command output the agent read most recently, which the summary
-  drops once they pass 500 characters. At 40%, a compacted request leaves
-  60% of that room for new turns before the next compaction. At the default,
-  0, the tail is exactly the newest `--keep-recent` turns.
+  drops once they pass 500 characters. At the default, 0, the tail is
+  exactly the newest `--keep-recent` turns. At 40%, the default through
+  v0.7.2, a compacted request leaves 60% of that room for new turns before
+  the next compaction. A higher floor leaves less room, so we expect the
+  proxy to compact more often and every request between compactions to be
+  larger. Replay agrees in direction: over 24 recorded sessions, tail 40
+  compacted 369 times against 343 at 32,000 tokens and 50 against 38 at
+  128,000 (estimates). In the Terminal-Bench run at a 45,000-token
+  threshold, tail 40 sent 118.5 million input tokens against 84.3 million
+  and cost 39% more in total, with solved counts within noise.
+
+  ![Diagram: two stacks after a rewrite. Tail 0 keeps your task, a summary and the last three turns. Tail 40 also keeps older turns, so it sits closer to the threshold and is rewritten again sooner.](assets/gob-tail.png)
+
+  *Keeping more old turns meant more rewrites and more tokens. In the
+  benchmark, tail 40 cost 39% more than tail 0 in provider-reported terms
+  (95% interval 2% to 87% more), at a 45,000-token threshold. v0.7.3 makes
+  tail 0 the default. Terminal-Bench 2.1 · 89 tasks · one trial per arm ·
+  Gobstopper v0.7.2 · September 27–28, 2026 · 21 of 89 tail-0 trials may
+  have run an earlier build*
+
   If the summary, with its carried text, and the newest `--keep-recent`
   turns need more, the proxy keeps those turns anyway, and the next request
   can compact again.
@@ -334,7 +374,7 @@ declares a 1M-token window, pass `--threshold 256000`.
   counts the Anthropic requests that declared a 1M-token window
   (`requests_1m`), and each compaction log line names the window it applied
   (`window=1m` or `window=base`).
-- Clients resend their original history on every request. The proxy keys each
+- **Prefix reuse.** Clients resend their original history on every request. The proxy keys each
   compaction by a hash of the original prefix and substitutes it into later
   requests, so the compacted prefix stays byte-stable until the next
   compaction and the provider's prompt cache can match it. The cache lives in
@@ -345,15 +385,21 @@ declares a 1M-token window, pass `--threshold 256000`.
   carry's quarter-of-the-room bound grew, which can happen only when
   `--carry-max-chars` is at least half the threshold, rounded down (at the
   default, at a threshold of 48,001 tokens or less).
-- If one pass leaves a request over the threshold, the proxy retries with
-  one kept turn and no tail extension, then with assistant text capped at
-  300 characters and thinking dropped. Without `--strict`, it then sends the
-  request anyway.
-- If the provider rejects a request for length, the proxy compacts further and
-  retries, and as a last step shortens the summary to its newest parts. If
-  the provider rejects the rewritten request for any other reason, the proxy
-  resends the client's original bytes.
-- Anthropic requests are calibrated to the provider's count; see
+- **Retry ladder.** If one pass leaves a request over the threshold, or the
+  provider rejects the rewrite for length, the proxy tries harsher settings
+  in order:
+  1. after a length rejection of a request not yet compacted, a compaction
+     at tail 0, the newest `--keep-recent` turns and no tail extension;
+  2. one kept turn;
+  3. assistant text capped at 300 characters and thinking dropped;
+  4. after a length rejection, or with `--strict`, the summary shortened to
+     its newest parts.
+
+  Without `--strict`, a request still over the threshold is then sent
+  anyway; with it, the proxy refuses it (HTTP 400). If the provider rejects
+  the rewritten request for any other reason, the proxy resends the
+  client's original bytes.
+- The threshold is calibrated to the provider's count; see
   [Estimate calibration](#estimate-calibration).
 - If the verbatim head alone approaches the threshold, as it can after the
   client compacted a session itself or when a subagent starts with a long
@@ -363,6 +409,39 @@ declares a 1M-token window, pass `--threshold 256000`.
   under the threshold raised to ~Nk by a large verbatim head`). A request
   over the threshold with nothing to compact, such as one with too few
   turns, is also sent unchanged and logged (`... with nothing to compact`).
+
+### Where it departs from CliffCompaction
+
+The proxy ports CliffCompaction's summary rule, prefix reuse, and retry on a
+length rejection. It departs from the reference in seven ways, six of them
+on by default.
+
+| # | Departure | Default | Restore the reference |
+|---|---|---|---|
+| 1 | Keep older whole turns beyond the last three within a tail budget | off (tail 0) | `--keep-tail-percent 0`, the default |
+| 2 | Count a run of assistant messages as one turn in every dialect | on | none; keeps tool calls paired with their results |
+| 3 | Separate threshold for Anthropic requests that declare a 1M-token window | on | `--threshold-1m` equal to `--threshold` |
+| 4 | Resend the original after a rejection for a reason other than length | on | none |
+| 5 | Raise the threshold when the verbatim head alone approaches it | on | none |
+| 6 | Carry human words and assistant replies from summarized turns, up to 24,000 characters | on | `--carry-max-chars 0` |
+| 7 | Calibrate the threshold from provider-reported input, 1.0 to 2.0 | on | `--no-calibrate` |
+
+### Choosing a threshold
+
+The default threshold, 128,000 estimated tokens, sits below the point where
+a 200,000-token client compacts on its own. A lower threshold compacts
+sooner and cuts more: replaying 24 recorded sessions (12 Claude Code, 12
+Codex) at tail 0 cut cumulative estimated input by 78% at 32K, 73% at 64K,
+61% at 128K, and 38% at 256K. Three large sessions dominate those pooled
+figures; a typical session's cut at 32K is about 46%, and at 128K most
+Claude Code sessions never cross the threshold. The Terminal-Bench run used
+45,000. Try `gobstopper proxy replay <session> --threshold N` on your own
+sessions before you lower it.
+
+![Line chart: estimated input cut across 24 recorded sessions. Tail 0 cuts 78% at 32K, 73% at 64K, 61% at 128K and 38% at 256K. Tail 40 is a little lower at every threshold.](assets/gob-grid.png)
+
+*Lower thresholds cut more. Estimates, not billed · 24 recorded sessions
+(12 Claude Code, 12 Codex), 665M tokens · main fdeb099 · September 26, 2026*
 
 ## Estimate calibration
 
@@ -442,9 +521,9 @@ tokens (`reported_over_threshold`), and each compaction's
 
 - Sizes are estimates at four characters per token, with images priced by
   their dimensions; the provider's count can differ. Calibration corrects
-  the threshold for Anthropic requests only after five responses, so the
-  first requests of each upstream and model, and every OpenAI-dialect
-  request, use the plain estimate.
+  the threshold only after five responses, so the first requests of each
+  upstream and model use the plain estimate, as does any response that
+  reports no usage.
 - A summary drops the details of long tool results. The agent can read the
   file or rerun the command, but nothing makes it notice that a detail is
   missing.
@@ -454,5 +533,9 @@ tokens (`reported_over_threshold`), and each compaction's
   2.1.282 and Codex 0.156.1. Chat Completions coverage is tested against
   synthetic histories and recorded contracts, not a live opencode, Crush,
   Aider, or Goose session; provider acceptance of that dialect is
-  unqualified. Task quality and cost under the proxy have not been
-  measured.
+  unqualified.
+- Task results under the proxy come from one Terminal-Bench 2.1 run: one
+  trial per arm, one model (GLM 5.3 Flash), one host, and a 45,000-token
+  threshold. It did not test an Anthropic model, other agents, or the
+  default threshold, and its dollar figures are provider-reported prices
+  for that model through Vercel AI Gateway, not a general bill.

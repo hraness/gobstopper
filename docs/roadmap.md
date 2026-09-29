@@ -89,9 +89,12 @@ and the README's comparison section records the differences. Since
 September 25, 2026, `gobstopper proxy` also runs that rule on the wire
 across the three dialects coding agents use (Anthropic Messages, OpenAI
 Responses, and OpenAI Chat Completions), because only the request path can
-compact a running session before the client's own compaction fires. Open:
-measure task quality and cost of proxied sessions against unproxied ones,
-and qualify the Chat Completions dialect against live opencode, Crush,
+compact a running session before the client's own compaction fires. Task
+quality and cost were measured once (Terminal-Bench 2.1, September 27 and
+28, 2026, one model, one trial per arm; see the
+[benchmarks page](https://gobstopper.sh/benchmarks#terminal-bench-2026-09-28)).
+Open: three trials per arm on native x86, a 45K native auto-compaction arm,
+an Anthropic model, and qualifying the Chat Completions dialect against live opencode, Crush,
 Aider, and Goose sessions (coverage is contract-tested so far).
 File-layer tools (cc-session, coldxx, claude-journal, compactdiff,
 claude-streaming-compactor) are manual or single-provider/single-
@@ -294,6 +297,12 @@ consumers need the same interface — is met.
 - Whether Anthropic server-side compaction (`compact_20260112`)
   becomes a better default than transcript surgery for Claude — decided
   by the eval harness, not by guess.
+- A three-trial Terminal-Bench rerun. The September 27 and 28, 2026 run
+  had one trial per arm, so its solved counts are within single-trial noise
+  and its cost intervals are wide. Planned: three trials per arm on native
+  x86, with a 45,000-token native auto-compaction arm, and a run on an
+  Anthropic model. The tail-0 default in v0.7.3 came from that run and
+  should be rechecked by the rerun.
 - Whether the proxy's defaults stop re-read loops in live sessions. On
   September 26, 2026, a workflow subagent on a 1M-window model made 1,560
   requests through the proxy at that day's defaults (128,000 tokens, three
@@ -304,7 +313,7 @@ consumers need the same interface — is met.
   day's defaults ([design](design.md#why-a-40-tail-share-and-a-256000-token-1m-threshold)).
   Replay repeats the recorded re-reads, so only live sessions can show the
   loop stopping.
-- ~~Estimate calibration~~ — **done (unreleased)**. The proxy sizes
+- ~~Estimate calibration~~ — **done in v0.7.0**. The proxy sizes
   requests at four characters per token. On that session reported input ran
   13% to 38% above the estimate: an estimated 128,000 tokens corresponded to
   144,000 to 176,000 reported input tokens. `proxy serve` now divides the

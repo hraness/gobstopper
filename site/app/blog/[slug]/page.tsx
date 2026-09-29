@@ -11,6 +11,7 @@ import { SiteFooter, SiteHeader } from "../../_components/site-chrome";
 import { serializeJsonLd } from "../../_lib/site";
 import { blogPosts, findPost, postHtml, postPath, postProvenance, postToc } from "../articles";
 import { postJsonLd, postMetadata } from "../discovery";
+import "../post-media.css";
 
 type Params = Promise<{ slug: string }>;
 

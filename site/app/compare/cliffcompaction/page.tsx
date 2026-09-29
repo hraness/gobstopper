@@ -12,8 +12,10 @@ import {
   CLIFF_REPOSITORY,
   comparisonQuestions,
   comparisonRows,
+  departureRows,
 } from "./comparison";
 import { socialSite } from "../../social";
+import "./departures.css";
 
 const title = "Gobstopper vs CliffCompaction";
 const socialTitle = "Gobstopper compared with CliffCompaction";
@@ -71,6 +73,7 @@ export default function CompareCliffCompaction() {
           toc={[
             { href: "#cliffcompaction-rule", label: "CliffCompaction summarizes older turns mechanically" },
             { href: "#gobstopper-port", label: "Gobstopper ports the rule and adds archived copies" },
+            { href: "#departures", label: "Seven departures, six on by default" },
             { href: "#side-by-side", label: "Side-by-side comparison" },
             { href: "#cliff-strategy", label: "The cliff strategy applies the rule to saved sessions" },
             { href: "#when-to-use-each", label: "When to use each" },
@@ -96,7 +99,8 @@ export default function CompareCliffCompaction() {
             and then resume. The proxy has shipped since v0.3.1 and the Chat
             Completions dialect since v0.4.0. Carrying the conversation&apos;s
             words across compactions, described in the table below, shipped
-            in v0.6.0.
+            in v0.6.0, and v0.7.3 made the reference tail of three turns the
+            default.
           </p>
 
           <h2 id="cliffcompaction-rule">CliffCompaction summarizes older turns mechanically</h2>
@@ -124,12 +128,17 @@ export default function CompareCliffCompaction() {
             maintained or improved Terminal-Bench 2.0 results for the Kimi and
             GLM models the authors tested, plus SWE-bench Verified and
             KernelBench results. In one Terminal-Bench 2.1 run through Claude
-            Code with a GLM model, their proxy scored 76.69% against 70.97%
-            for Claude Code&apos;s own auto-compaction. The cost figures model
-            perfect prompt caching rather than metered bills, and the authors
-            report that the benefit depends on the agent and the task. Those
-            are the authors&apos; figures for their proxy. Gobstopper has not
-            run those benchmarks.
+            Code with GLM 5.3 Flash, their proxy scored 76.69% against 70.97%
+            for Claude Code&apos;s own auto-compaction at about 45,000 tokens
+            and 73.03% for its default 200,000-token setting. The cost
+            figures model perfect prompt caching rather than metered bills,
+            and the authors report that the benefit depends on the agent and
+            the task. Those are the authors&apos; figures for their proxy.
+            Gobstopper&apos;s own Terminal-Bench 2.1 run, of{" "}
+            <code>gobstopper proxy</code> against Claude Code with no proxy,
+            is on the{" "}
+            <a href="/benchmarks#terminal-bench-2026-09-28">benchmarks page</a>;
+            it had no CliffCompaction arm.
           </p>
 
           <h2 id="gobstopper-port">Gobstopper ports the rule and adds archived copies</h2>
@@ -155,6 +164,36 @@ export default function CompareCliffCompaction() {
           <pre><SyntaxCode code={`gobstopper proxy run -- claude       # one session through a temporary proxy
 gobstopper proxy serve               # background proxy on http://127.0.0.1:8260
 gobstopper proxy replay <session>    # what the proxy would have sent; calls no provider`} language="sh" /></pre>
+
+          <h2 id="departures">Seven departures, six on by default</h2>
+          <p>
+            The summary format, prefix reuse between compactions, the harsher
+            settings applied when one pass leaves a request over the
+            threshold, and the retry after a length rejection are
+            CliffCompaction&apos;s. These seven behaviors are
+            Gobstopper&apos;s own, not the reference&apos;s:
+          </p>
+          <figure className="gob-departures">
+            <table>
+              <caption>How gobstopper proxy departs from CliffCompaction&apos;s request engine, and how to restore the reference</caption>
+              <thead>
+                <tr>
+                  <th scope="col">Departure</th>
+                  <th scope="col">Default</th>
+                  <th scope="col">Restore the reference</th>
+                </tr>
+              </thead>
+              <tbody>
+                {departureRows.map((row) => (
+                  <tr key={row.departure}>
+                    <th scope="row">{withCode(row.departure)}</th>
+                    <td data-label="Default">{withCode(row.byDefault)}</td>
+                    <td data-label="Restore">{withCode(row.restore)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </figure>
 
           <h2 id="side-by-side">Side-by-side comparison</h2>
           <figure>

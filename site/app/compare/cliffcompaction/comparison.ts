@@ -29,7 +29,7 @@ export const comparisonRows: readonly ComparisonRow[] = [
   {
     aspect: "How it shrinks",
     cliff: "Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases",
-    gobstopper: "The proxy applies the same summary rule and keeps the last three turns verbatim, plus, with `--keep-tail-percent`, older whole turns that fit in that share of the room under the threshold; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card",
+    gobstopper: "The proxy applies the same summary rule and keeps the last three turns verbatim by default, and older whole turns within a tail budget if you set one; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card",
   },
   {
     aspect: "Recompaction",
@@ -44,12 +44,53 @@ export const comparisonRows: readonly ComparisonRow[] = [
   {
     aspect: "Evidence published",
     cliff: "Terminal-Bench 2.0 and 2.1 (including a run through Claude Code), SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models",
-    gobstopper: "Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, one dated afternoon of live proxy counters, literal retention probes, dated single-session trials, and one Terminal-Bench 2.1 trial of 89 tasks (v0.7.3 changelog) whose resolution rates with and without the proxy were within noise",
+    gobstopper: "Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, one dated afternoon of live proxy counters, literal retention probes, dated single-session trials, and one live Terminal-Bench 2.1 run (89 tasks, three arms, one trial each, September 27 and 28, 2026): resolution within noise of Claude Code alone, 29% fewer provider-reported input tokens at the default tail and a 45,000-token threshold",
   },
   {
     aspect: "Model needed",
     cliff: "None; the summary is mechanical",
     gobstopper: "None for the proxy or the built-in strategies; optional model scorers",
+  },
+] as const;
+
+export type DepartureRow = Readonly<{ departure: string; byDefault: string; restore: string }>;
+
+/** The seven ways `gobstopper proxy` departs from the reference engine. */
+export const departureRows: readonly DepartureRow[] = [
+  {
+    departure: "Keeps older whole turns beyond the last three while they fit a tail budget",
+    byDefault: "Off: tail 0 since v0.7.3 (40 before)",
+    restore: "`--keep-tail-percent 0`",
+  },
+  {
+    departure: "Counts a run of consecutive assistant messages as one turn in every dialect, not only Responses",
+    byDefault: "On",
+    restore: "None; a split would separate tool calls from their results",
+  },
+  {
+    departure: "Uses a separate threshold for Anthropic requests that declare a 1M-token window",
+    byDefault: "On: 256,000, or `--threshold` if higher",
+    restore: "Set `--threshold-1m` equal to `--threshold`",
+  },
+  {
+    departure: "Resends the original when the provider rejects a rewritten request for a reason other than length",
+    byDefault: "On",
+    restore: "None",
+  },
+  {
+    departure: "Raises the threshold when the verbatim head alone approaches it",
+    byDefault: "On",
+    restore: "None",
+  },
+  {
+    departure: "Carries the human's words and the assistant's visible replies from earlier summarized turns",
+    byDefault: "On: up to 24,000 characters",
+    restore: "`--carry-max-chars 0`",
+  },
+  {
+    departure: "Divides the threshold by a learned ratio of provider-reported to estimated input tokens",
+    byDefault: "On: bounded 1.0 to 2.0, after five responses",
+    restore: "`--no-calibrate`",
   },
 ] as const;
 
@@ -62,7 +103,7 @@ export const comparisonQuestions = [
   {
     question: "Does Gobstopper reproduce CliffCompaction's benchmark results?",
     answer:
-      "No. The cost and Terminal-Bench figures are the authors' measurements of their proxy on the Kimi and GLM models they tested. `gobstopper proxy` ports the same summary rule, but Gobstopper has not run those benchmarks, and a smaller request is not evidence of a lower bill or a better result.",
+      "No. The cost and Terminal-Bench figures on this page are the authors' measurements of their proxy. Gobstopper ran its own Terminal-Bench 2.1 comparison of `gobstopper proxy` against Claude Code with no proxy, on GLM 5.3 Flash at a 45,000-token threshold with one trial per arm: resolution was within noise and input tokens were 29% lower. It ran no CliffCompaction arm and no 45K native auto-compaction arm, so the two sets of figures are not a head-to-head.",
   },
   {
     question: "Where do the dropped tool results go?",
