@@ -225,6 +225,9 @@ test("leads with the owner's hero line and explains the long-context price line"
   // Facts from the provider pages, checked 2026-09-28.
   expect(section).toContain("272K input tokens");
   expect(section).toContain("$2.24");
+  // The $4/$20 rate is promotional; the table must not present it as a list price.
+  expect(section).toContain("promotional rate");
+  expect(section).not.toContain("list prices");
   expect(section).toContain("128,000");
   expect(section).toContain("https://developers.openai.com/api/docs/models/gpt-5.6-sol");
   expect(section).toContain("https://platform.claude.com/docs/en/about-claude/pricing#long-context-pricing");
