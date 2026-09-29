@@ -1,0 +1,18 @@
+# CI runs `cargo nextest run --profile ci` in the quality job. Each test runs in
+# its own process, so wait-bound suites overlap instead of running binary after
+# binary. Doctests stay on `cargo test --doc`.
+[profile.ci]
+fail-fast = false
+failure-output = "immediate-final"
+slow-timeout = { period = "60s", terminate-after = 5 }
+
+# Start the long tests first so none of them runs alone at the end. In CI run
+# 36529915018 the 49 s replay sweep started last and held the run for 26 s
+# after every other test had finished; the watch fixtures take 7-34 s each.
+[[profile.ci.overrides]]
+filter = 'test(=request::tests::a_replay_with_split_steps_keeps_every_pair_at_any_tail_budget)'
+priority = 100
+
+[[profile.ci.overrides]]
+filter = 'binary(sequence) | binary(watch)'
+priority = 50

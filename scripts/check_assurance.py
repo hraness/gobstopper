@@ -275,7 +275,8 @@ def validate_receipt_contract(root, name, receipt, require):
                 f"{label}: missing isolated workspace metadata declaration")
     else:
         suites = json.loads((root / "verify/stress/suites.json").read_text(), object_pairs_hook=unique_object)["suites"]
-        contract = literal_contract(checker, ("TOTAL_SECONDS", "MAX_LOG_BYTES", "MAX_CHILD_RSS_BYTES", "SEED", "SUITES"))
+        contract = literal_contract(checker, ("TOTAL_SECONDS", "MAX_LOG_BYTES", "MAX_CHILD_RSS_BYTES", "SEED",
+                                              "SUITE_WORKERS", "SUITES"))
         expected = {suite["name"] for suite in suites}
         require(len(suites) == len(expected) and expected == set(contract["SUITES"]),
                 f"{label}: stress suite inventory differs from runner")
@@ -291,7 +292,8 @@ def validate_receipt_contract(root, name, receipt, require):
         bounds = receipt.get("raw_bounds", {})
         expected_bounds = {
             "total_seconds": contract["TOTAL_SECONDS"], "max_log_bytes_per_command": contract["MAX_LOG_BYTES"],
-            "cargo_jobs": 2, "test_threads": 1, "max_observed_single_child_rss_bytes": contract["MAX_CHILD_RSS_BYTES"],
+            "cargo_jobs": 2, "test_threads": 1, "suite_workers": contract["SUITE_WORKERS"],
+            "max_observed_single_child_rss_bytes": contract["MAX_CHILD_RSS_BYTES"],
             "sequence_steps": 64, "sequence_corruption_recoveries": 16, "sequence_post_step_file_limit": 1200,
             "sequence_post_step_bytes_limit": 16 * 1024 * 1024, "sequence_elapsed_ms_limit": 90_000,
         }
@@ -300,11 +302,12 @@ def validate_receipt_contract(root, name, receipt, require):
                 f"{label}: stress resource bounds differ from runner")
         require(elapsed(receipt.get("elapsed_seconds"), contract["TOTAL_SECONDS"]),
                 f"{label}: invalid aggregate elapsed bound")
-        suite_elapsed = 0
+        suite_elapsed = []
         for suite in suites:
             row = rows.get(suite["name"], {})
-            package, targets, count, seconds = contract["SUITES"].get(suite["name"], (None, [], 0, 0))
-            argv = (["cargo", "test", "-p", package, "--locked", *targets, "--", "--nocapture", "--test-threads=1"]
+            package, targets, count, seconds, threads = contract["SUITES"].get(suite["name"], (None, [], 0, 0, 0))
+            argv = (["cargo", "test", "-p", package, "--locked", *targets, "--", "--nocapture",
+                     f"--test-threads={threads}"]
                     if package else ["python3", *targets])
             require(suite.get("argv") == argv and suite.get("seconds") == seconds
                     and len(suite["tests"]) == len(set(suite["tests"])) == count,
@@ -315,12 +318,15 @@ def validate_receipt_contract(root, name, receipt, require):
             require(elapsed(duration, suite["seconds"]),
                     f"{label}: invalid elapsed bound")
             if elapsed(duration, suite["seconds"]):
-                suite_elapsed += duration
+                suite_elapsed.append(duration)
             require(integer(row.get("largest_reaped_child_rss_bytes"))
                     and row["largest_reaped_child_rss_bytes"] <= contract["MAX_CHILD_RSS_BYTES"],
                     f"{label}: invalid observed child memory bound")
+        # Suites share a pool of SUITE_WORKERS: the aggregate covers the longest
+        # suite and at least an even share of the summed suite time.
         require(elapsed(receipt.get("elapsed_seconds"), contract["TOTAL_SECONDS"])
-                and receipt["elapsed_seconds"] >= suite_elapsed,
+                and receipt["elapsed_seconds"] >= max(suite_elapsed, default=0)
+                and receipt["elapsed_seconds"] * contract["SUITE_WORKERS"] >= sum(suite_elapsed),
                 f"{label}: aggregate elapsed contradicts suite durations")
         metrics = rows.get("sequence", {}).get("sequence_metrics", {})
         require(isinstance(metrics, dict) and metrics.get("seed") == contract["SEED"]

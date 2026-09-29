@@ -11,12 +11,50 @@ on:
 permissions:
   contents: read
 
+# Pull requests cancel superseded runs; main, schedule and dispatch runs are
+# grouped per commit and never cancelled by a later run.
 concurrency:
-  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.event_name }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  # Pull requests skip gates their files cannot affect. Both filters are
+  # negative, so a new top-level path runs everything. Pushes, schedules and
+  # dispatches always run every gate (release evidence cites push runs).
+  changes:
+    name: Changed areas
+    runs-on: ubuntu-slim
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      rust: ${{ github.event_name != 'pull_request' || steps.filter.outputs.rust == 'true' || steps.filter.outputs.benchmarks == 'true' }}
+      site: ${{ github.event_name != 'pull_request' || steps.filter.outputs.site == 'true' }}
+    steps:
+      - id: filter
+        if: github.event_name == 'pull_request'
+        uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
+        with:
+          predicate-quantifier: every
+          filters: |
+            rust:
+              - '**'
+              - '!site/**'
+              - '!media/**'
+            benchmarks:
+              - 'site/public/benchmarks/**'
+            site:
+              - '**'
+              - '!crates/**'
+              - '!verify/**'
+              - '!hf/**'
+              - '!scripts/**'
+              - '!Cargo.lock'
+
   quality:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -30,10 +68,30 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           shared-key: rust-1.97.1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo fmt --all -- --check
       - run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-      - run: cargo test --workspace --all-targets --all-features --locked
+      - uses: taiki-e/install-action@4cef1412cce204788f482e778a0b9187f9626a29 # v2.87.21
+        with:
+          tool: cargo-nextest@0.9.146
+      # One process per test: wait-bound suites overlap instead of running
+      # binary after binary. Doctests stay on cargo test below.
+      - run: cargo nextest run --workspace --all-targets --all-features --locked --profile ci
       - run: cargo test --workspace --doc --all-features --locked
+      - run: python3 scripts/check-dialects.py --cases 512 --seed 78422376057123
+
+  # The Python gates need no Rust build, so they run beside quality instead
+  # of after its test step.
+  python:
+    name: Assurance and Python checks
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
       - run: python3 scripts/check_assurance.py
       - name: Validate public benchmark export
         run: |
@@ -46,10 +104,11 @@ jobs:
       - run: python3 -m unittest discover -s verify/core -p 'test_*.py' -v
       - run: python3 -m unittest discover -s verify/transcript -p 'test_*.py' -v
       - run: python3 -m unittest discover -s verify/stress -p 'test_*.py' -v
-      - run: python3 scripts/check-dialects.py --cases 512 --seed 78422376057123
 
   msrv:
     name: MSRV 1.85.0
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -62,10 +121,13 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           shared-key: msrv
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo check --workspace --lib --bins --locked
 
   formal:
     name: Vault and native protocol models
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -102,6 +164,8 @@ jobs:
 
   core-proofs:
     name: Production Rust proof kernels
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
@@ -133,6 +197,8 @@ jobs:
 
   transcript-proofs:
     name: Lean laws and Rust correspondence
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -166,6 +232,8 @@ jobs:
 
   bounded-stress:
     name: Bounded fault and process suites
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -178,6 +246,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6
         with:
           shared-key: rust-1.97.1
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Prepare dependencies and test binaries within the job deadline
         run: cargo test --workspace --all-targets --locked --no-run --jobs 2
       - name: Run exact named suites with bounded resources
@@ -195,6 +264,8 @@ jobs:
 
   site:
     name: Public site build and browser
+    needs: changes
+    if: needs.changes.outputs.site == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     defaults:
@@ -211,11 +282,36 @@ jobs:
         with:
           node-version: 24
           package-manager-cache: false
-      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      # Only main saves caches; pull requests and branch dispatches restore. The Next.js
+      # build cache is keyed per commit so each main build refreshes it.
+      - name: Restore Bun cache
+        if: github.ref != 'refs/heads/main'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.bun/install/cache
           key: bun-site-${{ runner.os }}-${{ hashFiles('site/bun.lock') }}
           restore-keys: bun-site-${{ runner.os }}-
+      - name: Bun cache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.bun/install/cache
+          key: bun-site-${{ runner.os }}-${{ hashFiles('site/bun.lock') }}
+          restore-keys: bun-site-${{ runner.os }}-
+      - name: Restore Next.js build cache
+        if: github.ref != 'refs/heads/main'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: site/.next/cache
+          key: next-site-${{ runner.os }}-${{ hashFiles('site/bun.lock') }}-${{ github.sha }}
+          restore-keys: next-site-${{ runner.os }}-${{ hashFiles('site/bun.lock') }}-
+      - name: Next.js build cache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: site/.next/cache
+          key: next-site-${{ runner.os }}-${{ hashFiles('site/bun.lock') }}-${{ github.sha }}
+          restore-keys: next-site-${{ runner.os }}-${{ hashFiles('site/bun.lock') }}-
       - run: bun install --frozen-lockfile --ignore-scripts
       - name: Check the launch stills against their receipts
         working-directory: .
@@ -241,17 +337,28 @@ jobs:
   required:
     name: Required
     if: always()
-    needs: [quality, msrv, formal, core-proofs, transcript-proofs, bounded-stress, site]
-    runs-on: ubuntu-24.04
+    needs: [changes, quality, python, msrv, formal, core-proofs, transcript-proofs, bounded-stress, site]
+    runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:
+      # A gate may be skipped only when the change filter ruled its area out.
       - name: Require every verification gate
         env:
+          CHANGES: ${{ needs.changes.result }}
+          RUST: ${{ needs.changes.outputs.rust }}
+          SITE_CHANGED: ${{ needs.changes.outputs.site }}
           SITE: ${{ needs.site.result }}
           QUALITY: ${{ needs.quality.result }}
+          PYTHON: ${{ needs.python.result }}
           MSRV: ${{ needs.msrv.result }}
           FORMAL: ${{ needs.formal.result }}
           CORE_PROOFS: ${{ needs.core-proofs.result }}
           TRANSCRIPT_PROOFS: ${{ needs.transcript-proofs.result }}
           BOUNDED_STRESS: ${{ needs.bounded-stress.result }}
-        run: test "$SITE" = success && test "$QUALITY" = success && test "$MSRV" = success && test "$FORMAL" = success && test "$CORE_PROOFS" = success && test "$TRANSCRIPT_PROOFS" = success && test "$BOUNDED_STRESS" = success
+        run: |
+          gate() { test "$1" = success || { test "$1" = skipped && test "$2" = false; }; }
+          test "$CHANGES" = success
+          gate "$SITE" "$SITE_CHANGED"
+          for result in "$QUALITY" "$PYTHON" "$MSRV" "$FORMAL" "$CORE_PROOFS" "$TRANSCRIPT_PROOFS" "$BOUNDED_STRESS"; do
+            gate "$result" "$RUST"
+          done

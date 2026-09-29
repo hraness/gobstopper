@@ -28,8 +28,14 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(sum(len(s["tests"]) for s in suites), 151)
         self.assertEqual(check.TOTAL_SECONDS, 900)
         self.assertEqual(next(s for s in suites if s["name"] == "watch")["seconds"], 360)
+        self.assertEqual(check.SUITE_WORKERS, 3)
+        # Only the watch suite runs two libtest threads; every other suite is serial.
+        threads = {s["name"]: s["argv"][-1] for s in suites if s["argv"][0] == "cargo"}
+        self.assertEqual(threads.pop("watch"), "--test-threads=2")
+        self.assertEqual(set(threads.values()), {"--test-threads=1"})
         for mutate in (lambda d:d["suites"].pop(),
                        lambda d:d["suites"][0]["argv"].append("--ignored"),
+                       lambda d:d["suites"][0]["argv"].__setitem__(-1, "--test-threads=4"),
                        lambda d:d["suites"][0].update(seconds=999999),
                        lambda d:d["suites"][0]["tests"].clear()):
             changed = document()

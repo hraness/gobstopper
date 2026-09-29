@@ -71,7 +71,7 @@ class AssuranceTests(unittest.TestCase):
             "identity_log_sha256": {name: "4" * 64 for name in
                                     ("rust-sysroot.log", "cargo-version.log", "rust-version.log")},
             "raw_bounds": {"total_seconds": 900, "max_log_bytes_per_command": 8 * 1024 * 1024,
-                           "cargo_jobs": 2, "test_threads": 1,
+                           "cargo_jobs": 2, "test_threads": 1, "suite_workers": 3,
                            "max_observed_single_child_rss_bytes": 2 * 1024 * 1024 * 1024,
                            "sequence_steps": 64, "sequence_corruption_recoveries": 16,
                            "sequence_post_step_file_limit": 1200,
@@ -266,6 +266,8 @@ class AssuranceTests(unittest.TestCase):
             (lambda r: r["raw_bounds"].update(test_threads=True), "stress resource bounds differ"),
             (lambda r: r.update(elapsed_seconds=901), "invalid aggregate elapsed bound"),
             (lambda r: r.update(elapsed_seconds=1), "aggregate elapsed contradicts suite durations"),
+            (lambda r: r["raw_bounds"].update(suite_workers=4), "stress resource bounds differ"),
+            (lambda r: r["results"][0].update(elapsed_seconds=21), "aggregate elapsed contradicts suite durations"),
             (lambda r: r["results"][0].update(elapsed_seconds=float("nan")), "invalid elapsed bound"),
             (lambda r: r["results"][0].update(elapsed_seconds=10**1000), "invalid elapsed bound"),
             (lambda r: r["results"][0].update(largest_reaped_child_rss_bytes=2 * 1024**3 + 1), "invalid observed child memory bound"),
