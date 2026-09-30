@@ -8,7 +8,7 @@ import {
   ProductHero,
   ProviderMarkChip,
 } from "@hraness/design-kit/react/server";
-import { relatedFor } from "@hraness/design-kit/portfolio";
+import { product } from "@hraness/design-kit/portfolio";
 import { PlatformBadges, PlatformInstall } from "@hraness/design-kit/react";
 
 import { Terminal } from "./_components/code-block";
@@ -21,10 +21,12 @@ import { F } from "./_lib/gobbench-format";
 import { plainInline, renderInline } from "./_lib/inline";
 import { publishedRelease } from "./publication";
 
+import { productMessaging, relatedProduct } from "./messaging";
+
 const releaseVersion = publishedRelease?.version;
 const repository = "https://github.com/hraness/gobstopper";
-const heading = "Context compaction you can undo.";
-const summary = "Gobstopper keeps long coding sessions smaller. Run your agent through a local proxy, or make a smaller copy of a saved session while keeping the original for recovery.";
+const heading = productMessaging.hero.heading;
+const summary = productMessaging.hero.summary;
 const facts = "Free and open source · Runs on your machine · No account";
 const agents = ["claudecode", "codex", "opencode", "crush", "aider", "goose"] as const;
 
@@ -61,7 +63,7 @@ const questions = [
   },
 ] as const;
 
-const relatedProducts = relatedFor("gobstopper").map(({ href, mark, name, role }) => ({ href, mark, name, role }));
+const relatedProducts = ["xcb" as const].map((id) => ({ ...relatedProduct(id), mark: product(id).mark }));
 const structuredData = {
   "@context": "https://schema.org",
   "@type": "FAQPage",
@@ -83,11 +85,11 @@ export default function Home() {
             backdrop={false}
             align="start"
             actions={[
-              { href: "#install", label: "Install Gobstopper" },
-              { href: "#how", label: "How it works", emphasis: "secondary" },
+              { href: "#install", label: productMessaging.hero.primaryAction },
+              { href: "#how", label: productMessaging.hero.secondaryAction, emphasis: "secondary" },
             ]}
             boundary={facts}
-            eyebrow="Session compaction tool"
+            eyebrow={productMessaging.category}
             heading={heading}
             headingId="hero-title"
             name=""
@@ -95,7 +97,7 @@ export default function Home() {
           />
 
           <MarketingSection
-            heading="Keep the recent work in view."
+            heading={productMessaging.headings["home-live"]}
             headingId="how-title"
             id="how"
             label="While you work"
@@ -119,14 +121,14 @@ export default function Home() {
           </MarketingSection>
 
           <MarketingPrimitives
-            heading="Try a smaller copy. Keep a way back."
+            heading={productMessaging.headings["home-file-copy"]}
             headingId="saved-title"
             id="saved"
             label="Saved sessions"
             items={[
-              { label: "Preview the cut", summary: "Find a Claude Code or Codex session and inspect what a strategy would remove before writing anything." },
-              { label: "Keep the original", summary: "Compaction creates a separate copy and saves the original bytes in a local vault. Search that vault or prepare a restored copy when you need an older detail." },
-              { label: "Check before resuming", summary: "Copy checks cover record links, order, and tool-call pairs. They cannot guarantee provider resume, retention of every task fact, or what you will be billed." },
+              { label: productMessaging.headings["home-primitive-preview"], summary: "Find a Claude Code or Codex session and inspect what a strategy would remove before writing anything." },
+              { label: productMessaging.headings["home-primitive-original"], summary: "Compaction creates a separate copy and saves the original bytes in a local vault. Search that vault or prepare a restored copy when you need an older detail." },
+              { label: productMessaging.headings["home-primitive-resume"], summary: "Copy checks cover record links, order, and tool-call pairs. They cannot guarantee provider resume, retention of every task fact, or what you will be billed." },
             ]}
           />
           <div className="gob-home-demo">
@@ -151,7 +153,7 @@ export default function Home() {
 
           {gobFilm === null ? null : (
             <MarketingSection
-              heading="Watch it in 75 seconds."
+              heading={productMessaging.headings["home-film"]}
               headingId="film-title"
               id="film"
               label="Film"
@@ -164,7 +166,7 @@ export default function Home() {
 
           <MarketingInstallPanel
             eyebrow="Install"
-            heading="Start with one session."
+            heading={productMessaging.headings["home-install"]}
             headingId="install-title"
             id="install"
             note={<p>Each installer downloads the latest release for your platform, checks its SHA-256, and installs it for your user only. The proxy needs curl 8.3 or newer.</p>}
@@ -187,14 +189,14 @@ export default function Home() {
           </MarketingInstallPanel>
 
           <MarketingQuestionList
-            heading="Before you install."
+            heading={productMessaging.headings["home-questions"]}
             headingId="questions-title"
             id="questions"
             label="Questions"
             questions={questions.map(({ answer, question }) => ({ answer: <p>{renderInline(answer)}</p>, question }))}
           />
           <MarketingRelated
-            heading="Works with Gobstopper."
+            heading={productMessaging.headings["home-related"]}
             headingId="related-title"
             items={relatedProducts}
             label="Related"
