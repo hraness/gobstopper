@@ -1,18 +1,29 @@
-import { defineSocialImageSite } from "@hraness/web-discovery/social-image";
+import { defineSocialImageSite, type SocialImagePage } from "@hraness/web-discovery/social-image";
 
 import { productMessaging, productName } from "./messaging";
-import { socialIconPng } from "./social-icon";
+import { socialBrandMarkSvg } from "./social-mark";
 
 /**
  * Gobstopper's one social-image declaration. Every Open Graph and Twitter card
  * on the site renders from this through the shared @hraness/web-discovery
- * template; routes pass page copy only.
+ * template, which draws the site's sticky header (foil mark and name) over its
+ * hero in the Tokyo Night palette the site sets on <html data-palette>.
+ * Routes pass page copy only.
  */
 export const socialSite = defineSocialImageSite({
-  description: productMessaging.short,
+  brand: "Gobstopper",
+  brandMark: socialBrandMarkSvg,
+  description: productMessaging.tagline,
   domain: "gobstopper.sh",
-  icon: { kind: "app", src: socialIconPng },
   name: productName,
-  // Tokyo Night light, as the site renders it (design-kit contrast-adjusted text).
-  theme: { accent: "#2E7DE9", background: "#E1E2E7", foreground: "#1C3161", muted: "#414C76" },
+  palette: "tokyo-night",
 });
+
+/**
+ * The home card mirrors the hero: the category eyebrow over the tagline, which
+ * is also the hero heading. It fits two lines, so the card keeps the default
+ * product layout.
+ */
+export const homeSocialPage = {
+  eyebrow: productMessaging.category,
+} as const satisfies SocialImagePage;

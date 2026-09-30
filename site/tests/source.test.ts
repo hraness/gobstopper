@@ -537,16 +537,34 @@ describe("launch film files", () => {
 });
 
 describe("share card declaration", () => {
-  test("declares the real app icon, brand name, domain, and light theme once", async () => {
-    const { socialSite } = await import("../app/social");
-    const { socialImageSiteDetails } = await import("@hraness/web-discovery/social-image");
+  test("declares the header's foil mark, brand name, domain, and palette once", async () => {
+    const { homeSocialPage, socialSite } = await import("../app/social");
+    const { productMessaging } = await import("../app/messaging");
+    const { socialImageLayout, socialImageSiteDetails } = await import("@hraness/web-discovery/social-image/card");
     expect(socialSite.name).toBe("Gobstopper");
     expect(socialSite.domain).toBe("gobstopper.sh");
-    expect(socialSite.icon).toMatchObject({ kind: "app" });
-    const icon = socialSite.icon as { src: string };
-    expect(icon.src.startsWith("data:image/png;base64,")).toBe(true);
-    for (const value of Object.values(socialSite.theme ?? {})) expect(value).toMatch(/^#[0-9A-F]{6}$/u);
-    const details = socialImageSiteDetails(socialSite);
+    // The header shows "Gobstopper" beside /marks/gobstopper.svg on <html data-palette="tokyo-night">.
+    const [chrome, layout, mark] = await Promise.all([
+      read("app/_components/site-chrome.tsx"),
+      read("app/layout.tsx"),
+      read("public/marks/gobstopper.svg"),
+    ]);
+    expect(chrome).toContain('brand="Gobstopper"');
+    expect(chrome).toContain('brandMark="/marks/gobstopper.svg"');
+    expect(socialSite.brand).toBe("Gobstopper");
+    expect(socialSite.brandMark).toBe(mark);
+    expect(layout).toContain(`data-palette="${socialSite.palette}"`);
+    expect(socialSite.palette).toBe("tokyo-night");
+    // v0.13 draws no tile or wash: no legacy icon, mark, or accent/wash theme.
+    expect(socialSite.icon).toBeUndefined();
+    expect(socialSite.mark).toBeUndefined();
+    expect(socialSite.theme).toBeUndefined();
+    // The home card is the hero: category eyebrow over the tagline heading.
+    expect(socialSite.description).toBe(productMessaging.tagline);
+    expect(productMessaging.hero.heading).toBe(productMessaging.tagline);
+    expect(homeSocialPage.eyebrow).toBe(productMessaging.category);
+    const details = socialImageSiteDetails(socialSite, homeSocialPage);
+    expect(socialImageLayout(details)).toBe("product");
     expect(details.domain).toBe("gobstopper.sh");
   });
 
@@ -562,13 +580,13 @@ describe("share card declaration", () => {
   });
 
   test("every declared card fits as written, with nothing cut, shrunk, or removed", async () => {
-    const { socialSite } = await import("../app/social");
+    const { homeSocialPage, socialSite } = await import("../app/social");
     const { blogPosts } = await import("../app/blog/articles");
     const { postSocialPage } = await import("../app/blog/discovery");
     const { docsSocialPage } = await import("../app/docs/social-page");
     const { socialImageFit, socialImageSiteDetails } = await import("@hraness/web-discovery/social-image/card");
     const cards = [
-      ["home", undefined],
+      ["home", homeSocialPage],
       ["docs", docsSocialPage],
       ...blogPosts.map((post) => [`blog/${post.slug}`, postSocialPage(post)] as const),
     ] as const;
