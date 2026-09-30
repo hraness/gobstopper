@@ -11,6 +11,18 @@ Gobstopper releases are immutable GitHub Releases that the [release workflow](..
 
 Each archive holds exactly one file, `gobstopper` or `gobstopper.exe`. The workflow signs a build provenance attestation for each archive with [`actions/attest-build-provenance`](https://github.com/actions/attest-build-provenance). The Windows binary is not Authenticode-signed.
 
+Mac releases from 0.7.6 will also carry an Apple Developer ID Application signature from Team `8AAP53VTW3`, with the stable identifier `dev.hraness.gobstopper`, hardened runtime, and a secure timestamp. The installer verifies that identity before running the downloaded binary. Linux and Windows installation checks remain unchanged, and explicitly selected older Mac releases keep their previous installation behavior.
+
+### Apple signing setup
+
+Only the `macos_sign` job uses the tag-only `hraness-apple-release` environment. It has no required reviewers or wait timer. Its secrets are `APPLE_DEVELOPER_ID_P12_BASE64`, `APPLE_DEVELOPER_ID_P12_PASSWORD`, `APPLE_NOTARY_KEY_P8_BASE64`, `APPLE_NOTARY_KEY_ID`, and `APPLE_NOTARY_ISSUER_ID`. Keep the encrypted Developer ID Application certificate/private-key bundle and notarization API key outside source, logs, and artifacts. The signing team and identifier are reviewed source constants; certificate renewal preserves them.
+
+The Mac build runs without those credentials and produces a distinct unsigned intermediate. The signing job requires the exact tagged commit to be on the governed default branch and to have passed its CI `Required` check. It verifies the intermediate's same-run artifact ID and ZIP digest, signs the single executable in a temporary Keychain, and submits it to Apple. Publication requires an `Accepted` notarization result and a strict notarization check, followed by credential cleanup, an installer check, and attestation of the final archive.
+
+The notarization wait is limited to 15 minutes. A timeout stops publication and preserves a small diagnostic artifact containing the submission ID and input/signed-file hashes so the existing submission can be investigated without automatically submitting it again. It contains no private keys or service logs. Publication separately verifies the signing job's exact artifact ID and final archive/checksum hashes.
+
+A raw executable in a tar archive cannot carry a stapled notarization ticket. Release verification checks Apple's online ticket; installation verifies the code signature locally. Signing does not grant folder access. The first signed build may need approval when replacing an ad hoc build, and permission retention across updates requires a real test through the intended background launch route.
+
 The page follows [`RELEASES.md`](https://github.com/hraness/.github/blob/main/RELEASES.md) in hraness/.github, and [`scripts/release_notes.py`](../scripts/release_notes.py) builds it.
 
 ## Install

@@ -28,10 +28,14 @@ jobs:
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
       version: ${{ steps.tag.outputs.version }}
+      sha: ${{ steps.tag.outputs.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 1
+          fetch-tags: false
           persist-credentials: false
+          ref: ${{ github.sha }}
       # Fails before any build when the tag is not vX.Y.Z, does not match
       # Cargo.toml, or CHANGELOG.md has no finished section for it.
       - id: tag
@@ -47,7 +51,43 @@ jobs:
             printf '%064d  gobstopper-%s-%s\n' 0 "$version" "$asset" >> "$sums"
           done
           python3 scripts/release_notes.py render --tag "$TAG" --commit "$COMMIT" --sha256sums "$sums" > /dev/null
-          printf 'tag=%s\nversion=%s\n' "$TAG" "$version" >> "$GITHUB_OUTPUT"
+          test "$(git rev-parse HEAD)" = "$COMMIT"
+          printf 'tag=%s\nversion=%s\nsha=%s\n' "$TAG" "$version" "$COMMIT" >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: Verify the exact source passed Required on main
+    needs: identity
+    permissions:
+      actions: read
+      contents: read
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    outputs:
+      verified_sha: ${{ needs.identity.outputs.sha }}
+      verified_tag: ${{ needs.identity.outputs.tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERIFIED_SHA: ${{ needs.identity.outputs.sha }}
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+          ref: ${{ needs.identity.outputs.sha }}
+      - name: Bind the release to governed main and its exact CI run
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --unshallow origin "refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          git merge-base --is-ancestor "$VERIFIED_SHA" "refs/remotes/origin/$DEFAULT_BRANCH"
+          listing="$(gh api --method GET "repos/$GITHUB_REPOSITORY/actions/workflows/ci.yml/runs" -f head_sha="$VERIFIED_SHA" -f event=push -f per_page=100)"
+          [[ "$(jq -r '.total_count' <<<"$listing")" -le 100 ]] || exit 1
+          run="$(jq -r --arg sha "$VERIFIED_SHA" --arg branch "$DEFAULT_BRANCH" '[.workflow_runs[] | select(.head_sha == $sha and .head_branch == $branch and .event == "push")] | max_by(.id) | .id // empty' <<<"$listing")"
+          [[ "$run" =~ ^[1-9][0-9]*$ ]] || { echo "::error::No exact-source main CI run exists"; exit 1; }
+          gh run watch "$run" --repo "$GITHUB_REPOSITORY" --exit-status --interval 15
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run" | jq -e --arg sha "$VERIFIED_SHA" --arg branch "$DEFAULT_BRANCH" '.head_sha == $sha and .head_branch == $branch and .event == "push" and .conclusion == "success"' > /dev/null
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run/jobs?per_page=100" | jq -e '.total_count <= 100 and ([.jobs[] | select(.name == "Required")] | length == 1 and .[0].conclusion == "success")' > /dev/null
 
   build:
     name: Build (${{ matrix.platform }})
@@ -62,8 +102,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
-            platform: darwin-aarch64
           # Ubuntu 22.04 links against glibc 2.35, so the Linux builds run on
           # older distributions than a 24.04 build would.
           - os: ubuntu-22.04
@@ -80,7 +118,10 @@ jobs:
         run: git config --global core.autocrlf false
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 1
+          fetch-tags: false
           persist-credentials: false
+          ref: ${{ github.sha }}
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           toolchain: 1.97.1
@@ -97,6 +138,8 @@ jobs:
         run: |
           set -euo pipefail
           python3 -m http.server 8765 --bind 127.0.0.1 --directory artifacts >/dev/null 2>&1 &
+          server=$!
+          trap 'kill "$server"; wait "$server" || true' EXIT
           for _ in $(seq 1 120); do curl -fsS -o /dev/null http://127.0.0.1:8765/ && break; sleep 0.5; done
           prefix="$RUNNER_TEMP/install-check"
           GOBSTOPPER_RELEASE_BASE_URL=http://127.0.0.1:8765 GOBSTOPPER_INSTALL_PREFIX="$prefix" sh scripts/install.sh
@@ -124,15 +167,158 @@ jobs:
           subject-path: ${{ runner.os == 'Windows' && 'artifacts/*.zip' || 'artifacts/*.tar.gz' }}
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-${{ matrix.platform }}
+          name: release-${{ matrix.platform }}-${{ github.run_attempt }}
           path: artifacts/
           if-no-files-found: error
           retention-days: 30
 
+  macos_build:
+    name: Build unsigned macOS binary without Apple credentials
+    needs: identity
+    permissions:
+      contents: read
+    runs-on: macos-15
+    timeout-minutes: 45
+    outputs:
+      artifact_id: ${{ steps.unsigned.outputs.artifact-id }}
+      artifact_digest: ${{ steps.unsigned.outputs.artifact-digest }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+          ref: ${{ needs.identity.outputs.sha }}
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable 2026-09-03
+        with:
+          toolchain: 1.97.1
+      - name: Build and validate unsigned intermediate
+        env:
+          GOBSTOPPER_VERSION: ${{ needs.identity.outputs.version }}
+        run: ./scripts/build-release.sh
+      - name: Preserve exact unsigned input for the isolated signing job
+        id: unsigned
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # Deliberately cannot match the final release-<platform>-<attempt> selectors.
+          name: gobstopper-unsigned-darwin-aarch64-${{ github.run_attempt }}
+          path: |
+            artifacts/*.unsigned.tar.gz
+            artifacts/*.unsigned.tar.gz.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  macos_sign:
+    name: Sign and notarize exact macOS release bytes
+    needs:
+      - identity
+      - verify
+      - macos_build
+    # This environment permits only release tags and has no reviewers/timers.
+    # Apple credentials exist only here, never in the source/build jobs.
+    environment: hraness-apple-release
+    permissions:
+      actions: read
+      attestations: write
+      contents: read
+      id-token: write
+    runs-on: macos-15
+    timeout-minutes: 30
+    outputs:
+      artifact_id: ${{ steps.signed.outputs.artifact-id }}
+      artifact_digest: ${{ steps.signed.outputs.artifact-digest }}
+      archive_sha256: ${{ steps.signed_bytes.outputs.archive_sha256 }}
+      checksum_sha256: ${{ steps.signed_bytes.outputs.checksum_sha256 }}
+    env:
+      VERIFIED_TAG: ${{ needs.verify.outputs.verified_tag }}
+    steps:
+      - name: Check out verified dependency-free signing and admission code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+          fetch-tags: false
+          persist-credentials: false
+          ref: ${{ needs.verify.outputs.verified_sha }}
+      - name: Download and cryptographically bind exact same-run unsigned artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ARTIFACT_ID: ${{ needs.macos_build.outputs.artifact_id }}
+          ARTIFACT_DIGEST: ${{ needs.macos_build.outputs.artifact_digest }}
+          VERIFIED_SHA: ${{ needs.verify.outputs.verified_sha }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$ARTIFACT_ID" =~ ^[1-9][0-9]*$ || ! "$ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]]; then
+            echo "::error::Unsigned input lacks an immutable artifact identity"
+            exit 1
+          fi
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID" > "$RUNNER_TEMP/gobstopper-unsigned-metadata.json"
+          jq -e --arg id "$ARTIFACT_ID" --arg digest "sha256:$ARTIFACT_DIGEST" --arg run "$GITHUB_RUN_ID" --arg sha "$VERIFIED_SHA" '
+            (.id | tostring) == $id and .digest == $digest and .expired == false and
+            (.workflow_run.id | tostring) == $run and .workflow_run.head_sha == $sha and
+            (.name | test("^gobstopper-unsigned-darwin-aarch64-[1-9][0-9]*$")) and
+            .size_in_bytes > 0 and .size_in_bytes <= 134217728
+          ' "$RUNNER_TEMP/gobstopper-unsigned-metadata.json" > /dev/null
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$ARTIFACT_ID/zip" > "$RUNNER_TEMP/gobstopper-unsigned.zip"
+          python3 -I scripts/sign-macos-release.py extract-artifact "$RUNNER_TEMP/gobstopper-unsigned.zip" "$ARTIFACT_DIGEST" "$VERIFIED_TAG" "$RUNNER_TEMP/gobstopper-unsigned-input"
+      - name: Sign and notarize without executing the binary
+        env:
+          APPLE_DEVELOPER_ID_P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          APPLE_DEVELOPER_ID_P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+          APPLE_NOTARY_KEY_P8_BASE64: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          APPLE_NOTARY_KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          APPLE_NOTARY_ISSUER_ID: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          python3 -I scripts/sign-macos-release.py sign "$RUNNER_TEMP/gobstopper-unsigned-input/gobstopper-${VERIFIED_TAG#v}-darwin-aarch64.unsigned.tar.gz" "$VERIFIED_TAG" "$GITHUB_WORKSPACE/signed-artifacts" "$RUNNER_TEMP/gobstopper-apple-signing"
+      - name: Remove temporary signing credentials even on failure or cancellation
+        if: always()
+        run: python3 -I scripts/sign-macos-release.py cleanup "$RUNNER_TEMP/gobstopper-apple-signing"
+      - name: Bind the final signed bytes before executing the archive smoke
+        id: signed_bytes
+        run: |
+          set -euo pipefail
+          archive="signed-artifacts/gobstopper-${VERIFIED_TAG#v}-darwin-aarch64.tar.gz"
+          archive_sha256="$(shasum -a 256 "$archive" | cut -d ' ' -f 1)"
+          checksum_sha256="$(shasum -a 256 "$archive.sha256" | cut -d ' ' -f 1)"
+          [[ "$archive_sha256" =~ ^[0-9a-f]{64}$ && "$checksum_sha256" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          printf 'archive_sha256=%s\nchecksum_sha256=%s\n' "$archive_sha256" "$checksum_sha256" >> "$GITHUB_OUTPUT"
+      - name: Install and execute the final signed archive after credential removal
+        env:
+          GOBSTOPPER_VERSION: ${{ needs.identity.outputs.version }}
+        run: |
+          set -euo pipefail
+          python3 -m http.server 8765 --bind 127.0.0.1 --directory signed-artifacts >/dev/null 2>&1 &
+          server=$!
+          trap 'kill "$server"; wait "$server" || true' EXIT
+          for _ in $(seq 1 120); do curl -fsS -o /dev/null http://127.0.0.1:8765/ && break; sleep 0.5; done
+          prefix="$RUNNER_TEMP/signed-install-check"
+          GOBSTOPPER_RELEASE_BASE_URL=http://127.0.0.1:8765 GOBSTOPPER_INSTALL_PREFIX="$prefix" sh scripts/install.sh
+          test "$("$prefix/bin/gobstopper" --version)" = "gobstopper $GOBSTOPPER_VERSION"
+      - name: Attest final signed and notarized macOS archive
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: signed-artifacts/*.tar.gz
+      - name: Preserve exact signed macOS release assets
+        id: signed
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-darwin-aarch64-${{ github.run_attempt }}
+          path: signed-artifacts/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Preserve non-secret notarization submission diagnostic
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: gobstopper-apple-notarization-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/gobstopper-apple-notarization.json
+          if-no-files-found: ignore
+          retention-days: 30
+
   publish:
     name: Publish the GitHub Release
-    needs: [identity, build]
+    needs: [identity, verify, build, macos_sign]
     permissions:
+      actions: read
       contents: write
     runs-on: ubuntu-24.04
     timeout-minutes: 10
@@ -143,12 +329,49 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 1
+          fetch-tags: false
           persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Resolve native assets and bind the exact signing-job artifact
+        id: native_ids
+        env:
+          MACOS_ARTIFACT_ID: ${{ needs.macos_sign.outputs.artifact_id }}
+          MACOS_ARTIFACT_DIGEST: ${{ needs.macos_sign.outputs.artifact_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$MACOS_ARTIFACT_ID" =~ ^[1-9][0-9]*$ && "$MACOS_ARTIFACT_DIGEST" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$MACOS_ARTIFACT_ID" | jq -e --arg id "$MACOS_ARTIFACT_ID" --arg digest "sha256:$MACOS_ARTIFACT_DIGEST" --arg run "$GITHUB_RUN_ID" --arg sha "$COMMIT" '
+            (.id | tostring) == $id and .digest == $digest and .expired == false and
+            (.workflow_run.id | tostring) == $run and .workflow_run.head_sha == $sha and
+            (.name | test("^release-darwin-aarch64-[1-9][0-9]*$")) and
+            .size_in_bytes > 0 and .size_in_bytes <= 134217728
+          ' > /dev/null
+          listing="$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100")"
+          [[ "$(jq -r '.total_count' <<<"$listing")" -le 100 ]] || exit 1
+          ids=("$MACOS_ARTIFACT_ID")
+          for platform in linux-x86_64 linux-aarch64 windows-x86_64; do
+            id="$(jq -r --arg platform "$platform" '[.artifacts[] | select(.expired == false and (.name | test("^release-" + $platform + "-[1-9][0-9]*$")))] | max_by(.id) | .id // empty' <<<"$listing")"
+            [[ "$id" =~ ^[1-9][0-9]*$ ]] || { echo "::error::Missing $platform release artifact"; exit 1; }
+            ids+=("$id")
+          done
+          (IFS=,; echo "ids=${ids[*]}") >> "$GITHUB_OUTPUT"
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: release-*
+          artifact-ids: ${{ steps.native_ids.outputs.ids }}
           merge-multiple: true
           path: artifacts
+      - name: Require exact signed Mac archive and checksum bytes
+        env:
+          MACOS_ARCHIVE_SHA256: ${{ needs.macos_sign.outputs.archive_sha256 }}
+          MACOS_CHECKSUM_SHA256: ${{ needs.macos_sign.outputs.checksum_sha256 }}
+        run: |
+          set -euo pipefail
+          archive="artifacts/gobstopper-${TAG#v}-darwin-aarch64.tar.gz"
+          [[ "$MACOS_ARCHIVE_SHA256" =~ ^[0-9a-f]{64}$ && "$MACOS_CHECKSUM_SHA256" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          [[ -f "$archive" && ! -L "$archive" && -f "$archive.sha256" && ! -L "$archive.sha256" ]] || exit 1
+          [[ "$(sha256sum "$archive" | cut -d ' ' -f 1)" == "$MACOS_ARCHIVE_SHA256" ]] || exit 1
+          [[ "$(sha256sum "$archive.sha256" | cut -d ' ' -f 1)" == "$MACOS_CHECKSUM_SHA256" ]] || exit 1
       - name: Check each archive against its checksum and write SHA256SUMS
         working-directory: artifacts
         run: |
@@ -194,7 +417,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          fetch-depth: 1
+          fetch-tags: false
           persist-credentials: false
+          ref: ${{ github.sha }}
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           toolchain: 1.97.1

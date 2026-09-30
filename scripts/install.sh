@@ -89,13 +89,19 @@ main() {
   [ "$actual" = "$expected" ] || fail "checksum mismatch for $asset (expected $expected, got $actual)"
 
   # The archive holds exactly one regular file, gobstopper.
-  members=$(tar -tzf "$temporary/$asset") || fail "$asset is not a readable archive"
+  members=$(tar_list -tzf "$temporary/$asset") || fail "$asset is not a readable archive"
   [ "$members" = gobstopper ] || fail "$asset must contain only gobstopper"
+  types=$(tar_list -tvzf "$temporary/$asset") || fail "$asset is not a readable archive"
+  [ "$(printf '%s\n' "$types" | wc -l | tr -d '[:space:]')" = 1 ] || fail "$asset must contain one entry"
+  case "$types" in -*) ;; *) fail "$asset must contain a regular file named gobstopper" ;; esac
   mkdir "$temporary/extract"
-  tar -xzf "$temporary/$asset" -C "$temporary/extract" gobstopper
   candidate="$temporary/extract/gobstopper"
+  tar -xzOf "$temporary/$asset" gobstopper > "$candidate"
   [ -f "$candidate" ] && [ ! -L "$candidate" ] || fail "$asset must contain a regular file named gobstopper"
   chmod 0755 "$candidate"
+  if [ "$platform" = darwin-aarch64 ] && ! historical_unsigned_release "$version"; then
+    verify_macos_release_signature "$candidate"
+  fi
   reported=$("$candidate" --version 2>&1) || fail "the downloaded gobstopper does not run on this system: $reported"
   [ "$reported" = "gobstopper $version" ] || fail "the downloaded binary reports '$reported', expected 'gobstopper $version'"
 
@@ -131,6 +137,29 @@ download() {
 fail() {
   printf 'gobstopper install: %s\n' "$*" >&2
   exit 1
+}
+
+# Mac releases before 0.7.6 predate Developer ID signing.
+historical_unsigned_release() {
+  printf '%s\n' "$1" | awk -F . '{ exit !($1 == 0 && ($2 < 7 || ($2 == 7 && $3 < 6))) }'
+}
+
+verify_macos_release_signature() {
+  apple_team_id='8AAP53VTW3'
+  apple_identifier='dev.hraness.gobstopper'
+  printf '%s\n' "$apple_team_id" | LC_ALL=C grep -Eq '^[A-Z0-9]{10}$' || fail "release Apple Developer Team ID is not configured"
+  [ -x /usr/bin/codesign ] || fail "macOS codesign is required to verify this release"
+  requirement="anchor apple generic and identifier \"$apple_identifier\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$apple_team_id\""
+  /usr/bin/codesign --verify --strict --all-architectures --test-requirement "$requirement" "$1" \
+    || fail "release does not have the required Apple Developer ID signature"
+}
+
+tar_list() {
+  if listed=$(LC_ALL=C tar --options '!mac-ext' "$1" "$2" 2>/dev/null); then
+    printf '%s\n' "$listed"
+  else
+    LC_ALL=C tar "$1" "$2"
+  fi
 }
 
 main "$@"

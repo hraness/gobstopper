@@ -106,6 +106,30 @@
       "meaning": "The user's sh.gobstopper.proxy LaunchAgent file and its launchd registration",
       "owner": "CLI proxy install/uninstall",
       "boundary": "Only the one fixed label in the current user's gui domain; never a system daemon."
+    },
+    {
+      "id": "release_artifact",
+      "meaning": "Checked unsigned intermediate and final signed executable release archives and checksums",
+      "owner": "release workflow",
+      "boundary": "Reproducible distribution files only; distinct from transcript-bearing vault archives."
+    },
+    {
+      "id": "release_credentials",
+      "meaning": "Explicit Apple certificate/private-key bundle, notarization API key, and temporary signing Keychain",
+      "owner": "protected release environment",
+      "boundary": "Private release-only files and environment; never copied into logs, artifacts, or provider credential storage."
+    },
+    {
+      "id": "release_signing_config",
+      "meaning": "Pinned Apple team/identifier, verified release tag, artifact identity and signing limits",
+      "owner": "reviewed release source and verified workflow outputs",
+      "boundary": "Not user policy or provider hook configuration."
+    },
+    {
+      "id": "release_submission",
+      "meaning": "Allowlisted Apple notarization submission ID, status and input/signed-file hashes",
+      "owner": "release workflow",
+      "boundary": "Non-secret diagnostics survive temporary credential cleanup; they do not authorize resubmission or publication without Accepted verification."
     }
   ],
   "assumptions": [
@@ -472,6 +496,35 @@
         "path": "docs/assurance/receipts/2026-09-29-075-publishing-stress.json",
         "sha256": "aef970c45a4341f28df87808fbb9ac2905010c4b36920b43398a7979fa0bed32"
       }
+    },
+    {
+      "id": "E-APPLE-RELEASE-SOURCE",
+      "kind": "source_review",
+      "revision": "current-source; signing delivery recorded by its pull request",
+      "scope": "Developer ID signing, notarization submission bookkeeping, installer identity checks, and exact signed artifact publication.",
+      "bounds": "Source and mocked regression definitions cover credential handling and rejection paths. They do not attest an Apple account, real notarization acceptance, or permission retention across upgrades.",
+      "references": [
+        {
+          "path": "scripts/sign-macos-release.py"
+        },
+        {
+          "path": "scripts/test_sign_macos_release.py"
+        },
+        {
+          "path": "scripts/test_release_signing.py"
+        },
+        {
+          "path": "scripts/test_install.py"
+        },
+        {
+          "path": ".github/workflows/release.yml"
+        }
+      ],
+      "exclusions": [
+        "Real Apple signing or notarization evidence",
+        "Live provider/session mutation authority",
+        "Permission retention or reboot recovery"
+      ]
     }
   ],
   "invariants": [
