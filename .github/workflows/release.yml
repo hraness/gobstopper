@@ -180,6 +180,9 @@ jobs:
     # variable is "true"; docs/release.md lists what has to happen first.
     name: Publish to crates.io
     needs: [identity, publish]
+    concurrency:
+      group: crates-io-gobstopper
+      cancel-in-progress: false
     if: vars.CRATES_IO_PUBLISH == 'true'
     permissions:
       contents: read
@@ -195,22 +198,73 @@ jobs:
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           toolchain: 1.97.1
+      - name: Check package versions and default-branch ancestry
+        env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
+          workspace = tomllib.loads(Path('Cargo.toml').read_text())['workspace']
+          version = workspace['package']['version']
+          assert version == os.environ['GOBSTOPPER_VERSION']
+          for name in ('gobstopper-core', 'gobstopper-adapters'):
+              assert workspace['dependencies'][name]['version'] == f'={version}'
+          PY
+          git fetch --no-tags --unshallow origin "refs/heads/$DEFAULT_BRANCH:refs/remotes/origin/$DEFAULT_BRANCH"
+          git merge-base --is-ancestor "$GITHUB_SHA" "origin/$DEFAULT_BRANCH"
       - uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1.0.5
         id: auth
-      # Dependencies first; cargo waits for each one to reach the index. A
-      # version crates.io already has is skipped, so a rerun finishes the set.
+      # Dependencies first; cargo waits for each one to reach the index.
+      # Reruns accept only the exact available archive from this checked tag.
       - name: Publish the crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: |
           set -euo pipefail
+          verify_archive() {
+            python3 - "$crate" "$GOBSTOPPER_VERSION" "$checksum" "$RUNNER_TEMP/crate.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          name, version, checksum, path = sys.argv[1:]
+          published = json.loads(Path(path).read_text())['version']
+          assert published['crate'] == name and published['num'] == version, 'registry identity mismatch'
+          assert published['yanked'] is False, 'registry version is yanked'
+          assert published['checksum'] == checksum, 'registry archive differs from the checked source'
+          PY
+          }
           for crate in gobstopper-core gobstopper-adapters gobstopper; do
-            status="$(curl -sS -o /dev/null -w '%{http_code}' -A 'hraness/gobstopper release workflow' \
+            cargo +1.97.1 package --locked -p "$crate"
+            checksum=$(sha256sum "target/package/$crate-$GOBSTOPPER_VERSION.crate" | cut -d' ' -f1)
+            status="$(curl -sS --retry 3 -o "$RUNNER_TEMP/crate.json" -w '%{http_code}' -A 'hraness/gobstopper release workflow' \
               "https://crates.io/api/v1/crates/$crate/$GOBSTOPPER_VERSION")"
             case "$status" in
-              200) echo "::notice::$crate $GOBSTOPPER_VERSION is already on crates.io"; continue ;;
+              200) verify_archive; echo "::notice::$crate $GOBSTOPPER_VERSION already matches crates.io"; continue ;;
               404) ;;
               *) echo "::error::crates.io answered $status for $crate $GOBSTOPPER_VERSION"; exit 1 ;;
             esac
-            cargo publish --locked -p "$crate"
+            curl --fail --silent --show-error --retry 3 "https://crates.io/api/v1/crates/$crate" > "$RUNNER_TEMP/crate-latest.json"
+            python3 - "$GOBSTOPPER_VERSION" "$RUNNER_TEMP/crate-latest.json" <<'PY'
+          import json
+          import sys
+          from pathlib import Path
+          latest = json.loads(Path(sys.argv[2]).read_text())['crate']['max_stable_version']
+          if latest is not None:
+              assert tuple(map(int, sys.argv[1].split('.'))) > tuple(map(int, latest.split('.'))), 'refusing an older crate version'
+          PY
+            cargo +1.97.1 publish --locked -p "$crate"
+            available=false
+            for _ in $(seq 1 10); do
+              if curl --fail --silent --show-error \
+                "https://crates.io/api/v1/crates/$crate/$GOBSTOPPER_VERSION" > "$RUNNER_TEMP/crate.json"; then
+                verify_archive
+                available=true
+                break
+              fi
+              sleep 5
+            done
+            test "$available" = true
           done
