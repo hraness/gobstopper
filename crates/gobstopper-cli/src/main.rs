@@ -5,16 +5,20 @@ mod apple_cmd;
 mod apple_digest;
 mod apple_scorer;
 mod config;
+mod context;
 mod hooks;
 mod jev;
 mod llm_scorer;
 mod mcp;
 mod native_operations;
+mod power;
 mod proxy;
 mod proxy_agent;
+mod proxy_observations;
 mod report;
 mod secrets;
 mod self_update;
+mod session_data;
 mod telemetry;
 mod ux;
 
@@ -430,6 +434,10 @@ enum Cmd {
         #[command(subcommand)]
         command: proxy::ProxyCmd,
     },
+    /// Reserve context for a difficult phase and inspect its effective limits.
+    Context(context::ContextArgs),
+    /// Inspect, export, and import local session observations and metrics.
+    Data(session_data::DataArgs),
     /// Show recorded native compaction operations and any whose outcome is
     /// unknown. Changes nothing and calls no provider.
     NativeOperations,
@@ -5468,6 +5476,8 @@ fn offline_command(command: Option<&Cmd>) -> bool {
                 | Cmd::History { .. }
                 | Cmd::Show { .. }
                 | Cmd::Recall { .. }
+                | Cmd::Context(_)
+                | Cmd::Data(_)
                 | Cmd::NativeOperations
                 | Cmd::Eval { .. }
                 | Cmd::Diff { .. }
@@ -5483,6 +5493,11 @@ fn offline_command(command: Option<&Cmd>) -> bool {
                 }
                 | Cmd::Proxy {
                     command: proxy::ProxyCmd::Replay { .. }
+                        | proxy::ProxyCmd::Doctor { .. }
+                        | proxy::ProxyCmd::Status { .. }
+                        | proxy::ProxyCmd::Install { print: true, .. }
+                        | proxy::ProxyCmd::MigrateService { print: true }
+                        | proxy::ProxyCmd::Repair { print: true }
                 }
         )
     )
@@ -5498,6 +5513,8 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Update(_) | Cmd::InstallRelease(_) | Cmd::BuildIdentity => {
             unreachable!("handled before product configuration")
         }
+        Cmd::Context(args) => context::run(args),
+        Cmd::Data(args) => session_data::run(args),
         Cmd::Plugin { command } => cmd_plugin(command),
         Cmd::Detect { all, limit, json } => cmd_detect(&cli, *all, *limit, *json),
         Cmd::Plan {
@@ -5865,6 +5882,15 @@ mod tests {
             "eval fixture.jsonl",
             "plugin check plugin.json",
             "apple status",
+            "context status",
+            "context reserve --tokens 100000",
+            "data status",
+            "data import fixture.jsonl",
+            "proxy doctor",
+            "proxy status",
+            "proxy install --print",
+            "proxy migrate-service --print",
+            "proxy repair --print",
             "policy-check --provider codex --context-tokens 5000",
         ] {
             let cli = super::Cli::try_parse_from(
@@ -5873,7 +5899,13 @@ mod tests {
             .unwrap();
             assert!(super::offline_command(cli.command.as_ref()), "{arguments}");
         }
-        for arguments in ["apply fixture.jsonl", "watch", "proxy serve"] {
+        for arguments in [
+            "apply fixture.jsonl",
+            "watch",
+            "proxy serve",
+            "proxy install",
+            "proxy repair",
+        ] {
             let cli = super::Cli::try_parse_from(
                 std::iter::once("gobstopper").chain(arguments.split_whitespace()),
             )

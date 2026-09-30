@@ -1,12 +1,12 @@
 //! Golden output for the CLI style contract: bare invocation, grouped help,
 //! version, usage errors (text, ASCII, agent JSON), empty states, closed
-//! pipes, `proxy status` when nothing answers, and `proxy install` against a
-//! fake `launchctl`.
+//! pipes, `proxy status` when nothing answers, and non-mutating service setup
+//! previews and ownership checks.
 //!
 //! Every run clears the environment and uses a private temporary HOME, so no
 //! real session, keychain, clipboard or LaunchAgent is touched.
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 
 struct Sandbox(PathBuf);
@@ -31,10 +31,13 @@ impl Sandbox {
         command
             .env_clear()
             .env("HOME", self.home())
+            .env("USERPROFILE", self.home())
+            .env("LOCALAPPDATA", self.0.join("local-app-data"))
             .env("XDG_CONFIG_HOME", self.0.join("config"))
             .env("XDG_DATA_HOME", self.0.join("data"))
             .env("PATH", self.0.join("bin"))
             .env("LANG", "en_US.UTF-8")
+            .env("TERM", "xterm-256color")
             .env("CODEX_HOME", self.0.join("codex"))
             .env("CLAUDE_CONFIG_DIR", self.0.join("claude"))
             .args(args)
@@ -294,49 +297,18 @@ fn proxy_status_says_how_to_start_the_proxy() {
     assert!(agent.stderr.is_empty());
     let value: serde_json::Value = serde_json::from_slice(&agent.stdout).unwrap();
     assert_eq!(value["error"]["code"], "proxy-not-running");
-    // Installed but not answering: point at the log and a restart.
+    // A bare plist is not proof of an installation we own. Preserve it and
+    // report its migration path through doctor instead of offering kill -k.
     let agents = sandbox.home().join("Library/LaunchAgents");
     std::fs::create_dir_all(&agents).unwrap();
     std::fs::write(agents.join("sh.gobstopper.proxy.plist"), "<plist/>").unwrap();
     let installed = sandbox.run(&["proxy", "status", "--port", &port], &[]);
-    let stderr = text(&installed.stderr);
-    assert!(
-        stderr.starts_with(&format!(
-            "✗ The proxy is installed but isn't answering on 127.0.0.1:{port}. Its log is {}.\n",
-            sandbox
-                .home()
-                .join("Library/Logs/gobstopper-proxy.log")
-                .display()
-        )),
-        "{stderr}"
-    );
-    assert!(stderr.contains("→ launchctl kickstart -k gui/"), "{stderr}");
-    assert!(stderr.ends_with("/sh.gobstopper.proxy\n"), "{stderr}");
-}
-
-fn fake_launchctl(sandbox: &Sandbox) -> (PathBuf, PathBuf) {
-    let log = sandbox.0.join("launchctl.log");
-    let script = sandbox.0.join("bin/fake-launchctl");
-    std::fs::write(
-        &script,
-        format!("#!/bin/sh\necho \"$@\" >> '{}'\nexit 0\n", log.display()),
-    )
-    .unwrap();
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o755)).unwrap();
-    }
-    (script, log)
-}
-
-fn read(path: &Path) -> String {
-    std::fs::read_to_string(path).unwrap_or_default()
+    assert!(text(&installed.stderr).contains("gobstopper proxy install"));
 }
 
 #[test]
-fn proxy_install_says_what_macos_will_show_then_loads_the_agent() {
-    let sandbox = Sandbox::new("install");
+fn proxy_install_preview_has_identity_and_supervision_without_writes() {
+    let sandbox = Sandbox::new("install-preview");
     let port = free_port().to_string();
     let printed = sandbox.run(
         &[
@@ -351,81 +323,67 @@ fn proxy_install_says_what_macos_will_show_then_loads_the_agent() {
         &[],
     );
     assert_eq!(printed.status.code(), Some(0), "{printed:?}");
-    let plist = text(&printed.stdout);
-    assert!(plist.contains("<string>serve</string>\n    <string>--port</string>"));
-    assert!(plist.contains("<string>--threshold</string>\n    <string>256000</string>"));
-    assert!(!plist.contains("--print"));
-    let plist_path = sandbox
+    let definition = text(&printed.stdout);
+    assert!(definition.contains("--service-id"));
+    assert!(definition.contains("--threshold"));
+    assert!(definition.contains("256000"));
+    assert!(!definition.contains("--print"));
+    #[cfg(target_os = "macos")]
+    assert!(definition.contains("<key>ThrottleInterval</key><integer>30</integer>"));
+    #[cfg(target_os = "linux")]
+    assert!(definition.contains("StartLimitBurst=5"));
+    assert!(
+        !sandbox.0.join("config/gobstopper/service").exists(),
+        "--print changes nothing"
+    );
+    assert!(!sandbox
+        .home()
+        .join("Library/LaunchAgents/sh.gobstopper.proxy.plist")
+        .exists());
+}
+
+#[test]
+fn proxy_setup_preserves_unmanaged_files_even_with_replace() {
+    let sandbox = Sandbox::new("install-ownership");
+    #[cfg(target_os = "macos")]
+    let path = sandbox
         .home()
         .join("Library/LaunchAgents/sh.gobstopper.proxy.plist");
-    assert!(!plist_path.exists(), "--print changes nothing");
+    #[cfg(target_os = "linux")]
+    let path = sandbox
+        .0
+        .join("config/systemd/user/gobstopper-proxy.service");
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    return;
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
+    {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "owner-controlled existing definition").unwrap();
+        let blocked = sandbox.run(&["proxy", "install", "--replace"], &[]);
+        assert_eq!(blocked.status.code(), Some(1), "{blocked:?}");
+        assert!(text(&blocked.stderr).contains("unmanaged service definition"));
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "owner-controlled existing definition"
+        );
+        let removed = sandbox.run(&["proxy", "uninstall"], &[]);
+        assert_eq!(removed.status.code(), Some(0));
+        assert!(
+            path.exists(),
+            "uninstall cannot delete an unmanaged definition"
+        );
+    }
+}
 
-    let (launchctl, calls) = fake_launchctl(&sandbox);
-    let launchctl = launchctl.to_str().unwrap();
-    let env = [
-        ("GOBSTOPPER_TEST_LAUNCHCTL", launchctl),
-        ("HRANESS_AUDIENCE", "human"),
-    ];
-    let installed = sandbox.run(&["proxy", "install", "--port", &port], &env);
-    assert_eq!(installed.status.code(), Some(0), "{installed:?}");
-    assert_eq!(
-        text(&installed.stderr),
-        format!(
-            "🔐 macOS will show a notice that gobstopper can open at login.\n   It keeps the request proxy on 127.0.0.1:{port} running so Claude Code and Codex requests stay small. Turn it off any time in System Settings › General › Login Items & Extensions.\nNext: export ANTHROPIC_BASE_URL=http://127.0.0.1:{port} in your shell profile, then start Claude Code\n"
-        )
-    );
-    assert!(
-        text(&installed.stdout).starts_with("✓ The proxy starts at login. It isn't answering yet")
-    );
-    assert!(read(&plist_path).contains("<string>--port</string>"));
-    assert!(
-        read(&calls).starts_with("bootstrap gui/"),
-        "{}",
-        read(&calls)
-    );
-
-    let again = sandbox.run(&["proxy", "install", "--port", &port], &env);
-    assert_eq!(again.status.code(), Some(1));
-    assert!(text(&again.stderr).ends_with("→ gobstopper proxy status\n"));
-    let different = sandbox.run(&["proxy", "install", "--port", "9"], &env);
-    assert!(text(&different.stderr).ends_with("→ gobstopper proxy install --replace\n"));
-
-    let quiet = sandbox.run(
-        &["proxy", "install", "--port", &port, "--replace"],
-        &[("GOBSTOPPER_TEST_LAUNCHCTL", launchctl)],
-    );
-    assert_eq!(quiet.status.code(), Some(0));
-    assert!(quiet.stderr.is_empty(), "a quiet reader gets no notice");
-
-    // A proxy already on the port (started by hand) blocks a second one.
-    let busy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let busy_port = busy.local_addr().unwrap().port().to_string();
-    std::thread::spawn(move || {
-        use std::io::{Read, Write};
-        for stream in busy.incoming().flatten() {
-            let mut stream = stream;
-            let mut buffer = [0u8; 1024];
-            let _ = stream.read(&mut buffer);
-            let _ = stream.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n{}");
-        }
-    });
-    let blocked = sandbox.run(
-        &["proxy", "install", "--port", &busy_port, "--replace"],
-        &env,
-    );
+#[test]
+fn proxy_install_refuses_an_occupied_port_without_killing_its_owner() {
+    let sandbox = Sandbox::new("install-port");
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port().to_string();
+    let blocked = sandbox.run(&["proxy", "install", "--port", &port], &[]);
     assert_eq!(blocked.status.code(), Some(1), "{blocked:?}");
-    assert!(text(&blocked.stderr).starts_with(&format!(
-        "✗ A gobstopper proxy is already running on 127.0.0.1:{busy_port}."
-    )));
-
-    let removed = sandbox.run(&["proxy", "uninstall"], &env);
-    assert_eq!(removed.status.code(), Some(0));
-    assert_eq!(
-        text(&removed.stdout),
-        "✓ Removed the proxy LaunchAgent. The proxy no longer starts at login.\n"
-    );
-    assert!(!plist_path.exists());
-    assert!(read(&calls).contains("bootout gui/"));
+    assert!(text(&blocked.stderr).contains("occupied"));
+    assert!(listener.local_addr().is_ok());
 }
 
 #[test]

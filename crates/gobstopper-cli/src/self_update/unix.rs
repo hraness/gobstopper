@@ -22,9 +22,9 @@ const ARCHIVE_LIMIT: usize = 128 * 1024 * 1024;
 const BINARY_LIMIT: usize = 256 * 1024 * 1024;
 const CHECKSUM_LIMIT: usize = 1024;
 const RECEIPT_LIMIT: usize = 64 * 1024;
-// The last release before installer ownership receipts. Compare verified bytes,
+// Known releases before installer ownership receipts. Compare verified bytes,
 // never execute an unknown installed binary to discover its claimed version.
-const LEGACY_RELEASE: &str = "v0.7.5";
+const LEGACY_RELEASES: &[&str] = &["v0.8.0", "v0.7.5"];
 
 pub(super) struct NativeInstaller;
 
@@ -513,6 +513,15 @@ fn replace(
     Ok(())
 }
 
+fn matches_legacy_release(
+    current_hash: &str,
+    mut fetch_hash: impl FnMut(&str) -> Result<String>,
+) -> bool {
+    LEGACY_RELEASES
+        .iter()
+        .any(|tag| fetch_hash(tag).is_ok_and(|hash| hash == current_hash))
+}
+
 fn verify_previous(
     profile: &Product,
     published: &Published,
@@ -549,15 +558,18 @@ fn verify_previous(
         ensure!(!old.pinned || explicit_pin || old.release_tag == published.release.tag_name, "This install is pinned; set GOBSTOPPER_VERSION to explicitly select a replacement version");
         return Ok(old.pinned || explicit_pin);
     }
-    // Legacy migration is limited to the last published pre-receipt build. A
-    // matching current candidate is checked separately by the caller.
-    let legacy = Published::fetch(profile, LEGACY_RELEASE).context(
-        "Cannot verify the pre-update installation; use a new GOBSTOPPER_INSTALL_PREFIX",
-    )?;
-    let stage = Stage::new(bin)?;
-    legacy.download(profile, &stage)?;
-    let old_hash = unpack(&stage)?;
-    ensure!(digest(binary) == old_hash, "Existing file is not the verified {LEGACY_RELEASE} release; use its source/package-manager update workflow or select a new GOBSTOPPER_INSTALL_PREFIX");
+    // Each allowed predecessor is independently checked against its canonical
+    // immutable release. A reserved or unavailable newer predecessor must not
+    // prevent migration of an older verified copy.
+    ensure!(
+        matches_legacy_release(&digest(binary), |tag| {
+            let legacy = Published::fetch(profile, tag)?;
+            let stage = Stage::new(bin)?;
+            legacy.download(profile, &stage)?;
+            unpack(&stage)
+        }),
+        "Existing file is not a verified 0.8.0 or 0.7.5 release; use its source/package-manager update workflow or select a new GOBSTOPPER_INSTALL_PREFIX"
+    );
     Ok(explicit_pin)
 }
 
@@ -697,6 +709,34 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static SERIAL: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn legacy_migration_uses_only_verified_known_predecessors() {
+        let expected = "a".repeat(64);
+        let mut requests = Vec::new();
+        assert!(matches_legacy_release(&expected, |tag| {
+            requests.push(tag.to_string());
+            if tag == "v0.8.0" {
+                bail!("release is not published yet");
+            }
+            Ok(expected.clone())
+        }));
+        assert_eq!(requests, ["v0.8.0", "v0.7.5"]);
+
+        requests.clear();
+        assert!(matches_legacy_release(&expected, |tag| {
+            requests.push(tag.to_string());
+            Ok(expected.clone())
+        }));
+        assert_eq!(requests, ["v0.8.0"]);
+
+        requests.clear();
+        assert!(!matches_legacy_release(&expected, |tag| {
+            requests.push(tag.to_string());
+            Ok("b".repeat(64))
+        }));
+        assert_eq!(requests, ["v0.8.0", "v0.7.5"]);
+    }
 
     struct Fixture {
         root: PathBuf,

@@ -1745,7 +1745,11 @@
     {
       "id": "request-proxy",
       "owner": "CLI proxy",
-      "reads": [],
+      "reads": [
+        "config",
+        "context_state",
+        "session_data"
+      ],
       "writes": [
         {
           "state": "process_state",
@@ -1758,9 +1762,24 @@
           "condition": "Upstream responses relayed to the loopback client; stderr carries paths, sizes, counts and error summaries, never request or response text."
         },
         {
-          "state": "cache",
-          "mode": "create",
-          "condition": "Append-only proxy-stats.jsonl ledger of per-request token estimates under the gobstopper data dir (or GOBSTOPPER_STATS_FILE); contains sizes, paths and flags, never content. Write failure is non-fatal."
+          "state": "event_log",
+          "mode": "append",
+          "condition": "Create parent directory and create/append proxy-stats.jsonl ledger of per-request token estimates under the gobstopper data dir (or GOBSTOPPER_STATS_FILE); contains sizes, paths and flags, never content. Write failure is non-fatal."
+        },
+        {
+          "state": "context_state",
+          "mode": "sql_transaction",
+          "condition": "Proxy startup and scoped recovery can initialize private storage; explicit scopes consume one reservation per logical request and update bounded adaptive evidence identities; wrapper closes its owned scope."
+        },
+        {
+          "state": "session_data",
+          "mode": "sql_transaction",
+          "condition": "Enabled local observation recording writes content-free attempt/context/usage/timing/tool metadata with bounded queue and recoverable failure counters."
+        },
+        {
+          "state": "idle_sleep",
+          "mode": "native",
+          "condition": "Enabled active inference holds a process-owned idle-sleep assertion through retries and releases on completion/cancellation."
         }
       ],
       "outbound": [
@@ -1788,47 +1807,68 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Loopback bind with a host check; 64 KiB request heads, 256 MiB bodies, 256 connections; curl connect 30 s, stall 900 s, total 7200 s. Parse, engine and non-length provider failures forward the original bytes. Estimate calibration reads provider usage from a copy of at most 4 MiB of a JSON response or 64 KiB of an event stream (the start for an Anthropic stream, the tail for an OpenAI stream), taken after each chunk reaches the client, and keeps at most 64 per-upstream, per-model ratios in memory.",
+      "bounds": "Loopback host validation; 64 KiB request heads, 256 MiB bodies, 256 connections; curl connect 30 s, stall 900 s, total 7200 s. Explicit hard context capacity applies to prepared output, raw fallbacks and retries using calibrated estimates. Prefix/evidence cache has hard serialized-byte bounds. Observation parsing is bounded and cannot reinterpret incomplete/unsupported responses as successful completion. Read-only MCP does not expose context mutation. Scoped traffic shares one recovery attempt for unavailable startup context storage, with a 30-second cooldown after each attempt; requests fail explicitly until it succeeds. Status remains responsive, and recovery does not replace an existing healthy control handle.",
       "exclusions": [
         "No live task-quality or billing claim",
-        "Estimates use four characters per token, divided into the threshold by a ratio from 1.0 to 2.0 learned from provider-reported usage unless --no-calibrate; provider counts can differ"
+        "Character/token estimates and calibrated ratios are approximations, not provider-capacity proof",
+        "Context/evidence memory cannot recover material already removed by native client compaction"
       ],
       "evidence": [
-        "E-FOUNDATION-SOURCE"
+        "E-EVERLASTING-SOURCE"
       ],
       "next_gate": "C15"
     },
     {
       "id": "launch-agent",
-      "owner": "CLI proxy",
+      "owner": "CLI proxy_agent",
       "reads": [
-        "config"
+        "config",
+        "service_state",
+        "launch_agent"
       ],
       "writes": [
         {
           "state": "launch_agent",
+          "mode": "create_delete",
+          "condition": "Install/migrate/repair/uninstall manage only a manifest-owned current-user platform definition and registration; print branches do not install."
+        },
+        {
+          "state": "service_state",
           "mode": "create_replace",
-          "condition": "Explicit `proxy install` writes ~/Library/LaunchAgents/sh.gobstopper.proxy.plist (refusing to replace a different file without --replace; --print writes nothing) and bootstraps it in the user's gui launchd domain; `proxy uninstall` boots it out and deletes that file."
+          "condition": "Persist identity manifest, pending intent, immutable predecessor configuration and migration backups; retain data/logs/backups on uninstall. Conflicts or damaged/unknown identity refuse."
+        },
+        {
+          "state": "service_state",
+          "mode": "delete",
+          "condition": "Explicit uninstall removes only the verified owned manifest; completed or recovered operations clear only their owned pending journal. Logs, data and backups are retained."
         },
         {
           "state": "process_state",
           "mode": "spawn",
-          "condition": "Runs launchctl bootstrap/bootout for the one sh.gobstopper.proxy label."
+          "condition": "Bounded fixed platform service-manager commands. Repair/upgrade checks active inference and drains the owned idle service before stopping; active work refuses and failure rolls back known owned configuration."
         },
         {
           "state": "output",
           "mode": "emit",
-          "condition": "The Background Items notice on stderr before loading, then one result line; no request or session content."
+          "condition": "Requested service paths, identity, status and closed diagnostics; no request/response content."
         }
       ],
-      "outbound": [],
-      "authority": "Explicit `gobstopper proxy install|uninstall` invocation for the current user's login session only.",
+      "outbound": [
+        "Local identity/status/drain control only; no inference."
+      ],
+      "authority": "Explicit proxy install/migrate/repair/uninstall for the current user; startup registration is never implicit in inspection.",
       "invariants": [
+        "ID-1",
+        "OWN-1",
+        "REC-2",
         "PRIV-1",
-        "OBS-1"
+        "READ-1"
       ],
       "assumptions": [
         "A-OS",
+        "A-FS",
+        "A-HASH",
+        "A-IDENTITY",
         "A-AUTH"
       ],
       "source": [
@@ -1838,17 +1878,18 @@
         },
         {
           "path": "crates/gobstopper-cli/src/proxy_agent.rs",
-          "anchor": "pub fn uninstall"
+          "anchor": "pub fn repair"
         }
       ],
       "status": "source_reviewed",
-      "bounds": "One fixed label and file path; the loaded agent runs `proxy serve` with the exact settings given to install.",
+      "bounds": "Manifest schema 1; bounded 256 KiB metadata files; exact executable path/definition/manager identity, per-user lock and pending intent. macOS launchd, Linux systemd user, Windows least-privilege task definitions.",
       "exclusions": [
         "No system-wide daemon",
-        "No signing or notarization; macOS attributes the item to the gobstopper executable"
+        "No Linux/Windows native manager qualification claim",
+        "Same-user hostile executable/path replacement remains outside the documented identity trust boundary"
       ],
       "evidence": [
-        "E-FOUNDATION-SOURCE"
+        "E-EVERLASTING-SOURCE"
       ],
       "next_gate": "C15"
     },
@@ -1916,6 +1957,433 @@
       ],
       "evidence": [
         "E-APPLE-RELEASE-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "runtime-input",
+      "owner": "CLI clock/identity/path helpers",
+      "reads": [
+        "process_state",
+        "config"
+      ],
+      "writes": [],
+      "outbound": [],
+      "authority": "OS clock, entropy and configured local paths; no provider access.",
+      "invariants": [
+        "READ-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-HASH",
+        "A-IDENTITY",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/context.rs",
+          "anchor": "pub fn now_ms"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Clock and entropy reads are nondeterministic; supplied-value hashing remains pure.",
+      "exclusions": [
+        "No universal execution or native platform qualification claim"
+      ],
+      "evidence": [
+        "E-EVERLASTING-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "context-read",
+      "owner": "CLI context",
+      "reads": [
+        "context_state"
+      ],
+      "writes": [],
+      "outbound": [],
+      "authority": "Read an already opened capability-addressed scope.",
+      "invariants": [
+        "READ-1",
+        "PRIV-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-HASH",
+        "A-IDENTITY",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/context.rs",
+          "anchor": "pub fn status"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Returns effective budget, bounds, expiry, reason and policy identity; does not initialize storage itself.",
+      "exclusions": [
+        "No universal execution or native platform qualification claim"
+      ],
+      "evidence": [
+        "E-EVERLASTING-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "context-control",
+      "owner": "CLI context",
+      "reads": [
+        "config",
+        "context_state"
+      ],
+      "writes": [
+        {
+          "state": "context_state",
+          "mode": "sql_transaction",
+          "condition": "Open can initialize the private schema even for status; create/reserve/release/consume/observe/close transactionally update scopes and bounded evidence-digest state."
+        },
+        {
+          "state": "process_state",
+          "mode": "in_memory",
+          "condition": "Capability and policy decisions; no MCP mutation surface."
+        }
+      ],
+      "outbound": [],
+      "authority": "Explicit local context command or accepted scoped proxy request. Capability header is consumed locally, not forwarded upstream.",
+      "invariants": [
+        "ID-1",
+        "PLAN-2",
+        "PRIV-1",
+        "RES-1",
+        "READ-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-HASH",
+        "A-IDENTITY",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/context.rs",
+          "anchor": "pub fn open"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/context.rs",
+          "anchor": "pub fn observe"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "4096 scopes; reservations at most 4096 logical requests/86400 seconds/8000000 requested tokens and always clamped to known capacity/output headroom. Adaptive evidence limited to 2048 identities per scope/65536 globally; automatic growth is opt-in. Startup retries only SQLite busy/locked errors within a configured 5-second retry window; established schema identity is read in one snapshot, and initialization rechecks after acquiring the writer lock. SQLite mutation busy waits are configured for 5 seconds without replaying mutations. Negative/newer schema versions, foreign identity and privacy failures are refused.",
+      "exclusions": [
+        "No provider-capacity attestation from a user declaration",
+        "No guarantee that retained evidence improves task success"
+      ],
+      "evidence": [
+        "E-EVERLASTING-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "session-read",
+      "owner": "CLI session_data",
+      "reads": [
+        "session_data"
+      ],
+      "writes": [],
+      "outbound": [],
+      "authority": "Queries use an already opened observation database.",
+      "invariants": [
+        "READ-1",
+        "OBS-1",
+        "PRIV-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-HASH",
+        "A-IDENTITY",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/session_data/store.rs",
+          "anchor": "pub fn events"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/session_data/store.rs",
+          "anchor": "pub fn check"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Queries select at most 100000 events; metrics preserve provenance, missing coverage and denominator units.",
+      "exclusions": [
+        "No universal execution or native platform qualification claim"
+      ],
+      "evidence": [
+        "E-EVERLASTING-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "session-store",
+      "owner": "CLI session_data and proxy recorder",
+      "reads": [
+        "config",
+        "session_data"
+      ],
+      "writes": [
+        {
+          "state": "session_data",
+          "mode": "sql_transaction",
+          "condition": "Private database creation, schema migration, WAL metadata and append-only idempotent observations. Opening status/check/query commands can initialize or migrate schema; damaged/newer schemas refuse. Source event corrections require explicit new evidence."
+        }
+      ],
+      "outbound": [],
+      "authority": "Enabled local proxy recording or explicit data command. Native and legacy imports read only the selected file.",
+      "invariants": [
+        "READ-1",
+        "REC-2",
+        "PRIV-1",
+        "OBS-1",
+        "RES-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-HASH",
+        "A-IDENTITY",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/session_data/store.rs",
+          "anchor": "pub fn open"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/session_data/store.rs",
+          "anchor": "pub fn append"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+          "anchor": "impl RecorderWorker"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Batch cap 10000 events; query cap 100000; import cap 64 MiB; database page limit 1 GiB. Current-schema identity checks use one read snapshot; initialization and migration recheck under writer locks. Proxy recording buffers at most 1024 events, flushes at most 256 per normal batch, and configures a 25 ms SQLite busy timeout. One owned worker drains pending batches and retries failures after 1\u201360 seconds even without new requests; it sleeps while healthy and idle, and is stopped and joined before the final shutdown flush. Atomic health publication follows counter updates; status does not wait on the database mutex. Background retry availability and loss/degraded counters are explicit.",
+      "exclusions": [
+        "No complete-observation guarantee after process crash, dropped queue or full storage",
+        "Windows ACLs inherit OS user-directory policy; Unix mode checks do not prove equivalent ACL restrictions"
+      ],
+      "evidence": [
+        "E-EVERLASTING-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "session-import",
+      "owner": "CLI native/legacy importers",
+      "reads": [
+        "source_file",
+        "session_data",
+        "config"
+      ],
+      "writes": [
+        {
+          "state": "session_data",
+          "mode": "sql_transaction",
+          "condition": "Explicit bounded native/legacy or portable import atomically appends admitted observations; source files untouched."
+        }
+      ],
+      "outbound": [],
+      "authority": "Caller selects provider/file or checksummed portable export; content-free observed metadata only.",
+      "invariants": [
+        "SRC-1",
+        "PRIV-1",
+        "OBS-1",
+        "RES-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-HASH",
+        "A-IDENTITY",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/session_data/importers.rs",
+          "anchor": "pub fn import_native"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/session_data/store.rs",
+          "anchor": "pub fn import"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "No provider dispatch. Unknown measured values stay missing; legacy context estimates are not billed usage.",
+      "exclusions": [
+        "No universal execution or native platform qualification claim"
+      ],
+      "evidence": [
+        "E-EVERLASTING-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "session-export",
+      "owner": "CLI session_data",
+      "reads": [
+        "session_data"
+      ],
+      "writes": [
+        {
+          "state": "output",
+          "mode": "emit",
+          "condition": "Checksummed portable observation snapshot is written to caller-owned Write/output or stdout; contains operational metadata and opaque IDs."
+        },
+        {
+          "state": "experiment_output",
+          "mode": "create",
+          "condition": "Explicit export path must be new; backup uses fresh SQLite destination and verified committed data, including WAL-visible events and private identity namespace."
+        }
+      ],
+      "outbound": [],
+      "authority": "Explicit data export or backup only; no automatic publishing.",
+      "invariants": [
+        "SRC-1",
+        "REC-1",
+        "PRIV-1",
+        "OBS-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-HASH",
+        "A-IDENTITY",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/session_data/store.rs",
+          "anchor": "pub fn export"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/session_data/store.rs",
+          "anchor": "pub fn backup"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Portable export excludes the secret identity namespace. Backups contain it and remain private; no transcripts or credentials are recorded as events.",
+      "exclusions": [
+        "No universal execution or native platform qualification claim"
+      ],
+      "evidence": [
+        "E-EVERLASTING-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "service-inspect",
+      "owner": "CLI proxy_agent",
+      "reads": [
+        "service_state",
+        "launch_agent"
+      ],
+      "writes": [
+        {
+          "state": "process_state",
+          "mode": "spawn",
+          "condition": "Bounded read-only platform manager queries and macOS plist inspection as needed."
+        }
+      ],
+      "outbound": [
+        "Loopback status request validates service ID/version/port; no inference."
+      ],
+      "authority": "Inspection of the current user service only.",
+      "invariants": [
+        "READ-1",
+        "ID-1",
+        "PRIV-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-HASH",
+        "A-IDENTITY",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+          "anchor": "pub fn inspect"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Manifest-owned definition and manager registration are checked separately from HTTP responsiveness; mismatch is unhealthy.",
+      "exclusions": [
+        "No universal execution or native platform qualification claim"
+      ],
+      "evidence": [
+        "E-EVERLASTING-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "inference-power",
+      "owner": "CLI power",
+      "reads": [
+        "idle_sleep",
+        "process_state"
+      ],
+      "writes": [
+        {
+          "state": "idle_sleep",
+          "mode": "native",
+          "condition": "Acquire process-owned idle-sleep inhibition during active inference and release on last guard drop or process termination."
+        },
+        {
+          "state": "process_state",
+          "mode": "spawn",
+          "condition": "Linux only: fixed-path systemd-inhibit helper owns EOF-bound stdin; cleanup collects the owned helper. macOS/Windows call native power APIs."
+        },
+        {
+          "state": "process_state",
+          "mode": "in_memory",
+          "condition": "Reference count, backend status and bounded retry cooldown."
+        }
+      ],
+      "outbound": [],
+      "authority": "Validated proxy inference with keep-awake enabled; local status/control requests do not acquire an assertion.",
+      "invariants": [
+        "RES-1",
+        "READ-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-HASH",
+        "A-IDENTITY",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/power.rs",
+          "anchor": "pub fn acquire"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "One shared assertion; 30-second acquisition failure backoff; failures observable and nonfatal. macOS IOKit, Windows power request or Linux idle inhibition only.",
+      "exclusions": [
+        "No display-wake/lid-close override",
+        "No Linux/Windows native runtime qualification claim"
+      ],
+      "evidence": [
+        "E-EVERLASTING-SOURCE"
       ],
       "next_gate": "C15"
     },
@@ -2395,13 +2863,17 @@
       "name": "Proxy",
       "effects": [
         "request-proxy",
+        "context-control",
+        "session-store",
+        "inference-power",
         "launch-agent",
+        "service-inspect",
         "inspect",
         "output",
         "native-update-storage",
         "native-update-network"
       ],
-      "contract": "serve/run forward loopback client requests through curl, compacting Anthropic Messages and OpenAI Responses bodies over the threshold and forwarding the original bytes on any failure; replay reads one recorded Claude Code or Codex transcript and calls no provider; status reads a local proxy's counters; install writes and loads the sh.gobstopper.proxy LaunchAgent after saying macOS will show a Background Items notice, and uninstall boots it out and removes it.",
+      "contract": "Loopback proxy for Anthropic Messages, OpenAI Responses and Chat Completions; bounded evidence and scoped budgets, content-free observation recording and inference-only idle-sleep inhibition. Hard configured capacity constrains fallbacks and retries. Replay reads a selected transcript without a provider call. Explicit current-user install/migrate/repair/uninstall preserve service identity, recover owned interrupted operations and leave user data intact. Replay, doctor and status suppress automatic release checks; all commands retain their native installation lease.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2549,6 +3021,35 @@
         "native-update-storage",
         "native-update-network"
       ]
+    },
+    {
+      "name": "Context",
+      "effects": [
+        "context-control",
+        "output",
+        "native-update-storage"
+      ],
+      "contract": "Local capability-scoped context create/reserve/status/release/close. Opening any command may initialize private SQLite policy state. Explicit windows and output reserve bound requests; counts/TTL and policy generation prevent stale rescue from replacing an agent reservation. Automatic release checks are suppressed; the native installation lease remains held.",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "anchor": "enum Cmd"
+      }
+    },
+    {
+      "name": "Data",
+      "effects": [
+        "session-store",
+        "session-import",
+        "session-export",
+        "inspect",
+        "output",
+        "native-update-storage"
+      ],
+      "contract": "Local versioned session/request/tool/metric/status/check output; opening may initialize or migrate private SQLite state. Explicit content-free native/legacy import, checksummed portable import/export and verified fresh backup. No cloud publication. Automatic release checks are suppressed; the native installation lease remains held.",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "anchor": "enum Cmd"
+      }
     },
     {
       "name": "Update",
@@ -4799,6 +5300,9 @@
       "symbol": "run",
       "effects": [
         "request-proxy",
+        "context-control",
+        "session-store",
+        "inference-power",
         "inspect",
         "output"
       ]
@@ -5296,13 +5800,6 @@
       ]
     },
     {
-      "path": "crates/gobstopper-cli/src/proxy.rs",
-      "symbol": "is_answering",
-      "effects": [
-        "inspect"
-      ]
-    },
-    {
       "path": "crates/gobstopper-cli/src/proxy_agent.rs",
       "symbol": "install",
       "effects": [
@@ -5320,21 +5817,7 @@
       "path": "crates/gobstopper-cli/src/proxy_agent.rs",
       "symbol": "log_path",
       "effects": [
-        "pure"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
-      "symbol": "plist",
-      "effects": [
-        "pure"
-      ]
-    },
-    {
-      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
-      "symbol": "plist_path",
-      "effects": [
-        "pure"
+        "runtime-input"
       ]
     },
     {
@@ -5440,6 +5923,520 @@
       "symbol": "write_stdout",
       "effects": [
         "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/anthropic.rs",
+      "symbol": "canonical_block",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/engine.rs",
+      "symbol": "prepare_with_policy",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/evidence.rs",
+      "symbol": "complete_digests",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/evidence.rs",
+      "symbol": "evidence_observations",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/evidence.rs",
+      "symbol": "merge",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/evidence.rs",
+      "symbol": "render",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/evidence.rs",
+      "symbol": "serialized_bytes",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/evidence.rs",
+      "symbol": "serialized_size",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/context.rs",
+      "symbol": "close",
+      "effects": [
+        "context-control"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/context.rs",
+      "symbol": "consume",
+      "effects": [
+        "context-control"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/context.rs",
+      "symbol": "create",
+      "effects": [
+        "context-control"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/context.rs",
+      "symbol": "default_path",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/context.rs",
+      "symbol": "now_ms",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/context.rs",
+      "symbol": "observe",
+      "effects": [
+        "context-control"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/context.rs",
+      "symbol": "open",
+      "effects": [
+        "context-control"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/context.rs",
+      "symbol": "policy_identity",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/context.rs",
+      "symbol": "random_id",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/context.rs",
+      "symbol": "release",
+      "effects": [
+        "context-control"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/context.rs",
+      "symbol": "reserve",
+      "effects": [
+        "context-control"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/context.rs",
+      "symbol": "run",
+      "effects": [
+        "context-control",
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/context.rs",
+      "symbol": "status",
+      "effects": [
+        "context-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/power.rs",
+      "symbol": "acquire",
+      "effects": [
+        "inference-power"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/power.rs",
+      "symbol": "alive",
+      "effects": [
+        "inference-power"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/power.rs",
+      "symbol": "new",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/power.rs",
+      "symbol": "status",
+      "effects": [
+        "inference-power"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "inspect",
+      "effects": [
+        "service-inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "migrate",
+      "effects": [
+        "launch-agent"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "repair",
+      "effects": [
+        "launch-agent"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "context",
+      "effects": [
+        "session-store",
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "disabled",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "finish",
+      "effects": [
+        "session-store",
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "finish_json",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "new",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "observe",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "open",
+      "effects": [
+        "session-store",
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "request_id",
+      "effects": [
+        "session-store",
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "session_id",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "start",
+      "effects": [
+        "session-store",
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "status",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data.rs",
+      "symbol": "run",
+      "effects": [
+        "session-store",
+        "session-import",
+        "session-export",
+        "inspect",
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/importers.rs",
+      "symbol": "import_legacy",
+      "effects": [
+        "session-import"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/importers.rs",
+      "symbol": "import_native",
+      "effects": [
+        "session-import"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/metrics.rs",
+      "symbol": "metrics",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/metrics.rs",
+      "symbol": "requests",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/metrics.rs",
+      "symbol": "sessions",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/metrics.rs",
+      "symbol": "tools",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/schema.rs",
+      "symbol": "hex",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/schema.rs",
+      "symbol": "kind",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/schema.rs",
+      "symbol": "lifecycle_key",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/schema.rs",
+      "symbol": "new",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/schema.rs",
+      "symbol": "now_ms",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/schema.rs",
+      "symbol": "random",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/schema.rs",
+      "symbol": "reported",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/schema.rs",
+      "symbol": "safe_label",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/schema.rs",
+      "symbol": "validate",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "append",
+      "effects": [
+        "session-store"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "append_batch",
+      "effects": [
+        "session-store"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "backup",
+      "effects": [
+        "session-export"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "check",
+      "effects": [
+        "session-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "default_dir",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "default_path",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "events",
+      "effects": [
+        "session-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "export",
+      "effects": [
+        "session-export"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "identity_namespace",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "import",
+      "effects": [
+        "session-import"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "opaque",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "open",
+      "effects": [
+        "session-store"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "open_with_busy_timeout",
+      "effects": [
+        "session-store"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "prepare_private_dir",
+      "effects": [
+        "session-store"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "random",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "read_line",
+      "effects": [
+        "session-store"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "status",
+      "effects": [
+        "session-read"
       ]
     },
     {

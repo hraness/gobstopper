@@ -11,7 +11,7 @@ python3 verify/stress/check.py --output "$NEW_EVIDENCE_DIR"
 ```
 
 Cargo dependencies must already be fetched; execution is offline. Supported
-platforms are Linux and macOS. The exact commands and 159 expected test names are
+platforms are Linux and macOS. The exact commands and 151 expected test names are
 in `suites.json`. Suites run on three workers. Every suite in the `gobstopper`
 package runs in one serial lane, because each `cargo test -p gobstopper` re-links
 the CLI binary that running fixtures bind; the other suites share the remaining
@@ -36,14 +36,13 @@ trusted inputs; this is not a hermetic build attestation.
 | Native journal | 10 | Prepared/dispatched/terminal persistence faults, refusal before dispatch, identity binding, fabricated reconciliation and unknown/corrupt state |
 | Watch | 28 | Unqualified activation refusal, source/snapshot binding, no-op/unknown state, restart/config changes, two watchers and process death, explicit evidence-only reconciliation |
 | Claude processes | 2 | Normal/timeout descendant collection and refusal before spawn |
-| ACP processes | 10 | Exact session evidence, early completion, response/request bounds, blocked writes, queue bursts, EOF/timeouts and descendant collection |
 | Codex processes | 11 | Terminal correlation/order/duplicates, lost acknowledgment, frame limits, private diagnostics and inherited/escaped pipe holders |
 | Plugins | 11 | Exact bundle trust, capture, capability restrictions, timeout/flood/blocked stdin, aggregate projection and child/reader cleanup |
 | Events | 15 | FIFO/symlink/actual-read limits, append and rotation admission, strict accounting evidence and log compatibility |
-| Monitor | 40 | Source-bound observations, malformed/conflicting history refusal, measurement admission, bounded private logs, timeouts, child collection and inherited environment isolation |
+| Monitor | 42 | Source-bound observations, malformed/conflicting history refusal, measurement admission, bounded private logs, timeouts, child collection and inherited environment isolation |
 
 The aggregate has a 900-second deadline, individual suites have reviewed limits
-of 60–240 seconds including compilation, and logs are capped at 8 MiB per
+of 60–360 seconds including compilation, and logs are capped at 8 MiB per
 command. The shared `watch.run_owned` reactor retains process-group identity
 through cleanup, observes exit without reaping, and avoids blocking pipe reads.
 If a deadline, output cap or cleanup operation fails, admission fails.

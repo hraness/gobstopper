@@ -43,7 +43,7 @@
     },
     {
       "id": "event_log",
-      "meaning": "compaction-events-v1 append log",
+      "meaning": "Compaction-events-v1 and proxy-stats append logs",
       "owner": "core::events and CLI callers",
       "boundary": "Telemetry is nonfatal; absence is not proof that no mutation happened."
     },
@@ -55,9 +55,9 @@
     },
     {
       "id": "cache",
-      "meaning": "Discovery and validated model-response caches",
+      "meaning": "Discovery, validated model-response and in-memory request-prefix/evidence caches",
       "owner": "CLI/model library",
-      "boundary": "Apple is memory-only and installed-bridge-only; Jev disk cache is private, bounded and atomically replaced."
+      "boundary": "Apple is memory-only and installed-bridge-only; Jev disk cache is private, bounded and atomically replaced. Request prefixes and bounded retained evidence are ephemeral; cache eviction or restart cannot manufacture recovered native-compacted content."
     },
     {
       "id": "config",
@@ -103,9 +103,9 @@
     },
     {
       "id": "launch_agent",
-      "meaning": "The user's sh.gobstopper.proxy LaunchAgent file and its launchd registration",
-      "owner": "CLI proxy install/uninstall",
-      "boundary": "Only the one fixed label in the current user's gui domain; never a system daemon."
+      "meaning": "Per-user Gobstopper startup definition and platform service-manager registration",
+      "owner": "CLI proxy install/migrate/repair/uninstall",
+      "boundary": "Fixed macOS launchd label/current user GUI domain, Linux systemd user unit, or Windows least-privilege current-user scheduled task. No system service; legacy migration validates and backs up the exact recognized definition."
     },
     {
       "id": "release_artifact",
@@ -130,6 +130,30 @@
       "meaning": "Allowlisted Apple notarization submission ID, status and input/signed-file hashes",
       "owner": "release workflow",
       "boundary": "Non-secret diagnostics survive temporary credential cleanup; they do not authorize resubmission or publication without Accepted verification."
+    },
+    {
+      "id": "context_state",
+      "meaning": "Private context.sqlite3 scopes, reservations and evidence-eviction identities",
+      "owner": "CLI context",
+      "boundary": "Capability-addressed local policy; stores hashed scope/source identity and evidence digests, never tool content. TTL and request counts constrain larger budgets; this is not the native-operation journal."
+    },
+    {
+      "id": "session_data",
+      "meaning": "Private sessions.sqlite3 immutable observation envelopes, projections and identity namespace",
+      "owner": "CLI session_data and proxy_observations",
+      "boundary": "Content-free operational metadata; local HMAC namespace is included in database backups but excluded from portable exports. Missing observations remain missing; no cloud publication."
+    },
+    {
+      "id": "service_state",
+      "meaning": "Owned service manifest, pending intent, immutable predecessor configuration, migration backup and logs",
+      "owner": "CLI proxy_agent",
+      "boundary": "Exact manifest/file/registration/instance identity controls repair, replacement and rollback. Unknown ownership and damaged state refuse; user sessions and credentials remain external."
+    },
+    {
+      "id": "idle_sleep",
+      "meaning": "Process-owned idle-system-sleep assertion or EOF-bound inhibition helper",
+      "owner": "CLI power",
+      "boundary": "Only active validated inference holds the assertion. Last request releases it; disabled or unavailable backends do not prevent forwarding. No display-wake or lid-close override."
     },
     {
       "id": "native_installation",
@@ -421,8 +445,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-30-076-updater-core.json",
-        "sha256": "67153e64b107fbc2a45394b4db79e0ffaa4af1abc1610c84b047d7749c351583"
+        "path": "docs/assurance/receipts/2026-09-30-081-updater-core.json",
+        "sha256": "7fb5ce99141929023dbdc90462a810e54f7d814c9b33caf7eb22b07fb86fa621"
       }
     },
     {
@@ -484,8 +508,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-30-076-updater-transcript.json",
-        "sha256": "9b165d5e73f9a3bddece13c675a200c40fb75c56c56c9d64df1226a9e5307e5c"
+        "path": "docs/assurance/receipts/2026-09-30-081-updater-transcript.json",
+        "sha256": "52806cce9f772ab8c4692df68792c8a26f6515ee9381ef17f509c53c6b6c0728"
       }
     },
     {
@@ -505,8 +529,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-30-076-updater-stress.json",
-        "sha256": "6626503235d2868f14800e2133dd1bdb55a16cb1cc18641a2932d70f05cf95f4"
+        "path": "docs/assurance/receipts/2026-09-30-081-updater-stress.json",
+        "sha256": "a5d9d1d39f41beb13a09092b377be845b7e05db381a2f403e1db20767548e351"
       }
     },
     {
@@ -536,6 +560,56 @@
         "Real Apple signing or notarization evidence",
         "Live provider/session mutation authority",
         "Permission retention or reboot recovery"
+      ]
+    },
+    {
+      "id": "E-EVERLASTING-SOURCE",
+      "kind": "source_review",
+      "revision": "current-source; delivery revision recorded by the v0.8.0 integration PR",
+      "scope": "Current request identity/evidence, context reservations, local observation storage, service ownership and inference power-effect classifications.",
+      "bounds": "Source inspection and synthetic test definitions; fresh execution and native platform qualification remain separate evidence.",
+      "references": [
+        {
+          "path": "crates/gobstopper-adapters/src/request/evidence.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/context.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_observations.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/session_data/store.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_agent.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/power.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/request/engine.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/request/store.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/request/responses.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/request/anthropic.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/request/chat.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy.rs"
+        }
+      ],
+      "exclusions": [
+        "No whole-system correctness or task-quality theorem",
+        "No Linux/Windows service-manager or power native qualification claim",
+        "No inference-provider qualification from synthetic fixtures"
       ]
     }
   ],

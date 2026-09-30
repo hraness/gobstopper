@@ -7,6 +7,7 @@
 # Downloads gobstopper-<version>-<platform>.tar.gz from the GitHub Release,
 # checks it against the release's .sha256 file, and installs
 # ~/.local/bin/gobstopper. Nothing runs as root.
+# Update-enabled releases require authenticated GitHub CLI (gh).
 #
 # Options (environment):
 #   GOBSTOPPER_VERSION         exact version, MAJOR.MINOR.PATCH (default: the latest release)
@@ -108,7 +109,7 @@ main() {
 
   case "$base_url" in
     http://127.0.0.1:*) native_transaction=no ;;
-    *) if historical_unsigned_release "$version"; then native_transaction=no; else native_transaction=yes; fi ;;
+    *) if supports_native_update "$version"; then native_transaction=yes; else native_transaction=no; fi ;;
   esac
   if [ "$native_transaction" = yes ]; then
     # This verified candidate independently checks canonical immutable release
@@ -153,6 +154,12 @@ download() {
 fail() {
   printf 'gobstopper install: %s\n' "$*" >&2
   exit 1
+}
+
+# Self-update began after the signed 0.8.0 release. Older signed binaries do
+# not implement the private installation transaction.
+supports_native_update() {
+  printf '%s\n' "$1" | awk -F . '{ exit !($1 > 0 || ($1 == 0 && ($2 > 8 || ($2 == 8 && $3 >= 1)))) }'
 }
 
 # Mac releases before 0.7.6 predate Developer ID signing.

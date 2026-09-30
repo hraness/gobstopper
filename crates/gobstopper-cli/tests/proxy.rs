@@ -168,6 +168,7 @@ fn serve_fake(stream: TcpStream, log: &Mutex<Vec<Recorded>>, responder: &Respond
 }
 
 struct ProxyProcess {
+    data_root: std::path::PathBuf,
     child: Child,
     port: u16,
 }
@@ -176,6 +177,7 @@ impl Drop for ProxyProcess {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+        let _ = std::fs::remove_dir_all(&self.data_root);
     }
 }
 
@@ -205,6 +207,12 @@ fn start_proxy_inner(
     env: &[(&str, &str)],
     stderr: Stdio,
 ) -> ProxyProcess {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let data_root = std::env::temp_dir().join(format!(
+        "gobstopper-proxy-data-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
     let mut command = Command::new(env!("CARGO_BIN_EXE_gobstopper"));
     // Read as a pipe would, even from an agent session.
     command.env("HRANESS_AUDIENCE", "quiet");
@@ -218,6 +226,7 @@ fn start_proxy_inner(
     command
         .env("XDG_CONFIG_HOME", std::env::temp_dir())
         .env("GOBSTOPPER_STATS_FILE", "off")
+        .env("GOBSTOPPER_DATA_DIR", &data_root)
         .args(["proxy", "serve", "--port", "0"])
         .args(["--anthropic-upstream", anthropic])
         .args(["--openai-upstream", openai])
@@ -241,7 +250,11 @@ fn start_proxy_inner(
         .next()
         .and_then(|port| port.parse().ok())
         .unwrap_or_else(|| panic!("unexpected proxy banner: {line}"));
-    ProxyProcess { child, port }
+    ProxyProcess {
+        child,
+        port,
+        data_root,
+    }
 }
 
 struct Response {
@@ -416,7 +429,17 @@ fn small_requests_pass_through_byte_for_byte_with_headers() {
 #[test]
 fn over_threshold_requests_are_compacted_streamed_and_reused() {
     let fake = Fake::start(|_| Reply::Sse(sse_events()));
-    let proxy = start_proxy(&fake.url(), &["--threshold", "2000", "--keep-recent", "1"]);
+    let proxy = start_proxy(
+        &fake.url(),
+        &[
+            "--threshold",
+            "2000",
+            "--keep-recent",
+            "1",
+            "--evidence-max-bytes",
+            "0",
+        ],
+    );
     // Small closing turns leave headroom under the threshold after the last
     // compaction, so the follow-up below is a pure prefix reuse.
     let mut messages = session(12);
@@ -1211,6 +1234,8 @@ fn replay_at_zero_tail_percent_matches_the_reference_report() {
                 percent,
                 "--carry-max-chars",
                 carry,
+                "--evidence-max-bytes",
+                "0",
                 "--json",
             ],
             &dir,
@@ -1697,5 +1722,383 @@ fn openai_dialects_calibrate_from_json_and_streamed_usage() {
     assert!(
         (1.49..=1.5).contains(&row["ratio"].as_f64().unwrap()),
         "{row}"
+    );
+}
+
+fn data_cli(proxy: &ProxyProcess, args: &[&str]) -> Value {
+    let output = Command::new(env!("CARGO_BIN_EXE_gobstopper"))
+        .env("GOBSTOPPER_DATA_DIR", &proxy.data_root)
+        .env("HRANESS_AUDIENCE", "quiet")
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+fn finished_requests(proxy: &ProxyProcess, expected: usize) -> Value {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        let rows = data_cli(proxy, &["data", "requests"]);
+        if rows.as_array().is_some_and(|r| {
+            r.len() == expected && r.iter().all(|row| row["finished_at_ms"].is_number())
+        }) {
+            return rows;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "terminal observations did not arrive: {rows}"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+#[test]
+fn scoped_reservation_changes_actual_wire_request_then_expires_without_leaking_capability() {
+    let fake = Fake::start(|_| {
+        Reply::Json(
+            200,
+            json!({"type":"message","role":"assistant","stop_reason":"end_turn","content":[],"usage":{"input_tokens":100,"output_tokens":20}}),
+        )
+    });
+    let proxy = start_proxy(&fake.url(), &["--threshold", "1000", "--no-calibrate"]);
+    let scope = data_cli(
+        &proxy,
+        &[
+            "context",
+            "create",
+            "--context-window",
+            "100000",
+            "--port",
+            &proxy.port.to_string(),
+        ],
+    );
+    let capability = scope["scope"].as_str().unwrap();
+    let target = format!("/__gobstopper/s/{capability}/v1/messages");
+    let original = body(&session(20));
+    assert_eq!(
+        request(proxy.port, "POST", &target, ANTHROPIC, &original).status,
+        200
+    );
+    assert_ne!(
+        fake.seen()[0].json()["messages"],
+        serde_json::from_slice::<Value>(&original).unwrap()["messages"]
+    );
+    let reservation = data_cli(
+        &proxy,
+        &[
+            "context",
+            "reserve",
+            "--scope",
+            capability,
+            "--tokens",
+            "50000",
+            "--requests",
+            "2",
+        ],
+    );
+    assert_eq!(reservation["effective_input_tokens"], 50000);
+    for _ in 0..2 {
+        assert_eq!(
+            request(proxy.port, "POST", &target, ANTHROPIC, &original).status,
+            200
+        );
+    }
+    assert_eq!(fake.seen()[1].body, original);
+    assert_eq!(fake.seen()[2].body, original);
+    assert_eq!(
+        request(proxy.port, "POST", &target, ANTHROPIC, &original).status,
+        200
+    );
+    assert_ne!(
+        fake.seen()[3].json()["messages"],
+        serde_json::from_slice::<Value>(&original).unwrap()["messages"]
+    );
+    for wire in fake.seen() {
+        assert_eq!(wire.target, "/v1/messages");
+        assert!(wire.header("x-gobstopper-scope").is_none());
+    }
+    let rows = finished_requests(&proxy, 4);
+    assert!(rows
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|row| row["outcome"] == "success"));
+    let export = Command::new(env!("CARGO_BIN_EXE_gobstopper"))
+        .env("GOBSTOPPER_DATA_DIR", &proxy.data_root)
+        .args(["data", "export"])
+        .output()
+        .unwrap();
+    assert!(export.status.success());
+    let exported = String::from_utf8(export.stdout).unwrap();
+    for private in [
+        capability,
+        "Fix the failing test.",
+        "sk-ant-synthetic-test-key",
+        "pytest -x",
+    ] {
+        assert!(!exported.contains(private));
+    }
+    data_cli(&proxy, &["context", "close", "--scope", capability]);
+    assert_eq!(
+        request(proxy.port, "POST", &target, ANTHROPIC, &original).status,
+        400
+    );
+}
+
+#[test]
+fn live_observations_join_retries_without_counting_them_as_separate_requests() {
+    let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let n = Arc::clone(&count);
+    let fake = Fake::start(move |_| {
+        if n.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            Reply::Json(
+                400,
+                json!({"error":{"type":"invalid_request_error","message":"prompt is too long"}}),
+            )
+        } else {
+            Reply::Json(
+                200,
+                json!({"type":"message","role":"assistant","stop_reason":"end_turn","content":[],"usage":{"input_tokens":100,"cache_read_input_tokens":900,"output_tokens":50}}),
+            )
+        }
+    });
+    let proxy = start_proxy(&fake.url(), &["--threshold", "10000", "--no-calibrate"]);
+    assert_eq!(
+        request(
+            proxy.port,
+            "POST",
+            "/v1/messages",
+            ANTHROPIC,
+            &body(&session(30))
+        )
+        .status,
+        200
+    );
+    let rows = finished_requests(&proxy, 2);
+    let rows = rows.as_array().unwrap();
+    assert_eq!(
+        rows[0]["identity"]["request_id"],
+        rows[1]["identity"]["request_id"]
+    );
+    assert_ne!(
+        rows[0]["identity"]["attempt_id"],
+        rows[1]["identity"]["attempt_id"]
+    );
+    let success = rows.iter().find(|row| row["outcome"] == "success").unwrap();
+    assert_eq!(success["usage"]["input_tokens"]["value"], 1000);
+    assert!(success["generation"].is_null());
+    assert_eq!(
+        rows.iter()
+            .filter(|row| row["outcome"] == "refused")
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn live_streaming_metrics_require_terminal_event_and_capture_final_usage() {
+    let fake = Fake::start(|_| {
+        Reply::Sse(vec![
+        "data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":0}}}\n\n".into(),
+        "data: {\"type\":\"content_block_delta\",\"delta\":{\"text\":\"SYNTHETIC_PRIVATE_OUTPUT\"}}\n\n".into(),
+        "data: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":250}}\n\n".into(),
+        "data: {\"type\":\"message_stop\"}\n\n".into(),
+    ])
+    });
+    let proxy = start_proxy(&fake.url(), &[]);
+    assert_eq!(
+        request(
+            proxy.port,
+            "POST",
+            "/v1/messages",
+            ANTHROPIC,
+            &body(&session(1))
+        )
+        .status,
+        200
+    );
+    let rows = finished_requests(&proxy, 1);
+    assert_eq!(rows[0]["usage"]["output_tokens"]["value"], 250);
+    assert!(rows[0]["first_output_ms"].is_number());
+    assert_eq!(rows[0]["outcome"], "success");
+    assert!(!rows.to_string().contains("SYNTHETIC_PRIVATE_OUTPUT"));
+    let fake = Fake::start(|_| Reply::Sse(vec!["data: {\"type\":\"message_start\"}\n\n".into()]));
+    let proxy = start_proxy(&fake.url(), &[]);
+    request(
+        proxy.port,
+        "POST",
+        "/v1/messages",
+        ANTHROPIC,
+        &body(&session(1)),
+    );
+    let rows = finished_requests(&proxy, 1);
+    assert_eq!(rows[0]["outcome"], "interrupted");
+    assert!(rows[0]["usage"].is_null());
+}
+
+#[test]
+fn owned_service_drain_rejects_new_inference_and_resume_restores_it() {
+    let fake = Fake::start(|_| {
+        Reply::Json(
+            200,
+            json!({"type":"message","content":[],"stop_reason":"end_turn"}),
+        )
+    });
+    let proxy = start_proxy(&fake.url(), &["--service-id", "owned-service-test"]);
+    let endpoint = "/gobstopper/service/drain";
+    let owned = &[("x-gobstopper-service-id", "owned-service-test")];
+    assert_eq!(request(proxy.port, "POST", endpoint, &[], b"").status, 403);
+    assert_eq!(
+        request(
+            proxy.port,
+            "POST",
+            endpoint,
+            &[
+                ("x-gobstopper-service-id", "owned-service-test"),
+                ("origin", "https://unrelated.invalid")
+            ],
+            b""
+        )
+        .status,
+        403
+    );
+    assert_eq!(
+        request(proxy.port, "POST", endpoint, owned, b"").json()["drained"],
+        true
+    );
+    assert_eq!(
+        request(
+            proxy.port,
+            "POST",
+            "/v1/messages",
+            ANTHROPIC,
+            &body(&session(1))
+        )
+        .status,
+        503
+    );
+    assert!(fake.seen().is_empty());
+    assert_eq!(
+        request(proxy.port, "GET", "/gobstopper/status", &[], b"").json()["draining"],
+        true
+    );
+    assert_eq!(
+        request(proxy.port, "POST", "/gobstopper/service/resume", owned, b"").json()["drained"],
+        false
+    );
+    assert_eq!(
+        request(
+            proxy.port,
+            "POST",
+            "/v1/messages",
+            ANTHROPIC,
+            &body(&session(1))
+        )
+        .status,
+        200
+    );
+}
+
+#[test]
+fn service_drain_preserves_active_inference() {
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let gate = Arc::new(std::sync::Barrier::new(2));
+    let upstream_gate = Arc::clone(&gate);
+    let fake = Fake::start(move |_| {
+        started_tx.send(()).unwrap();
+        upstream_gate.wait();
+        Reply::Json(
+            200,
+            json!({"type":"message","content":[],"stop_reason":"end_turn"}),
+        )
+    });
+    let proxy = start_proxy(&fake.url(), &["--service-id", "active-service-test"]);
+    let port = proxy.port;
+    for route in ["/v1/messages", "/backend-api/codex/responses/compact"] {
+        let inference =
+            std::thread::spawn(move || request(port, "POST", route, ANTHROPIC, &body(&session(1))));
+        started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            request(
+                port,
+                "POST",
+                "/gobstopper/service/drain",
+                &[("x-gobstopper-service-id", "active-service-test")],
+                b""
+            )
+            .status,
+            409
+        );
+        assert_eq!(
+            request(port, "GET", "/gobstopper/status", &[], b"").json()["draining"],
+            false
+        );
+        gate.wait();
+        assert_eq!(inference.join().unwrap().status, 200);
+    }
+}
+
+#[test]
+fn explicit_capacity_rejects_an_immutable_oversized_head_before_upstream() {
+    let fake = Fake::start(|_| Reply::Json(200, json!({})));
+    let proxy = start_proxy(&fake.url(), &["--context-window", "5000"]);
+    let oversized = json!({"model":"test","max_tokens":100,"messages":[{"role":"user","content":"x".repeat(100_000)}]});
+    let response = request(
+        proxy.port,
+        "POST",
+        "/v1/messages",
+        ANTHROPIC,
+        &serde_json::to_vec(&oversized).unwrap(),
+    );
+    assert_eq!(response.status, 400);
+    assert_eq!(
+        response.json()["error"]["type"],
+        "gobstopper_capacity_exceeded"
+    );
+    assert!(fake.seen().is_empty());
+}
+
+#[test]
+fn explicit_capacity_applies_to_nonlength_original_body_fallback() {
+    let fake = Fake::start(|_| {
+        Reply::Json(
+            400,
+            json!({"error":{"type":"invalid_request_error","message":"synthetic schema rejection"}}),
+        )
+    });
+    let proxy = start_proxy(
+        &fake.url(),
+        &[
+            "--threshold",
+            "2000",
+            "--keep-recent",
+            "1",
+            "--evidence-max-bytes",
+            "0",
+            "--context-window",
+            "8000",
+        ],
+    );
+    let mut payload = serde_json::from_slice::<Value>(&body(&session(40))).unwrap();
+    payload["max_tokens"] = json!(100);
+    assert_eq!(
+        request(
+            proxy.port,
+            "POST",
+            "/v1/messages",
+            ANTHROPIC,
+            &serde_json::to_vec(&payload).unwrap()
+        )
+        .status,
+        400
+    );
+    assert_eq!(
+        fake.seen().len(),
+        1,
+        "original oversized input must not be retried"
     );
 }

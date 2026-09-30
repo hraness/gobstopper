@@ -46,7 +46,11 @@ Tests point both at a loopback server with `GOBSTOPPER_RELEASE_BASE_URL=http://1
 
 ### Updates
 
-Starting with 0.7.6, macOS and Linux installations made by the public installer
+Update-enabled macOS and Linux releases need the [GitHub CLI](https://cli.github.com/)
+(`gh`) authenticated with github.com for immutable release verification. Install
+`gh` and run `gh auth login` before installing a current release.
+
+Starting with 0.8.1, macOS and Linux installations made by the public installer
 enable automatic updates by default. Before a command starts, Gobstopper checks
 for a newer stable release at most once a day. It verifies the immutable GitHub
 release, archive and checksum hashes, archive contents, executable version, and
@@ -62,16 +66,20 @@ gobstopper update disable        # turn automatic updates off
 gobstopper update enable         # restore automatic updates
 ```
 
-An active proxy, MCP server, watch command, or other Gobstopper command prevents
-replacement until it exits. Updating does not restart a service. Help, version,
+Commands started from an update-enabled installation prevent replacement until
+they exit, including a proxy, MCP server, or watch command. Updating does not
+restart a service. Help, version,
 CI, MCP, offline replay and read-only inspection commands do not check for
 updates. `--no-update` or
 `HRANESS_NO_UPDATE=1` skips automatic checks for one invocation. The saved policy
 survives a reinstall. `GOBSTOPPER_VERSION` pins an installation; updating cannot
 silently change that pin.
 
-Re-run the public installer once to add update support to the verified 0.7.5
-release. It compares the existing bytes with that release before replacing them.
+Re-run the public installer once to add update support to a verified 0.7.5 or
+0.8.0 release. It compares the existing bytes with that immutable release before
+replacing them.
+Stop services started by an older release before this first migration, then
+restart them with the new executable so they participate in update coordination.
 Unknown older copies need their original installation workflow or a new
 `GOBSTOPPER_INSTALL_PREFIX`. Cargo, Homebrew, source builds, and Windows do not
 replace themselves. Test installs from a loopback server never enable public
@@ -79,7 +87,7 @@ release updates.
 
 ### Windows
 
-The Windows build runs the read-only commands (`detect`, `plan`, `report`, `explain`, `verify`, `mcp`) and the proxy. Claude Code session usage reads as unknown there, because the usage scan binds to Unix inode and ctime identity. Commands that write through the vault refuse with an error naming the missing platform guarantee (directory sync, directory locking, bounded event log I/O, bounded plugin process custody), and `proxy install` refuses because it installs a macOS LaunchAgent. CI runs the Windows test suite with the tests for those Unix-only features excluded; see `[profile.windows]` in [`.config/nextest.toml`](../.config/nextest.toml).
+The Windows build runs the read-only commands (`detect`, `plan`, `report`, `explain`, `verify`, `mcp`) and the proxy. Claude Code session usage reads as unknown there, because the usage scan binds to Unix inode and ctime identity. Commands that write through the vault refuse with an error naming the missing platform guarantee (directory sync, directory locking, bounded event log I/O, bounded plugin process custody). `proxy install` registers a least-privilege Task Scheduler task for the current user. macOS uses a LaunchAgent and Linux uses a systemd user service; see [startup, recovery, and sleep behavior](service.md). CI runs the Windows test suite with the tests for those Unix-only features excluded; see `[profile.windows]` in [`.config/nextest.toml`](../.config/nextest.toml).
 
 ## Check a download
 

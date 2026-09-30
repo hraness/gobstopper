@@ -25,12 +25,14 @@ pub mod anthropic;
 pub mod calibrate;
 pub mod chat;
 mod engine;
+mod evidence;
 mod images;
 pub mod replay;
 pub mod responses;
 mod store;
 
 pub use engine::{Engine, RequestCtx};
+pub use evidence::{evidence_observations, EvidenceEntry, EvidenceObservation};
 pub use store::{Entry, PrefixStore};
 
 /// Marks an injected summary so re-compaction can drop it. Byte-identical to
@@ -54,7 +56,7 @@ pub const DEFAULT_THRESHOLD_TOKENS: u64 = 128_000;
 /// after a few small requests.
 pub const MAX_KEEP_TAIL_PERCENT: u8 = 60;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct CliffConfig {
     /// Compact when the estimated outgoing request exceeds this.
     pub threshold_tokens: u64,
@@ -89,6 +91,16 @@ pub struct CliffConfig {
     /// headroom. 0 turns carrying off, and each summary then covers only
     /// the turns since the previous compaction.
     pub carry_max_chars: usize,
+    /// Serialized-byte ceiling for original retained tool evidence. The
+    /// token budget below applies independently, including native images.
+    /// Zero disables evidence retention.
+    pub evidence_max_bytes: usize,
+    /// Billable-character ceiling for evidence (four characters per
+    /// estimated token), additionally capped at a quarter of headroom.
+    pub evidence_max_chars: usize,
+    /// Text retained per result; longer results get labeled head/tail
+    /// excerpts. Zero disables evidence retention.
+    pub evidence_item_max_chars: usize,
     /// Refuse a request still over budget after the escalation ladder
     /// instead of sending it anyway.
     pub strict: bool,
@@ -107,6 +119,9 @@ impl Default for CliffConfig {
             keep_thinking: true,
             thinking_max_chars: 0,
             carry_max_chars: 24_000,
+            evidence_max_bytes: 256 * 1024,
+            evidence_max_chars: 32_000,
+            evidence_item_max_chars: 2_000,
             strict: false,
         }
     }
@@ -517,6 +532,20 @@ fn sha256_hex(bytes: &[u8]) -> String {
 
 fn digest_value(value: &Value) -> String {
     sha256_hex(canonical_json(value).as_bytes())
+}
+
+/// Known fields are normalized by each dialect. Preserve all remaining
+/// fields so provider additions cannot silently alias an older prefix.
+fn other_fields(value: &Value, known: &[&str]) -> Value {
+    Value::Object(
+        value
+            .as_object()
+            .into_iter()
+            .flat_map(|map| map.iter())
+            .filter(|(key, _)| !known.contains(&key.as_str()))
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect(),
+    )
 }
 
 /// `chain[i]` identifies `messages[0..=i]` as a sequence, so prefix identity
@@ -1882,11 +1911,14 @@ pub(crate) mod fixtures {
     }
 
     /// A C2 test configuration: `keep_recent` 3 and a 40% tail budget.
+    /// Keep its original carry/tail assumptions independent of tool evidence;
+    /// evidence-enabled replay properties have separate regression cases.
     pub fn tail_cfg(threshold_tokens: u64) -> super::CliffConfig {
         super::CliffConfig {
             threshold_tokens,
             keep_recent: 3,
             keep_tail_percent: 40,
+            evidence_max_chars: 0,
             ..super::CliffConfig::default()
         }
     }

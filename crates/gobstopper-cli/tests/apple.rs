@@ -70,6 +70,7 @@ impl Fixture {
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_DATA_HOME", self.root.join("data"))
             .env("LANG", "en_US.UTF-8")
+            .env("TERM", "xterm-256color")
             .env("NO_COLOR", "1")
             .stdin(Stdio::null());
         cmd

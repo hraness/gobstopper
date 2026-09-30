@@ -9,8 +9,8 @@
 //! `tool` message echoing its `tool_call_id`.
 
 use super::{
-    canonical_json, carry_assistant, carry_human, digest_value, sha256_hex, str_field,
-    strip_task_notifications, truncate, CliffConfig, SUMMARY_HEADER,
+    canonical_json, carry_assistant, carry_human, digest_value, other_fields, sha256_hex,
+    str_field, strip_task_notifications, truncate, CliffConfig, SUMMARY_HEADER,
 };
 use serde_json::{json, Value};
 
@@ -43,21 +43,23 @@ fn content_text(content: Option<&Value>) -> String {
 fn canonical_part(part: &Value) -> Value {
     let kind = str_field(part, "type");
     match kind {
-        "text" => json!(["text", str_field(part, "text")]),
-        "refusal" => json!(["refusal", str_field(part, "refusal")]),
+        "text" => json!([
+            "text",
+            str_field(part, "text"),
+            other_fields(part, &["type", "text"])
+        ]),
+        "refusal" => json!([
+            "refusal",
+            str_field(part, "refusal"),
+            other_fields(part, &["type", "refusal"])
+        ]),
         "image_url" => {
-            let url = part.get("image_url").unwrap_or(&Value::Null);
-            let url = url.get("url").cloned().unwrap_or_else(|| url.clone());
-            let payload = match &url {
-                Value::String(text) => text.clone(),
-                other => other.to_string(),
-            };
-            json!(["image_url", sha256_hex(payload.as_bytes())])
+            // `detail`, MIME-bearing URLs and future metadata change what
+            // the provider sees, even when image bytes are identical.
+            json!(["image_url", sha256_hex(canonical_json(part).as_bytes())])
         }
         "input_audio" => {
-            let audio = part.get("input_audio").unwrap_or(&Value::Null);
-            let data = audio.get("data").and_then(Value::as_str).unwrap_or("");
-            json!(["input_audio", sha256_hex(data.as_bytes())])
+            json!(["input_audio", sha256_hex(canonical_json(part).as_bytes())])
         }
         _ => json!(["other", canonical_json(part)]),
     }
@@ -65,7 +67,7 @@ fn canonical_part(part: &Value) -> Value {
 
 fn canonical_content(content: Option<&Value>) -> Value {
     match content {
-        Some(Value::String(text)) => json!([["text", text]]),
+        Some(Value::String(text)) => json!([["text", text, {}]]),
         Some(Value::Array(parts)) => Value::Array(
             parts
                 .iter()
@@ -99,6 +101,8 @@ fn canonical_calls(message: &Value) -> Vec<Value> {
                                 other => canonical_json(other),
                             })
                             .unwrap_or_default(),
+                        other_fields(call, &["id", "function"]),
+                        other_fields(function, &["name", "arguments"]),
                     ])
                 })
                 .collect()
@@ -114,6 +118,17 @@ pub fn digest_message(message: &Value) -> String {
         str_field(message, "tool_call_id"),
         str_field(message, "reasoning_content"),
         str_field(message, "name"),
+        other_fields(
+            message,
+            &[
+                "role",
+                "content",
+                "tool_calls",
+                "tool_call_id",
+                "reasoning_content",
+                "name"
+            ]
+        ),
     ]))
 }
 
@@ -260,6 +275,18 @@ mod tests {
     };
     use super::super::{compact, Dialect};
     use super::*;
+
+    #[test]
+    fn image_detail_and_audio_format_are_semantic() {
+        let image = json!({"role":"user", "content":[{"type":"image_url", "image_url":{"url":"data:image/png;base64,AAAA", "detail":"low"}}]});
+        let mut changed = image.clone();
+        changed["content"][0]["image_url"]["detail"] = json!("high");
+        assert_ne!(digest_message(&image), digest_message(&changed));
+        let audio = json!({"role":"user", "content":[{"type":"input_audio", "input_audio":{"data":"AAAA", "format":"wav"}}]});
+        changed = audio.clone();
+        changed["content"][0]["input_audio"]["format"] = json!("mp3");
+        assert_ne!(digest_message(&audio), digest_message(&changed));
+    }
     use serde_json::Map;
 
     fn cfg(keep_recent: usize) -> CliffConfig {

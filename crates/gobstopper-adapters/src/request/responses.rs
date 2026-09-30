@@ -9,7 +9,7 @@
 //! digests: some clients strip ids, and status is lifecycle metadata.
 
 use super::{
-    canonical_json, carry_assistant, carry_human, digest_value, str_field,
+    canonical_json, carry_assistant, carry_human, digest_value, other_fields, str_field,
     strip_task_notifications, truncate, CliffConfig, SUMMARY_HEADER,
 };
 use serde_json::{json, Value};
@@ -53,14 +53,18 @@ fn content_text(content: Option<&Value>) -> String {
 
 fn canonical_content(content: Option<&Value>) -> Value {
     match content {
-        Some(Value::String(text)) => json!([["text", text]]),
+        Some(Value::String(text)) => json!([["text", text, {}]]),
         Some(Value::Array(parts)) => Value::Array(
             parts
                 .iter()
                 .filter(|part| part.is_object())
                 .map(|part| match str_field(part, "type") {
                     "input_text" | "output_text" | "text" => {
-                        json!(["text", str_field(part, "text")])
+                        json!([
+                            "text",
+                            str_field(part, "text"),
+                            other_fields(part, &["type", "text"])
+                        ])
                     }
                     _ => json!(["other", canonical_json(part)]),
                 })
@@ -78,30 +82,56 @@ fn string_or_canonical(value: Option<&Value>) -> String {
     }
 }
 
+/// Provider call kinds have different payload fields (`input` for freeform
+/// calls, `arguments` for functions, `action` for local shell calls). Keep
+/// unknown semantic fields as well: a new call kind must not alias an old
+/// cached prefix merely because it does not use `arguments`.
+fn canonical_call(item: &Value) -> Value {
+    let mut call = item.clone();
+    if let Some(fields) = call.as_object_mut() {
+        fields.remove("id");
+        fields.remove("status");
+    }
+    call
+}
+
+fn call_input(item: &Value) -> String {
+    let key = if item_type(item) == "custom_tool_call" {
+        "input"
+    } else {
+        "arguments"
+    };
+    match item.get(key) {
+        Some(value) => string_or_canonical(Some(value)),
+        None => canonical_json(&canonical_call(item)),
+    }
+}
+
 pub fn digest_message(item: &Value) -> String {
     let kind = item_type(item);
     let canonical = match kind {
         "message" => json!([
             "message",
             str_field(item, "role"),
-            canonical_content(item.get("content"))
+            canonical_content(item.get("content")),
+            other_fields(item, &["type", "id", "status", "role", "content"]),
         ]),
         "reasoning" => json!([
             "reasoning",
             str_field(item, "encrypted_content"),
             canonical_json(item.get("summary").unwrap_or(&json!([]))),
+            other_fields(
+                item,
+                &["type", "id", "status", "encrypted_content", "summary"]
+            ),
         ]),
         "function_call_output" => json!([
             "function_call_output",
             str_field(item, "call_id"),
             string_or_canonical(item.get("output")),
+            other_fields(item, &["type", "id", "status", "call_id", "output"]),
         ]),
-        _ if kind.ends_with("_call") => json!([
-            kind,
-            str_field(item, "call_id"),
-            str_field(item, "name"),
-            string_or_canonical(item.get("arguments")),
-        ]),
+        _ if kind.ends_with("_call") => json!([kind, canonical_call(item)]),
         _ => {
             let mut stripped = item.clone();
             if let Some(map) = stripped.as_object_mut() {
@@ -117,7 +147,7 @@ pub fn digest_message(item: &Value) -> String {
 pub fn is_assistant(item: &Value) -> bool {
     match item_type(item) {
         "message" => str_field(item, "role") == "assistant",
-        kind => MODEL_ITEM_TYPES.contains(&kind),
+        kind => MODEL_ITEM_TYPES.contains(&kind) || kind.ends_with("_call"),
     }
 }
 
@@ -204,7 +234,7 @@ pub fn summarize_message(item: &Value, cfg: &CliffConfig) -> Vec<String> {
             }
         }
         _ if kind.ends_with("_call") => {
-            let args = string_or_canonical(item.get("arguments"));
+            let args = call_input(item);
             let name = match str_field(item, "name") {
                 "" => kind,
                 name => name,
@@ -276,6 +306,27 @@ mod tests {
     };
     use super::super::{compact, Dialect};
     use super::*;
+
+    #[test]
+    fn custom_input_and_unknown_call_fields_are_semantic() {
+        let call = json!({"type":"custom_tool_call", "call_id":"exec-1", "name":"exec", "input":"inspect_lock_graph()"});
+        let mut changed = call.clone();
+        changed["input"] = json!("release_lock_graph()");
+        assert_ne!(digest_message(&call), digest_message(&changed));
+        assert!(summarize_message(&call, &CliffConfig::default())
+            .join("\n")
+            .contains("inspect_lock_graph()"));
+        changed = call.clone();
+        changed["id"] = json!("provider-id");
+        changed["status"] = json!("completed");
+        assert_eq!(digest_message(&call), digest_message(&changed));
+
+        let call =
+            json!({"type":"future_tool_call", "call_id":"future", "action":{"command":"read"}});
+        let mut changed = call.clone();
+        changed["action"]["command"] = json!("write");
+        assert_ne!(digest_message(&call), digest_message(&changed));
+    }
     use serde_json::Map;
 
     fn reasoning(n: usize) -> Value {

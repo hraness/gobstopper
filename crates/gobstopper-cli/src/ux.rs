@@ -4,7 +4,9 @@
 //! closed pipes, and the grouped root help.
 
 use hraness_cli_kit::style::CliError;
-pub(crate) use hraness_cli_kit::{Audience, Style, Symbol};
+pub(crate) use hraness_cli_kit::Audience;
+#[cfg(test)]
+use hraness_cli_kit::Style;
 use std::fmt;
 
 /// Who is reading this process's output.
@@ -221,7 +223,9 @@ Usage: gobstopper [options] <command>
 Start here
   detect            List Claude Code and Codex sessions and their size
   plan              Preview a compaction; changes nothing
-  proxy             Compact live requests: run, serve, install, status
+  proxy             Compact live requests and manage startup
+  context           Reserve more context for a difficult phase
+  data              Inspect local sessions, tool calls, and usage
   apply             Write a smaller copy of a session; keeps the original
 
 Sessions and snapshots
