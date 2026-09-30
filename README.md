@@ -105,12 +105,9 @@ a model call:
 
 ![Line chart of estimated tokens per request over 383 requests of one session. Without the proxy, request size climbs steadily to about 491,000. With Gobstopper at a 45,000-token threshold, it stays under 40,000 in a sawtooth, and total input falls from 116.7 million to 12.9 million estimated tokens.](docs/assets/gob-sawtooth.png)
 
-*A sawtooth, not a ramp. One recorded Claude Code session replayed at a
-45,000-token threshold (the default is 128,000). The shaded areas are what
-each request resends; with Gobstopper the area is about a ninth as large.
-Estimated tokens (4 characters per token), not billed · one recorded Claude
-Code session, 383 requests · estimate, replay, build f4db57e (request
-engine identical to v0.7.2) · calibration on*
+*One recorded Claude Code session: 383 requests replayed at a 45,000-token
+threshold (default 128,000), with calibration on. Counts estimate four
+characters per token. Build f4db57e uses the v0.7.2 request engine.*
 
 ### What CliffCompaction's authors report
 
@@ -136,7 +133,7 @@ has not rerun the authors' benchmarks as published; its own Terminal-Bench
 On September 27 and 28, 2026, Gobstopper ran the 89 tasks of Terminal-Bench
 2.1 through Claude Code 2.1.283 with GLM 5.3 Flash via Vercel AI Gateway,
 one trial per arm, at a 45,000-token threshold (the default is 128,000).
-`gobstopper proxy` v0.7.2 at tail 0 (`--keep-tail-percent 0`, the default
+`gobstopper proxy` v0.7.2[¹](#benchmark-notes) at tail 0 (`--keep-tail-percent 0`, the default
 since v0.7.3) solved 61 tasks, Claude Code with no proxy 60, and tail 40, the old
 default, 59. Those counts are within single-trial noise (McNemar p = 1.0
 against no proxy; 31 of 89 tasks changed outcome between arms). The tail-0
@@ -154,29 +151,15 @@ aggregates.
 
 ![Bar chart of total input tokens over 89 Terminal-Bench tasks. Gobstopper, tail 0: 84.3 million, 61 solved. Claude Code, no proxy: 118.6 million, 60 solved. Gobstopper, tail 40 (old default): 118.5 million, 59 solved. Cache reads make up most of each bar.](docs/assets/gob-tokens.png)
 
-*Same tasks solved, 29% fewer tokens sent. Total input over 89 tasks.
-Almost all of the difference is cache reads, the context resent on every
-step: 68.7M vs 102.6M. New input and output were about equal.
-Terminal-Bench 2.1 · 89 tasks · one trial per arm · Claude Code 2.1.283
-with GLM 5.3 Flash via Vercel AI Gateway · Gobstopper v0.7.2,
-45,000-token threshold (default 128,000) · September 27–28, 2026 · 21 of
-89 tail-0 trials may have run an earlier build*
+*Cache reads account for most of the difference: 68.7M with tail 0 against
+102.6M with no proxy. New input and output were about equal.*
 
-Two earlier measurements are estimates, not task results. Replays of nine
-recorded sessions through the proxy engine, built from
-`main` on September 25, 2026, kept Claude Code sessions whose requests peaked at 273k to 652k
-estimated tokens at or under about 127k; see [Compact live coding-agent
-requests](#compact-live-coding-agent-requests). On September 26, 2026, one
-Mac sent about 77 minutes of Claude Code traffic through `gobstopper proxy
-serve` from the v0.4.1 release at its defaults. Of 3,136 requests, most were
-small (median about 6,300 estimated tokens). 89 passed the 128,000-token
-threshold; the proxy sent 78 of them smaller, 12.2 million estimated tokens
-in total down to 7.5 million (38% less). The other 11 went out unchanged.
-v0.4.1 does not record why; the likely cause is a threshold raised by a
-large verbatim head (see [How it works](docs/proxy.md#how-it-works)), and
-the current build records the threshold applied to each request. There were no provider errors and no
-length retries. These are estimates from one machine over one afternoon, not
-billed tokens or task results.
+The [proxy replay studies](https://gobstopper.sh/benchmarks) report estimated
+request sizes separately from task results and provider-reported token counts.
+
+###### Benchmark notes
+
+1. 21 of 89 tail-0 trials may have run an earlier build.
 
 ### Saved sessions
 

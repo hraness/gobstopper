@@ -134,19 +134,6 @@ export default function Home() {
             <Terminal title="Preview a saved session" code={`gobstopper detect\ngobstopper plan <session> --trigger 250000`} />
           </div>
 
-          <MarketingSection
-            heading="38% smaller on requests it compacted."
-            headingId="evidence-title"
-            id="evidence"
-            label="One observed session"
-            summary="On September 26, 2026, one Mac ran about 77 minutes of Claude Code through Gobstopper v0.4.1 at its defaults. Compacted requests were 38% smaller in estimated tokens. Most requests were below the threshold and went out unchanged."
-          >
-            <p>
-              This measures estimated request size, not billing or task quality.
-              Cache hits and details the agent reads again affect the result.{" "}
-              <a href="/benchmarks">See the dated measurements and their limits</a>.
-            </p>
-          </MarketingSection>
 
           <MarketingSection
             heading={`About as many tasks solved, ${F.inputFewer} fewer tokens sent.`}

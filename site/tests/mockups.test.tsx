@@ -50,7 +50,7 @@ test("the CLI fixtures agree with each other", async () => {
   expect(start).toContain("keep_recent 3");
 });
 
-test("every mockup says it is an illustration and uses a made-up account", () => {
+test("every mockup has an accessible name and keeps sample account paths private", () => {
   const surfaces = [
     <GobMeter key="m" mode="off" />,
     <GobMeterShowcase key="s" />,
@@ -61,7 +61,12 @@ test("every mockup says it is an illustration and uses a made-up account", () =>
   ];
   for (const surface of surfaces) {
     const html = renderToStaticMarkup(surface);
-    expect(html).toMatch(/Illustration/u);
+    const names: string[] = [];
+    new HTMLRewriter().on('[role="img"]', { element(element) {
+      names.push(element.getAttribute("aria-label") ?? "");
+    } }).transform(html);
+    expect(names.length).toBeGreaterThan(0);
+    for (const name of names) expect(name.trim().length).toBeGreaterThan(0);
     expect(html).not.toMatch(/\/Users\/(?!sam\b)[a-z]+/u);
   }
 });

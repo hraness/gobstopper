@@ -42,11 +42,15 @@ jobs:
           key: bun-site-${{ runner.os }}-${{ hashFiles('site/bun.lock') }}
           restore-keys: bun-site-${{ runner.os }}-
       - run: bun install --frozen-lockfile --ignore-scripts
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.61.1
+      - name: Provision locked Chromium
+        run: bunx --no-install playwright-core install --with-deps chromium
       # The check reads gobstopper.sh, whose alias can trail the deployment's
       # success event by a few seconds; retry twice before failing.
       - name: Verify the live public routes
-        env:
-          GOBSTOPPER_BROWSER_EXECUTABLE: /usr/bin/google-chrome
         run: |
           for attempt in 1 2 3; do
             bun run check:public-site:browser --production && exit 0
