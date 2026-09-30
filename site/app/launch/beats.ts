@@ -85,7 +85,8 @@ const authoredBeats: readonly LaunchBeat[] = [
     post: "On Terminal-Bench 2.1, Claude Code through the proxy solved {benchSolvedWith} of {benchTasks} tasks, against {benchSolvedWithout} without it, and sent {benchInputFewer} fewer input tokens. Built for people who run long agent sessions every day.",
     visual: { kind: "diagram", src: `${FIGURES}/gob-tokens.png` },
     alt: "Bar chart of total input tokens on Terminal-Bench with and without Gobstopper, mostly cache reads.",
-    facts: ["benchSolvedWith", "benchTasks", "benchSolvedWithout", "benchInputFewer"],
+    socialPost: "On Terminal-Bench 2.1, Claude Code through the proxy with a {benchThreshold}-token threshold solved {benchSolvedWith} of {benchTasks} tasks, against {benchSolvedWithout} without it, and sent {benchInputFewer} fewer input tokens. Built for people who run long agent sessions every day.",
+    facts: ["benchSolvedWith", "benchTasks", "benchSolvedWithout", "benchInputFewer", "benchThreshold"],
     detailHref: `${COMPANION_PATH}#what-terminal-bench-showed`,
   },
   {
@@ -111,6 +112,7 @@ const authoredBeats: readonly LaunchBeat[] = [
     part: "status",
     headline: "Free and open source, out now",
     post: "{status}. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows. On Windows the proxy works; the saved-session tools need a Mac or Linux.",
+    socialPost: "{status}. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows.",
     visual: { kind: "mockup", id: "install", state: {} },
     alt: "The one-line install script in an illustration, then gobstopper --version printing the current release.",
     facts: ["status"],
