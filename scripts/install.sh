@@ -150,7 +150,7 @@ verify_macos_release_signature() {
   printf '%s\n' "$apple_team_id" | LC_ALL=C grep -Eq '^[A-Z0-9]{10}$' || fail "release Apple Developer Team ID is not configured"
   [ -x /usr/bin/codesign ] || fail "macOS codesign is required to verify this release"
   requirement="anchor apple generic and identifier \"$apple_identifier\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$apple_team_id\""
-  /usr/bin/codesign --verify --strict --all-architectures --test-requirement "$requirement" "$1" \
+  /usr/bin/codesign --verify --strict --all-architectures --test-requirement "=$requirement" "$1" \
     || fail "release does not have the required Apple Developer ID signature"
 }
 

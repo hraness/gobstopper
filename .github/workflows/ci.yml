@@ -159,6 +159,20 @@ jobs:
           $reported = ((& (Join-Path $prefix 'bin\gobstopper.exe') --version) | Out-String).Trim()
           if ($reported -cne "gobstopper $version") { throw "installed binary reports '$reported'" }
 
+  macos-signing:
+    name: macOS signing parser
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: macos-15
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      # Copies and ad-hoc-signs a disposable system executable. No payload is
+      # executed and no certificate, keychain, or service credential is used.
+      - run: python3 scripts/test_sign_macos_release.py NativeRequirementParserTests -v
+
   msrv:
     name: MSRV 1.85.0
     needs: changes
@@ -403,7 +417,7 @@ jobs:
   required:
     name: Required
     if: always()
-    needs: [changes, quality, windows, python, msrv, formal, core-proofs, transcript-proofs, bounded-stress, site]
+    needs: [changes, quality, windows, python, macos-signing, msrv, formal, core-proofs, transcript-proofs, bounded-stress, site]
     runs-on: ubuntu-slim
     timeout-minutes: 5
     steps:
@@ -417,6 +431,7 @@ jobs:
           QUALITY: ${{ needs.quality.result }}
           WINDOWS: ${{ needs.windows.result }}
           PYTHON: ${{ needs.python.result }}
+          MACOS_SIGNING: ${{ needs.macos-signing.result }}
           MSRV: ${{ needs.msrv.result }}
           FORMAL: ${{ needs.formal.result }}
           CORE_PROOFS: ${{ needs.core-proofs.result }}
@@ -426,6 +441,6 @@ jobs:
           gate() { test "$1" = success || { test "$1" = skipped && test "$2" = false; }; }
           test "$CHANGES" = success
           gate "$SITE" "$SITE_CHANGED"
-          for result in "$QUALITY" "$WINDOWS" "$PYTHON" "$MSRV" "$FORMAL" "$CORE_PROOFS" "$TRANSCRIPT_PROOFS" "$BOUNDED_STRESS"; do
+          for result in "$QUALITY" "$WINDOWS" "$PYTHON" "$MACOS_SIGNING" "$MSRV" "$FORMAL" "$CORE_PROOFS" "$TRANSCRIPT_PROOFS" "$BOUNDED_STRESS"; do
             gate "$result" "$RUST"
           done
