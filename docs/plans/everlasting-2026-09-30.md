@@ -18,7 +18,16 @@ Focused adapter regressions cover semantic cache changes, multiple compactions, 
 
 Required final checks follow `.github/workflows/ci.yml`, assurance records and `docs/release.md`. Final evidence includes the integration tree, independent review, exact commands/results, PR, CI, merge, immutable release, installation and service health.
 
-## Status
+## Delivery status
+
+- [PR #205](https://github.com/hraness/gobstopper/pull/205) merged as `6b36844660a5cc6b16930f600d4bd84e81f5d532` after independent review and all required checks.
+- [CI on the exact merged commit](https://github.com/hraness/gobstopper/actions/runs/36769119899) passed, including Windows, strict Rust checks, proofs, fault suites, and the public-site browser checks.
+- The `v0.8.0` tag points to that commit. [Release publication](https://github.com/hraness/gobstopper/actions/runs/36770257017) is held after the Mac signing/notarization job could not finish waiting for Apple. All four platform builds and the exact-source check passed; temporary credential cleanup and diagnostic preservation succeeded. Publication was skipped.
+- The saved diagnostic was downloaded and its artifact SHA-256 verified. It identifies Apple submission `e21db2b6-911a-461e-8f85-3fd089bd773a`, submitted at `2026-09-30T20:09:04.758Z`; a read-only query of that exact submission still returned `In Progress` on September 30. The diagnostic records `wait-incomplete`, not rejection. No new submission was made. Resolve the existing submission before retrying; the existing retry path creates a new signing and notarization submission whose result must independently pass.
+- Archive verification, the published-release website update, and local installation remain pending actual publication. The temporary signed payload was removed by cleanup, while the successful build artifacts and non-secret submission diagnostic remain in the release run.
+- The installed legacy proxy remains unchanged while clients are active. Its first managed upgrade needs a coordinated pause in new requests; the new service can drain future replacements.
+
+## Work log
 
 - Investigation complete; contracts agreed.
 - Implementation complete in four shared-tree lanes; original checkout preserved.
