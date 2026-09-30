@@ -1,0 +1,37 @@
+{
+  "kind": "slopcamera.html-film-delivery",
+  "schemaVersion": 1,
+  "source": {
+    "path": "site/public/media/gobstopper-film-1080p.mp4",
+    "bytes": 2716873,
+    "sha256": "5e9d9873f2b9867c49819df0ebd4a4184159b129c03f803fdad551483abd3b17",
+    "duration": 75
+  },
+  "files": [
+    {
+      "role": "cut",
+      "path": "site/public/media/cuts/gobstopper-film-1x1.mp4",
+      "bytes": 1201540,
+      "sha256": "7998a4fbd975ec1b88325e8fec989a0668014d1887e974e4ed4ad2fa770d4b1a",
+      "budget": 12000000,
+      "withinBudget": true,
+      "cut": "1:1"
+    },
+    {
+      "role": "cut",
+      "path": "site/public/media/cuts/gobstopper-film-9x16.mp4",
+      "bytes": 1415866,
+      "sha256": "bd6b595ab2311b68e9dde6b902537201897e07e90998be0a841d3aabaa09a4cc",
+      "budget": 12000000,
+      "withinBudget": true,
+      "cut": "9:16"
+    }
+  ],
+  "withinBudget": true,
+  "deliveredAt": "2026-09-30T00:01:55.372Z",
+  "budgets": {
+    "mp4": 12000000,
+    "webm": 10000000,
+    "jpg": 250000
+  }
+}

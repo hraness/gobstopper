@@ -7,13 +7,15 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.4"
+version = "0.7.5"
 edition = "2021"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/hraness/gobstopper"
 rust-version = "1.85"
 
 [workspace.dependencies]
+gobstopper-core = { path = "crates/gobstopper-core", version = "=0.7.5" }
+gobstopper-adapters = { path = "crates/gobstopper-adapters", version = "=0.7.5" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 thiserror = "2"

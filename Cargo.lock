@@ -209,7 +209,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -234,7 +234,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "apple-foundation",
@@ -253,7 +253,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper-adapters"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "anyhow",
  "fs2",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper-core"
-version = "0.7.4"
+version = "0.7.5"
 dependencies = [
  "libc",
  "serde",
@@ -311,8 +311,8 @@ dependencies = [
 
 [[package]]
 name = "hraness-cli-kit"
-version = "0.8.1"
-source = "git+https://github.com/hraness/desktop-foundation?tag=v0.8.1#6040606576167e4e8d0163a564463f04fa238be4"
+version = "1.1.2"
+source = "git+https://github.com/hraness/desktop-foundation?tag=v1.1.2#c6003c05a86ab9a188b8bc20dd4de5fe459affab"
 dependencies = [
  "clap",
 ]
@@ -463,7 +463,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -613,7 +613,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "230a1b821ccbd75b185820a1f1ff7b14d21da1e442e22c0863ea5f08771a8874"
 dependencies = [
  "rustix",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
