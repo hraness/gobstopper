@@ -73,6 +73,7 @@ main() {
   fi
 
   temporary=$(mktemp -d "${TMPDIR:-/tmp}/gobstopper-install.XXXXXX")
+  temporary=$(cd "$temporary" && pwd -P)
   trap 'rm -rf "$temporary"' EXIT
   trap 'exit 1' HUP INT TERM
 
@@ -105,14 +106,29 @@ main() {
   reported=$("$candidate" --version 2>&1) || fail "the downloaded gobstopper does not run on this system: $reported"
   [ "$reported" = "gobstopper $version" ] || fail "the downloaded binary reports '$reported', expected 'gobstopper $version'"
 
-  mkdir -p "$bin"
-  [ ! -L "$bin/gobstopper" ] || fail "$bin/gobstopper is a symlink; remove it first"
-  # Stage beside the destination, then rename: a running gobstopper keeps its
-  # old file and the new one appears in one step.
-  staged="$bin/.gobstopper-install.$$"
-  cp "$candidate" "$staged"
-  chmod 0755 "$staged"
-  mv -f "$staged" "$bin/gobstopper"
+  case "$base_url" in
+    http://127.0.0.1:*) native_transaction=no ;;
+    *) if historical_unsigned_release "$version"; then native_transaction=no; else native_transaction=yes; fi ;;
+  esac
+  if [ "$native_transaction" = yes ]; then
+    # This verified candidate independently checks canonical immutable release
+    # metadata and its own bytes, then owns the lock, replacement and receipt.
+    # The loopback fixture path never claims public release ownership.
+    if [ -n "${GOBSTOPPER_VERSION:-}" ]; then
+      "$candidate" __install-release --archive "$temporary/$asset" --checksum "$temporary/$asset.sha256" --prefix "$prefix" --pinned
+    else
+      "$candidate" __install-release --archive "$temporary/$asset" --checksum "$temporary/$asset.sha256" --prefix "$prefix"
+    fi
+  else
+    mkdir -p "$bin"
+    [ ! -L "$bin/gobstopper" ] || fail "$bin/gobstopper is a symlink; remove it first"
+    [ ! -e "$bin/.hraness-cli-update-gobstopper" ] \
+      || fail "this installation uses native update coordination; use gobstopper update or install a modern official release"
+    staged="$bin/.gobstopper-install.$$"
+    cp "$candidate" "$staged"
+    chmod 0755 "$staged"
+    mv -f "$staged" "$bin/gobstopper"
+  fi
 
   echo "Installed $bin/gobstopper ($actual)"
   case ":${PATH:-}:" in

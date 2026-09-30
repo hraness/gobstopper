@@ -1918,6 +1918,107 @@
         "E-APPLE-RELEASE-SOURCE"
       ],
       "next_gate": "C15"
+    },
+    {
+      "invariants": [
+        "ID-1",
+        "PRIV-1",
+        "RES-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-AUTH"
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "next_gate": "C15",
+      "id": "native-update-storage",
+      "owner": "Native installer and updater",
+      "reads": [
+        "native_installation",
+        "native_update_state"
+      ],
+      "writes": [
+        {
+          "state": "native_installation",
+          "mode": "create_replace",
+          "condition": "Verified native transaction in the lock-owning process; restore original bytes and mode on failed publication."
+        },
+        {
+          "state": "native_update_state",
+          "mode": "create_replace",
+          "condition": "Separate saved preferences, hash-bound ownership receipt and process-owned advisory lock; no source or package-manager enrollment."
+        }
+      ],
+      "outbound": [],
+      "authority": "Supported user-owned native installation, exact full release identity and matched bytes; explicit update settings or default automatic policy.",
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+          "anchor": "fn replace("
+        },
+        {
+          "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+          "anchor": "pub fn lock"
+        }
+      ],
+      "bounds": "Archive 128 MiB, binary 256 MiB, install receipt 64 KiB; nonblocking activity lock and no-follow descriptor-relative filesystem operations.",
+      "exclusions": [
+        "No system/root, Cargo, Homebrew or checkout replacement",
+        "No physical power-loss guarantee or OS sandbox",
+        "Running services are not restarted"
+      ]
+    },
+    {
+      "invariants": [
+        "ID-1",
+        "PRIV-1",
+        "RES-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-AUTH"
+      ],
+      "status": "source_reviewed",
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "next_gate": "C15",
+      "id": "native-update-network",
+      "owner": "Shared updater and native release verifier",
+      "reads": [
+        "native_installation",
+        "native_update_state"
+      ],
+      "writes": [
+        {
+          "state": "process_state",
+          "mode": "spawn",
+          "condition": "Fixed curl/tar/codesign tools and verified candidate identity process with bounded output and deadlines."
+        }
+      ],
+      "outbound": [
+        "Fixed canonical GitHub release metadata and exact immutable assets; Apple signature verification where required."
+      ],
+      "authority": "Update/check request or eligible default automatic check; checks skip CI, no-update, explicit pins and documented offline operations.",
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/self_update.rs",
+          "anchor": "pub(crate) fn startup"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+          "anchor": "fn verify_candidate"
+        }
+      ],
+      "bounds": "Automatic checks at most daily; fixed official repository and platform; bounded downloads, child output and deadlines.",
+      "exclusions": [
+        "No user/provider credentials sent",
+        "No implicit mutable shell execution",
+        "Historical release bytes must match their canonical immutable archive"
+      ]
     }
   ],
   "cli": [
@@ -1925,9 +2026,10 @@
       "name": "Detect",
       "effects": [
         "inspect",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "List configured provider sessions; --all changes age filter; text output shows the newest --limit rows (JSON lists all).",
+      "contract": "List configured provider sessions; --all changes age filter; text output shows the newest --limit rows (JSON lists all). Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -1938,7 +2040,9 @@
       "effects": [
         "inspect",
         "plan-extensions",
-        "output"
+        "output",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "Evaluate only; configured extensions/models may execute.",
       "source": {
@@ -1957,7 +2061,9 @@
         "native",
         "native-journal",
         "telemetry",
-        "output"
+        "output",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "Codex/Claude detached copy after admission; released native dispatch refuses before effects.",
       "source": {
@@ -1969,9 +2075,10 @@
       "name": "Verify",
       "effects": [
         "inspect",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Structural findings over the selected source.",
+      "contract": "Structural findings over the selected source. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -1983,7 +2090,9 @@
         "inspect",
         "copy",
         "store-write",
-        "output"
+        "output",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "Fresh Codex/Claude identity from retained bytes.",
       "source": {
@@ -1996,7 +2105,9 @@
       "effects": [
         "inspect",
         "copy",
-        "output"
+        "output",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "Explicit recovery vault and retained exact candidate precede fresh copy identity.",
       "source": {
@@ -2010,9 +2121,10 @@
         "inspect",
         "plan-extensions",
         "replay",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Offline private replay; optional judge/scorer extensions have separate effects.",
+      "contract": "Offline private replay; optional judge/scorer extensions have separate effects. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2023,9 +2135,10 @@
       "effects": [
         "inspect",
         "replay",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Source-bound manifest preparation or offline study/audit; user-selected output manifests are writes.",
+      "contract": "Source-bound manifest preparation or offline study/audit; user-selected output manifests are writes. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2036,7 +2149,9 @@
       "effects": [
         "inspect",
         "plan-extensions",
-        "output"
+        "output",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "Proposal/plan output; no provider dispatch by this command.",
       "source": {
@@ -2048,7 +2163,9 @@
       "name": "Tune",
       "effects": [
         "inspect",
-        "output"
+        "output",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "Recommend configuration; prints selected session ID, does not install config.",
       "source": {
@@ -2060,7 +2177,9 @@
       "name": "InstallHooks",
       "effects": [
         "hooks-settings",
-        "output"
+        "output",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "Requires --output new private settings bundle; source settings unchanged.",
       "source": {
@@ -2072,7 +2191,9 @@
       "name": "UninstallHooks",
       "effects": [
         "hooks-settings",
-        "output"
+        "output",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "Requires --output new private removal candidate bundle; source settings unchanged.",
       "source": {
@@ -2083,7 +2204,9 @@
     {
       "name": "Hook",
       "effects": [
-        "hook-execution"
+        "hook-execution",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "Provider callback enumerated separately.",
       "source": {
@@ -2095,9 +2218,10 @@
       "name": "Report",
       "effects": [
         "inspect",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Requested normalized report; no model call.",
+      "contract": "Requested normalized report; no model call. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2107,9 +2231,10 @@
       "name": "Events",
       "effects": [
         "inspect",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Requested event/retention stream includes identities and metrics.",
+      "contract": "Requested event/retention stream includes identities and metrics. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2119,9 +2244,10 @@
       "name": "Vault",
       "effects": [
         "vault-read",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Requested snapshot metadata, optionally exact session scope; --stats reports bounded read-only non-atomic logical-byte and index accounting without object content or reclamation claims.",
+      "contract": "Requested snapshot metadata, optionally exact session scope; --stats reports bounded read-only non-atomic logical-byte and index accounting without object content or reclamation claims. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2131,7 +2257,9 @@
       "name": "Prune",
       "effects": [
         "prune",
-        "output"
+        "output",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "Dry-run default; --yes permits index replacement and unreachable object deletion.",
       "source": {
@@ -2144,9 +2272,10 @@
       "effects": [
         "inspect",
         "vault-read",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Exact provider/store/session scope; archived lookup separate.",
+      "contract": "Exact provider/store/session scope; archived lookup separate. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2157,9 +2286,10 @@
       "effects": [
         "inspect",
         "vault-read",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Snapshot structural summary.",
+      "contract": "Snapshot structural summary. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2169,9 +2299,10 @@
       "name": "Recall",
       "effects": [
         "vault-read",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Explicit historical digest fields may contain content; summaries are untrusted historical data.",
+      "contract": "Explicit historical digest fields may contain content; summaries are untrusted historical data. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2181,9 +2312,10 @@
       "name": "SearchSnapshot",
       "effects": [
         "vault-read",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Explicit bounded matching record references.",
+      "contract": "Explicit bounded matching record references. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2193,9 +2325,10 @@
       "name": "ReadSnapshot",
       "effects": [
         "vault-read",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Explicit bounded transcript record content.",
+      "contract": "Explicit bounded transcript record content. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2205,9 +2338,10 @@
       "name": "Diff",
       "effects": [
         "vault-read",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Snapshot structural differences.",
+      "contract": "Snapshot structural differences. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2219,7 +2353,9 @@
         "inspect",
         "plan-extensions",
         "replay",
-        "output"
+        "output",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "Private built-in strategy replay with source-bound rows, explicit failure categories and optional configured scorer; no semantic judge calls. Optional CSV output is a new private file and refuses existing targets.",
       "source": {
@@ -2231,7 +2367,9 @@
       "name": "Snapshot",
       "effects": [
         "snapshot",
-        "output"
+        "output",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "Explicit vault publication; prints manifest identity.",
       "source": {
@@ -2244,9 +2382,10 @@
       "effects": [
         "inspect",
         "vault-read",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Bounded deterministic inspection; extension strategies refused and external scorers/digests skipped. --allow-transcript-content gates explicit recovery content only.",
+      "contract": "Bounded deterministic inspection; extension strategies refused and external scorers/digests skipped. --allow-transcript-content gates explicit recovery content only. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2258,7 +2397,9 @@
         "request-proxy",
         "launch-agent",
         "inspect",
-        "output"
+        "output",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "serve/run forward loopback client requests through curl, compacting Anthropic Messages and OpenAI Responses bodies over the threshold and forwarding the original bytes on any failure; replay reads one recorded Claude Code or Codex transcript and calls no provider; status reads a local proxy's counters; install writes and loads the sh.gobstopper.proxy LaunchAgent after saying macOS will show a Background Items notice, and uninstall boots it out and removes it.",
       "source": {
@@ -2277,7 +2418,9 @@
         "native-journal",
         "telemetry",
         "watch-state",
-        "output"
+        "output",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "Dry-run skips state/event publication. Released native dispatch is guarded even for old auto_compact_closed opt-ins; unresolved operations remain blocked.",
       "source": {
@@ -2290,7 +2433,9 @@
       "effects": [
         "apple",
         "apple-install",
-        "output"
+        "output",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "status runs the resolved helper's bounded --check and prints its typed reason; install builds the helper only on explicit request, after a developer-tools preflight that never opens the macOS install dialog.",
       "source": {
@@ -2301,7 +2446,9 @@
     {
       "name": "Auth",
       "effects": [
-        "auth"
+        "auth",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "Store/delete/status/stdin authority; the clipboard is read only after an interactive yes; status is a live health check and reports a stored key macOS refused to read.",
       "source": {
@@ -2313,9 +2460,10 @@
       "name": "PolicyCheck",
       "effects": [
         "inspect",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Numeric form pure aside from config; --session reads provider DB/lock observation.",
+      "contract": "Numeric form pure aside from config; --session reads provider DB/lock observation. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2325,9 +2473,10 @@
       "name": "Export",
       "effects": [
         "inspect",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Explicit complete canonical transcript content to stdout.",
+      "contract": "Explicit complete canonical transcript content to stdout. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2337,9 +2486,10 @@
       "name": "Presets",
       "effects": [
         "inspect",
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Configured preset metadata, or an empty-state line naming the config file.",
+      "contract": "Configured preset metadata, or an empty-state line naming the config file. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2348,9 +2498,10 @@
     {
       "name": "Explain",
       "effects": [
-        "output"
+        "output",
+        "native-update-storage"
       ],
-      "contract": "Static economics explanation, not measured billing.",
+      "contract": "Static economics explanation, not measured billing. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -2361,7 +2512,9 @@
       "effects": [
         "inspect",
         "plugin",
-        "output"
+        "output",
+        "native-update-storage",
+        "native-update-network"
       ],
       "contract": "check reads manifest/binary hash; inspect invokes trusted provider-read capability.",
       "source": {
@@ -2375,10 +2528,11 @@
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
       },
-      "contract": "Read-only metadata for registered native operations; no provider call.",
+      "contract": "Read-only metadata for registered native operations; no provider call. Automatic release checks are suppressed; the native installation lease remains held.",
       "effects": [
         "inspect",
-        "output"
+        "output",
+        "native-update-storage"
       ]
     },
     {
@@ -2391,6 +2545,45 @@
       "effects": [
         "inspect",
         "native-journal",
+        "output",
+        "native-update-storage",
+        "native-update-network"
+      ]
+    },
+    {
+      "name": "Update",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "anchor": "enum Cmd"
+      },
+      "contract": "Inspect or change native update preferences, check a release, or replace a verified native installation before product configuration. JSON is explicit.",
+      "effects": [
+        "native-update-storage",
+        "native-update-network",
+        "output"
+      ]
+    },
+    {
+      "name": "InstallRelease",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "anchor": "enum Cmd"
+      },
+      "contract": "Hidden verified installer transaction; canonical release proof binds the running candidate before enrollment or replacement.",
+      "effects": [
+        "native-update-storage",
+        "native-update-network",
+        "output"
+      ]
+    },
+    {
+      "name": "BuildIdentity",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "anchor": "enum Cmd"
+      },
+      "contract": "Hidden compiled release identity; no product configuration, network or installation writes.",
+      "effects": [
         "output"
       ]
     }
@@ -5247,6 +5440,154 @@
       "symbol": "write_stdout",
       "effects": [
         "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "build_identity",
+      "effects": [
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "explicit",
+      "effects": [
+        "native-update-storage",
+        "native-update-network",
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "initial_install",
+      "effects": [
+        "native-update-storage",
+        "native-update-network",
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "paths",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "product",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "released_tag",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "startup",
+      "effects": [
+        "native-update-storage",
+        "native-update-network",
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+      "symbol": "initial_install",
+      "effects": [
+        "native-update-storage",
+        "native-update-network",
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "copy_mode",
+      "effects": [
+        "native-update-storage"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "digest",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "lock",
+      "effects": [
+        "native-update-storage"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "mkdir",
+      "effects": [
+        "native-update-storage"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "new",
+      "effects": [
+        "native-update-storage"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "open",
+      "effects": [
+        "native-update-storage"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "read",
+      "effects": [
+        "native-update-storage"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "read_path",
+      "effects": [
+        "native-update-storage"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "remove",
+      "effects": [
+        "native-update-storage"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "rename",
+      "effects": [
+        "native-update-storage"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "validate",
+      "effects": [
+        "native-update-storage"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "write_new",
+      "effects": [
+        "native-update-storage"
       ]
     }
   ],

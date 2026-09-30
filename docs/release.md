@@ -44,6 +44,39 @@ Both install the latest release unless `GOBSTOPPER_VERSION` names one, download 
 
 Tests point both at a loopback server with `GOBSTOPPER_RELEASE_BASE_URL=http://127.0.0.1:<port>`; they refuse any other override.
 
+### Updates
+
+Starting with 0.7.6, macOS and Linux installations made by the public installer
+enable automatic updates by default. Before a command starts, Gobstopper checks
+for a newer stable release at most once a day. It verifies the immutable GitHub
+release, archive and checksum hashes, archive contents, executable version, and
+Mac signature before replacing the executable. If installation fails, it restores
+the previous executable and install record. The requested command then runs with
+the updated executable, arguments, input and exit status.
+
+```sh
+gobstopper update                # install the latest supported release
+gobstopper update check --json   # check without installing
+gobstopper update status         # show the installation and saved policy
+gobstopper update disable        # turn automatic updates off
+gobstopper update enable         # restore automatic updates
+```
+
+An active proxy, MCP server, watch command, or other Gobstopper command prevents
+replacement until it exits. Updating does not restart a service. Help, version,
+CI, MCP, offline replay and read-only inspection commands do not check for
+updates. `--no-update` or
+`HRANESS_NO_UPDATE=1` skips automatic checks for one invocation. The saved policy
+survives a reinstall. `GOBSTOPPER_VERSION` pins an installation; updating cannot
+silently change that pin.
+
+Re-run the public installer once to add update support to the verified 0.7.5
+release. It compares the existing bytes with that release before replacing them.
+Unknown older copies need their original installation workflow or a new
+`GOBSTOPPER_INSTALL_PREFIX`. Cargo, Homebrew, source builds, and Windows do not
+replace themselves. Test installs from a loopback server never enable public
+release updates.
+
 ### Windows
 
 The Windows build runs the read-only commands (`detect`, `plan`, `report`, `explain`, `verify`, `mcp`) and the proxy. Claude Code session usage reads as unknown there, because the usage scan binds to Unix inode and ctime identity. Commands that write through the vault refuse with an error naming the missing platform guarantee (directory sync, directory locking, bounded event log I/O, bounded plugin process custody), and `proxy install` refuses because it installs a macOS LaunchAgent. CI runs the Windows test suite with the tests for those Unix-only features excluded; see `[profile.windows]` in [`.config/nextest.toml`](../.config/nextest.toml).
@@ -102,7 +135,7 @@ The release workflow's `crates` job publishes `gobstopper-core`, `gobstopper-ada
 
 The job is off until the `CRATES_IO_PUBLISH` repository variable is `true`, because these have to happen first, once:
 
-1. Publish `apple-foundation` 0.2.0 and `hraness-cli-kit` 1.1.2 to crates.io. Gobstopper declares each dependency with both an immutable Git tag and an exact registry version; Cargo uses the Git sources locally and registry dependencies in published packages.
+1. Publish `apple-foundation` 0.2.0, `hraness-cli-kit` 1.1.2, and `hraness-cli-update` 0.1.0 to crates.io. Gobstopper declares each dependency with both an immutable Git tag and an exact registry version; Cargo uses the Git sources locally and registry dependencies in published packages. These prerequisites are not complete, so registry publication stays disabled.
 2. Keep the workspace's exact path-dependency versions equal to its release version. Re-run the normal proof and stress suites when their manifest or lockfile inputs change, and record fresh assurance receipts.
 3. crates.io only lets trusted publishing update a crate that exists. A maintainer publishes the first version of each crate from the release tag with a short-lived API token scoped to publishing new crates, in order: `cargo +1.97.1 publish --locked -p gobstopper-core`, then `-p gobstopper-adapters`, then `-p gobstopper`. Revoke the token afterwards.
 4. On crates.io, open each crate's Settings, add a trusted publisher for GitHub with owner `hraness`, repository `gobstopper` and workflow `release.yml`, and leave the environment empty.

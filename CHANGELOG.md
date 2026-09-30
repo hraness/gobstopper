@@ -2,9 +2,13 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
-## Unreleased
+## v0.7.6 - 2026-09-30
 
-Future Mac releases will use a stable Apple Developer ID identity across updates.
+Gobstopper's macOS and Linux release installations update automatically before a command when a newer verified release is available. Mac releases use a stable Apple Developer ID identity across updates.
+
+- `gobstopper update` installs a newer release. `update check`, `status`, `enable`, and `disable` inspect or change update behavior. Supported native installations check at most once a day by default; CI, MCP, offline replay, read-only inspection and pinned versions skip automatic checks.
+- Updates verify the canonical immutable release, archive hashes, archive contents, executable identity and Mac signature, then replace the executable and preserve the previous copy if installation fails. Running commands prevent replacement for their entire lifetime, including proxies and MCP servers.
+- The public installer can upgrade a verified 0.7.5 copy into an installation that updates itself. Cargo, source builds, unknown copies and Windows keep their existing update workflow. `--no-update` or `HRANESS_NO_UPDATE=1` skips an automatic check for one invocation.
 
 - The release workflow signs and notarizes the Apple silicon binary after the exact source passes CI. Compilation runs without Apple credentials, and temporary signing credentials are removed before testing the final installer.
 - The Mac installer verifies the expected Apple signing team and Gobstopper identifier before executing the downloaded binary. Releases before 0.7.6 retain their original installation behavior.

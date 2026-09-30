@@ -14,6 +14,7 @@ mod proxy;
 mod proxy_agent;
 mod report;
 mod secrets;
+mod self_update;
 mod telemetry;
 mod ux;
 
@@ -39,6 +40,9 @@ use std::process::{Command, Stdio};
     override_help = ux::ROOT_HELP
 )]
 struct Cli {
+    /// Skip automatic update checks for this invocation.
+    #[arg(long, global = true, help_heading = "Global options")]
+    no_update: bool,
     /// Codex state root (default: $CODEX_HOME or ~/.codex).
     #[arg(long, global = true, help_heading = "Global options")]
     codex_home: Option<PathBuf>,
@@ -54,6 +58,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Update a supported native installation or change automatic-update settings.
+    Update(self_update::UpdateArgs),
+    #[command(name = "__install-release", hide = true)]
+    InstallRelease(self_update::InitialInstall),
+    #[command(name = "__build-identity", hide = true)]
+    BuildIdentity,
     /// List detected sessions with context occupancy, newest first.
     Detect {
         /// Include sessions of any age (default: last 7 days).
@@ -5415,13 +5425,67 @@ fn main() -> std::process::ExitCode {
                 }
         )
     );
-    match run(cli) {
+    let mut _update_lease = None;
+    let result = (|| {
+        match &cli.command {
+            Some(Cmd::Update(args)) => return self_update::explicit(args),
+            Some(Cmd::InstallRelease(args)) => return self_update::initial_install(args),
+            Some(Cmd::BuildIdentity) => {
+                self_update::build_identity();
+                return Ok(());
+            }
+            None => return run(cli),
+            _ => {}
+        }
+        // Read-only and offline commands retain their no-incidental-network
+        // contract. Their lease still prevents replacement while they run.
+        let offline = offline_command(cli.command.as_ref());
+        _update_lease = self_update::startup(offline, cli.no_update)?;
+        run(cli)
+    })();
+    match result {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             ux::report_error(&error, json, protocol);
             std::process::ExitCode::FAILURE
         }
     }
+}
+
+fn offline_command(command: Option<&Cmd>) -> bool {
+    matches!(
+        command,
+        Some(
+            Cmd::Mcp { .. }
+                | Cmd::Detect { .. }
+                | Cmd::Verify { .. }
+                | Cmd::Report { .. }
+                | Cmd::PolicyCheck { .. }
+                | Cmd::Presets
+                | Cmd::Explain
+                | Cmd::Export { .. }
+                | Cmd::Vault { .. }
+                | Cmd::History { .. }
+                | Cmd::Show { .. }
+                | Cmd::Recall { .. }
+                | Cmd::NativeOperations
+                | Cmd::Eval { .. }
+                | Cmd::Diff { .. }
+                | Cmd::Events { .. }
+                | Cmd::ReadSnapshot { .. }
+                | Cmd::SearchSnapshot { .. }
+                | Cmd::EvalStudy { .. }
+                | Cmd::Plugin {
+                    command: PluginCmd::Check { .. }
+                }
+                | Cmd::Apple {
+                    command: apple_cmd::AppleCmd::Status { .. }
+                }
+                | Cmd::Proxy {
+                    command: proxy::ProxyCmd::Replay { .. }
+                }
+        )
+    )
 }
 
 fn run(cli: Cli) -> Result<()> {
@@ -5431,6 +5495,9 @@ fn run(cli: Cli) -> Result<()> {
     };
     let cfg = config::load()?;
     match command {
+        Cmd::Update(_) | Cmd::InstallRelease(_) | Cmd::BuildIdentity => {
+            unreachable!("handled before product configuration")
+        }
         Cmd::Plugin { command } => cmd_plugin(command),
         Cmd::Detect { all, limit, json } => cmd_detect(&cli, *all, *limit, *json),
         Cmd::Plan {
@@ -5779,6 +5846,42 @@ fn _assert_error_surface(e: AdapterError) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn self_update_skips_offline_inspection_and_retains_active_workflows() {
+        use clap::Parser as _;
+        for arguments in [
+            "mcp",
+            "detect",
+            "verify fixture.jsonl",
+            "report",
+            "presets",
+            "explain",
+            "export fixture.jsonl",
+            "vault",
+            "history fixture.jsonl",
+            "show digest",
+            "recall",
+            "native-operations",
+            "eval fixture.jsonl",
+            "plugin check plugin.json",
+            "apple status",
+            "policy-check --provider codex --context-tokens 5000",
+        ] {
+            let cli = super::Cli::try_parse_from(
+                std::iter::once("gobstopper").chain(arguments.split_whitespace()),
+            )
+            .unwrap();
+            assert!(super::offline_command(cli.command.as_ref()), "{arguments}");
+        }
+        for arguments in ["apply fixture.jsonl", "watch", "proxy serve"] {
+            let cli = super::Cli::try_parse_from(
+                std::iter::once("gobstopper").chain(arguments.split_whitespace()),
+            )
+            .unwrap();
+            assert!(!super::offline_command(cli.command.as_ref()), "{arguments}");
+        }
+    }
+
     #[test]
     fn root_help_and_help_advanced_list_every_visible_command() {
         use clap::CommandFactory as _;

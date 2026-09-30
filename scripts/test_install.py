@@ -135,6 +135,19 @@ class InstallShTests(unittest.TestCase):
         self.assertIn("checksum mismatch", result.stderr)
         self.assertFalse((self.prefix / "bin" / "gobstopper").exists())
 
+    def test_loopback_cannot_replace_a_managed_native_install(self):
+        self.publish(archive({"gobstopper": FAKE}))
+        binary = self.prefix / "bin" / "gobstopper"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"preserve managed executable")
+        state = binary.parent / ".hraness-cli-update-gobstopper"
+        state.mkdir()
+        (state / "activity.lock").write_bytes(b"")
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("native update coordination", result.stderr)
+        self.assertEqual(binary.read_bytes(), b"preserve managed executable")
+
     def test_archive_with_other_members_is_refused(self):
         self.publish(archive({"gobstopper": FAKE, "extra": b"x"}))
         result = self.install()

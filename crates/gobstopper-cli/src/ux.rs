@@ -239,6 +239,7 @@ Sessions and snapshots
   events            Show past compactions and what they saved
 
 Setup
+  update            Update Gobstopper or change automatic-update settings
   watch             Prepare compacted copies as sessions grow
   auth              Store or check the TypeSafe key for the jev scorer
   apple             Set up and check Apple's on-device model for scoring
@@ -251,6 +252,7 @@ Setup
 Options
   -h, --help        Print help; `gobstopper <command> --help` for one command
   -V, --version     Print the version
+  --no-update       Skip automatic update checks for this invocation
   --codex-home      Codex folder ($CODEX_HOME or ~/.codex)
   --claude-home     Claude Code folder ($CLAUDE_CONFIG_DIR or ~/.claude)
   --codex-bin       Codex CLI to use (default: codex on PATH)

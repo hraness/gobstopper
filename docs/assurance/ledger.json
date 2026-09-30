@@ -130,6 +130,18 @@
       "meaning": "Allowlisted Apple notarization submission ID, status and input/signed-file hashes",
       "owner": "release workflow",
       "boundary": "Non-secret diagnostics survive temporary credential cleanup; they do not authorize resubmission or publication without Accepted verification."
+    },
+    {
+      "id": "native_installation",
+      "meaning": "Verified native executable and private staged/rollback copies",
+      "owner": "Native installer and shared updater lease owner",
+      "boundary": "Exact immutable release archive and executable hash, fixed user-owned location, same-process atomic replacement with rollback."
+    },
+    {
+      "id": "native_update_state",
+      "meaning": "Native ownership receipt, activity lock and separate saved preferences",
+      "owner": "Native installer and shared updater",
+      "boundary": "Preferences cannot create ownership. Active product commands hold a lease; updater replaces files only under the corresponding exclusive lock."
     }
   ],
   "assumptions": [
@@ -409,8 +421,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-29-075-publishing-core.json",
-        "sha256": "5948f2c03cd2c3032d4cfaa595fa6f957e059136d411d4beb7eaa31b21e0f004"
+        "path": "docs/assurance/receipts/2026-09-30-076-updater-core.json",
+        "sha256": "5c2e9a7b28b9237b63cc033bbbfeb468df8bcb4fbd16a4221f261efa27bf6bee"
       }
     },
     {
@@ -472,8 +484,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-29-075-publishing-transcript.json",
-        "sha256": "16a54af6665f0069e63e04f264c1b75d8763bb7c3637348f95d3f588889f2674"
+        "path": "docs/assurance/receipts/2026-09-30-076-updater-transcript.json",
+        "sha256": "c9780644e5df0e19cce01b626b19b6693f6a7f8cf88b885f73ce094fda1ebee9"
       }
     },
     {
@@ -493,8 +505,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-29-075-publishing-stress.json",
-        "sha256": "aef970c45a4341f28df87808fbb9ac2905010c4b36920b43398a7979fa0bed32"
+        "path": "docs/assurance/receipts/2026-09-30-076-updater-stress.json",
+        "sha256": "586a006e10494ecd8ba057665db719205ea33b06fa2e92096a526d3a02e3abdd"
       }
     },
     {
