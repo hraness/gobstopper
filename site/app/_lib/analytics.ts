@@ -18,6 +18,8 @@ export const gobstopperPostHogSite = {
   canonicalDomain: "gobstopper.sh",
   allowedHosts: ["gobstopper.sh"],
   schemaVersion: POSTHOG_SCHEMA_VERSION,
+  excludedPaths: ["/api", "/auth", "/account", "/dashboard", "/login", "/sign-in", "/oauth", "/callback", "/checkout", "/billing", "/invite"]
+    .map(path => ({ match: "prefix" as const, path })),
   routes: [
     { match: "exact", path: "/", pageKind: "home" },
     { match: "exact", path: "/docs", pageKind: "docs" },
@@ -27,8 +29,7 @@ export const gobstopperPostHogSite = {
     { match: "prefix", path: "/blog", pageKind: "blog_post", contentGroup: "blog", captureSlug: true },
     { match: "prefix", path: "/compare", pageKind: "comparison", contentGroup: "compare", captureSlug: true },
   ],
-  customEvents: [INSTALL_COPIED_EVENT, CTA_CLICKED_EVENT, FILM_PLAYED_EVENT],
-  stripQueryAttribution: true,
+  customEvents: ["outbound link opened", "page not found", INSTALL_COPIED_EVENT, CTA_CLICKED_EVENT, FILM_PLAYED_EVENT],
   unknownCanonicalPath: "/not-found",
 } as const satisfies PostHogSiteDefinition;
 
