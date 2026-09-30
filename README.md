@@ -86,8 +86,9 @@ a model call:
   and the newest three turns (more with `--keep-tail-percent`) are sent
   unchanged. Older turns become one summary that keeps human
   and assistant text, keeps tool results of at most 500 characters, and
-  reduces each tool call to a one-line signature. Longer tool results are
-  dropped, because the agent can read the file or rerun the command.
+  reduces each tool call to a one-line signature. A separate bounded carry
+  retains selected original tool results and images with their source invocation;
+  excerpts are labelled. See [context retention](docs/context-retention.md).
 - **A summary is never summarized.** Each compaction starts again from the
   original history the client resends and discards the previous summary;
   the human's words and the assistant's replies carry forward, up to 24,000
@@ -95,12 +96,14 @@ a model call:
 - **The prompt cache keeps matching.** Between compactions, every request
   reuses the same compacted prefix byte for byte, so the provider's prompt
   cache stays valid until the next compaction.
-- **The agent's own compaction stays idle.** The provider reports the
-  compacted size, so Claude Code or Codex does not reach its auto-compaction
-  trigger, and your transcript keeps the full history.
-- **A failure sends the original request.** If the body cannot be parsed,
+- **Fewer native compaction triggers.** The provider reports the
+  compacted size, which can keep Claude Code or Codex below its own trigger.
+  Client limits and native compaction can still apply; your transcript keeps
+  the full history.
+- **A failure can send the original request.** If the body cannot be parsed,
   the engine fails, or the provider rejects the rewritten request for a
-  reason other than length, the proxy forwards the client's original bytes.
+  reason other than length, the proxy forwards the client's original bytes
+  when they fit any explicitly configured hard context capacity.
   A length rejection gets a further compaction and a retry.
 
 ![Line chart of estimated tokens per request over 383 requests of one session. Without the proxy, request size climbs steadily to about 491,000. With Gobstopper at a 45,000-token threshold, it stays under 40,000 in a sawtooth, and total input falls from 116.7 million to 12.9 million estimated tokens.](docs/assets/gob-sawtooth.png)
@@ -228,8 +231,10 @@ not yet been qualified against a live opencode, Crush, Aider, or Goose
 session.
 
 The summary keeps human and assistant text, keeps tool results of at most 500
-characters, and reduces each tool call to a one-line signature; longer tool
-results are dropped because the agent can read the file or rerun the command.
+characters, and reduces each tool call to a one-line signature. A separate
+bounded carry retains selected original tool results and images with their
+invocation and labels excerpts. [Context retention](docs/context-retention.md)
+describes the limits and controls.
 The next compaction starts again from the history the client resends and
 discards the previous summary, but the human's words and the assistant's
 visible replies carry forward: each later summary opens with them, oldest
@@ -238,7 +243,8 @@ longer fit. Between compactions, requests reuse the same compacted prefix,
 so the provider's prompt cache can match it.
 
 The kept turns hold the files and command output the agent read most
-recently, which the summary drops once they pass 500 characters. By default
+recently. The summary omits long results unless the bounded evidence carry
+selects them. By default
 the proxy keeps exactly the newest `--keep-recent` turns, as CliffCompaction
 does. `--keep-tail-percent` (0 to 60, default 0 since v0.7.3; 40 before)
 keeps older whole turns too while the summary and the kept turns fit in that
@@ -266,7 +272,7 @@ below the point where the client compacts on its own, including any
 ```sh
 gobstopper proxy run -- claude            # one session through a temporary proxy
 gobstopper proxy serve                    # background proxy on http://127.0.0.1:8260
-gobstopper proxy install                  # macOS: start that proxy at login (LaunchAgent)
+gobstopper proxy install                  # owned user service; start at login
 export ANTHROPIC_BASE_URL=http://127.0.0.1:8260
 gobstopper proxy replay <session>         # what the proxy would have sent; calls no provider
 gobstopper proxy status                   # counters and estimated-token totals, this run and all time
@@ -284,11 +290,12 @@ choosing a threshold, and every setting.
 
 *It sits between your agent and the provider. If a rewrite fails or the
 provider rejects it for any reason other than length, Gobstopper sends the
-original bytes. A length rejection gets one more trim and a retry.*
+original bytes when they fit any explicit hard context capacity. A length rejection gets one more trim and a retry.*
 
 Flags: `--threshold` (keep it below the client's auto-compaction point),
 `--threshold-1m`, `--keep-recent`, `--keep-tail-percent`,
-`--result-max-chars`, `--carry-max-chars`, `--drop-thinking`,
+`--result-max-chars`, `--carry-max-chars`, `--evidence-max-bytes`,
+`--evidence-max-chars`, `--context-window`, `--no-keep-awake`, `--drop-thinking`,
 `--no-calibrate`, `--shadow` (log what would change and forward everything
 unchanged), and `--strict`.
 
@@ -297,7 +304,8 @@ unchanged), and `--strict`.
   request headers, which carry your API key or sign-in token, to curl through
   its environment instead of its command line. Logs contain sizes and counts,
   never request or response text.
-- On any failure it forwards the client's original bytes: an unparseable or
+- Unless an explicit hard context capacity prevents forwarding, failures
+  send the client's original bytes: an unparseable or
   compressed body, an internal error, or a provider that rejects the
   rewritten request for a reason other than length. When the provider rejects
   a request for length, the proxy compacts further and retries.
@@ -322,6 +330,42 @@ under about 127k. Two Codex sessions that Codex had already compacted itself
 began with heads near 160k and stayed under about 243k. No replayed request
 was left with an unpaired tool call. These are estimates over recorded
 histories, not billed tokens or task results.
+
+## Longer work, local visibility, and startup recovery
+
+For a difficult analysis phase, reserve more input context within a scope bound
+to your client and its descendants. Declare capacities supported by your route;
+Gobstopper returns the effective budget after output headroom and client limits.
+
+```sh
+gobstopper proxy run --context-window 1000000 --client-context-window 1000000 --adaptive-context -- claude
+# From inside that scoped session:
+gobstopper context reserve --tokens 500000 --requests 20 --ttl-seconds 1800
+gobstopper context status
+gobstopper context release
+```
+
+The larger budget expires by request count or time. Optional adaptive rescue
+responds to repeated reads of unchanged evidence after eviction. It needs a
+scope and configured capacity. See [context budgets](docs/context-budgets.md).
+
+The proxy records local metadata and provider usage. Inspect requests, attempts,
+compaction decisions and tool activity, or export the versioned journal:
+
+```sh
+gobstopper data requests
+gobstopper data metrics
+gobstopper data export > gobstopper-events.jsonl
+gobstopper data check
+gobstopper proxy doctor
+```
+
+[Session data](docs/session-data.md) explains the schema, privacy boundaries,
+imports, backups and metric denominators. [Startup and recovery](docs/service.md)
+covers login services, automatic process restart, repair and inference-aware
+sleep prevention. Closing a lid and forced sleep remain operating-system decisions.
+These controls have functional regression tests; the September 28 benchmark
+predates them and does not measure their effect on task accuracy.
 
 ## Recoverable history
 
@@ -990,8 +1034,8 @@ bounded context with maintained or improved Terminal-Bench 2.0 results for the
 Kimi and GLM models they tested; those are the authors' benchmark figures, not
 measurements of Gobstopper.
 
-Gobstopper runs the same summary rule in its own proxy, carries the
-conversation's words from the turns earlier compactions summarized, keeps a
+Gobstopper extends that summary rule with carried conversation and bounded
+original observations from the turns earlier compactions summarized, keeps a
 larger recent tail only if you set one, and also works on saved session
 files:
 
@@ -1000,7 +1044,7 @@ files:
 | Where it runs | A local HTTP proxy between the agent and the Anthropic or OpenAI API | A local HTTP proxy between the agent and its model provider, plus a CLI over the session files Claude Code and Codex write |
 | Clients | Any client of the Anthropic Messages, OpenAI Chat Completions, or OpenAI Responses API | Any client of the same three dialects that accepts a custom provider address: Claude Code, Codex, opencode, Crush, Aider, Goose, and more |
 | What it changes | Each outgoing request, transparently, while the session runs | The proxy rewrites outgoing requests over the threshold; file commands publish a separate compacted copy and leave the source unchanged |
-| How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy applies the same summary rule and keeps the last three turns verbatim by default, and older whole turns within a tail budget if you set one; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
+| How it shrinks | Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases | The proxy extends the summary rule with bounded original evidence carry and keeps the last three turns verbatim by default, and older whole turns within a tail budget if you set one; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card |
 | Recompaction | Rebuilt from the original history; the prior summary is discarded | The proxy rebuilds from the original history, and each summary keeps the human's words and the assistant's visible replies from the turns earlier compactions summarized, up to 24,000 characters (since v0.6.0); `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy |
 | What holds the originals | The agent's own history and the files on disk; the proxy keeps only an in-memory cache of compacted prefixes | For proxied requests, the agent's own transcript and an in-memory cache; for copies, a content-addressed vault with `search-snapshot` and `read-snapshot` |
 | Evidence published | Terminal-Bench 2.0 and 2.1 (including a run through Claude Code), SWE-bench Verified, and KernelBench results in the paper, on Kimi, GLM, and GPT-5-mini models | Offline replays of 729 archived sessions, replays of nine recorded sessions through the proxy, one dated afternoon of live proxy counters, literal retention probes, dated single-session trials, and one live Terminal-Bench 2.1 run (89 tasks, three arms, one trial each, September 27 and 28, 2026): resolution within noise of Claude Code alone, 29% fewer provider-reported input tokens at the default tail and a 45,000-token threshold |

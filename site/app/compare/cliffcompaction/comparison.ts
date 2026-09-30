@@ -29,7 +29,7 @@ export const comparisonRows: readonly ComparisonRow[] = [
   {
     aspect: "How it shrinks",
     cliff: "Drops tool results over 500 characters, signatures for tool calls, last three turns verbatim; never paraphrases",
-    gobstopper: "The proxy applies the same summary rule and keeps the last three turns verbatim by default, and older whole turns within a tail budget if you set one; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card",
+    gobstopper: "The proxy extends the summary rule with bounded original evidence carry and keeps the last three turns verbatim by default, and older whole turns within a tail budget if you set one; file strategies drop or stub stale tool results, and `structured` and `compacted` add a metadata state card; no built-in strategy paraphrases unless `GOBSTOPPER_DIGEST=apple` has an on-device model write the card",
   },
   {
     aspect: "Recompaction",
@@ -55,7 +55,7 @@ export const comparisonRows: readonly ComparisonRow[] = [
 
 export type DepartureRow = Readonly<{ departure: string; byDefault: string; restore: string }>;
 
-/** The seven ways `gobstopper proxy` departs from the reference engine. */
+/** Request behavior that Gobstopper adds to the reference engine. */
 export const departureRows: readonly DepartureRow[] = [
   {
     departure: "Keeps older whole turns beyond the last three while they fit a tail budget",
@@ -73,12 +73,12 @@ export const departureRows: readonly DepartureRow[] = [
     restore: "Set `--threshold-1m` equal to `--threshold`",
   },
   {
-    departure: "Resends the original when the provider rejects a rewritten request for a reason other than length",
+    departure: "Resends the original when the provider rejects a rewritten request for a reason other than length, within any explicit hard context capacity",
     byDefault: "On",
     restore: "None",
   },
   {
-    departure: "Raises the threshold when the verbatim head alone approaches it",
+    departure: "Raises the threshold when the verbatim head alone approaches it, within any explicit hard context capacity",
     byDefault: "On",
     restore: "None",
   },
@@ -91,6 +91,16 @@ export const departureRows: readonly DepartureRow[] = [
     departure: "Divides the threshold by a learned ratio of provider-reported to estimated input tokens",
     byDefault: "On: bounded 1.0 to 2.0, after five responses",
     restore: "`--no-calibrate`",
+  },
+  {
+    departure: "Keeps selected original tool results and supported images with their source invocation, labeling excerpts and omissions",
+    byDefault: "On: up to 262,144 serialized bytes and 32,000 billable characters, also limited by available context",
+    restore: "`--evidence-max-bytes 0`",
+  },
+  {
+    departure: "Accepts temporary context reservations and optional automatic rescue for repeated reads of evicted evidence",
+    byDefault: "Off: requires a private scope and configured provider capacity",
+    restore: "Release the reservation and leave `--adaptive-context` off",
   },
 ] as const;
 
@@ -108,7 +118,7 @@ export const comparisonQuestions = [
   {
     question: "Where do the dropped tool results go?",
     answer:
-      "Both proxies drop them from the request only; the agent can read the file or rerun the command, and Claude Code and Codex keep the full history in their own transcripts. For copies, Gobstopper stores the source and candidate bytes in a local vault, so `gobstopper search-snapshot` and `gobstopper read-snapshot` can return the archived record. Neither tool makes an agent notice that a fact is missing.",
+      "Both proxies change the outgoing request, while Claude Code and Codex keep their own transcripts. Gobstopper also carries selected original results and supported images through compaction within byte and context limits; excerpts and omissions are labeled. Other results can leave the request, and gathering them again may require a file read or another command. For copies, Gobstopper stores the source and candidate bytes in a local vault, so `gobstopper search-snapshot` and `gobstopper read-snapshot` can return the archived record.",
   },
   {
     question: "Why does auto not pick cliff?",

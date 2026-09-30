@@ -42,7 +42,7 @@ def enum_variants(text, name):
     match = re.search(r"\benum " + re.escape(name) + r"\s*\{([\s\S]*?)\n\}", text)
     if not match:
         raise ValueError(f"missing source enum {name}")
-    return set(re.findall(r"^    ([A-Z][A-Za-z0-9_]*)\s*(?:\{|,)", match.group(1), re.M))
+    return set(re.findall(r"^    ([A-Z][A-Za-z0-9_]*)\s*(?:\{|\(|,)", match.group(1), re.M))
 
 
 def production_text(text):

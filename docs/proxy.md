@@ -32,7 +32,8 @@ system `curl`, version 8.3 or later (`curl --version`).
 ## What you get
 
 - **A smaller request each turn.** Past the threshold, older file reads and
-  command output longer than 500 characters leave the request. The system
+  command output are summarized. Selected original observations can survive in
+  bounded evidence carry; see [context retention](context-retention.md). The system
   prompt, the first task, and the newest turns stay word for word, so the
   agent keeps what it was just working on.
 - **No model call to compact.** The summary is built by a fixed rule, so a
@@ -48,7 +49,7 @@ system `curl`, version 8.3 or later (`curl --version`).
   Its transcript keeps the full history, and resume works as before.
 - **Failures send the original.** An unparseable body, an internal error, or
   a provider rejection for any reason other than length sends the client's
-  original bytes.
+  original bytes when they fit an explicitly configured hard context capacity.
 
 CliffCompaction's authors report up to 50% lower cost at a bounded context,
 with Terminal-Bench 2.0 scores held or improved, on the Kimi K2.6 and GLM 5.1
@@ -86,39 +87,26 @@ overrides, so route it with the provider block in [Codex](#codex).
 gobstopper proxy serve        # http://127.0.0.1:8260; --port changes it
 ```
 
-On macOS, `proxy install` keeps it running across logins:
+`proxy install` creates an owned user service on macOS, Linux or Windows:
 
 ```sh
-gobstopper proxy install                    # add serve settings after install
+gobstopper proxy install
 gobstopper proxy status
+gobstopper proxy doctor
+gobstopper proxy repair
 ```
 
-`install` writes `~/Library/LaunchAgents/sh.gobstopper.proxy.plist`, which
-runs `gobstopper proxy serve` with the settings you give it (for example
-`gobstopper proxy install --threshold 256000`), loads it, and waits for the
-proxy to answer. Its output goes to `~/Library/Logs/gobstopper-proxy.log`.
-macOS shows a "Background Items Added" notice for `gobstopper`; turn it off
-any time in System Settings › General › Login Items & Extensions, or run
-`gobstopper proxy uninstall`. `--print` shows the file without writing it,
-and `--replace` swaps an existing agent, including one written by hand from
-an earlier version of this page.
+The service manager restarts failed processes. Installation verifies service
+identity and readiness, and replacement preserves active inference. `--print`
+previews the definition. Use `proxy install --replace` to update owned settings;
+`proxy repair` diagnoses and reconciles the installed service. Existing manually
+written definitions are not overwritten without an exact supported migration.
+See [startup, recovery, and sleep behavior](service.md) for platform prerequisites,
+legacy Mac migration, logs and rollback.
 
-Pass `--proxy 8260` to `scripts/monitor.py` so each observation pass also
-probes `proxy status`; a dead proxy lane then fails the monitor check instead
-of silently breaking clients that route through it.
-
-After upgrading the binary, restart it with
-`launchctl kickstart -k gui/$(id -u)/sh.gobstopper.proxy`.
-
-To change settings, run `gobstopper proxy install --replace` with the new
-ones. After an upgrade, compare them with [Settings](#settings): a
-`--threshold` raised for 1M-window sessions applies to every request, while
-`--threshold-1m` applies only to requests that declare the 1M window.
-Carrying earlier words forward is on by default. Once the restarted proxy
-runs a build that carries them, `gobstopper proxy status` shows
-`carry_max_chars 24000`; a status line without it comes from a proxy still
-running an older binary. Add the arguments `--carry-max-chars` and `0` to
-turn carrying off.
+For a difficult phase, use [temporary context budgets](context-budgets.md).
+For local usage, throughput, tool activity and portable exports, see
+[session data](session-data.md).
 
 ## Claude Code
 
@@ -306,7 +294,10 @@ lines are illustrative.*
   `tool` messages answering a `tool_calls` turn for Chat Completions. The
   summary keeps human and assistant text (and readable thinking), keeps tool
   results of at most 500 characters, reduces each tool call to its name and
-  up to 150 characters of arguments, and drops images. Calls are never
+  up to 150 characters of arguments. Bounded evidence carry additionally retains
+  selected original tool results and supported images, with invocation provenance
+  and explicit excerpt labels; see [context retention](context-retention.md).
+  Calls are never
   separated from their results: the kept tail is whole turns, so a `tool`
   message can never outlive the call it answers. CliffCompaction starts a
   turn at every Anthropic or Chat Completions assistant message; the proxy
@@ -317,7 +308,8 @@ lines are illustrative.*
   `--keep-tail-percent` of the room under the threshold, the threshold minus
   the system prompt, tool definitions, and head. The kept turns hold the
   files and command output the agent read most recently, which the summary
-  drops once they pass 500 characters. At the default, 0, the tail is
+  omits once they pass 500 characters unless evidence carry selects them.
+  At the default, 0, the tail is
   exactly the newest `--keep-recent` turns. At 40%, the default through
   v0.7.2, a compacted request leaves 60% of that room for new turns before
   the next compaction. A higher floor leaves less room, so we expect the

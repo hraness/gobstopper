@@ -14,7 +14,9 @@
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use gobstopper_adapters::codex_compact::rfc3339_now;
-use gobstopper_adapters::request::calibrate::{reported_input_tokens, Calibration};
+use gobstopper_adapters::request::calibrate::{
+    calibrated_threshold, reported_input_tokens, Calibration,
+};
 use gobstopper_adapters::request::{
     replay, CliffConfig, Dialect, Engine, RequestCtx, DEFAULT_THRESHOLD_TOKENS,
     MAX_KEEP_TAIL_PERCENT,
@@ -25,7 +27,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{Ipv4Addr, TcpListener, TcpStream};
 use std::process::{Child, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -60,6 +62,7 @@ const STRIP_REQUEST: &[&str] = &[
     "te",
     "trailer",
     "upgrade",
+    "x-gobstopper-scope",
 ];
 /// Never relayed to the client: framing is re-established here.
 const STRIP_RESPONSE: &[&str] = &[
@@ -117,6 +120,11 @@ pub enum ProxyCmd {
         #[arg(long, value_name = "CHARS",
               default_value_t = CliffConfig::default().carry_max_chars)]
         carry_max_chars: usize,
+        /// Original evidence bytes kept across compactions; 0 disables evidence.
+        #[arg(long, default_value_t = CliffConfig::default().evidence_max_bytes)]
+        evidence_max_bytes: usize,
+        #[arg(long, default_value_t = CliffConfig::default().evidence_max_chars)]
+        evidence_max_chars: usize,
         /// Tokens assumed for the system prompt and tool definitions, which
         /// transcripts do not record.
         #[arg(long, default_value_t = 20_000)]
@@ -131,24 +139,38 @@ pub enum ProxyCmd {
         #[arg(long)]
         json: bool,
     },
-    /// Start the proxy at login on macOS (a LaunchAgent that runs
-    /// `proxy serve` with these settings) and start it now.
+    /// Install a user startup service and start the proxy now.
     Install {
         #[command(flatten)]
         opts: ProxyOpts,
         /// Loopback port.
         #[arg(long, default_value_t = DEFAULT_PORT)]
         port: u16,
-        /// Replace an existing proxy LaunchAgent.
+        /// Replace an existing owned user service.
         #[arg(long)]
         replace: bool,
-        /// Print the LaunchAgent file and change nothing.
+        /// Print the platform service definition and change nothing.
         #[arg(long)]
         print: bool,
     },
-    /// Stop the proxy LaunchAgent and remove it, so the proxy no longer
+    /// Stop the owned user service and remove it, so the proxy no longer
     /// starts at login.
     Uninstall,
+    /// Check the installed user service, its identity, and its configuration.
+    Doctor {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Migrate an exactly identified legacy startup service, preserving rollback.
+    MigrateService {
+        #[arg(long)]
+        print: bool,
+    },
+    /// Repair a managed service without replacing modified or unrelated files.
+    Repair {
+        #[arg(long)]
+        print: bool,
+    },
     /// Show a running proxy's settings and counters.
     Status {
         #[arg(long, default_value_t = DEFAULT_PORT)]
@@ -161,6 +183,26 @@ pub enum ProxyCmd {
 
 #[derive(Args, Clone)]
 pub struct ProxyOpts {
+    /// Allow idle sleep during inference. Display sleep is always allowed.
+    #[arg(long)]
+    no_keep_awake: bool,
+    /// Disable the local content-free session observation journal.
+    #[arg(long)]
+    no_session_data: bool,
+    /// Operator-configured context capacity for this upstream route.
+    #[arg(long)]
+    context_window: Option<u64>,
+    /// Client capacity, if lower than the provider capacity (proxy run scopes).
+    #[arg(long)]
+    client_context_window: Option<u64>,
+    /// Output headroom when creating a proxy run scope.
+    #[arg(long, default_value_t = 32_000)]
+    output_reserve: u64,
+    /// Opt into bounded context rescue for proxy run scopes.
+    #[arg(long)]
+    adaptive_context: bool,
+    #[arg(long, hide = true)]
+    service_id: Option<String>,
     /// Compact when the estimated outgoing request exceeds this many tokens;
     /// Anthropic requests that declare a 1M-token window use --threshold-1m.
     /// Keep it below the client's own auto-compaction point.
@@ -193,6 +235,12 @@ pub struct ProxyOpts {
     #[arg(long, value_name = "CHARS",
           default_value_t = CliffConfig::default().carry_max_chars)]
     carry_max_chars: usize,
+    /// UTF-8 bytes of original tool evidence retained across summaries. 0 disables it.
+    #[arg(long, default_value_t = CliffConfig::default().evidence_max_bytes)]
+    evidence_max_bytes: usize,
+    /// Characters of original text evidence retained across summaries.
+    #[arg(long, default_value_t = CliffConfig::default().evidence_max_chars)]
+    evidence_max_chars: usize,
     /// Leave thinking and reasoning text out of summaries.
     #[arg(long)]
     drop_thinking: bool,
@@ -283,6 +331,8 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             keep_tail_percent,
             result_max_chars,
             carry_max_chars,
+            evidence_max_bytes,
+            evidence_max_chars,
             fixed_tokens,
             no_calibrate,
             json,
@@ -295,6 +345,8 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
                 keep_tail_percent: *keep_tail_percent,
                 result_max_chars: *result_max_chars,
                 carry_max_chars: *carry_max_chars,
+                evidence_max_bytes: *evidence_max_bytes,
+                evidence_max_chars: *evidence_max_chars,
                 ..CliffConfig::default()
             };
             let report = replay::replay_calibrated(
@@ -398,14 +450,32 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             let proxy = Arc::new(Proxy::new(opts, port)?);
             let server = Arc::clone(&proxy);
             std::thread::spawn(move || serve(listener, server));
-            let base = format!("http://127.0.0.1:{port}");
-            log(&format!("{base}, {}", proxy.settings()));
+            let scope = proxy
+                .control
+                .get()
+                .context("context control unavailable")?
+                .create(
+                    opts.context_window,
+                    opts.client_context_window,
+                    opts.output_reserve,
+                    opts.adaptive_context,
+                )?;
+            let base = format!("http://127.0.0.1:{port}/__gobstopper/s/{scope}");
+            log(&format!(
+                "scoped proxy on port {port}, {}",
+                proxy.settings()
+            ));
             let status = Command::new(&command[0])
                 .args(&command[1..])
+                .env("GOBSTOPPER_SCOPE", &scope)
                 .env("ANTHROPIC_BASE_URL", &base)
                 .env("OPENAI_BASE_URL", format!("{base}/v1"))
                 .status()
-                .with_context(|| format!("run {}", command[0]))?;
+                .with_context(|| format!("run {}", command[0]));
+            if let Some(control) = proxy.control.current() {
+                let _ = control.close(&scope);
+            }
+            let status = status?;
             log(&proxy.summary());
             std::process::exit(status.code().unwrap_or(1));
         }
@@ -419,6 +489,15 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             crate::proxy_agent::install(&install_serve_args(), *port, *replace, *print)
         }
         ProxyCmd::Uninstall => crate::proxy_agent::uninstall(),
+        ProxyCmd::MigrateService { print } => crate::proxy_agent::migrate(*print),
+        ProxyCmd::Repair { print } => crate::proxy_agent::repair(*print),
+        ProxyCmd::Doctor { .. } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&crate::proxy_agent::inspect()?)?
+            );
+            Ok(())
+        }
         ProxyCmd::Status { port, json } => {
             let status = match fetch_status(*port) {
                 Ok(status) => status,
@@ -472,7 +551,9 @@ fn status_text(port: u16, status: &Value) -> String {
     text += &format!(
         "requests {}{}, compacted {}, reused a compacted prefix {}, retried after a length error {}, upstream errors {}, uptime {}s\n",
         status["requests"],
-        present("requests_1m", &|value| format!(" ({value} with a 1M window)")),
+        present("requests_1m", &|value| format!(
+            " ({value} with a 1M window)"
+        )),
         status["compacted"],
         status["matched"],
         status["reactive_retries"],
@@ -676,8 +757,61 @@ fn default_stats_path() -> Option<std::path::PathBuf> {
     Some(data.join("gobstopper").join("proxy-stats.jsonl"))
 }
 
+/// A failed initial open must not disable scoped inference for the lifetime of
+/// a healthy proxy. Only scoped traffic retries, and concurrent callers share
+/// one bounded open attempt. Status remains nonblocking while that attempt runs.
+struct ContextAccess {
+    path: Option<std::path::PathBuf>,
+    state: Mutex<ContextAccessState>,
+    available: AtomicBool,
+}
+
+struct ContextAccessState {
+    control: Option<Arc<crate::context::Control>>,
+    retry_after: Instant,
+}
+
+impl ContextAccess {
+    fn new(path: Option<std::path::PathBuf>) -> Self {
+        let control = path
+            .as_ref()
+            .and_then(|path| crate::context::Control::open(path).ok())
+            .map(Arc::new);
+        Self {
+            available: AtomicBool::new(control.is_some()),
+            path,
+            state: Mutex::new(ContextAccessState {
+                control,
+                retry_after: Instant::now() + Duration::from_secs(30),
+            }),
+        }
+    }
+
+    fn current(&self) -> Option<Arc<crate::context::Control>> {
+        self.state.lock().ok()?.control.clone()
+    }
+
+    fn get(&self) -> Option<Arc<crate::context::Control>> {
+        let mut state = self.state.lock().ok()?;
+        if state.control.is_none() && Instant::now() >= state.retry_after {
+            if let Some(path) = &self.path {
+                state.control = crate::context::Control::open(path).ok().map(Arc::new);
+                self.available
+                    .store(state.control.is_some(), Ordering::Release);
+            }
+            state.retry_after = Instant::now() + Duration::from_secs(30);
+        }
+        state.control.clone()
+    }
+}
+
 struct Proxy {
     engine: Engine,
+    power: crate::power::Power,
+    observations: crate::proxy_observations::Recorder,
+    control: ContextAccess,
+    context_window: Option<u64>,
+    service_id: Option<String>,
     /// Threshold for Anthropic requests that declare a 1M-token window.
     threshold_1m: u64,
     shadow: bool,
@@ -691,6 +825,7 @@ struct Proxy {
     port: u16,
     started: Instant,
     active: AtomicUsize,
+    draining: AtomicBool,
     stats: Stats,
     stats_log: StatsLog,
 }
@@ -703,11 +838,19 @@ impl Proxy {
             keep_tail_percent: opts.keep_tail_percent,
             result_max_chars: opts.result_max_chars,
             carry_max_chars: opts.carry_max_chars,
+            evidence_max_bytes: opts.evidence_max_bytes,
+            evidence_max_chars: opts.evidence_max_chars,
             keep_thinking: !opts.drop_thinking,
             strict: opts.strict,
             ..CliffConfig::default()
         };
+        let control = ContextAccess::new(crate::context::default_path().ok());
         Ok(Self {
+            power: crate::power::Power::new(!opts.no_keep_awake),
+            observations: crate::proxy_observations::Recorder::open(!opts.no_session_data),
+            control,
+            context_window: opts.context_window,
+            service_id: opts.service_id.clone(),
             threshold_1m: threshold_1m(opts.threshold, opts.threshold_1m)?,
             engine: Engine::new(cfg),
             shadow: opts.shadow,
@@ -719,6 +862,7 @@ impl Proxy {
             port,
             started: Instant::now(),
             active: AtomicUsize::new(0),
+            draining: AtomicBool::new(false),
             stats: Stats::default(),
             stats_log: StatsLog::open(),
         })
@@ -732,8 +876,15 @@ impl Proxy {
         let cfg = self.engine.config();
         let (entries, chars) = self.engine.store_stats();
         let totals = self.stats_log.totals(&self.stats);
+        let context_available = self.control.available.load(Ordering::Acquire);
         json!({
             "name": "gobstopper-proxy",
+            "pid": std::process::id(),
+            "executable": std::env::current_exe().ok().and_then(|p| p.canonicalize().ok()).map(|p| p.display().to_string()),
+            "service_id": self.service_id,
+            "keep_awake": self.power.status(),
+            "observations": self.observations.status(),
+            "context_control": {"available": context_available, "error": (!context_available).then_some("context_control_unavailable"), "configured_window": self.context_window},
             "version": env!("CARGO_PKG_VERSION"),
             "port": self.port,
             "threshold_tokens": cfg.threshold_tokens,
@@ -741,6 +892,8 @@ impl Proxy {
             "keep_recent": cfg.keep_recent,
             "keep_tail_percent": cfg.keep_tail_percent,
             "carry_max_chars": cfg.carry_max_chars,
+            "evidence_max_bytes": cfg.evidence_max_bytes,
+            "evidence_max_chars": cfg.evidence_max_chars,
             "result_max_chars": cfg.result_max_chars,
             "keep_thinking": cfg.keep_thinking,
             "shadow": self.shadow,
@@ -762,6 +915,7 @@ impl Proxy {
             "all_time_est_tokens_out": totals.1,
             "stats_file": self.stats_log.path.as_ref().map(|p| p.display().to_string()),
             "active_connections": self.active.load(Ordering::Relaxed),
+            "draining": self.draining.load(Ordering::SeqCst),
             "uptime_secs": self.started.elapsed().as_secs(),
         })
     }
@@ -880,7 +1034,16 @@ impl Proxy {
 
     /// The engine's view of a request, and the (upstream, model) key its
     /// calibration is kept under.
+    #[cfg(test)]
     fn prepare(&self, request: &Request) -> Option<(RequestCtx, (String, String))> {
+        self.prepare_scoped(request, None)
+    }
+
+    fn prepare_scoped(
+        &self,
+        request: &Request,
+        budget: Option<&crate::context::Decision>,
+    ) -> Option<(RequestCtx, (String, String))> {
         if request.method != "POST" || request.body.is_empty() {
             return None;
         }
@@ -904,7 +1067,25 @@ impl Proxy {
                 return None;
             }
         };
-        let threshold = self.threshold_for(request, dialect);
+        let ordinary = self.threshold_for(request, dialect);
+        let threshold = budget.map_or(ordinary, |b| b.effective_input_tokens);
+        let output = requested_output(&parsed);
+        let capacity = budget
+            .and_then(|b| b.input_capacity_tokens)
+            .or_else(|| self.context_window.map(|n| n.saturating_sub(output)));
+        let policy = budget.map_or_else(String::new, crate::context::Decision::policy_identity);
+        let observations = budget.filter(|b| b.adaptive).map(|_| {
+            let messages = parsed
+                .get(if dialect == Dialect::Responses {
+                    "input"
+                } else {
+                    "messages"
+                })
+                .and_then(Value::as_array)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            gobstopper_adapters::request::evidence_observations(messages, dialect)
+        });
         let model = parsed
             .get("model")
             .and_then(Value::as_str)
@@ -915,10 +1096,27 @@ impl Proxy {
         // Engine failures must never fail the request.
         let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             self.engine
-                .prepare_calibrated(parsed, dialect, threshold, ratio)
+                .prepare_with_policy(parsed, dialect, threshold, ratio, &policy, capacity)
         }));
         match prepared {
-            Ok(ctx) => ctx.map(|ctx| (ctx, key)),
+            Ok(ctx) => ctx.map(|ctx| {
+                if !self.shadow && budget.is_some() {
+                    if let (Some(control), Some(scope), Some(observations), Some(budget)) = (
+                        self.control.current(),
+                        request.header("x-gobstopper-scope"),
+                        observations,
+                        budget,
+                    ) {
+                        if control
+                            .observe(scope, &observations, &ctx.evicted_evidence_digests, budget)
+                            .unwrap_or(false)
+                        {
+                            log("context rescue reserved after repeated unchanged evidence reads");
+                        }
+                    }
+                }
+                (ctx, key)
+            }),
             Err(_) => {
                 self.stats.fail_open.fetch_add(1, Ordering::Relaxed);
                 log(&format!(
@@ -991,7 +1189,11 @@ impl Proxy {
                 ctx.messages().len(),
                 ctx.chain_steps,
                 ctx.rung,
-                if ctx.over_budget { ", still over threshold" } else { "" },
+                if ctx.over_budget {
+                    ", still over threshold"
+                } else {
+                    ""
+                },
             ));
         } else if ctx.matched {
             self.stats.matched.fetch_add(1, Ordering::Relaxed);
@@ -1025,7 +1227,7 @@ impl Proxy {
         client.set_read_timeout(Some(Duration::from_secs(120)))?;
         client.set_write_timeout(Some(Duration::from_secs(600)))?;
         let _ = client.set_nodelay(true);
-        let request = match read_request(&mut client) {
+        let mut request = match read_request(&mut client) {
             Ok(request) => request,
             Err(error) => {
                 return write_error(
@@ -1044,6 +1246,14 @@ impl Proxy {
                 "gobstopper proxy: only loopback hosts are served",
             );
         }
+        if let Err(error) = request.bind_scope() {
+            return write_error(
+                &mut client,
+                400,
+                "gobstopper_invalid_scope",
+                &error.to_string(),
+            );
+        }
         if request.path() == STATUS_PATH {
             let body = serde_json::to_vec_pretty(&self.status())?;
             return write_buffered(
@@ -1054,18 +1264,151 @@ impl Proxy {
                 &body,
             );
         }
+        if matches!(
+            request.path(),
+            "/gobstopper/service/drain" | "/gobstopper/service/resume"
+        ) {
+            if request.method != "POST"
+                || request.header("origin").is_some()
+                || self
+                    .service_id
+                    .as_deref()
+                    .is_none_or(|id| request.header("x-gobstopper-service-id") != Some(id))
+            {
+                return write_error(
+                    &mut client,
+                    403,
+                    "permission_error",
+                    "owned service identity is required",
+                );
+            }
+            let drain = request.path().ends_with("/drain");
+            // Requests check this before AND after acquiring their activity guard.
+            // Once this store is visible, no new upstream inference may begin.
+            self.draining.store(drain, Ordering::SeqCst);
+            if drain
+                && self.power.status()["active_inference"]
+                    .as_u64()
+                    .unwrap_or(0)
+                    > 0
+            {
+                self.draining.store(false, Ordering::SeqCst);
+                return write_error(
+                    &mut client,
+                    409,
+                    "active_inference",
+                    "inference is active; service was preserved",
+                );
+            }
+            return write_buffered(
+                &mut client,
+                200,
+                "OK",
+                &[("content-type".into(), "application/json".into())],
+                &serde_json::to_vec(&json!({"drained":drain}))?,
+            );
+        }
         self.stats.requests.fetch_add(1, Ordering::Relaxed);
         self.forward(&request, &mut client)
     }
 
     fn forward(&self, request: &Request, client: &mut TcpStream) -> Result<()> {
         let upstream = self.upstream_for(request);
-        let mut prepared = self.prepare(request);
+        let dialect = Dialect::detect(request.path()).filter(|_| request.method == "POST");
+        // Native provider compaction performs inference even though its request
+        // must not be rewritten by the ordinary Responses adapter.
+        let inference = dialect.is_some()
+            || (request.method == "POST" && request.path().ends_with("/responses/compact"));
+        if inference && self.draining.load(Ordering::SeqCst) {
+            return write_error(
+                client,
+                503,
+                "service_draining",
+                "the owned proxy is restarting; retry shortly",
+            );
+        }
+        let _awake = inference.then(|| self.power.acquire());
+        if inference && self.draining.load(Ordering::SeqCst) {
+            return write_error(
+                client,
+                503,
+                "service_draining",
+                "the owned proxy is restarting; retry shortly",
+            );
+        }
+        let scoped = dialect.is_some() && request.header("x-gobstopper-scope").is_some();
+        let control = scoped.then(|| self.control.get()).flatten();
+        if scoped && control.is_none() {
+            return write_error(
+                client,
+                503,
+                "gobstopper_scope_unavailable",
+                "context state is unavailable; inspect gobstopper proxy status",
+            );
+        }
+        let budget = if let (Some(control), Some(scope), Some(dialect)) =
+            (&control, request.header("x-gobstopper-scope"), dialect)
+        {
+            let output = serde_json::from_slice::<Value>(&request.body)
+                .ok()
+                .and_then(|v| v.as_object().map(requested_output))
+                .unwrap_or(32_000);
+            let base = if declares_1m_window(request, dialect) {
+                self.threshold_1m
+            } else {
+                self.engine.config().threshold_tokens
+            };
+            match control.consume(scope, base, self.context_window, output) {
+                Ok(decision) => Some(decision),
+                Err(_) => {
+                    return write_error(
+                        client,
+                        400,
+                        "gobstopper_scope_unavailable",
+                        "context scope is unavailable; inspect gobstopper context status",
+                    );
+                }
+            }
+        } else {
+            None
+        };
+        let input_capacity = budget
+            .as_ref()
+            .and_then(|b| b.input_capacity_tokens)
+            .or_else(|| {
+                self.context_window.map(|limit| {
+                    limit.saturating_sub(
+                        serde_json::from_slice::<Value>(&request.body)
+                            .ok()
+                            .and_then(|v| v.as_object().map(requested_output))
+                            .unwrap_or(32_000),
+                    )
+                })
+            });
+        let mut prepared = self.prepare_scoped(request, budget.as_ref());
+        if dialect.is_some() && input_capacity.is_some() && prepared.is_none() {
+            return write_error(
+                client,
+                400,
+                "gobstopper_capacity_unknown",
+                "cannot verify the explicit context capacity for this payload",
+            );
+        }
         let mut body: Cow<[u8]> = Cow::Borrowed(&request.body);
         if let Some((ctx, _)) = &prepared {
             self.report(ctx, request);
             if ctx.modified && !self.shadow {
                 body = Cow::Owned(serde_json::to_vec(&ctx.outgoing_body())?);
+            }
+            let sent_tokens = if self.shadow {
+                ctx.est_tokens_in
+            } else {
+                ctx.est_tokens_out
+            };
+            if ctx.capacity_exceeded_by_floor
+                || !within_input_capacity(sent_tokens, ctx.ratio_permille, input_capacity)
+            {
+                return write_error(client,400,"gobstopper_capacity_exceeded","the preserved input exceeds this scope's configured input capacity; increase its supported capacity or reduce the immutable input");
             }
             if ctx.over_budget && self.engine.config().strict && !self.shadow {
                 return write_error(
@@ -1073,89 +1416,204 @@ impl Proxy {
                     400,
                     "gobstopper_over_budget",
                     &format!(
-                        "gobstopper proxy strict mode: ~{} est tokens after every compaction step, over the {} token threshold",
-                        ctx.est_tokens_out, ctx.base_threshold_tokens
+                        "gobstopper proxy strict mode: ~{} est tokens after compaction, over the {} token threshold",
+                        ctx.est_tokens_out, ctx.threshold_tokens
                     ),
                 );
             }
         }
+        let request_id = dialect.and_then(|_| self.observations.request_id());
+        let session = self.observations.session_id(request.header("session_id"));
+        let kind = dialect.unwrap_or(Dialect::Responses);
+        let model = prepared.as_ref().map(|(_, key)| key.1.as_str());
+        let mut attempt = self
+            .observations
+            .start(request_id.clone(), session.clone(), kind, model);
+        if let Some((ctx, _)) = &prepared {
+            record_context(&attempt, ctx, self.shadow, budget.as_ref());
+        }
         let response = match send_upstream(request, upstream, &body) {
             Ok(response) => response,
-            Err(error) => return self.upstream_failed(client, &error),
+            Err(error) => {
+                attempt.finish(crate::session_data::Outcome::Error, None, None);
+                return self.upstream_failed(client, &error);
+            }
         };
         match prepared.as_mut() {
-            Some((ctx, _)) if response.status == 400 && !self.shadow => {
-                self.reactive(request, upstream, ctx, response, client)
-            }
-            Some((ctx, key)) if self.calibrate && response.status == 200 => {
-                // The estimate of the bytes actually forwarded.
-                let sent = if self.shadow {
-                    ctx.est_tokens_in
-                } else {
-                    ctx.est_tokens_out
-                };
-                let mut tap = UsageTap::new(&response.headers, ctx.dialect);
-                relay_tapped(client, response, &request.method, tap.as_mut())?;
-                if let Some(reported) = tap.and_then(|tap| tap.reported_tokens()) {
-                    self.observe(std::mem::take(key), sent, reported);
-                }
-                Ok(())
-            }
-            _ => relay(client, response, &request.method),
+            Some((ctx, key)) if response.status == 400 && !self.shadow => self.reactive(
+                request,
+                upstream,
+                ctx,
+                key,
+                response,
+                client,
+                attempt,
+                request_id,
+                session,
+                budget.as_ref(),
+                input_capacity,
+            ),
+            Some((ctx, key)) => self.relay_observed(
+                client,
+                response,
+                request,
+                attempt,
+                kind,
+                Some((
+                    key.clone(),
+                    if self.shadow {
+                        ctx.est_tokens_in
+                    } else {
+                        ctx.est_tokens_out
+                    },
+                )),
+            ),
+            None => self.relay_observed(client, response, request, attempt, kind, None),
         }
     }
 
-    /// The provider rejected the request: when it rejected it for length,
-    /// walk the escalation ladder and replay until it is accepted.
+    fn relay_observed(
+        &self,
+        client: &mut TcpStream,
+        response: Upstream,
+        request: &Request,
+        mut attempt: crate::proxy_observations::Attempt<'_>,
+        dialect: Dialect,
+        calibration: Option<((String, String), u64)>,
+    ) -> Result<()> {
+        let status = response.status;
+        let mut tap = UsageTap::new(&response.headers, dialect);
+        if let Some(tap) = &mut tap {
+            tap.metrics = crate::proxy_observations::StreamMetrics::new(
+                dialect,
+                tap.event_stream,
+                attempt.started,
+            );
+        }
+        let result = relay_tapped(client, response, &request.method, tap.as_mut());
+        if let Some(tap) = &mut tap {
+            tap.metrics.finish_json();
+        }
+        let outcome = if result.is_err() {
+            crate::session_data::Outcome::Interrupted
+        } else if status >= 500 {
+            crate::session_data::Outcome::Error
+        } else if status >= 400 {
+            crate::session_data::Outcome::Refused
+        } else if tap.as_ref().is_some_and(|t| t.metrics.failed) {
+            crate::session_data::Outcome::Error
+        } else if result.as_ref().is_ok_and(|complete| !complete)
+            || tap
+                .as_ref()
+                .is_some_and(|t| t.event_stream && !t.metrics.terminal)
+        {
+            crate::session_data::Outcome::Interrupted
+        } else if !(200..300).contains(&status) || tap.as_ref().is_none_or(|t| !t.metrics.terminal)
+        {
+            crate::session_data::Outcome::Unknown
+        } else {
+            crate::session_data::Outcome::Success
+        };
+        attempt.finish(outcome, Some(status), tap.as_ref().map(|t| &t.metrics));
+        if self.calibrate && status == 200 && result.is_ok() {
+            if let (Some((key, sent)), Some(reported)) = (
+                calibration,
+                tap.as_ref().and_then(UsageTap::reported_tokens),
+            ) {
+                self.observe(key, sent, reported);
+            }
+        }
+        result.map(|_| ())
+    }
+
+    /// Length retries remain separate attempts of the same logical request.
+    #[allow(clippy::too_many_arguments)]
     fn reactive(
         &self,
         request: &Request,
         upstream: &str,
         ctx: &mut RequestCtx,
+        key: &(String, String),
         response: Upstream,
         client: &mut TcpStream,
+        mut attempt: crate::proxy_observations::Attempt<'_>,
+        request_id: Option<crate::session_data::OpaqueId>,
+        session: Option<crate::session_data::OpaqueId>,
+        budget: Option<&crate::context::Decision>,
+        input_capacity: Option<u64>,
     ) -> Result<()> {
         let (mut status, mut headers) = (response.status, response.headers.clone());
         let mut data = response.read_all(MAX_ERROR_BODY_BYTES)?;
-        if ctx.modified && !is_context_error(&data) {
-            // The provider refused the rewritten request for another reason:
-            // send the client's original bytes once, so the proxy never leaves
-            // a session worse off than running without it.
+        attempt.finish(crate::session_data::Outcome::Refused, Some(status), None);
+        if ctx.modified
+            && !is_context_error(&data)
+            && within_input_capacity(ctx.est_tokens_in, ctx.ratio_permille, input_capacity)
+        {
             self.stats.fail_open.fetch_add(1, Ordering::Relaxed);
-            log(&format!(
-                "{} {}: provider rejected the compacted request; resending the original",
-                ctx.dialect.name(),
-                request.path()
-            ));
+            log("provider rejected the compacted request; resending the original");
+            let mut original_attempt =
+                self.observations
+                    .start(request_id, session, ctx.dialect, Some(&key.1));
             return match send_upstream(request, upstream, &request.body) {
-                Ok(original) => relay(client, original, &request.method),
-                Err(error) => self.upstream_failed(client, &error),
+                Ok(original) => self.relay_observed(
+                    client,
+                    original,
+                    request,
+                    original_attempt,
+                    ctx.dialect,
+                    Some((key.clone(), ctx.est_tokens_in)),
+                ),
+                Err(error) => {
+                    original_attempt.finish(crate::session_data::Outcome::Error, None, None);
+                    self.upstream_failed(client, &error)
+                }
             };
         }
         while is_context_error(&data)
             && self.guarded_step(ctx.dialect, request.path(), || self.engine.reactive(ctx))
         {
+            if !within_input_capacity(ctx.est_tokens_out, ctx.ratio_permille, input_capacity) {
+                break;
+            }
             self.stats.reactive_retries.fetch_add(1, Ordering::Relaxed);
             log(&format!(
-                "{} {}: provider rejected the length; replaying at ~{}k est tokens (step {})",
+                "{} {}: retrying length rejection at ~{}k est tokens (step {})",
                 ctx.dialect.name(),
                 request.path(),
                 ctx.est_tokens_out / 1000,
                 ctx.rung
             ));
             let body = serde_json::to_vec(&ctx.outgoing_body())?;
+            let mut retry = self.observations.start(
+                request_id.clone(),
+                session.clone(),
+                ctx.dialect,
+                Some(&key.1),
+            );
+            record_context(&retry, ctx, false, budget);
             let again = match send_upstream(request, upstream, &body) {
                 Ok(again) => again,
-                Err(error) => return self.upstream_failed(client, &error),
+                Err(error) => {
+                    retry.finish(crate::session_data::Outcome::Error, None, None);
+                    return self.upstream_failed(client, &error);
+                }
             };
             if again.status != 400 {
-                return relay(client, again, &request.method);
+                return self.relay_observed(
+                    client,
+                    again,
+                    request,
+                    retry,
+                    ctx.dialect,
+                    Some((key.clone(), ctx.est_tokens_out)),
+                );
             }
             status = again.status;
             headers = again.headers.clone();
             data = again.read_all(MAX_ERROR_BODY_BYTES)?;
+            retry.finish(crate::session_data::Outcome::Refused, Some(status), None);
         }
-        let headers: Vec<(String, String)> = headers
+        let headers: Vec<_> = headers
             .into_iter()
             .filter(|(name, _)| !STRIP_RESPONSE.contains(&name.to_ascii_lowercase().as_str()))
             .collect();
@@ -1190,6 +1648,54 @@ impl Proxy {
             &format!("gobstopper proxy: upstream request failed: {error:#}"),
         )
     }
+}
+
+/// Raw character-based estimates and provider capacities use different units
+/// after calibration. Apply exactly the engine's bounded conversion, including
+/// integer rounding, to every body that could be sent upstream.
+fn within_input_capacity(
+    estimated_tokens: u64,
+    ratio_permille: u32,
+    capacity: Option<u64>,
+) -> bool {
+    capacity.is_none_or(|limit| estimated_tokens <= calibrated_threshold(limit, ratio_permille))
+}
+
+fn requested_output(parsed: &serde_json::Map<String, Value>) -> u64 {
+    ["max_tokens", "max_output_tokens", "max_completion_tokens"]
+        .iter()
+        .filter_map(|name| parsed.get(*name).and_then(Value::as_u64))
+        .max()
+        .unwrap_or(32_000)
+}
+fn record_context(
+    attempt: &crate::proxy_observations::Attempt<'_>,
+    ctx: &RequestCtx,
+    shadow: bool,
+    budget: Option<&crate::context::Decision>,
+) {
+    use crate::session_data::{Event, OpaqueId, PolicyObservation};
+    attempt.context(Event::ContextDecision {
+        estimated_before_tokens: ctx.est_tokens_in,
+        estimated_after_tokens: if shadow {
+            ctx.est_tokens_in
+        } else {
+            ctx.est_tokens_out
+        },
+        threshold_tokens: ctx.threshold_tokens,
+        compacted: ctx.compacted,
+        shadow,
+        policy: Some(PolicyObservation {
+            requested_input_tokens: budget.and_then(|b| b.requested_input_tokens),
+            input_capacity_tokens: budget.and_then(|b| b.input_capacity_tokens),
+            policy_generation: budget.map(|b| b.policy_generation),
+            limiting_reason: budget.map(|b| b.limiting_reason.clone()),
+            scope_id: budget.map(|b| OpaqueId(b.scope_id.clone())),
+            evidence_bytes: Some(ctx.evidence_bytes as u64),
+            evicted_evidence_count: Some(ctx.evicted_evidence_digests.len() as u64),
+            rescued: budget.is_some_and(|b| b.rescue_count > 0),
+        }),
+    });
 }
 
 fn serve(listener: TcpListener, proxy: Arc<Proxy>) {
@@ -1283,6 +1789,29 @@ struct Request {
 }
 
 impl Request {
+    fn bind_scope(&mut self) -> Result<()> {
+        if let Some(rest) = self.target.strip_prefix("/__gobstopper/s/") {
+            let (scope, path) = rest
+                .split_once('/')
+                .context("invalid scoped request path")?;
+            if scope.len() != 64 || !scope.bytes().all(|b| b.is_ascii_hexdigit()) {
+                bail!("invalid context scope");
+            }
+            if self
+                .header("x-gobstopper-scope")
+                .is_some_and(|header| header != scope)
+            {
+                bail!("conflicting context scopes");
+            }
+            let scope = scope.to_string();
+            let target = format!("/{path}");
+            self.headers
+                .retain(|(name, _)| !name.eq_ignore_ascii_case("x-gobstopper-scope"));
+            self.headers.push(("x-gobstopper-scope".into(), scope));
+            self.target = target;
+        }
+        Ok(())
+    }
     fn header(&self, name: &str) -> Option<&str> {
         self.headers
             .iter()
@@ -1417,6 +1946,16 @@ struct Upstream {
     headers: Vec<(String, String)>,
 }
 
+impl Drop for Upstream {
+    fn drop(&mut self) {
+        // All error and unwind paths retain custody of the exact spawned child.
+        if matches!(self.child.try_wait(), Ok(None)) {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+    }
+}
+
 impl Upstream {
     fn header(&self, name: &str) -> Option<&str> {
         self.headers
@@ -1508,7 +2047,7 @@ fn send_upstream(request: &Request, upstream: &str, body: &[u8]) -> Result<Upstr
                     status,
                     reason,
                     headers,
-                })
+                });
             }
             Err(error) => {
                 let _ = child.kill();
@@ -1647,6 +2186,7 @@ fn write_error(client: &mut TcpStream, status: u16, kind: &str, message: &str) -
 /// each chunk only after the chunk was written to the client, never
 /// changes it, and gives up past its bound.
 struct UsageTap {
+    metrics: crate::proxy_observations::StreamMetrics,
     dialect: Dialect,
     event_stream: bool,
     data: Vec<u8>,
@@ -1669,6 +2209,11 @@ impl UsageTap {
             None => true,
         };
         Some(Self {
+            metrics: crate::proxy_observations::StreamMetrics::new(
+                dialect,
+                event_stream,
+                Instant::now(),
+            ),
             dialect,
             event_stream,
             data: Vec::new(),
@@ -1677,6 +2222,7 @@ impl UsageTap {
     }
 
     fn observe(&mut self, bytes: &[u8]) {
+        self.metrics.observe(bytes);
         let limit = if self.event_stream {
             MAX_TAP_STREAM_BYTES
         } else {
@@ -1753,18 +2299,13 @@ impl<W: Write> Write for Tee<'_, W> {
     }
 }
 
-/// Stream an upstream response to the client, re-framing the body.
-fn relay(client: &mut TcpStream, upstream: Upstream, method: &str) -> Result<()> {
-    relay_tapped(client, upstream, method, None)
-}
-
-/// `relay`, handing the body to `tap` as it is written to the client.
+/// Stream and re-frame an upstream response, tapping bytes written to the client.
 fn relay_tapped(
     client: &mut TcpStream,
     mut upstream: Upstream,
     method: &str,
     mut tap: Option<&mut UsageTap>,
-) -> Result<()> {
+) -> Result<bool> {
     let headers: Vec<(String, String)> = upstream
         .headers
         .iter()
@@ -1852,7 +2393,7 @@ fn relay_tapped(
             exit.map_or_else(|| "signal".to_string(), |code| code.to_string())
         ));
     }
-    Ok(())
+    Ok(complete && (exited_cleanly || length.is_some()))
 }
 
 /// The `serve` settings given to `proxy install`, as typed: everything after
@@ -1922,11 +2463,6 @@ fn proxy_down(port: u16) -> anyhow::Error {
     }
 }
 
-/// Whether a gobstopper proxy answers its status request on `port`.
-pub fn is_answering(port: u16) -> bool {
-    fetch_status(port).is_ok()
-}
-
 fn fetch_status(port: u16) -> Result<Value> {
     let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
         .with_context(|| format!("no gobstopper proxy on 127.0.0.1:{port}"))?;
@@ -1946,6 +2482,147 @@ fn fetch_status(port: u16) -> Result<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_access_recovers_existing_reservation_once_after_storage_returns() {
+        let root = std::env::temp_dir().join(format!(
+            "gobstopper-context-recovery-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let directory = root.join("private");
+        let saved = root.join("saved");
+        let path = directory.join("context.sqlite3");
+        let original = crate::context::Control::open(&path).unwrap();
+        let scope = original
+            .create(Some(1_000_000), Some(1_000_000), 32_000, false)
+            .unwrap();
+        original.reserve(&scope, 500_000, 32, 60).unwrap();
+        drop(original);
+        std::fs::rename(&directory, &saved).unwrap();
+        std::fs::write(&directory, b"temporarily unavailable storage").unwrap();
+
+        let access = Arc::new(ContextAccess::new(Some(path)));
+        assert!(access.get().is_none());
+        assert!(!access.available.load(Ordering::Acquire));
+        std::fs::remove_file(&directory).unwrap();
+        std::fs::rename(&saved, &directory).unwrap();
+        // Recovery is rate limited even when the storage problem is resolved.
+        assert!(access.get().is_none());
+        access.state.lock().unwrap().retry_after = Instant::now();
+
+        let barrier = Arc::new(std::sync::Barrier::new(16));
+        let workers: Vec<_> = (0..16)
+            .map(|_| {
+                let access = Arc::clone(&access);
+                let barrier = Arc::clone(&barrier);
+                let scope = scope.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let control = access.get().expect("recover existing context database");
+                    let decision = control.consume(&scope, 128_000, None, 32_000).unwrap();
+                    assert_eq!(decision.effective_input_tokens, 500_000);
+                    control
+                })
+            })
+            .collect();
+        let controls: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+        assert!(controls.iter().all(|c| Arc::ptr_eq(c, &controls[0])));
+        assert_eq!(controls[0].status(&scope).unwrap().remaining_requests, 16);
+        assert!(access.available.load(Ordering::Acquire));
+        drop(controls);
+        drop(access);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn context_access_recovery_preserves_unrecognized_storage() {
+        let root = std::env::temp_dir().join(format!(
+            "gobstopper-context-identity-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = root.join("context.sqlite3");
+        drop(crate::context::Control::open(&path).unwrap());
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.pragma_update(None, "application_id", 123).unwrap();
+        drop(db);
+        let before = std::fs::read(&path).unwrap();
+        let access = ContextAccess::new(Some(path.clone()));
+        access.state.lock().unwrap().retry_after = Instant::now();
+        assert!(access.get().is_none());
+        assert!(!access.available.load(Ordering::Acquire));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(access.state.lock().unwrap().retry_after > Instant::now());
+        drop(access);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn input_capacity_uses_calibration_and_rounds_down() {
+        assert!(within_input_capacity(1_000, 1_000, Some(1_000)));
+        assert!(!within_input_capacity(1_001, 1_000, Some(1_000)));
+        assert!(within_input_capacity(976, 1_024, Some(1_000)));
+        assert!(!within_input_capacity(977, 1_024, Some(1_000)));
+        assert!(within_input_capacity(500, 2_000, Some(1_000)));
+        assert!(!within_input_capacity(600, 2_000, Some(1_000)));
+        assert!(within_input_capacity(u64::MAX, 2_000, None));
+        assert!(within_input_capacity(0, 2_000, Some(0)));
+        assert!(!within_input_capacity(1, 2_000, Some(0)));
+        // Match the engine's clamping and avoid arithmetic overflow.
+        assert!(within_input_capacity(u64::MAX, 0, Some(u64::MAX)));
+        assert!(within_input_capacity(
+            u64::MAX / 2,
+            u32::MAX,
+            Some(u64::MAX)
+        ));
+        assert!(!within_input_capacity(
+            u64::MAX / 2 + 1,
+            u32::MAX,
+            Some(u64::MAX)
+        ));
+    }
+
+    #[test]
+    fn input_capacity_rejects_calibrated_soft_overflow_with_a_small_head() {
+        let payload = json!({"model":"test", "max_tokens":10,"messages":[
+            {"role":"user","content":"hi"},
+            {"role":"assistant","content":"ok"},
+            {"role":"user","content":"x".repeat(2_400)}
+        ]});
+        let engine = Engine::new(CliffConfig::default());
+        let ctx = engine
+            .prepare_with_policy(
+                payload.as_object().unwrap().clone(),
+                Dialect::Anthropic,
+                128_000,
+                2_000,
+                "capacity-regression",
+                Some(1_000),
+            )
+            .unwrap();
+        assert!(!ctx.capacity_exceeded_by_floor);
+        assert!(ctx.over_budget);
+        assert!(
+            ctx.est_tokens_out <= 1_000,
+            "the uncalibrated comparison would permit this request"
+        );
+        assert!(!within_input_capacity(
+            ctx.est_tokens_out,
+            ctx.ratio_permille,
+            Some(1_000)
+        ));
+        assert!(
+            !within_input_capacity(ctx.est_tokens_in, ctx.ratio_permille, Some(1_000)),
+            "the original-body fallback must also be refused"
+        );
+    }
 
     #[test]
     fn install_keeps_serve_settings_and_drops_install_and_global_options() {
@@ -2122,6 +2799,12 @@ mod tests {
     /// A proxy without a stats file, so unit tests touch no disk.
     fn test_proxy(threshold_tokens: u64, threshold_1m: u64) -> Proxy {
         Proxy {
+            power: crate::power::Power::new(false),
+            observations: crate::proxy_observations::Recorder::disabled(),
+            control: ContextAccess::new(None),
+            context_window: None,
+            service_id: None,
+            draining: AtomicBool::new(false),
             engine: Engine::new(CliffConfig {
                 threshold_tokens,
                 ..CliffConfig::default()
@@ -2277,7 +2960,9 @@ mod tests {
         let text = status_text(8260, &current);
         assert_eq!(
             text.lines().next(),
-            Some("gobstopper proxy on 127.0.0.1:8260: threshold 128000 tokens, threshold_1m 256000 tokens, keep_recent 3, keep_tail_percent 40, carry_max_chars 24000")
+            Some(
+                "gobstopper proxy on 127.0.0.1:8260: threshold 128000 tokens, threshold_1m 256000 tokens, keep_recent 3, keep_tail_percent 40, carry_max_chars 24000"
+            )
         );
         assert!(
             text.contains("\nrequests 10 (4 with a 1M window), compacted 2,"),

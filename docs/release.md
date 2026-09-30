@@ -46,7 +46,7 @@ Tests point both at a loopback server with `GOBSTOPPER_RELEASE_BASE_URL=http://1
 
 ### Windows
 
-The Windows build runs the read-only commands (`detect`, `plan`, `report`, `explain`, `verify`, `mcp`) and the proxy. Claude Code session usage reads as unknown there, because the usage scan binds to Unix inode and ctime identity. Commands that write through the vault refuse with an error naming the missing platform guarantee (directory sync, directory locking, bounded event log I/O, bounded plugin process custody), and `proxy install` refuses because it installs a macOS LaunchAgent. CI runs the Windows test suite with the tests for those Unix-only features excluded; see `[profile.windows]` in [`.config/nextest.toml`](../.config/nextest.toml).
+The Windows build runs the read-only commands (`detect`, `plan`, `report`, `explain`, `verify`, `mcp`) and the proxy. Claude Code session usage reads as unknown there, because the usage scan binds to Unix inode and ctime identity. Commands that write through the vault refuse with an error naming the missing platform guarantee (directory sync, directory locking, bounded event log I/O, bounded plugin process custody). `proxy install` registers a least-privilege Task Scheduler task for the current user. macOS uses a LaunchAgent and Linux uses a systemd user service; see [startup, recovery, and sleep behavior](service.md). CI runs the Windows test suite with the tests for those Unix-only features excluded; see `[profile.windows]` in [`.config/nextest.toml`](../.config/nextest.toml).
 
 ## Check a download
 

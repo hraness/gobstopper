@@ -5,15 +5,19 @@ mod apple_cmd;
 mod apple_digest;
 mod apple_scorer;
 mod config;
+mod context;
 mod hooks;
 mod jev;
 mod llm_scorer;
 mod mcp;
 mod native_operations;
+mod power;
 mod proxy;
 mod proxy_agent;
+mod proxy_observations;
 mod report;
 mod secrets;
+mod session_data;
 mod telemetry;
 mod ux;
 
@@ -420,6 +424,10 @@ enum Cmd {
         #[command(subcommand)]
         command: proxy::ProxyCmd,
     },
+    /// Reserve context for a difficult phase and inspect its effective limits.
+    Context(context::ContextArgs),
+    /// Inspect, export, and import local session observations and metrics.
+    Data(session_data::DataArgs),
     /// Show recorded native compaction operations and any whose outcome is
     /// unknown. Changes nothing and calls no provider.
     NativeOperations,
@@ -5431,6 +5439,8 @@ fn run(cli: Cli) -> Result<()> {
     };
     let cfg = config::load()?;
     match command {
+        Cmd::Context(args) => context::run(args),
+        Cmd::Data(args) => session_data::run(args),
         Cmd::Plugin { command } => cmd_plugin(command),
         Cmd::Detect { all, limit, json } => cmd_detect(&cli, *all, *limit, *json),
         Cmd::Plan {
