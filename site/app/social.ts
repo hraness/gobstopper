@@ -8,7 +8,7 @@ import { socialIconPng } from "./social-icon";
  * template; routes pass page copy only.
  */
 export const socialSite = defineSocialImageSite({
-  description: "Compacts long agent sessions into smaller copies, keeping every byte",
+  description: "Compacts long agent sessions into smaller copies, keeping every byte.",
   domain: "gobstopper.sh",
   icon: { kind: "app", src: socialIconPng },
   name: "Gobstopper",
