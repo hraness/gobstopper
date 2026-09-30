@@ -2,14 +2,22 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
-## v0.8.1 - 2026-09-30
+## v0.8.2 - 2026-09-30
 
 Gobstopper's macOS and Linux release installations update automatically before a command when a newer verified release is available.
 
 - `gobstopper update` installs a newer release. `update check`, `status`, `enable`, and `disable` inspect or change update behavior. Supported native installations check at most once a day by default; CI, MCP, offline replay, read-only inspection and pinned versions skip automatic checks.
 - Updates verify the canonical immutable release, archive hashes, archive contents, executable identity and Mac signature, then replace the executable and preserve the previous copy if installation fails. Running commands prevent replacement for their entire lifetime, including proxies and MCP servers.
-- The public installer can upgrade a verified 0.7.5 or 0.8.0 copy into an installation that updates itself. Cargo, source builds, unknown copies and Windows keep their existing update workflow. `--no-update` or `HRANESS_NO_UPDATE=1` skips an automatic check for one invocation.
+- The public installer can upgrade a verified 0.7.5, 0.8.0 or 0.8.1 copy into an installation that updates itself. Cargo, source builds, unknown copies and Windows keep their existing update workflow. `--no-update` or `HRANESS_NO_UPDATE=1` skips an automatic check for one invocation.
 
+## v0.8.1 - 2026-09-30
+
+Managed service changes can wait for inference to finish while new requests receive a retry response. A timed wait reopens requests if its owner stops responding; once the service change begins, recovery checks its outcome before reopening requests.
+
+- Service changes use an owned, renewable wait with a separate final stop check. A stale owner cannot complete or cancel a newer wait.
+- The proxy keeps existing inference, provider retries and response forwarding active while waiting for them to finish. A timeout cancels the wait instead of stopping busy inference.
+- Interrupted service changes record their progress. An uncertain service-manager result keeps requests paused until recovery can safely reconcile it.
+- New service definitions prevent automatic restarts from accepting requests while an earlier stop remains unresolved. Older definitions retain idle-only upgrades until replaced.
 
 ## v0.8.0 - 2026-09-30
 

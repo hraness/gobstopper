@@ -50,7 +50,7 @@ Update-enabled macOS and Linux releases need the [GitHub CLI](https://cli.github
 (`gh`) authenticated with github.com for immutable release verification. Install
 `gh` and run `gh auth login` before installing a current release.
 
-Starting with 0.8.1, macOS and Linux installations made by the public installer
+Starting with 0.8.2, macOS and Linux installations made by the public installer
 enable automatic updates by default. Before a command starts, Gobstopper checks
 for a newer stable release at most once a day. It verifies the immutable GitHub
 release, archive and checksum hashes, archive contents, executable version, and
@@ -75,8 +75,8 @@ updates. `--no-update` or
 survives a reinstall. `GOBSTOPPER_VERSION` pins an installation; updating cannot
 silently change that pin.
 
-Re-run the public installer once to add update support to a verified 0.7.5 or
-0.8.0 release. It compares the existing bytes with that immutable release before
+Re-run the public installer once to add update support to a verified 0.7.5,
+0.8.0 or 0.8.1 release. It compares the existing bytes with that immutable release before
 replacing them.
 Stop services started by an older release before this first migration, then
 restart them with the new executable so they participate in update coordination.

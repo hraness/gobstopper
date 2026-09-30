@@ -45,6 +45,8 @@ struct Manifest {
     schema: u32,
     platform: Platform,
     service_id: String,
+    #[serde(default)]
+    state_dir: Option<PathBuf>,
     executable: PathBuf,
     serve_args: Vec<String>,
     port: u16,
@@ -186,6 +188,9 @@ fn definition(manifest: &Manifest, log: &Path) -> String {
     // The service ID is a normal serve option as Windows scheduled tasks do
     // not support per-action environment variables. It contains no secret.
     args.extend(["--service-id".into(), manifest.service_id.clone()]);
+    if let Some(root) = &manifest.state_dir {
+        args.extend(["--service-state-dir".into(), root.display().to_string()]);
+    }
     match manifest.platform {
         Platform::Macos => {
             let arguments = std::iter::once(manifest.executable.display().to_string())
@@ -362,7 +367,7 @@ fn replace_windows(source: &Path, dest: &Path) -> Result<()> {
     }
     Ok(())
 }
-fn unique_id() -> String {
+pub(crate) fn unique_id() -> String {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SEQUENCE: AtomicU64 = AtomicU64::new(0);
     digest(
@@ -574,6 +579,9 @@ fn service_arguments(m: &Manifest) -> Vec<String> {
     ];
     args.extend(m.serve_args.clone());
     args.extend(["--service-id".into(), m.service_id.clone()]);
+    if let Some(root) = &m.state_dir {
+        args.extend(["--service-state-dir".into(), root.display().to_string()]);
+    }
     args
 }
 fn launchd_arguments(text: &str) -> Option<Vec<String>> {
@@ -666,6 +674,7 @@ fn verify_definition(m: &Manifest, p: &Paths, allow_missing: bool) -> Result<()>
 }
 
 fn activate(m: &mut Manifest, p: &Paths) -> Result<()> {
+    require_clear_drain(p)?;
     match m.platform {
         Platform::Linux => {
             run_manager(m.platform, &strings(&["--user", "daemon-reload"]))?;
@@ -703,49 +712,312 @@ fn activate(m: &mut Manifest, p: &Paths) -> Result<()> {
     run_manager(m.platform, &manager_args(m, p, "start"))?;
     wait_ready(m)
 }
-fn stop(m: &Manifest, p: &Paths) -> Result<()> {
-    if registered(m, p)?.is_none() {
+const DRAIN_WAIT_SECS: u64 = 600;
+
+/// A stop dispatch without a durable acknowledgement is intentionally not
+/// retried or reopened: a surviving manager child may still execute it later.
+#[derive(Clone, Serialize, Deserialize)]
+struct DrainOperation {
+    schema: u32,
+    service_id: String,
+    executable: PathBuf,
+    definition_sha256: String,
+    port: u16,
+    pid: u64,
+    instance_id: String,
+    owner: String,
+    epoch: u64,
+    protocol: u64,
+    stage: String,
+}
+/// Managed definitions pin this absolute directory so startup and the
+/// controller consult the same journal despite login-environment differences.
+pub fn check_startup_drain(service_id: Option<&str>, root: Option<&Path>, port: u16) -> Result<()> {
+    let Some(root) = root else {
         return Ok(());
-    }
-    verify_job(m, p)?;
-    let drained = match status(m.port) {
-        Ok(live) => {
-            if !matches_identity(m, &live) {
-                bail!(
-                    "running proxy identity differs from the managed service; no process stopped"
-                );
-            }
-            if let Err(error) = service_control(m, true) {
-                // A lost acknowledgement may have left the proxy drained.
-                // Reconcile that owned instance before returning the error.
-                resume_if_owned(m);
-                return Err(error)
-                    .context("proxy could not stop admitting inference; no process stopped");
-            }
-            true
-        }
-        Err(_) => {
-            // A nonresponsive listener is not evidence that no work exists.
-            ensure_free(m.port)?;
-            false
-        }
     };
-    if let Err(error) = run_manager(m.platform, &manager_args(m, p, "stop")) {
-        if drained {
-            resume_if_owned(m);
-        }
-        return Err(error);
+    let id =
+        service_id.context("a managed service identity is required for its state directory")?;
+    if !root.is_absolute() {
+        bail!("service state directory must be absolute");
     }
+    let p = Paths {
+        root: root.to_path_buf(),
+        manifest: root.join("manifest.json"),
+        definition: root.join("unused"),
+        log: root.join("unused"),
+    };
+    let m =
+        load(&p)?.context("managed service manifest is missing; startup preserved the drain")?;
+    if m.service_id != id
+        || m.port != port
+        || m.state_dir.as_deref() != Some(root)
+        || m.executable != std::env::current_exe()?.canonicalize()?
+    {
+        bail!("managed service startup identity differs from its saved manifest");
+    }
+    check_startup_journal(&m, &p)
+}
+fn check_startup_journal(m: &Manifest, p: &Paths) -> Result<()> {
+    if let Some(op) = load_drain(m, p)? {
+        if op.protocol > 1 || op.stage != "waiting" {
+            bail!("an unresolved service stop prevents startup inference; inspect proxy doctor and reconcile its journal");
+        }
+    }
+    Ok(())
+}
+fn require_clear_drain(p: &Paths) -> Result<()> {
+    if read_file(&drain_path(p))?.is_some() {
+        bail!("a recorded service stop has not been reconciled; no service was started");
+    }
+    Ok(())
+}
+fn drain_path(p: &Paths) -> PathBuf {
+    p.root.join("drain-operation.json")
+}
+fn save_drain(p: &Paths, operation: &DrainOperation) -> Result<()> {
+    write_atomic(&drain_path(p), &serde_json::to_vec_pretty(operation)?)
+}
+fn clear_drain(p: &Paths) -> Result<()> {
+    match fs::remove_file(drain_path(p)) {
+        Ok(()) => {
+            #[cfg(unix)]
+            File::open(&p.root)?.sync_all()?;
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+fn load_drain(m: &Manifest, p: &Paths) -> Result<Option<DrainOperation>> {
+    let Some(bytes) = read_file(&drain_path(p))? else {
+        return Ok(None);
+    };
+    let op: DrainOperation = serde_json::from_slice(&bytes)
+        .context("drain journal is damaged; admission was preserved")?;
+    if op.schema != 1
+        || op.service_id != m.service_id
+        || op.executable != m.executable
+        || op.port != m.port
+        || op.definition_sha256 != m.definition_sha256
+        || !matches!(
+            op.stage.as_str(),
+            "waiting" | "commit_intent" | "committed" | "stop_started" | "stop_acknowledged"
+        )
+    {
+        bail!("drain journal identity or stage differs; service was preserved");
+    }
+    Ok(Some(op))
+}
+fn drain_body(op: &DrainOperation) -> Value {
+    json!({"instance_id":op.instance_id,"pid":op.pid,"owner":op.owner,"epoch":op.epoch,"wait_secs":DRAIN_WAIT_SECS})
+}
+fn same_drain_process(m: &Manifest, op: &DrainOperation, live: &Value) -> bool {
+    matches_identity(m, live)
+        && live["pid"] == op.pid
+        && (op.protocol == 0 || live["instance_id"] == op.instance_id)
+}
+fn validate_lease_reply(op: &DrainOperation, reply: &Value) -> Result<()> {
+    if reply["protocol"] != 1
+        || reply["instance_id"] != op.instance_id
+        || reply["pid"] != op.pid
+        || reply["owner"] != op.owner
+        || reply["epoch"] != op.epoch
+        || reply["active_inference"].as_u64().is_none()
+    {
+        bail!("drain lease acknowledgement has a different identity or invalid activity count");
+    }
+    Ok(())
+}
+fn lease_control(m: &Manifest, op: &DrainOperation, action: &str) -> Result<Value> {
+    let mut body = drain_body(op);
+    if action == "acquire" {
+        body["epoch"] = json!(op
+            .epoch
+            .checked_sub(1)
+            .context("invalid initial drain epoch")?);
+    }
+    let reply = service_request(
+        m,
+        &format!("drain-lease/{action}"),
+        &serde_json::to_vec(&body)?,
+    )?;
+    validate_lease_reply(op, &reply)?;
+    Ok(reply)
+}
+fn stopped_port(port: u16) -> Result<()> {
     let deadline = Instant::now() + Duration::from_secs(5);
-    while status(m.port).is_ok_and(|v| v["service_id"] == m.service_id) {
+    loop {
+        // A failed status request alone is never evidence of a stopped process.
+        if ensure_free(port).is_ok() {
+            return Ok(());
+        }
         if Instant::now() >= deadline {
-            if drained {
-                resume_if_owned(m);
-            }
-            bail!("owned proxy did not stop; configuration was preserved");
+            bail!("owned proxy did not release its port; drain journal and configuration were preserved");
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+fn acquire_committed_drain(
+    m: &Manifest,
+    p: &Paths,
+    live: &Value,
+    prior: Option<DrainOperation>,
+) -> Result<DrainOperation> {
+    let protocol = match live.get("drain_control") {
+        None => 0, // 0.8.0 and earlier only support the idle-only drain.
+        Some(control) if control["protocol"] == 1 && control["startup_guard"] == true => 1,
+        // Definitions written before startup journal protection retain the
+        // older idle-only behavior until install --replace updates them.
+        Some(control) if control["protocol"] == 1 && control["startup_guard"] == false => 0,
+        _ => bail!("unsupported service drain protocol; no stop attempted"),
+    };
+    let previous = prior.filter(|op| same_drain_process(m, op, live));
+    let mut op = if let Some(op) = previous {
+        op
+    } else {
+        DrainOperation {
+            schema: 1,
+            service_id: m.service_id.clone(),
+            executable: m.executable.clone(),
+            definition_sha256: m.definition_sha256.clone(),
+            port: m.port,
+            pid: live["pid"].as_u64().context("proxy PID is missing")?,
+            instance_id: live["instance_id"].as_str().unwrap_or("").to_owned(),
+            owner: unique_id(),
+            epoch: if protocol == 1 {
+                live["drain_control"]["epoch"]
+                    .as_u64()
+                    .and_then(|e| e.checked_add(1))
+                    .context("invalid drain epoch")?
+            } else {
+                0
+            },
+            protocol,
+            stage: "waiting".into(),
+        }
+    };
+    if op.protocol != protocol || (protocol == 1 && op.instance_id.is_empty()) {
+        bail!("drain protocol changed for the recorded process");
+    }
+    if protocol == 0 {
+        if live["keep_awake"]["active_inference"].as_u64() != Some(0) {
+            bail!("this older proxy only supports idle upgrades; active inference was preserved");
+        }
+        op.stage = "commit_intent".into();
+        save_drain(p, &op)?;
+        service_control(m, true)?;
+        op.stage = "committed".into();
+        save_drain(p, &op)?;
+        return Ok(op);
+    }
+    // A lost commit acknowledgement may already have installed the permanent
+    // barrier. Inspect using its private token before touching admission.
+    let mut reply = if live["drain_control"]["phase"] == "committed" {
+        lease_control(m, &op, "inspect")?
+    } else if live["drain_control"]["phase"] == "open" {
+        op.epoch = live["drain_control"]["epoch"]
+            .as_u64()
+            .and_then(|e| e.checked_add(1))
+            .context("invalid drain epoch")?;
+        op.stage = "waiting".into();
+        save_drain(p, &op)?;
+        lease_control(m, &op, "acquire")?
+    } else {
+        lease_control(m, &op, "inspect")?
+    };
+    let deadline = Instant::now() + Duration::from_secs(DRAIN_WAIT_SECS);
+    let result = (|| {
+        if reply["phase"] == "waiting" && reply["active_inference"] != 0 {
+            eprintln!("Gobstopper is holding new inference while active requests finish (up to {DRAIN_WAIT_SECS}s).");
+        }
+        loop {
+            if reply["phase"] == "committed" {
+                if reply["active_inference"] != 0 {
+                    bail!("committed drain reported active inference");
+                }
+                op.stage = "committed".into();
+                save_drain(p, &op)?;
+                return Ok(());
+            }
+            if reply["phase"] != "waiting" {
+                bail!("proxy no longer owns the waiting drain");
+            }
+            if Instant::now() >= deadline {
+                bail!("timed out waiting for inference; no process stopped");
+            }
+            if reply["active_inference"] == 0 {
+                // These reads can be slow. Commit rechecks remaining lifetime,
+                // exact incarnation, token and active==0 under admission's lock.
+                verify_owned(m, p, true)?;
+                verify_job(m, p)?;
+                op.stage = "commit_intent".into();
+                save_drain(p, &op)?;
+                reply = lease_control(m, &op, "commit")?;
+            } else {
+                std::thread::sleep(Duration::from_millis(500));
+                reply = lease_control(m, &op, "renew")?;
+            }
+        }
+    })();
+    if let Err(error) = result {
+        if op.stage == "waiting" && lease_control(m, &op, "release").is_ok() {
+            clear_drain(p)?;
+        }
+        // A commit request without an acknowledgement must be reconciled on
+        // repair. It cannot safely be treated as a waiting cancellation.
+        return Err(error);
+    }
+    Ok(op)
+}
+fn stop(m: &Manifest, p: &Paths) -> Result<()> {
+    let prior = load_drain(m, p)?;
+    if prior.as_ref().is_some_and(|op| op.stage == "stop_started") {
+        bail!("an external service stop has no durable acknowledgement; admission remains closed. Inspect proxy doctor and reconcile the recorded manager operation before restarting; elapsed time or controller death is not proof it is safe");
+    }
+    if prior
+        .as_ref()
+        .is_some_and(|op| op.stage == "stop_acknowledged")
+    {
+        stopped_port(m.port)?;
+        clear_drain(p)?;
+        return Ok(());
+    }
+    if registered(m, p)?.is_none() {
+        ensure_free(m.port)?;
+        clear_drain(p)?;
+        return Ok(());
+    }
+    verify_job(m, p)?;
+    let live = status(m.port).context("the registered proxy is not responsive; cannot prove held admission, so no process was stopped")?;
+    if !matches_identity(m, &live) {
+        bail!("running proxy identity differs from the managed service; no process stopped");
+    }
+    let mut op = acquire_committed_drain(m, p, &live, prior)?;
+    // The non-expiring barrier still belongs to this process immediately
+    // before external dispatch. Public status alone cannot prove ownership.
+    let live = status(m.port)?;
+    if !same_drain_process(m, &op, &live) {
+        bail!("proxy process changed before stop; no process stopped");
+    }
+    if op.protocol == 1 {
+        let lease = lease_control(m, &op, "inspect")?;
+        if lease["phase"] != "committed" || lease["active_inference"] != 0 {
+            bail!("proxy did not confirm a committed idle drain; no process stopped");
+        }
+    } else if live["draining"] != true || live["keep_awake"]["active_inference"] != 0 {
+        bail!("legacy owned proxy is not drained and idle; no process stopped");
+    }
+    verify_job(m, p)?;
+    op.stage = "stop_started".into();
+    save_drain(p, &op)?;
+    // No resume on any manager error: the manager may already have accepted
+    // the stop even when its caller times out or loses the acknowledgement.
+    run_manager(m.platform, &manager_args(m, p, "stop"))?;
+    op.stage = "stop_acknowledged".into();
+    save_drain(p, &op)?;
+    stopped_port(m.port)?;
+    clear_drain(p)?;
     Ok(())
 }
 
@@ -759,17 +1031,42 @@ fn service_control(m: &Manifest, drain: bool) -> Result<()> {
         bail!("service identity is not a valid control header");
     }
     let action = if drain { "drain" } else { "resume" };
+    let value = service_request(m, action, &[])?;
+    if value["drained"] != drain {
+        bail!("proxy did not confirm the requested admission state");
+    }
+    Ok(())
+}
+fn service_request(m: &Manifest, action: &str, body: &[u8]) -> Result<Value> {
+    if m.service_id.is_empty()
+        || !m
+            .service_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+    {
+        bail!("service identity is not a valid control header");
+    }
     let address = SocketAddr::from((Ipv4Addr::LOCALHOST, m.port));
     let mut socket = TcpStream::connect_timeout(&address, Duration::from_millis(300))?;
     socket.set_read_timeout(Some(Duration::from_secs(2)))?;
     socket.set_write_timeout(Some(Duration::from_secs(2)))?;
     write!(socket,
-        "POST /gobstopper/service/{action} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nx-gobstopper-service-id: {}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-        m.port, m.service_id)?;
+        "POST /gobstopper/service/{action} HTTP/1.1\r\nHost: 127.0.0.1:{}\r\nx-gobstopper-service-id: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        m.port, m.service_id, body.len())?;
+    socket.write_all(body)?;
     let mut bytes = Vec::new();
     socket.take(MAX_FILE + 1).read_to_end(&mut bytes)?;
-    verify_control_reply(&bytes, drain)
+    if bytes.len() as u64 > MAX_FILE || !bytes.starts_with(b"HTTP/1.1 200 ") {
+        bail!("proxy service control was refused or unavailable; inspect proxy doctor");
+    }
+    let split = bytes
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .context("invalid service control response")?;
+    Ok(serde_json::from_slice(&bytes[split + 4..])?)
 }
+
+#[cfg(test)]
 fn verify_control_reply(bytes: &[u8], drain: bool) -> Result<()> {
     if bytes.len() as u64 > MAX_FILE || !bytes.starts_with(b"HTTP/1.1 200 ") {
         bail!(
@@ -785,11 +1082,6 @@ fn verify_control_reply(bytes: &[u8], drain: bool) -> Result<()> {
         bail!("proxy did not confirm the requested admission state");
     }
     Ok(())
-}
-fn resume_if_owned(m: &Manifest) {
-    if status(m.port).is_ok_and(|live| matches_identity(m, &live)) {
-        let _ = service_control(m, false);
-    }
 }
 
 fn status(port: u16) -> Result<Value> {
@@ -828,10 +1120,16 @@ fn matches_identity(m: &Manifest, value: &Value) -> bool {
 fn needs_version_restart(m: &Manifest, live: &Value, current_executable: &Path) -> bool {
     m.executable == current_executable && live["version"] != env!("CARGO_PKG_VERSION")
 }
+fn ready_identity(m: &Manifest, live: &Value, current: &Path) -> bool {
+    matches_identity(m, live)
+        && live["draining"] == false
+        && !needs_version_restart(m, live, current)
+}
 fn wait_ready(m: &Manifest) -> Result<()> {
+    let current = std::env::current_exe()?.canonicalize()?;
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if status(m.port).is_ok_and(|v| matches_identity(m, &v)) {
+        if status(m.port).is_ok_and(|v| ready_identity(m, &v, &current)) {
             return Ok(());
         }
         if Instant::now() >= deadline {
@@ -944,6 +1242,18 @@ fn recover_pending(p: &Paths) -> Result<bool> {
             bail!("service definition changed outside the pending operation; files preserved");
         }
     }
+    // Resolve drain state even when the old job has already disappeared. An
+    // absent listener must never bypass an uncertain external stop journal.
+    if drain_path(p).exists() {
+        let owner = if load_drain(candidate, p).is_ok() {
+            candidate
+        } else if let Some(old) = previous.filter(|old| load_drain(old, p).is_ok()) {
+            old
+        } else {
+            bail!("drain journal belongs to neither recorded service identity");
+        };
+        stop(owner, p)?;
+    }
     // A registered job must match a recorded identity, including any initial
     // Windows registration digest durably saved in the current manifest.
     if registered(candidate, p)?.is_some() {
@@ -956,7 +1266,8 @@ fn recover_pending(p: &Paths) -> Result<bool> {
         };
         if let Ok(live) = status(owned.port) {
             if !matches_identity(owned, &live)
-                || live["keep_awake"]["active_inference"].as_u64().unwrap_or(0) > 0
+                || (live["drain_control"]["protocol"] != 1
+                    && live["keep_awake"]["active_inference"].as_u64() != Some(0))
             {
                 bail!("pending operation recovery is waiting for the owned idle proxy; no process stopped");
             }
@@ -1261,6 +1572,10 @@ fn legacy_restart_guard(candidate: &Manifest, job: &LoadedLegacy, live: &Value) 
     Ok(())
 }
 fn recover_legacy(p: &Paths, candidate: &Manifest, legacy: &LegacySnapshot) -> Result<bool> {
+    if drain_path(p).exists() {
+        stop(candidate, p)?;
+    }
+    require_clear_drain(p)?;
     if Platform::current()? != Platform::Macos
         || ![LABEL, LEGACY_LABEL].contains(&legacy.label.as_str())
         || legacy.path
@@ -1423,6 +1738,7 @@ pub fn install(serve_args: &[String], port: u16, replace: bool, print: bool) -> 
             .as_ref()
             .map(|m| m.service_id.clone())
             .unwrap_or_else(unique_id),
+        state_dir: Some(p.root.clone()),
         executable,
         serve_args: serve_args.to_vec(),
         port,
@@ -1468,8 +1784,12 @@ pub fn install(serve_args: &[String], port: u16, replace: bool, print: bool) -> 
             if !matches_identity(old, &live) {
                 bail!("running proxy identity differs from the managed service; no process was stopped");
             }
-            if live["keep_awake"]["active_inference"].as_u64().unwrap_or(0) > 0 {
-                bail!("proxy has active inference; retry the upgrade after it finishes");
+            if live["drain_control"]["protocol"] != 1
+                && live["keep_awake"]["active_inference"].as_u64() != Some(0)
+            {
+                bail!(
+                    "this older proxy only supports idle upgrades; active inference was preserved"
+                );
             }
         }
     } else {
@@ -1523,6 +1843,12 @@ fn repair_locked(mut m: Manifest, p: &Paths) -> Result<()> {
     if !m.executable.is_file() {
         bail!("installed executable is missing; reinstall the binary before repairing startup");
     }
+    if drain_path(p).exists() {
+        stop(&m, p)?;
+        activate(&mut m, p)?;
+        println!("Recorded service stop recovered; the owned proxy is healthy.");
+        return Ok(());
+    }
     if read_file(&p.definition)?.is_none() {
         write_atomic(&p.definition, m.rendered_definition.as_bytes())?;
     }
@@ -1534,7 +1860,9 @@ fn repair_locked(mut m: Manifest, p: &Paths) -> Result<()> {
         if !is_registered {
             bail!("the proxy is healthy but its service-manager job is missing; the running process was preserved");
         }
-        if needs_version_restart(&m, &live, &std::env::current_exe()?.canonicalize()?) {
+        if live["drain_control"]["phase"] == "committed"
+            || needs_version_restart(&m, &live, &std::env::current_exe()?.canonicalize()?)
+        {
             // Installing a new binary at the same permanent path leaves the
             // definition unchanged. A healthy predecessor process still
             // needs the same guarded restart as a configuration upgrade.
@@ -1542,6 +1870,9 @@ fn repair_locked(mut m: Manifest, p: &Paths) -> Result<()> {
             activate(&mut m, p)?;
             println!("Gobstopper restarted with the installed version and is healthy.");
             return Ok(());
+        }
+        if live["drain_control"]["phase"] == "waiting" {
+            bail!("a waiting drain lease owns admission; it will expire if its controller has stopped");
         }
         if live["draining"] == true {
             service_control(&m, false)
@@ -1710,6 +2041,7 @@ pub fn migrate(print: bool) -> Result<()> {
         schema: SCHEMA,
         platform: Platform::Macos,
         service_id: unique_id(),
+        state_dir: Some(p.root.clone()),
         executable,
         serve_args,
         port,
@@ -1826,13 +2158,22 @@ pub fn inspect() -> Result<Value> {
     };
     let ownership = verify_owned(&m, &p, true).err().map(|e| e.to_string());
     let live = status(m.port).ok();
+    let drain = load_drain(&m, &p);
+    let drain_stage = drain
+        .as_ref()
+        .ok()
+        .and_then(|op| op.as_ref())
+        .map(|op| op.stage.as_str());
+    let drain_error = drain.as_ref().err().map(|e| e.to_string());
     let manager = registered(&m, &p);
     let is_registered = manager.as_ref().is_ok_and(|value| value.is_some());
     let manager_error = manager.err().map(|error| error.to_string());
     Ok(json!({
         "schema":SCHEMA, "platform":platform, "installed":true,
         "pending_operation":pending_path(&p).exists(),
-        "healthy":!pending_path(&p).exists() && ownership.is_none() && is_registered && p.definition.is_file() && live.as_ref().is_some_and(|v| matches_identity(&m,v) && v["draining"] != true),
+        "drain_operation_stage":drain_stage,"drain_operation_error":drain_error,
+        "drain_control":live.as_ref().and_then(|v|v.get("drain_control")),
+        "healthy":!drain_path(&p).exists() && !pending_path(&p).exists() && ownership.is_none() && is_registered && p.definition.is_file() && live.as_ref().is_some_and(|v| matches_identity(&m,v) && v["draining"] != true),
         "definition_present":p.definition.is_file(), "definition":p.definition,
         "ownership_error":ownership, "port":m.port, "executable":m.executable,
         "service_id":m.service_id, "manager_registered":is_registered, "manager_error":manager_error,
@@ -1857,8 +2198,10 @@ pub fn uninstall() -> Result<()> {
         if !matches_identity(&m, &live) {
             bail!("running service identity differs; no process was stopped");
         }
-        if live["keep_awake"]["active_inference"].as_u64().unwrap_or(0) > 0 {
-            bail!("proxy has active inference; retry uninstall after it finishes");
+        if live["drain_control"]["protocol"] != 1
+            && live["keep_awake"]["active_inference"].as_u64() != Some(0)
+        {
+            bail!("this older proxy only supports idle uninstall; active inference was preserved");
         }
     }
     stop(&m, &p)?;
@@ -1899,6 +2242,7 @@ mod tests {
             schema: 1,
             platform,
             service_id: "aabbcc".into(),
+            state_dir: None,
             executable: PathBuf::from("/opt/Gob Stopper/gobstopper"),
             serve_args: vec!["--port".into(), "8260".into()],
             port: 8260,
@@ -1957,6 +2301,181 @@ mod tests {
             Path::new("/another/checkout/gobstopper")
         ));
         assert!(needs_version_restart(&m, &json!({}), &m.executable));
+    }
+    fn drain_fixture(stage: &str) -> (Manifest, Paths, DrainOperation) {
+        let m = manifest(Platform::Macos);
+        let root = std::env::temp_dir().join(format!("gobstopper-drain-{}", unique_id()));
+        let p = Paths {
+            manifest: root.join("manifest.json"),
+            definition: root.join("definition"),
+            log: root.join("log"),
+            root,
+        };
+        let op = DrainOperation {
+            schema: 1,
+            service_id: m.service_id.clone(),
+            executable: m.executable.clone(),
+            definition_sha256: m.definition_sha256.clone(),
+            port: m.port,
+            pid: 42,
+            instance_id: "incarnation".into(),
+            owner: "0123456789abcdef".into(),
+            epoch: 3,
+            protocol: 1,
+            stage: stage.into(),
+        };
+        (m, p, op)
+    }
+    #[test]
+    fn unacknowledged_external_stop_blocks_stop_and_activation_even_without_listener_or_job() {
+        let (mut m, p, op) = drain_fixture("stop_started");
+        save_drain(&p, &op).unwrap();
+        // Both checks precede all manager commands, process queries or starts.
+        assert!(stop(&m, &p)
+            .unwrap_err()
+            .to_string()
+            .contains("no durable acknowledgement"));
+        assert!(activate(&mut m, &p)
+            .unwrap_err()
+            .to_string()
+            .contains("no service was started"));
+        assert_eq!(load_drain(&m, &p).unwrap().unwrap().stage, "stop_started");
+        fs::remove_dir_all(p.root).unwrap();
+    }
+    #[test]
+    fn respawn_rejects_committed_and_damaged_journals_but_allows_waiting_recovery() {
+        let (m, p, mut op) = drain_fixture("waiting");
+        save_drain(&p, &op).unwrap();
+        assert!(check_startup_journal(&m, &p).is_ok());
+        for stage in [
+            "commit_intent",
+            "committed",
+            "stop_started",
+            "stop_acknowledged",
+            "unknown",
+        ] {
+            op.stage = stage.into();
+            save_drain(&p, &op).unwrap();
+            assert!(check_startup_journal(&m, &p).is_err(), "{stage}");
+        }
+        write_atomic(&drain_path(&p), b"broken").unwrap();
+        assert!(check_startup_journal(&m, &p).is_err());
+        clear_drain(&p).unwrap();
+        assert!(check_startup_journal(&m, &p).is_ok());
+        fs::remove_dir_all(p.root).unwrap();
+    }
+    #[test]
+    fn startup_guard_uses_the_pinned_state_directory_and_saved_process_identity() {
+        let (mut m, p, mut op) = drain_fixture("waiting");
+        m.state_dir = Some(p.root.clone());
+        m.executable = std::env::current_exe().unwrap().canonicalize().unwrap();
+        op.executable = m.executable.clone();
+        write_atomic(&p.manifest, &serde_json::to_vec(&m).unwrap()).unwrap();
+        save_drain(&p, &op).unwrap();
+        assert!(check_startup_drain(Some(&m.service_id), Some(&p.root), m.port).is_ok());
+        assert!(check_startup_drain(Some("another"), Some(&p.root), m.port).is_err());
+        assert!(check_startup_drain(Some(&m.service_id), Some(&p.root), m.port + 1).is_err());
+        assert!(check_startup_drain(None, Some(&p.root), m.port).is_err());
+        op.stage = "commit_intent".into();
+        save_drain(&p, &op).unwrap();
+        assert!(check_startup_drain(Some(&m.service_id), Some(&p.root), m.port).is_err());
+        fs::remove_dir_all(p.root).unwrap();
+    }
+    #[test]
+    fn managed_definition_and_ownership_pin_the_same_startup_state_path() {
+        for platform in [Platform::Macos, Platform::Linux, Platform::Windows] {
+            let mut m = manifest(platform);
+            m.state_dir = Some(PathBuf::from("/private/service state"));
+            assert!(definition(&m, Path::new("/tmp/log")).contains("--service-state-dir"));
+            assert!(service_arguments(&m).ends_with(&[
+                "--service-state-dir".into(),
+                "/private/service state".into()
+            ]));
+        }
+    }
+    #[test]
+    fn all_recorded_stop_stages_require_reconciliation_before_start() {
+        let (mut m, p, mut op) = drain_fixture("waiting");
+        for stage in [
+            "waiting",
+            "commit_intent",
+            "committed",
+            "stop_started",
+            "stop_acknowledged",
+        ] {
+            op.stage = stage.into();
+            save_drain(&p, &op).unwrap();
+            assert!(activate(&mut m, &p)
+                .unwrap_err()
+                .to_string()
+                .contains("no service was started"));
+        }
+        clear_drain(&p).unwrap();
+        assert!(require_clear_drain(&p).is_ok());
+        assert!(load_drain(&m, &p).unwrap().is_none());
+        fs::remove_dir_all(p.root).unwrap();
+    }
+    #[test]
+    fn drain_journal_identity_schema_and_stage_are_checked_before_effects() {
+        let (m, p, op) = drain_fixture("committed");
+        for field in [
+            "schema",
+            "service_id",
+            "executable",
+            "port",
+            "definition_sha256",
+            "stage",
+        ] {
+            let mut value = serde_json::to_value(&op).unwrap();
+            value[field] = if field == "schema" || field == "port" {
+                json!(99)
+            } else {
+                json!("changed")
+            };
+            write_atomic(&drain_path(&p), &serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(load_drain(&m, &p).is_err(), "{field}");
+        }
+        fs::remove_dir_all(p.root).unwrap();
+    }
+    #[test]
+    fn lease_acknowledgements_bind_every_owner_and_process_field() {
+        let (_, _, op) = drain_fixture("waiting");
+        let good = json!({"protocol":1,"instance_id":op.instance_id,"pid":op.pid,"owner":op.owner,"epoch":op.epoch,"active_inference":0});
+        assert!(validate_lease_reply(&op, &good).is_ok());
+        for field in [
+            "protocol",
+            "instance_id",
+            "pid",
+            "owner",
+            "epoch",
+            "active_inference",
+        ] {
+            let mut bad = good.clone();
+            bad.as_object_mut().unwrap().remove(field);
+            assert!(validate_lease_reply(&op, &bad).is_err(), "{field}");
+        }
+    }
+    #[test]
+    fn readiness_rejects_paused_or_old_instances_after_upgrade() {
+        let m = manifest(Platform::Macos);
+        let mut live = json!({"name":"gobstopper-proxy","port":8260,"service_id":"aabbcc","pid":42,"executable":"/opt/Gob Stopper/gobstopper","version":env!("CARGO_PKG_VERSION"),"draining":false});
+        assert!(ready_identity(&m, &live, &m.executable));
+        live["draining"] = json!(true);
+        assert!(!ready_identity(&m, &live, &m.executable));
+        live["draining"] = json!(false);
+        live["version"] = json!("old");
+        assert!(!ready_identity(&m, &live, &m.executable));
+    }
+    #[test]
+    fn restarted_process_does_not_inherit_previous_controller_authority() {
+        let (m, _, op) = drain_fixture("committed");
+        let mut live = json!({"name":"gobstopper-proxy","port":8260,"service_id":"aabbcc","pid":42,"executable":"/opt/Gob Stopper/gobstopper","instance_id":"incarnation"});
+        assert!(same_drain_process(&m, &op, &live));
+        live["instance_id"] = json!("new-incarnation");
+        assert!(!same_drain_process(&m, &op, &live));
+        live["instance_id"] = json!("incarnation");
+        live["pid"] = json!(43);
+        assert!(!same_drain_process(&m, &op, &live));
     }
     #[test]
     fn service_files_write_atomically_and_refuse_symlinks() {
@@ -2159,6 +2678,7 @@ mod tests {
             ("schema", json!(SCHEMA + 1)),
             ("platform", json!("linux")),
             ("service_id", json!("another-service")),
+            ("state_dir", json!("/another/state-directory")),
             ("executable", json!("/another/gobstopper")),
             ("serve_args", json!(["--port", "8261"])),
             ("port", json!(8261)),

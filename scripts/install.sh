@@ -156,10 +156,10 @@ fail() {
   exit 1
 }
 
-# Self-update began after the signed 0.8.0 release. Older signed binaries do
+# Self-update begins with the signed 0.8.2 release. Older signed binaries do
 # not implement the private installation transaction.
 supports_native_update() {
-  printf '%s\n' "$1" | awk -F . '{ exit !($1 > 0 || ($1 == 0 && ($2 > 8 || ($2 == 8 && $3 >= 1)))) }'
+  printf '%s\n' "$1" | awk -F . '{ exit !($1 > 0 || ($1 == 0 && ($2 > 8 || ($2 == 8 && $3 >= 2)))) }'
 }
 
 # Mac releases before 0.7.6 predate Developer ID signing.

@@ -158,8 +158,8 @@ class InstallShTests(unittest.TestCase):
             'http://127.0.0.1:*) if supports_native_update "$version"; then native_transaction=yes; else native_transaction=no; fi ;;'))
 
     def test_signed_pre_updater_release_uses_its_compatible_install_path(self):
-        self.version = "0.8.0"
-        candidate = b"#!/bin/sh\n[ \"$1\" = --version ] || exit 42\necho 'gobstopper 0.8.0'\n"
+        self.version = "0.8.1"
+        candidate = b"#!/bin/sh\n[ \"$1\" = --version ] || exit 42\necho 'gobstopper 0.8.1'\n"
         self.publish(archive({"gobstopper": candidate}))
         self.public_dispatch_fixture()
         result = self.install()
@@ -167,8 +167,8 @@ class InstallShTests(unittest.TestCase):
         self.assertEqual((self.prefix / "bin" / "gobstopper").read_bytes(), candidate)
 
     def test_first_updater_release_delegates_to_its_native_transaction(self):
-        self.version = "0.8.1"
-        candidate = b'#!/bin/sh\ncase "$1" in\n--version) echo "gobstopper 0.8.1" ;;\n__install-release) printf "%s\\n" "$@" > "$FIXTURE_TRANSACTION_LOG" ;;\n*) exit 42 ;;\nesac\n'
+        self.version = "0.8.2"
+        candidate = b'#!/bin/sh\ncase "$1" in\n--version) echo "gobstopper 0.8.2" ;;\n__install-release) printf "%s\\n" "$@" > "$FIXTURE_TRANSACTION_LOG" ;;\n*) exit 42 ;;\nesac\n'
         self.publish(archive({"gobstopper": candidate}))
         self.public_dispatch_fixture()
         transaction = self.dir / "transaction"

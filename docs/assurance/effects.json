@@ -1748,7 +1748,8 @@
       "reads": [
         "config",
         "context_state",
-        "session_data"
+        "session_data",
+        "service_state"
       ],
       "writes": [
         {
@@ -1780,6 +1781,11 @@
           "state": "idle_sleep",
           "mode": "native",
           "condition": "Enabled active inference holds a process-owned idle-sleep assertion through retries and releases on completion/cancellation."
+        },
+        {
+          "state": "process_state",
+          "mode": "in_memory",
+          "condition": "Process-incarnation-bound drain leases close new inference admission under the inference-guard mutex; waiting leases expire, committed stops remain closed. Public status excludes the owner token."
         }
       ],
       "outbound": [
@@ -1807,7 +1813,7 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Loopback host validation; 64 KiB request heads, 256 MiB bodies, 256 connections; curl connect 30 s, stall 900 s, total 7200 s. Explicit hard context capacity applies to prepared output, raw fallbacks and retries using calibrated estimates. Prefix/evidence cache has hard serialized-byte bounds. Observation parsing is bounded and cannot reinterpret incomplete/unsupported responses as successful completion. Read-only MCP does not expose context mutation. Scoped traffic shares one recovery attempt for unavailable startup context storage, with a 30-second cooldown after each attempt; requests fail explicitly until it succeeds. Status remains responsive, and recovery does not replace an existing healthy control handle.",
+      "bounds": "Loopback host validation; 64 KiB request heads, 256 MiB bodies, 256 connections; curl connect 30 s, stall 900 s, total 7200 s. Explicit hard context capacity applies to prepared output, raw fallbacks and retries using calibrated estimates. Prefix/evidence cache has hard serialized-byte bounds. Observation parsing is bounded and cannot reinterpret incomplete/unsupported responses as successful completion. Read-only MCP does not expose context mutation. Scoped traffic shares one recovery attempt for unavailable startup context storage, with a 30-second cooldown after each attempt; requests fail explicitly until it succeeds. Status remains responsive, and recovery does not replace an existing healthy control handle. Managed startup binds its listener before validating the pinned absolute service-state path, manifest identity and durable stop journal; unresolved commit/stop stages fail before inference.",
       "exclusions": [
         "No live task-quality or billing claim",
         "Character/token estimates and calibrated ratios are approximations, not provider-capacity proof",
@@ -1835,7 +1841,7 @@
         {
           "state": "service_state",
           "mode": "create_replace",
-          "condition": "Persist identity manifest, pending intent, immutable predecessor configuration and migration backups; retain data/logs/backups on uninstall. Conflicts or damaged/unknown identity refuse."
+          "condition": "Persist identity manifest, pending intent, drain-operation intent, immutable predecessor configuration and migration backups; retain data/logs/backups on uninstall. Drain intent binds service, executable, PID, process instance, owner and epoch. Unknown stop outcomes remain durable and block activation; conflicts or damaged/unknown identity refuse."
         },
         {
           "state": "service_state",
@@ -1845,7 +1851,7 @@
         {
           "state": "process_state",
           "mode": "spawn",
-          "condition": "Bounded fixed platform service-manager commands. Repair/upgrade checks active inference and drains the owned idle service before stopping; active work refuses and failure rolls back known owned configuration."
+          "condition": "Bounded fixed platform service-manager commands. Protocol-1 repair/upgrade acquires an owned expiring admission lease, waits for existing inference, and commits a non-expiring stop before dispatch. Legacy control requires an idle proxy. Unresponsive registered services and unresolved external-stop outcomes refuse automatic replacement."
         },
         {
           "state": "output",
@@ -1882,7 +1888,7 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Manifest schema 1; bounded 256 KiB metadata files; exact executable path/definition/manager identity, per-user lock and pending intent. macOS launchd, Linux systemd user, Windows least-privilege task definitions.",
+      "bounds": "Manifest schema 1 and drain-operation schema 1; bounded 256 KiB metadata files; exact executable path/definition/manager identity, per-user lock and durable intent before external stop. Protocol-1 waiting lease renews within its fixed deadline; committed admission remains closed until a verified stop. macOS launchd, Linux systemd user, Windows least-privilege task definitions. Newly installed definitions pin the startup journal directory; replacements refuse unresolved commit/stop intent. Unguarded older definitions retain idle-only drain control until explicit replacement.",
       "exclusions": [
         "No system-wide daemon",
         "No Linux/Windows native manager qualification claim",
@@ -2487,6 +2493,88 @@
         "No implicit mutable shell execution",
         "Historical release bytes must match their canonical immutable archive"
       ]
+    },
+    {
+      "id": "drain-control",
+      "owner": "CLI proxy admission",
+      "reads": [
+        "process_state"
+      ],
+      "writes": [
+        {
+          "state": "process_state",
+          "mode": "in_memory",
+          "condition": "Expire waiting leases or change admission only under the same mutex used to acquire inference guards. A matching owner/epoch may renew, release or commit; committed admission cannot expire or be released."
+        }
+      ],
+      "outbound": [],
+      "authority": "Owned loopback service-control request; process incarnation and service identity validated by the caller. Public status omits the owner token.",
+      "invariants": [
+        "ID-1",
+        "OWN-1",
+        "RES-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/proxy_drain.rs",
+          "anchor": "pub struct Admission"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy.rs",
+          "anchor": "pub fn run"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "30-second waiting lease, maximum 7200-second requested wait, monotonic epoch, 16-128-byte owner token. Commit requires zero active inference and at least five seconds of lease lifetime.",
+      "exclusions": [
+        "No whole-process or external service-manager theorem",
+        "A committed or uncertain stop can require operator recovery; availability is not proved"
+      ],
+      "evidence": [
+        "E-EVERLASTING-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "service-startup-check",
+      "owner": "CLI proxy_agent",
+      "reads": [
+        "service_state",
+        "process_state"
+      ],
+      "writes": [],
+      "outbound": [],
+      "authority": "Managed proxy startup with an explicit service identity and pinned absolute state directory.",
+      "invariants": [
+        "READ-1",
+        "ID-1",
+        "REC-2"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-IDENTITY"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+          "anchor": "pub fn check_startup_drain"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Bounded regular manifest/journal reads and current executable identity. After binding the listener, startup permits absent or valid waiting intent; malformed, mismatched, unsupported or commit/stop-stage intent refuses before inference. Does not clear the journal or dispatch a manager command.",
+      "exclusions": [
+        "Owner-controlled parent paths and executable identity remain assumptions; no hostile same-user path-replacement guarantee.",
+        "Older definitions without the pinned state directory do not claim startup journal protection."
+      ],
+      "evidence": [
+        "E-EVERLASTING-SOURCE"
+      ],
+      "next_gate": "C15"
     }
   ],
   "cli": [
@@ -6585,6 +6673,48 @@
       "symbol": "write_new",
       "effects": [
         "native-update-storage"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "unique_id",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_drain.rs",
+      "symbol": "blocked",
+      "effects": [
+        "drain-control"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_drain.rs",
+      "symbol": "control",
+      "effects": [
+        "drain-control"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_drain.rs",
+      "symbol": "legacy",
+      "effects": [
+        "drain-control"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_drain.rs",
+      "symbol": "snapshot",
+      "effects": [
+        "drain-control"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "check_startup_drain",
+      "effects": [
+        "service-startup-check"
       ]
     }
   ],

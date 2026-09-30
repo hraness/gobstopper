@@ -58,7 +58,7 @@ Both installers download the latest release for your platform, check its
 SHA-256, and install it for your user only. To build from source instead, run
 `cargo install --git https://github.com/hraness/gobstopper gobstopper --locked`.
 
-From 0.8.1, supported macOS and Linux release installs update automatically
+From 0.8.2, supported macOS and Linux release installs update automatically
 before a command, at most once a day, when no other Gobstopper command is
 running. Run `gobstopper update` to update now, `gobstopper update check` to
 check without installing, or `gobstopper update disable` to turn automatic

@@ -24,7 +24,7 @@ const CHECKSUM_LIMIT: usize = 1024;
 const RECEIPT_LIMIT: usize = 64 * 1024;
 // Known releases before installer ownership receipts. Compare verified bytes,
 // never execute an unknown installed binary to discover its claimed version.
-const LEGACY_RELEASES: &[&str] = &["v0.8.0", "v0.7.5"];
+const LEGACY_RELEASES: &[&str] = &["v0.8.1", "v0.8.0", "v0.7.5"];
 
 pub(super) struct NativeInstaller;
 
@@ -568,7 +568,7 @@ fn verify_previous(
             legacy.download(profile, &stage)?;
             unpack(&stage)
         }),
-        "Existing file is not a verified 0.8.0 or 0.7.5 release; use its source/package-manager update workflow or select a new GOBSTOPPER_INSTALL_PREFIX"
+        "Existing file is not a verified 0.8.1, 0.8.0 or 0.7.5 release; use its source/package-manager update workflow or select a new GOBSTOPPER_INSTALL_PREFIX"
     );
     Ok(explicit_pin)
 }
@@ -716,26 +716,26 @@ mod tests {
         let mut requests = Vec::new();
         assert!(matches_legacy_release(&expected, |tag| {
             requests.push(tag.to_string());
-            if tag == "v0.8.0" {
+            if tag != "v0.7.5" {
                 bail!("release is not published yet");
             }
             Ok(expected.clone())
         }));
-        assert_eq!(requests, ["v0.8.0", "v0.7.5"]);
+        assert_eq!(requests, ["v0.8.1", "v0.8.0", "v0.7.5"]);
 
         requests.clear();
         assert!(matches_legacy_release(&expected, |tag| {
             requests.push(tag.to_string());
             Ok(expected.clone())
         }));
-        assert_eq!(requests, ["v0.8.0"]);
+        assert_eq!(requests, ["v0.8.1"]);
 
         requests.clear();
         assert!(!matches_legacy_release(&expected, |tag| {
             requests.push(tag.to_string());
             Ok("b".repeat(64))
         }));
-        assert_eq!(requests, ["v0.8.0", "v0.7.5"]);
+        assert_eq!(requests, ["v0.8.1", "v0.8.0", "v0.7.5"]);
     }
 
     struct Fixture {
@@ -1149,7 +1149,7 @@ mod tests {
     }
 
     #[test]
-    fn installer_lock_obeys_the_running_command_sdk_lease() {
+    fn installer_lock_survives_service_drain_and_manual_helper_lifetimes() {
         let fixture = Fixture::new();
         let bin = fixture.bin();
         let state = fixture.state();
@@ -1177,7 +1177,31 @@ mod tests {
             panic!("command must retain an active lease")
         };
         assert!(state.lock().is_err());
+        let mut admission = crate::proxy_drain::Admission::default();
+        let now = std::time::Instant::now();
+        let mut request = serde_json::json!({
+            "owner": "0123456789abcdef", "epoch": 0, "wait_secs": 600
+        });
+        admission.control("acquire", &request, 1, now).unwrap();
+        assert!(state.lock().is_err());
+        request["epoch"] = serde_json::json!(1);
+        admission.control("commit", &request, 0, now).unwrap();
+        assert!(state.lock().is_err());
+        // A manual service helper keeps its own installation lease after the
+        // drained service exits, including while it replaces service files.
+        context.args = vec!["proxy".into(), "repair".into()];
+        let StartupOutcome::Continue {
+            lease: Some(helper),
+            ..
+        } = updater
+            .startup(&context, &NeverNetwork, &NativeInstaller)
+            .unwrap()
+        else {
+            panic!("service helper must retain an active lease")
+        };
         drop(lease);
+        assert!(state.lock().is_err());
+        drop(helper);
         state.lock().unwrap();
     }
 }
