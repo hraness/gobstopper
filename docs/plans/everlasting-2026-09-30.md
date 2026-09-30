@@ -18,7 +18,17 @@ Focused adapter regressions cover semantic cache changes, multiple compactions, 
 
 Required final checks follow `.github/workflows/ci.yml`, assurance records and `docs/release.md`. Final evidence includes the integration tree, independent review, exact commands/results, PR, CI, merge, immutable release, installation and service health.
 
-## Status
+## Delivery status
+
+- [PR #205](https://github.com/hraness/gobstopper/pull/205) merged as `6b36844660a5cc6b16930f600d4bd84e81f5d532` after independent review and all required checks.
+- [CI on the exact merged commit](https://github.com/hraness/gobstopper/actions/runs/36769119899) passed, including Windows, strict Rust checks, proofs, fault suites, and the public-site browser checks.
+- The `v0.8.0` tag points to that commit. The [release run](https://github.com/hraness/gobstopper/actions/runs/36770257017) reused its successful platform builds and exact-source check; attempt 2 passed Apple signing and notarization and immutable GitHub publication. [Gobstopper v0.8.0](https://github.com/hraness/gobstopper/releases/tag/v0.8.0) is published.
+- The first attempt timed out waiting for Apple. Its downloaded diagnostic and artifact SHA-256 identified submission `e21db2b6-911a-461e-8f85-3fd089bd773a`, submitted at `2026-09-30T20:09:04.758Z`. A read-only query confirmed `Accepted` at `2026-09-30T21:57:45Z` before retrying. The retry created a new signed payload and independently passed its notarization and verification gates.
+- Independent verification passed for all four archive checksums, sidecars, member shapes, build attestations bound to the exact source and release workflow, GitHub's immutable release, and all nine published assets. Native Mac verification passed for Developer ID Team `8AAP53VTW3`, identifier `dev.hraness.gobstopper`, hardened runtime, secure timestamp, and Apple's online notarization ticket. The downloaded binary reports `gobstopper 0.8.0`. The website release-record update is in progress; local installation awaits a coordinated pause in new requests.
+- Optional crates.io publication failed before any package write: a metadata request without the identifying User-Agent returned HTTP 403. OIDC authentication succeeded; read-only checks confirmed that prerequisite crate versions exist and are not yanked. All three 0.8.0 crate versions remain absent. The forward repair adds the identifying User-Agent to every metadata request without changing publication authority or guards. An actual-script HTTP regression reproduced the original 403 and passed after repair; all nine release-signing tests passed. The immutable tagged workflow cannot gain that fix through an unchanged retry. GitHub remains the canonical distribution.
+- The installed legacy proxy remains unchanged while clients are active. Its first managed upgrade needs a coordinated pause in new requests; the new service can drain future replacements.
+
+## Work log
 
 - Investigation complete; contracts agreed.
 - Implementation complete in four shared-tree lanes; original checkout preserved.
