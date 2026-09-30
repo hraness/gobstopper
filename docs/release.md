@@ -116,7 +116,14 @@ gh release verify-asset v0.0.0 gobstopper-0.0.0-linux-x86_64.tar.gz --repo hrane
    for archive in release-check/gobstopper-*; do case "$archive" in *.sha256) ;; *) gh attestation verify "$archive" --repo hraness/gobstopper ;; esac; done
    ```
 
-5. Update `site/published-release.json` to the new version in a follow-up pull request.
+5. Update `site/published-release.json` to the new version and the successful CI run URL for its exact tagged source in a follow-up pull request. From `site/`, run:
+
+   ```sh
+   bun run launch:kit
+   bun run check
+   ```
+
+   Include the regenerated `kb/launch/social-kit.md` and any `site/app/readme.generated.ts` changes in the same pull request. `check` refreshes the README, blog and installer outputs; the social kit requires the separate `launch:kit` command.
 
 To render or check a page by hand, pass the release's `SHA256SUMS`:
 

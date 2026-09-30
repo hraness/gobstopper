@@ -25,13 +25,13 @@ function installBlockFor(node: Node | null): string | null {
 /**
  * Mounts PostHog and the three launch events. Capture calls are inert until
  * the adapter initializes, which it does only in production on gobstopper.sh
- * with a public token. No text the visitor copies is sent, only which block.
+ * with a public token. No text the visitor copies is sent, only the install method and placement.
  */
 export function Analytics({ apiKey }: Readonly<{ apiKey: string | undefined }>) {
   useEffect(() => {
     const onCopy = () => {
       const block = installBlockFor(document.getSelection()?.anchorNode ?? null);
-      if (block !== null) capturePostHogEvent(gobstopperPostHogSite, INSTALL_COPIED_EVENT, { block });
+      if (block !== null) capturePostHogEvent(gobstopperPostHogSite, INSTALL_COPIED_EVENT, { install_method: block === "cargo_install" ? "cargo" : "other", placement: "inline" });
     };
     const onClick = (event: MouseEvent) => {
       if (!(event.target instanceof Element)) return;
@@ -54,5 +54,5 @@ export function Analytics({ apiKey }: Readonly<{ apiKey: string | undefined }>) 
       document.removeEventListener("play", onPlay, true);
     };
   }, []);
-  return <PostHogAnalytics apiKey={apiKey} site={gobstopperPostHogSite} />;
+  return <PostHogAnalytics captureOutboundLinks apiKey={apiKey} site={gobstopperPostHogSite} />;
 }
