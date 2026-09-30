@@ -6,9 +6,11 @@ import { createServer } from 'node:net';
 import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { chromium } from 'playwright-core';
-import { browserOwner, ownedChromiumLaunchOptions, pinnedBrowserExecutable, pinnedChromiumDefinition, verifyOwnedChromium } from './owned-browser.mjs';
+import { browserOwner, localVerificationOrigin, ownedChromiumLaunchOptions, pinnedBrowserExecutable, pinnedChromiumDefinition, verifyOwnedChromium } from './owned-browser.mjs';
 
-const { values } = parseArgs({ options: { production: { type: 'boolean', default: false } }, strict: true });
+const { values } = parseArgs({ options: { production: { type: 'boolean', default: false }, 'local-origin': { type: 'string' } }, strict: true });
+assert.equal(process.argv.slice(2).filter(argument => argument === '--local-origin' || argument.startsWith('--local-origin=')).length, Number(values['local-origin'] !== undefined), 'Provide at most one local origin.');
+const localOrigin = localVerificationOrigin(values['local-origin'], values.production);
 const repository = resolve(import.meta.dirname, '..');
 const artifacts = resolve(repository, '.impeccable/review', `public-${Date.now()}`);
 await mkdir(artifacts, { recursive: true });
@@ -26,7 +28,7 @@ const activePages = new Map();
 const CONTEXT_POOL = Math.max(1, Number.parseInt(process.env.GOBSTOPPER_BROWSER_CONTEXTS ?? '3', 10) || 3);
 let cleanupPromise;
 let interruption;
-let origin = 'https://gobstopper.sh';
+let origin = localOrigin ?? 'https://gobstopper.sh';
 const pause = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, label, timeout = 5000) {
   const deadline = Date.now() + timeout;
@@ -67,7 +69,7 @@ try {
   const executablePath = await pinnedBrowserExecutable(chromium.executablePath(), process.env.GOBSTOPPER_BROWSER_EXECUTABLE);
   launchOptions = ownedChromiumLaunchOptions(executablePath, definition.defaultArgs);
   if (interruption) throw interruption;
-  if (!values.production) {
+  if (!values.production && !localOrigin) {
     const socket = createServer();
     socket.listen(0, '127.0.0.1'); await once(socket, 'listening');
     const port = socket.address().port;
