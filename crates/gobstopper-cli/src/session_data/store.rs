@@ -24,7 +24,23 @@ pub fn default_dir() -> Result<PathBuf> {
     }
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share")))
+        .or_else(|| {
+            #[cfg(windows)]
+            {
+                std::env::var_os("LOCALAPPDATA")
+                    .filter(|p| !p.is_empty())
+                    .map(PathBuf::from)
+                    .or_else(|| {
+                        std::env::var_os("USERPROFILE")
+                            .filter(|p| !p.is_empty())
+                            .map(|p| PathBuf::from(p).join("AppData/Local"))
+                    })
+            }
+            #[cfg(not(windows))]
+            {
+                std::env::var_os("HOME").map(|p| PathBuf::from(p).join(".local/share"))
+            }
+        })
         .ok_or_else(|| anyhow::anyhow!("data_home_unavailable"))?;
     Ok(base.join("gobstopper/private"))
 }

@@ -561,6 +561,88 @@ fn metric_profiles_remain_separate_within_one_source_kind() {
 }
 
 #[test]
+fn cli_data_directory_explicit_overrides_keep_precedence() {
+    assert_cli_data_directory(
+        &[
+            ("GOBSTOPPER_DATA_DIR", "explicit"),
+            ("XDG_DATA_HOME", "xdg"),
+            ("LOCALAPPDATA", "local"),
+            ("USERPROFILE", "profile"),
+            ("HOME", "home"),
+        ],
+        "explicit",
+    );
+    assert_cli_data_directory(
+        &[
+            ("XDG_DATA_HOME", "xdg"),
+            ("LOCALAPPDATA", "local"),
+            ("USERPROFILE", "profile"),
+            ("HOME", "home"),
+        ],
+        "xdg/gobstopper/private",
+    );
+}
+
+#[test]
+#[cfg(not(windows))]
+fn cli_data_directory_keeps_unix_home_default() {
+    assert_cli_data_directory(
+        &[
+            ("LOCALAPPDATA", "local"),
+            ("USERPROFILE", "profile"),
+            ("HOME", "home"),
+        ],
+        "home/.local/share/gobstopper/private",
+    );
+}
+
+#[test]
+#[cfg(windows)]
+fn cli_data_directory_uses_windows_local_app_data_without_home() {
+    assert_cli_data_directory(
+        &[("LOCALAPPDATA", "local"), ("USERPROFILE", "profile")],
+        "local/gobstopper/private",
+    );
+    assert_cli_data_directory(&[("LOCALAPPDATA", "local")], "local/gobstopper/private");
+}
+
+#[test]
+#[cfg(windows)]
+fn cli_data_directory_falls_back_to_windows_user_profile_without_home() {
+    assert_cli_data_directory(
+        &[("USERPROFILE", "profile")],
+        "profile/AppData/Local/gobstopper/private",
+    );
+}
+
+fn assert_cli_data_directory(variables: &[(&str, &str)], expected: &str) {
+    let temp = Temp::new();
+    let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_gobstopper"));
+    command.args(["data", "status"]);
+    for variable in [
+        "GOBSTOPPER_DATA_DIR",
+        "XDG_DATA_HOME",
+        "LOCALAPPDATA",
+        "USERPROFILE",
+        "HOME",
+    ] {
+        command.env_remove(variable);
+    }
+    for (variable, relative) in variables {
+        command.env(variable, temp.0.join(relative));
+    }
+    let output = command.output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(status["events"], 0);
+    assert!(temp.0.join(expected).join("sessions.sqlite3").is_file());
+}
+
+#[test]
 fn cli_exports_imports_and_checks_a_private_store() {
     fn run(temp: &Temp, args: &[&str]) -> serde_json::Value {
         let output = std::process::Command::new(env!("CARGO_BIN_EXE_gobstopper"))

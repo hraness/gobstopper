@@ -16,6 +16,8 @@ const MAX_SCOPES: i64 = 4096;
 const MAX_TOKENS: u64 = 8_000_000;
 const MAX_REQUESTS: u32 = 4096;
 const MAX_TTL: u64 = 86_400;
+const OPEN_RETRY_TIMEOUT: Duration = Duration::from_secs(5);
+const WRITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Args)]
 pub struct ContextArgs {
@@ -159,33 +161,28 @@ pub fn default_path() -> Result<PathBuf> {
 
 impl Control {
     pub fn open(path: &Path) -> Result<Self> {
-        let deadline = Instant::now() + Duration::from_secs(1);
+        Self::open_with_timeout(path, OPEN_RETRY_TIMEOUT)
+    }
+
+    fn open_with_timeout(path: &Path, timeout: Duration) -> Result<Self> {
+        let deadline = Instant::now() + timeout;
         loop {
-            match Self::open_once(path) {
-                Err(error)
-                    if error
-                        .downcast_ref::<rusqlite::Error>()
-                        .is_some_and(|error| {
-                            matches!(
-                                error.sqlite_error_code(),
-                                Some(
-                                    rusqlite::ErrorCode::DatabaseBusy
-                                        | rusqlite::ErrorCode::DatabaseLocked
-                                )
-                            )
-                        })
-                        && Instant::now() < deadline =>
-                {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            match Self::open_once(path, remaining.min(Duration::from_millis(250))) {
+                Err(error) if transient_contention(&error) && Instant::now() < deadline => {
                     // Concurrent startup can briefly contend on schema creation
                     // or the WAL transition. Never retry identity/privacy errors.
-                    std::thread::sleep(Duration::from_millis(10));
+                    std::thread::sleep(
+                        Duration::from_millis(10)
+                            .min(deadline.saturating_duration_since(Instant::now())),
+                    );
                 }
                 result => return result,
             }
         }
     }
 
-    fn open_once(path: &Path) -> Result<Self> {
+    fn open_once(path: &Path, busy_timeout: Duration) -> Result<Self> {
         let parent = path
             .parent()
             .context("context state needs a parent directory")?;
@@ -215,30 +212,25 @@ impl Control {
                 bail!("context state file must be private (mode 0600)");
             }
         }
-        let mut db = Connection::open(path)?;
-        db.busy_timeout(Duration::from_millis(250))?;
+        let mut db = Connection::open(path).context("opening context state")?;
+        db.busy_timeout(busy_timeout)?;
         db.pragma_update(None, "synchronous", "FULL")?;
-        // Schema identity and creation share one write transaction. A second
-        // first opener must inspect the first opener's committed schema, never
-        // combine an old user_version with a newer sqlite_master snapshot.
-        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > SCHEMA {
-            bail!("context state uses a newer schema ({version})");
-        }
-        let application: i64 = tx.pragma_query_value(None, "application_id", |r| r.get(0))?;
-        if (version > 0 && application != APPLICATION_ID) || (version == 0 && application != 0) {
-            bail!("context state belongs to another application");
-        }
-        if version == 0 {
-            let tables: i64 =
-                tx.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))?;
-            if tables != 0 {
-                bail!("context state is not an empty database");
-            }
-        }
-        if version == 0 {
-            tx.execute_batch("CREATE TABLE IF NOT EXISTS scopes (
+        // Existing WAL stores can be opened while another client is writing.
+        // Read identity in one snapshot; only initialization needs a write lock.
+        let initialize = {
+            let tx = db.transaction().context("reading context schema")?;
+            let initialize = schema_needs_initialization(&tx)?;
+            tx.commit()?;
+            initialize
+        };
+        if initialize {
+            // Drop the read transaction before acquiring the writer lock, then
+            // recheck: another first opener may have initialized in between.
+            let tx = db
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("initializing context schema")?;
+            if schema_needs_initialization(&tx)? {
+                tx.execute_batch("CREATE TABLE IF NOT EXISTS scopes (
                 id TEXT PRIMARY KEY, provider_window INTEGER, client_window INTEGER,
                 output_reserve INTEGER NOT NULL, requested INTEGER, remaining INTEGER NOT NULL DEFAULT 0,
                 created INTEGER NOT NULL, expires INTEGER, generation INTEGER NOT NULL DEFAULT 0,
@@ -251,10 +243,22 @@ impl Control {
                 PRIMARY KEY(scope,source));
                 CREATE INDEX IF NOT EXISTS evidence_digest ON evidence(scope,digest,evicted);
                 PRAGMA user_version=1;")?;
-            tx.pragma_update(None, "application_id", APPLICATION_ID)?;
+                tx.pragma_update(None, "application_id", APPLICATION_ID)?;
+            }
+            tx.commit().context("committing context schema")?;
         }
-        tx.commit()?;
-        db.pragma_update(None, "journal_mode", "WAL")?;
+        let mode: String = db.pragma_query_value(None, "journal_mode", |r| r.get(0))?;
+        if mode != "wal" {
+            let mode: String = db
+                .query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))
+                .context("enabling context WAL")?;
+            if mode != "wal" {
+                bail!("context state could not enable WAL");
+            }
+        }
+        // Actual writes may queue behind other scopes after startup completes.
+        // Let SQLite wait for the lock; never replay a mutation or its commit.
+        db.busy_timeout(WRITE_BUSY_TIMEOUT)?;
         Ok(Self { db: Mutex::new(db) })
     }
     pub fn create(
@@ -275,7 +279,9 @@ impl Control {
         let capability = random_id()?;
         let key = scope_key(&capability)?;
         let mut db = self.db.lock().unwrap_or_else(|e| e.into_inner());
-        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("acquiring context scope creation lock")?;
         let count: i64 = tx.query_row("SELECT count(*) FROM scopes", [], |r| r.get(0))?;
         if count >= MAX_SCOPES {
             bail!("context scope limit reached; reuse an existing scope");
@@ -285,7 +291,7 @@ impl Control {
             VALUES(?,?,?,?,?,?)",
             params![key, window, client_window, output, now_ms(), adaptive],
         )?;
-        tx.commit()?;
+        tx.commit().context("committing context scope creation")?;
         Ok(capability)
     }
     pub fn close(&self, capability: &str) -> Result<()> {
@@ -313,9 +319,11 @@ impl Control {
             );
         }
         let key = scope_key(capability)?;
-        let now = now_ms();
         let mut db = self.db.lock().unwrap_or_else(|e| e.into_inner());
-        let tx = db.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .context("acquiring context reservation lock")?;
+        let now = now_ms();
         if tx.execute(
             "UPDATE scopes SET requested=?,remaining=?,created=?,expires=?,generation=generation+1
             WHERE id=?",
@@ -326,7 +334,7 @@ impl Control {
         }
         let row = read_scope(&tx, &key)?;
         let decision = decide(&key, &row, row.base, None, 0, now);
-        tx.commit()?;
+        tx.commit().context("committing context reservation")?;
         Ok(decision)
     }
     pub fn release(&self, capability: &str) -> Result<Decision> {
@@ -468,6 +476,39 @@ impl Control {
         Ok(rescue)
     }
 }
+fn transient_contention(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<rusqlite::Error>()
+        .is_some_and(|error| {
+            matches!(
+                error.sqlite_error_code(),
+                Some(rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked)
+            )
+        })
+}
+
+/// Caller holds a transaction so schema identity and table inventory agree.
+fn schema_needs_initialization(db: &Connection) -> Result<bool> {
+    let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
+    if version < 0 {
+        bail!("context state has an invalid schema ({version})");
+    }
+    if version > SCHEMA {
+        bail!("context state uses a newer schema ({version})");
+    }
+    let application: i64 = db.pragma_query_value(None, "application_id", |r| r.get(0))?;
+    if (version > 0 && application != APPLICATION_ID) || (version == 0 && application != 0) {
+        bail!("context state belongs to another application");
+    }
+    if version == 0 {
+        let tables: i64 = db.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))?;
+        if tables != 0 {
+            bail!("context state is not an empty database");
+        }
+    }
+    Ok(version == 0)
+}
+
 fn read_scope(db: &Connection, key: &str) -> Result<Scope> {
     db.query_row("SELECT provider_window,client_window,output_reserve,requested,remaining,created,
         expires,generation,adaptive,rereads,rescues,cooldown,base,reread_since FROM scopes WHERE id=?", [key], |r| {
@@ -633,14 +674,19 @@ mod tests {
             .join("context.sqlite3");
         let barrier = Arc::new(Barrier::new(16));
         let workers: Vec<_> = (0..16)
-            .map(|_| {
+            .map(|worker| {
                 let path = path.clone();
                 let barrier = Arc::clone(&barrier);
                 std::thread::spawn(move || {
                     barrier.wait();
-                    let control = Control::open(&path)?;
-                    let scope = control.create(Some(1_000_000), None, 32_000, false)?;
-                    control.reserve(&scope, 500_000, 3, 60)?;
+                    let control = Control::open(&path)
+                        .with_context(|| format!("worker {worker} opening context state"))?;
+                    let scope = control
+                        .create(Some(1_000_000), None, 32_000, false)
+                        .with_context(|| format!("worker {worker} creating context scope"))?;
+                    control
+                        .reserve(&scope, 500_000, 3, 60)
+                        .with_context(|| format!("worker {worker} reserving context"))?;
                     Ok::<_, anyhow::Error>(scope)
                 })
             })
@@ -655,6 +701,145 @@ mod tests {
             assert_eq!(decision.remaining_requests, 2);
         }
         drop(control);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn reopening_wal_state_does_not_wait_for_an_active_writer() {
+        let (control, path) = control();
+        let scope = control
+            .create(Some(1_000_000), None, 32_000, false)
+            .unwrap();
+        control.reserve(&scope, 500_000, 3, 60).unwrap();
+        let mut db = control.db.lock().unwrap();
+        let tx = db
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        tx.execute("UPDATE scopes SET remaining=1", []).unwrap();
+        // The writer cannot finish until open returns. An opener must neither
+        // require its own writer lock nor observe this uncommitted mutation.
+        let reopened = Control::open(&path).unwrap();
+        assert_eq!(reopened.status(&scope).unwrap().remaining_requests, 3);
+        tx.commit().unwrap();
+        assert_eq!(reopened.status(&scope).unwrap().remaining_requests, 1);
+        drop(db);
+        drop(reopened);
+        drop(control);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn scope_mutations_wait_for_transient_writers_without_replaying() {
+        let (control, path) = control();
+        let scope = control
+            .create(Some(1_000_000), None, 32_000, false)
+            .unwrap();
+        let mut blocker = Connection::open(&path).unwrap();
+        for reserve in [true, false] {
+            let tx = blocker
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .unwrap();
+            let decision = std::thread::scope(|threads| {
+                let (started, ready) = std::sync::mpsc::channel();
+                let control = &control;
+                let scope = &scope;
+                let worker = threads.spawn(move || {
+                    started.send(()).unwrap();
+                    if reserve {
+                        control.reserve(scope, 500_000, 3, 60)
+                    } else {
+                        control.consume(scope, 128_000, None, 32_000)
+                    }
+                });
+                ready.recv().unwrap();
+                // Longer than the former 250 ms connection busy timeout.
+                std::thread::sleep(Duration::from_millis(400));
+                tx.rollback().unwrap();
+                worker.join().unwrap().unwrap()
+            });
+            assert_eq!(decision.remaining_requests, if reserve { 3 } else { 2 });
+            assert_eq!(decision.policy_generation, 1);
+        }
+        assert_eq!(control.status(&scope).unwrap().remaining_requests, 2);
+        drop(blocker);
+        drop(control);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn opening_contention_has_a_deadline_and_preserves_the_store() {
+        let (control, path) = control();
+        let scope = control
+            .create(Some(1_000_000), None, 32_000, false)
+            .unwrap();
+        drop(control);
+        let mut blocker = Connection::open(&path).unwrap();
+        blocker
+            .pragma_update(None, "journal_mode", "DELETE")
+            .unwrap();
+        let tx = blocker
+            .transaction_with_behavior(TransactionBehavior::Exclusive)
+            .unwrap();
+        let began = Instant::now();
+        let error = Control::open_with_timeout(&path, Duration::from_millis(100))
+            .err()
+            .expect("an exclusive rollback-journal writer must block the open");
+        assert!(transient_contention(&error), "{error:#}");
+        assert!(began.elapsed() < Duration::from_secs(2));
+        tx.rollback().unwrap();
+        drop(blocker);
+        let reopened = Control::open(&path).unwrap();
+        assert_eq!(reopened.status(&scope).unwrap().remaining_requests, 0);
+        drop(reopened);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn identity_failures_are_not_transient_contention() {
+        let (control, path) = control();
+        drop(control);
+        let db = Connection::open(&path).unwrap();
+        for (version, application, message) in [
+            (-1, 0, "invalid schema"),
+            (SCHEMA, APPLICATION_ID + 1, "another application"),
+            (SCHEMA + 1, APPLICATION_ID, "newer schema"),
+            (0, 0, "not an empty database"),
+        ] {
+            db.pragma_update(None, "user_version", version).unwrap();
+            db.pragma_update(None, "application_id", application)
+                .unwrap();
+            let error = Control::open(&path)
+                .err()
+                .expect("foreign state must be refused");
+            assert!(error.to_string().contains(message), "{error:#}");
+            assert!(!transient_contention(&error));
+            assert_eq!(
+                db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                version
+            );
+            assert_eq!(
+                db.pragma_query_value(None, "application_id", |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                application
+            );
+            assert_eq!(
+                db.query_row("SELECT count(*) FROM scopes", [], |r| r.get::<_, i64>(0))
+                    .unwrap(),
+                0
+            );
+        }
+        drop(db);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            let error = Control::open(&path)
+                .err()
+                .expect("public state must be refused");
+            assert!(error.to_string().contains("must be private"), "{error:#}");
+            assert!(!transient_contention(&error));
+        }
         std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
     #[test]

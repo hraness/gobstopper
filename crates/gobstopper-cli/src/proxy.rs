@@ -452,7 +452,7 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             std::thread::spawn(move || serve(listener, server));
             let scope = proxy
                 .control
-                .as_ref()
+                .get()
                 .context("context control unavailable")?
                 .create(
                     opts.context_window,
@@ -472,7 +472,7 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
                 .env("OPENAI_BASE_URL", format!("{base}/v1"))
                 .status()
                 .with_context(|| format!("run {}", command[0]));
-            if let Some(control) = &proxy.control {
+            if let Some(control) = proxy.control.current() {
                 let _ = control.close(&scope);
             }
             let status = status?;
@@ -757,12 +757,59 @@ fn default_stats_path() -> Option<std::path::PathBuf> {
     Some(data.join("gobstopper").join("proxy-stats.jsonl"))
 }
 
+/// A failed initial open must not disable scoped inference for the lifetime of
+/// a healthy proxy. Only scoped traffic retries, and concurrent callers share
+/// one bounded open attempt. Status remains nonblocking while that attempt runs.
+struct ContextAccess {
+    path: Option<std::path::PathBuf>,
+    state: Mutex<ContextAccessState>,
+    available: AtomicBool,
+}
+
+struct ContextAccessState {
+    control: Option<Arc<crate::context::Control>>,
+    retry_after: Instant,
+}
+
+impl ContextAccess {
+    fn new(path: Option<std::path::PathBuf>) -> Self {
+        let control = path
+            .as_ref()
+            .and_then(|path| crate::context::Control::open(path).ok())
+            .map(Arc::new);
+        Self {
+            available: AtomicBool::new(control.is_some()),
+            path,
+            state: Mutex::new(ContextAccessState {
+                control,
+                retry_after: Instant::now() + Duration::from_secs(30),
+            }),
+        }
+    }
+
+    fn current(&self) -> Option<Arc<crate::context::Control>> {
+        self.state.lock().ok()?.control.clone()
+    }
+
+    fn get(&self) -> Option<Arc<crate::context::Control>> {
+        let mut state = self.state.lock().ok()?;
+        if state.control.is_none() && Instant::now() >= state.retry_after {
+            if let Some(path) = &self.path {
+                state.control = crate::context::Control::open(path).ok().map(Arc::new);
+                self.available
+                    .store(state.control.is_some(), Ordering::Release);
+            }
+            state.retry_after = Instant::now() + Duration::from_secs(30);
+        }
+        state.control.clone()
+    }
+}
+
 struct Proxy {
     engine: Engine,
     power: crate::power::Power,
     observations: crate::proxy_observations::Recorder,
-    control: Option<crate::context::Control>,
-    control_error: Option<String>,
+    control: ContextAccess,
     context_window: Option<u64>,
     service_id: Option<String>,
     /// Threshold for Anthropic requests that declare a 1M-token window.
@@ -797,16 +844,11 @@ impl Proxy {
             strict: opts.strict,
             ..CliffConfig::default()
         };
-        let (control, control_error) =
-            match crate::context::default_path().and_then(|p| crate::context::Control::open(&p)) {
-                Ok(control) => (Some(control), None),
-                Err(_) => (None, Some("context_control_unavailable".into())),
-            };
+        let control = ContextAccess::new(crate::context::default_path().ok());
         Ok(Self {
             power: crate::power::Power::new(!opts.no_keep_awake),
             observations: crate::proxy_observations::Recorder::open(!opts.no_session_data),
             control,
-            control_error,
             context_window: opts.context_window,
             service_id: opts.service_id.clone(),
             threshold_1m: threshold_1m(opts.threshold, opts.threshold_1m)?,
@@ -834,6 +876,7 @@ impl Proxy {
         let cfg = self.engine.config();
         let (entries, chars) = self.engine.store_stats();
         let totals = self.stats_log.totals(&self.stats);
+        let context_available = self.control.available.load(Ordering::Acquire);
         json!({
             "name": "gobstopper-proxy",
             "pid": std::process::id(),
@@ -841,7 +884,7 @@ impl Proxy {
             "service_id": self.service_id,
             "keep_awake": self.power.status(),
             "observations": self.observations.status(),
-            "context_control": {"available": self.control.is_some(), "error": self.control_error, "configured_window": self.context_window},
+            "context_control": {"available": context_available, "error": (!context_available).then_some("context_control_unavailable"), "configured_window": self.context_window},
             "version": env!("CARGO_PKG_VERSION"),
             "port": self.port,
             "threshold_tokens": cfg.threshold_tokens,
@@ -1057,9 +1100,9 @@ impl Proxy {
         }));
         match prepared {
             Ok(ctx) => ctx.map(|ctx| {
-                if !self.shadow {
+                if !self.shadow && budget.is_some() {
                     if let (Some(control), Some(scope), Some(observations), Some(budget)) = (
-                        &self.control,
+                        self.control.current(),
                         request.header("x-gobstopper-scope"),
                         observations,
                         budget,
@@ -1293,10 +1336,9 @@ impl Proxy {
                 "the owned proxy is restarting; retry shortly",
             );
         }
-        if dialect.is_some()
-            && request.header("x-gobstopper-scope").is_some()
-            && self.control.is_none()
-        {
+        let scoped = dialect.is_some() && request.header("x-gobstopper-scope").is_some();
+        let control = scoped.then(|| self.control.get()).flatten();
+        if scoped && control.is_none() {
             return write_error(
                 client,
                 503,
@@ -1305,7 +1347,7 @@ impl Proxy {
             );
         }
         let budget = if let (Some(control), Some(scope), Some(dialect)) =
-            (&self.control, request.header("x-gobstopper-scope"), dialect)
+            (&control, request.header("x-gobstopper-scope"), dialect)
         {
             let output = serde_json::from_slice::<Value>(&request.body)
                 .ok()
@@ -2442,6 +2484,87 @@ mod tests {
     use super::*;
 
     #[test]
+    fn context_access_recovers_existing_reservation_once_after_storage_returns() {
+        let root = std::env::temp_dir().join(format!(
+            "gobstopper-context-recovery-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let directory = root.join("private");
+        let saved = root.join("saved");
+        let path = directory.join("context.sqlite3");
+        let original = crate::context::Control::open(&path).unwrap();
+        let scope = original
+            .create(Some(1_000_000), Some(1_000_000), 32_000, false)
+            .unwrap();
+        original.reserve(&scope, 500_000, 32, 60).unwrap();
+        drop(original);
+        std::fs::rename(&directory, &saved).unwrap();
+        std::fs::write(&directory, b"temporarily unavailable storage").unwrap();
+
+        let access = Arc::new(ContextAccess::new(Some(path)));
+        assert!(access.get().is_none());
+        assert!(!access.available.load(Ordering::Acquire));
+        std::fs::remove_file(&directory).unwrap();
+        std::fs::rename(&saved, &directory).unwrap();
+        // Recovery is rate limited even when the storage problem is resolved.
+        assert!(access.get().is_none());
+        access.state.lock().unwrap().retry_after = Instant::now();
+
+        let barrier = Arc::new(std::sync::Barrier::new(16));
+        let workers: Vec<_> = (0..16)
+            .map(|_| {
+                let access = Arc::clone(&access);
+                let barrier = Arc::clone(&barrier);
+                let scope = scope.clone();
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    let control = access.get().expect("recover existing context database");
+                    let decision = control.consume(&scope, 128_000, None, 32_000).unwrap();
+                    assert_eq!(decision.effective_input_tokens, 500_000);
+                    control
+                })
+            })
+            .collect();
+        let controls: Vec<_> = workers.into_iter().map(|w| w.join().unwrap()).collect();
+        assert!(controls.iter().all(|c| Arc::ptr_eq(c, &controls[0])));
+        assert_eq!(controls[0].status(&scope).unwrap().remaining_requests, 16);
+        assert!(access.available.load(Ordering::Acquire));
+        drop(controls);
+        drop(access);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn context_access_recovery_preserves_unrecognized_storage() {
+        let root = std::env::temp_dir().join(format!(
+            "gobstopper-context-identity-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let path = root.join("context.sqlite3");
+        drop(crate::context::Control::open(&path).unwrap());
+        let db = rusqlite::Connection::open(&path).unwrap();
+        db.pragma_update(None, "application_id", 123).unwrap();
+        drop(db);
+        let before = std::fs::read(&path).unwrap();
+        let access = ContextAccess::new(Some(path.clone()));
+        access.state.lock().unwrap().retry_after = Instant::now();
+        assert!(access.get().is_none());
+        assert!(!access.available.load(Ordering::Acquire));
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(access.state.lock().unwrap().retry_after > Instant::now());
+        drop(access);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn input_capacity_uses_calibration_and_rounds_down() {
         assert!(within_input_capacity(1_000, 1_000, Some(1_000)));
         assert!(!within_input_capacity(1_001, 1_000, Some(1_000)));
@@ -2678,8 +2801,7 @@ mod tests {
         Proxy {
             power: crate::power::Power::new(false),
             observations: crate::proxy_observations::Recorder::disabled(),
-            control: None,
-            control_error: None,
+            control: ContextAccess::new(None),
             context_window: None,
             service_id: None,
             draining: AtomicBool::new(false),

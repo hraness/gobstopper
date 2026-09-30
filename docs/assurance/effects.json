@@ -1769,7 +1769,7 @@
         {
           "state": "context_state",
           "mode": "sql_transaction",
-          "condition": "Explicit scopes consume one reservation per logical request and update bounded adaptive evidence identities; wrapper closes its owned scope."
+          "condition": "Proxy startup and scoped recovery can initialize private storage; explicit scopes consume one reservation per logical request and update bounded adaptive evidence identities; wrapper closes its owned scope."
         },
         {
           "state": "session_data",
@@ -1807,7 +1807,7 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Loopback host validation; 64 KiB request heads, 256 MiB bodies, 256 connections; curl connect 30 s, stall 900 s, total 7200 s. Explicit hard context capacity applies to prepared output, raw fallbacks and retries using calibrated estimates. Prefix/evidence cache has hard serialized-byte bounds. Observation parsing is bounded and cannot reinterpret incomplete/unsupported responses as successful completion. Read-only MCP does not expose context mutation.",
+      "bounds": "Loopback host validation; 64 KiB request heads, 256 MiB bodies, 256 connections; curl connect 30 s, stall 900 s, total 7200 s. Explicit hard context capacity applies to prepared output, raw fallbacks and retries using calibrated estimates. Prefix/evidence cache has hard serialized-byte bounds. Observation parsing is bounded and cannot reinterpret incomplete/unsupported responses as successful completion. Read-only MCP does not expose context mutation. Scoped traffic shares one recovery attempt for unavailable startup context storage, with a 30-second cooldown after each attempt; requests fail explicitly until it succeeds. Status remains responsive, and recovery does not replace an existing healthy control handle.",
       "exclusions": [
         "No live task-quality or billing claim",
         "Character/token estimates and calibrated ratios are approximations, not provider-capacity proof",
@@ -2078,7 +2078,7 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "4096 scopes; reservations at most 4096 logical requests/86400 seconds/8000000 requested tokens and always clamped to known capacity/output headroom. Adaptive evidence limited to 2048 identities per scope/65536 globally; automatic growth is opt-in.",
+      "bounds": "4096 scopes; reservations at most 4096 logical requests/86400 seconds/8000000 requested tokens and always clamped to known capacity/output headroom. Adaptive evidence limited to 2048 identities per scope/65536 globally; automatic growth is opt-in. Startup retries only SQLite busy/locked errors within a configured 5-second retry window; established schema identity is read in one snapshot, and initialization rechecks after acquiring the writer lock. SQLite mutation busy waits are configured for 5 seconds without replaying mutations. Negative/newer schema versions, foreign identity and privacy failures are refused.",
       "exclusions": [
         "No provider-capacity attestation from a user declaration",
         "No guarantee that retained evidence improves task success"

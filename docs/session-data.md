@@ -11,7 +11,7 @@ gobstopper data metrics
 gobstopper data check
 ```
 
-Commands emit JSON. The database lives at `$GOBSTOPPER_DATA_DIR/sessions.sqlite3`, or `$XDG_DATA_HOME/gobstopper/private/sessions.sqlite3`. When neither variable is set, the directory is `~/.local/share/gobstopper/private`. Use `data --state-dir /path/to/private-directory` to select another directory. Gobstopper creates that directory with owner-only permissions on Unix and refuses an existing directory or database with broader access.
+Commands emit JSON. The database lives at `$GOBSTOPPER_DATA_DIR/sessions.sqlite3`, or `$XDG_DATA_HOME/gobstopper/private/sessions.sqlite3`. When neither variable is set, the directory is `~/.local/share/gobstopper/private` on Unix and `%LOCALAPPDATA%\gobstopper\private` on Windows, falling back to `%USERPROFILE%\AppData\Local\gobstopper\private` when `LOCALAPPDATA` is unavailable. Use `data --state-dir /path/to/private-directory` to select another directory. Gobstopper creates that directory with owner-only permissions on Unix and refuses an existing directory or database with broader access.
 
 ## Read a selected interval
 

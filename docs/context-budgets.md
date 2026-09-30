@@ -56,7 +56,12 @@ with the returned capability. Set `GOBSTOPPER_SCOPE` in that client's environmen
 or pass `--scope` to context commands. The scope token authorizes that scope's
 controls: keep it private. Gobstopper removes the routing prefix and header before
 forwarding upstream, and stores only its hash. A request naming an unavailable
-scope fails explicitly. After every client using it has stopped, run
+scope fails explicitly. If context storage was unavailable at proxy startup,
+scoped requests retry opening it at most once every 30 seconds. They continue to
+fail explicitly until the existing state can be read safely; recovery preserves
+reservations and their remaining request allowances.
+
+After every client using it has stopped, run
 `gobstopper context close --scope <capability>`.
 
 ## Optional automatic rescue
