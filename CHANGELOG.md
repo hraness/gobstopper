@@ -8,6 +8,7 @@ Gobstopper's source packages now declare the registry versions needed for instal
 
 - The three Gobstopper crates share exact matching dependency versions. Source builds retain immutable Git pins for Apple Foundation and the CLI kit; packaged crates use their declared registry versions.
 - The CLI kit pin moves to 1.1.2, whose package includes the source, README, and license required for crates.io publication.
+- Each crate includes its license text, and the adapters crate includes the CliffCompaction attribution and MIT notice.
 
 ## v0.7.4 - 2026-09-29
 

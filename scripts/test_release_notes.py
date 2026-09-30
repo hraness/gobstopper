@@ -44,6 +44,16 @@ Older release.
 
 
 class SectionTests(unittest.TestCase):
+    def test_registry_crates_carry_current_license_and_attribution_text(self):
+        for crate in ("gobstopper-core", "gobstopper-adapters", "gobstopper-cli"):
+            for name in ("LICENSE-MIT", "LICENSE-APACHE"):
+                with self.subTest(crate=crate, name=name):
+                    self.assertEqual((ROOT / "crates" / crate / name).read_bytes(), (ROOT / name).read_bytes())
+        self.assertEqual(
+            (ROOT / "crates/gobstopper-adapters/THIRD_PARTY_NOTICES.md").read_bytes(),
+            (ROOT / "THIRD_PARTY_NOTICES.md").read_bytes(),
+        )
+
     def test_reads_the_tagged_section_only(self):
         summary, bullets = rn.changelog_section(CHANGELOG, "v1.2.3")
         self.assertEqual(summary, "`watch` skips idle sessions.")

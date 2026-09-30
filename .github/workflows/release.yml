@@ -238,6 +238,19 @@ jobs:
           }
           for crate in gobstopper-core gobstopper-adapters gobstopper; do
             cargo +1.97.1 package --locked -p "$crate"
+            python3 - "$crate" "$GOBSTOPPER_VERSION" <<'PY'
+          import sys
+          import tarfile
+          from pathlib import Path
+          name, version = sys.argv[1:]
+          required = ['LICENSE-MIT', 'LICENSE-APACHE']
+          if name == 'gobstopper-adapters':
+              required.append('THIRD_PARTY_NOTICES.md')
+          with tarfile.open(f'target/package/{name}-{version}.crate', 'r:gz') as archive:
+              for notice in required:
+                  entry = archive.extractfile(f'{name}-{version}/{notice}')
+                  assert entry is not None and entry.read() == Path(notice).read_bytes(), f'missing or stale {notice}'
+          PY
             checksum=$(sha256sum "target/package/$crate-$GOBSTOPPER_VERSION.crate" | cut -d' ' -f1)
             status="$(curl -sS --retry 3 -o "$RUNNER_TEMP/crate.json" -w '%{http_code}' -A 'hraness/gobstopper release workflow' \
               "https://crates.io/api/v1/crates/$crate/$GOBSTOPPER_VERSION")"
