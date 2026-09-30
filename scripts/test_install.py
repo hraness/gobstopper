@@ -73,7 +73,7 @@ class InstallShTests(unittest.TestCase):
         requirement = 'anchor apple generic and identifier "dev.hraness.gobstopper" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "8AAP53VTW3"'
         verifier.write_text('#!/bin/sh\nset -eu\n'
             '[ "$#" = 6 ] && [ "$1" = --verify ] && [ "$2" = --strict ] && [ "$3" = --all-architectures ] && [ "$4" = --test-requirement ] || exit 91\n'
-            '[ "$5" = ' + shlex.quote(requirement) + ' ] || exit 92\n'
+            '[ "$5" = ' + shlex.quote('=' + requirement) + ' ] || exit 92\n'
             '[ ! -e "$FIXTURE_EXECUTION_LOG" ] || exit 93\n'
             'echo verified > "$FIXTURE_SIGNATURE_LOG"\n'
             '[ "$FIXTURE_SIGNATURE_RESULT" = valid ]\n')
