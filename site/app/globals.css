@@ -794,3 +794,7 @@ main:has(> .plain-publication--embedded) {
 .gob-meter__dot[data-mode="on"] { fill: var(--hkm-accent); }
 .gob-meter__foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.25rem 1rem; color: var(--hkm-muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
 .gob-home-demo { display: grid; gap: 1.25rem; }
+
+/* Before hydration measures it, a fitted mockup lays out at its natural width;
+   keep that from widening the page (full-page captures and print included). */
+.plain-publication__figure-body .hkm-showcase-stage { max-inline-size: 100%; overflow-x: clip; overflow-clip-margin: 0.5rem; }
