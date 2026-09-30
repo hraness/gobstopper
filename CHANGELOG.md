@@ -2,6 +2,14 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## v0.7.5 - 2026-09-29
+
+Gobstopper's source packages now declare the registry versions needed for installation through crates.io once their dependencies are published.
+
+- The three Gobstopper crates share exact matching dependency versions. Source builds retain immutable Git pins for Apple Foundation and the CLI kit; packaged crates use their declared registry versions.
+- The CLI kit pin moves to 1.1.2, whose package includes the source, README, and license required for crates.io publication.
+- Each crate includes its license text, and the adapters crate includes the CliffCompaction attribution and MIT notice.
+
 ## v0.7.4 - 2026-09-29
 
 Gobstopper now ships prebuilt binaries for macOS on Apple silicon, Linux x86_64 and arm64, and Windows x86_64, with one-line installers that check each download's SHA-256.
