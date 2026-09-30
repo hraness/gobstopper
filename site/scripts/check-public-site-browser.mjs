@@ -3,11 +3,14 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
-import { isAbsolute, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { parseArgs } from 'node:util';
 import { chromium } from 'playwright-core';
+import { browserOwner, localVerificationOrigin, ownedChromiumLaunchOptions, pinnedBrowserExecutable, pinnedChromiumDefinition, verifyOwnedChromium } from './owned-browser.mjs';
 
-const { values } = parseArgs({ options: { production: { type: 'boolean', default: false } }, strict: true });
+const { values } = parseArgs({ options: { production: { type: 'boolean', default: false }, 'local-origin': { type: 'string' } }, strict: true });
+assert.equal(process.argv.slice(2).filter(argument => argument === '--local-origin' || argument.startsWith('--local-origin=')).length, Number(values['local-origin'] !== undefined), 'Provide at most one local origin.');
+const localOrigin = localVerificationOrigin(values['local-origin'], values.production);
 const repository = resolve(import.meta.dirname, '..');
 const artifacts = resolve(repository, '.impeccable/review', `public-${Date.now()}`);
 await mkdir(artifacts, { recursive: true });
@@ -17,47 +20,72 @@ const errors = [];
 const records = [];
 const startedAt = Date.now();
 let server;
+let exited;
 let browser;
+let launchOptions;
+let browserIdentity;
 const activePages = new Map();
 const CONTEXT_POOL = Math.max(1, Number.parseInt(process.env.GOBSTOPPER_BROWSER_CONTEXTS ?? '3', 10) || 3);
 let cleanupPromise;
-let origin = 'https://gobstopper.sh';
+let interruption;
+let origin = localOrigin ?? 'https://gobstopper.sh';
 const pause = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 async function until(check, label, timeout = 5000) {
   const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) { if (await check()) return; await pause(50); }
+  while (Date.now() < deadline) {
+    if (interruption) throw interruption;
+    if (await check()) return;
+    await pause(50);
+  }
   throw new Error(`Timed out: ${label}`);
 }
 async function stopServer() {
-  if (!server || server.exitCode !== null || server.signalCode !== null) return;
-  const exited = once(server, 'exit');
-  server.kill('SIGTERM');
+  if (!server) return;
+  if (server.exitCode === null && server.signalCode === null) server.kill('SIGTERM');
   await Promise.race([exited, pause(5000)]);
   if (server.exitCode === null && server.signalCode === null) { server.kill('SIGKILL'); await exited; }
 }
-function cleanup() {
-  return cleanupPromise ??= (async () => {
-    try { await browser?.close(); } finally { await stopServer(); }
-  })();
+const owner = browserOwner({
+  launch: () => chromium.launch({ ...launchOptions, timeout: 15000,
+    handleSIGHUP: false, handleSIGINT: false, handleSIGTERM: false }),
+  close: async active => { await active.close(); }, stopServer,
+});
+function cleanup() { return cleanupPromise ??= owner.stop(); }
+function interrupt(error, code) {
+  interruption ??= error;
+  process.exitCode = code;
+  void cleanup().catch(error => { console.error(error); process.exitCode = 1; });
 }
-const deadline = setTimeout(() => { console.error('Public browser verification exceeded four minutes.'); void cleanup().finally(() => process.exit(1)); }, 240000);
-for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void cleanup().finally(() => process.exit(1)); });
+const deadline = setTimeout(() => {
+  const error = new Error('Public browser verification exceeded four minutes.');
+  console.error(error.message);
+  interrupt(error, 1);
+}, 240000);
+for (const [signal, code] of [['SIGHUP', 129], ['SIGINT', 130], ['SIGTERM', 143]]) {
+  process.once(signal, () => interrupt(new Error(`Browser verification interrupted by ${signal}.`), code));
+}
 try {
-  if (!values.production) {
+  const definition = pinnedChromiumDefinition();
+  const executablePath = await pinnedBrowserExecutable(chromium.executablePath(), process.env.GOBSTOPPER_BROWSER_EXECUTABLE);
+  launchOptions = ownedChromiumLaunchOptions(executablePath, definition.defaultArgs);
+  if (interruption) throw interruption;
+  if (!values.production && !localOrigin) {
     const socket = createServer();
     socket.listen(0, '127.0.0.1'); await once(socket, 'listening');
     const port = socket.address().port;
     await new Promise(resolve => socket.close(resolve));
+    if (interruption) throw interruption;
     origin = `http://127.0.0.1:${port}`;
     server = spawn(process.execPath, [resolve(repository, 'node_modules/next/dist/bin/next'), 'start', '--hostname', '127.0.0.1', '--port', String(port)], {
       cwd: repository, stdio: ['ignore', 'inherit', 'inherit'], env: process.env,
     });
+    exited = new Promise((resolveExit, reject) => { server.once('exit', resolveExit); server.once('error', reject); });
+    void exited.catch(() => undefined);
     server.once('error', error => errors.push(`Server: ${error.message}`));
     await until(async () => { assert.equal(server.exitCode, null, 'Owned Next server exited'); return fetch(origin, { signal: AbortSignal.timeout(1000) }).then(r => r.ok, () => false); }, 'Next production server', 30000);
   }
-  const executablePath = process.env.GOBSTOPPER_BROWSER_EXECUTABLE;
-  if (executablePath) assert.ok(isAbsolute(executablePath), 'Explicit browser executable must be absolute');
-  browser = await chromium.launch({ headless: true, ...(executablePath ? { executablePath } : { channel: 'chrome' }) });
+  browser = await owner.start();
+  browserIdentity = await verifyOwnedChromium(browser, executablePath, definition.expectedVersion);
   // Six (width, theme) contexts share one browser; a small pool keeps the
   // run short without starving the one CI runner. Each context has its own
   // page, records and failure screenshot; results are merged in fixed order.
@@ -171,12 +199,12 @@ try {
   records.push(...comboRecords.flat());
   if (failures.length) throw new Error(`Public browser checks failed:\n${failures.sort().join('\n')}`);
   assert.deepEqual(errors, [], 'No browser runtime or resource errors');
-  const receipt = { origin, production: values.production, sourceSha: process.env.GITHUB_SHA ?? null, startedAt: new Date(startedAt).toISOString(), completedAt: new Date().toISOString(), durationMs: Date.now() - startedAt, browserErrors: errors, pagesChecked: records.length, records };
+  const receipt = { browserExecutable: browserIdentity.executable, browserVersion: browserIdentity.browserVersion, browserIdentity, origin, production: values.production, sourceSha: process.env.GITHUB_SHA ?? null, startedAt: new Date(startedAt).toISOString(), completedAt: new Date().toISOString(), durationMs: Date.now() - startedAt, browserErrors: errors, pagesChecked: records.length, records };
   await writeFile(resolve(artifacts, 'verification.json'), JSON.stringify(receipt, null, 2));
   console.log(JSON.stringify({ ...receipt, records: undefined, artifacts }, null, 2));
 } catch (error) {
   for (const [index, page] of activePages) if (!page.isClosed()) await page.screenshot({ path: resolve(artifacts, `failure-context-${index}.png`), fullPage: true }).catch(() => {});
-  await writeFile(resolve(artifacts, 'failure.json'), JSON.stringify({ message: String(error), origin, errors, records }, null, 2));
+  await writeFile(resolve(artifacts, 'failure.json'), JSON.stringify({ message: String(error), origin, browserIdentity, errors, records }, null, 2));
   throw error;
 } finally {
   clearTimeout(deadline);

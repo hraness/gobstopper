@@ -375,9 +375,21 @@ jobs:
         run: bun test media/film.test.ts && bun media/scenes/film/sync.ts --check
       - name: Run the complete site gate and production build
         run: bun run check
+      - name: Restore pinned browser cache
+        if: github.ref != 'refs/heads/main'
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.61.1
+      - name: Pinned browser cache
+        if: github.ref == 'refs/heads/main'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-1.61.1
+      - name: Provision locked Chromium
+        run: bunx --no-install playwright-core install --with-deps chromium
       - name: Verify public routes and appearance
-        env:
-          GOBSTOPPER_BROWSER_EXECUTABLE: /usr/bin/google-chrome
         run: bun run check:public-site:browser
       - name: Retain screenshots and browser evidence
         if: always()

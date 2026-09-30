@@ -68,7 +68,7 @@ export function GobMeter({ mode, point = "end" }: Readonly<{ mode: MeterMode; po
 export function GobMeterShowcase({ initialMode = "on" }: Readonly<{ initialMode?: MeterMode }>) {
   return (
     <ModeShowcase<"session", MeterMode, string>
-      caption="Illustration from one recorded Claude Code session replayed offline at the 128,000-token default. Sizes are estimates at about four characters per token, not billed tokens."
+      caption="One recorded Claude Code session replayed at the 128,000-token default. Sizes estimate four characters per token."
       height={300}
       initial={{ mode: initialMode, option: METER_POINTS[1]!.id }}
       label={() => "Illustration: request size in one coding session"}
@@ -134,7 +134,6 @@ function ElideSession({ mode }: Readonly<{ mode: ElideMode }>) {
 export function GobElideShowcase() {
   return (
     <ModeShowcase<"session", ElideMode>
-      caption={`Illustration with a made-up project. The stubs are real gobstopper output: ${elide.elided} of ${elide.total} old tool outputs were replaced; the original stays in the local vault.`}
       height={420}
       initial={{ mode: "copy" }}
       label={() => "Illustration: a saved session before and after elide"}
@@ -203,7 +202,6 @@ export function GobVaultSteps({ initial }: Readonly<{ initial?: ThroughStep["id"
   return (
     <StepThrough
       initial={initial}
-      caption="Illustration with a made-up project. Every line is real output from gobstopper v0.7.4 on a synthetic session; paths are shortened to ~."
       label="Saved-session steps"
       minWidth={560}
       steps={vaultSteps}
