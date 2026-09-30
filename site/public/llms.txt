@@ -27,7 +27,8 @@ When to use this site:
 ## Blog
 
 - [Gobstopper blog](https://gobstopper.sh/blog): every post, newest first. Atom feed at https://gobstopper.sh/blog/feed.xml.
-- [Introducing Gobstopper](https://gobstopper.sh/blog/introducing-gobstopper): on Terminal-Bench 2.1 (one trial per arm, 45,000-token threshold), Claude Code behind gobstopper proxy solved about as many tasks as without it (61 vs 60 of 89, within single-trial noise) and sent 29% fewer input tokens; how the proxy works and how to try it.
+- [Introducing Gobstopper](https://gobstopper.sh/blog/introducing-gobstopper): what Gobstopper does, in ten short beats: the proxy that trims a live session, smaller copies of saved sessions, the local archive that undoes them, one benchmark result and its limits.
+- [Gobstopper on Terminal-Bench: fewer tokens, the same tasks solved](https://gobstopper.sh/blog/gobstopper-on-terminal-bench): on Terminal-Bench 2.1 (one trial per arm, 45,000-token threshold), Claude Code behind gobstopper proxy solved about as many tasks as without it (61 vs 60 of 89, within single-trial noise) and sent 29% fewer input tokens; how the proxy works and how to try it.
 - [What Kani and Lean prove about Gobstopper's compaction](https://gobstopper.sh/blog/proofs-for-the-admission-math): what the Kani and Lean proofs cover and leave out.
 - [How Gobstopper model-checks its archive against crashes](https://gobstopper.sh/blog/vault-models-that-fail-on-purpose): the TLA+ models, their broken copies, and the Hegel tests.
 

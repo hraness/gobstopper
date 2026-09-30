@@ -16,11 +16,14 @@ import {
   articleAdmissions,
   blogPosts,
   filmHtml,
+  INTRODUCING_SLUG,
+  markdownPosts,
   indexablePosts,
   postHtml,
   postPath,
   postProvenance,
   type BlogPost as BlogPostRecord,
+  type MarkdownSlug,
 } from "../app/blog/articles";
 import { blogAtomFeed, blogIndexJsonLd, postJsonLd, postMetadata } from "../app/blog/discovery";
 import BlogIndex from "../app/blog/page";
@@ -52,7 +55,8 @@ describe("Gobstopper blog", () => {
 
   test("every Markdown post has a record and the generated bodies are current", async () => {
     const files = (await readdir(join(site, "content/blog"))).filter((name) => name.endsWith(".md")).sort();
-    expect(files).toEqual(blogPosts.map((post) => `${post.slug}.md`).sort());
+    expect(files).toEqual(markdownPosts.map((post) => `${post.slug}.md`).sort());
+    expect(blogPosts.filter((post) => post.body === "beats").map((post) => post.slug)).toEqual([INTRODUCING_SLUG]);
     expect(await readFile(generatedBlogPath, "utf8")).toBe(await generatedBlogModule());
   });
 
@@ -62,6 +66,7 @@ describe("Gobstopper blog", () => {
       const html = postHtml(post);
       expect(html).not.toContain("{{");
       if (publishedRelease !== null) expect(html).toContain(`Latest release: v${publishedRelease.version}.`);
+      for (const [, src] of html.matchAll(/<img\b[^>]*\bsrc="([^"]+)"/gu)) expect(existsSync(join(site, "public", src!.split("?")[0]!))).toBe(true);
       for (const [, href] of html.matchAll(/href="([^"]+)"/gu)) {
         if (href!.startsWith("#")) continue;
         if (href!.startsWith("/")) {
@@ -74,24 +79,25 @@ describe("Gobstopper blog", () => {
     }
   });
 
-  test("{{film}} is the one block token, and the introduction places it once after the lead figure", () => {
-    const intro = blogPosts.find((post) => post.slug === "introducing-gobstopper")!;
-    for (const post of blogPosts) {
+  test("the introduction carries the film once, before its beats; Markdown posts place no film", () => {
+    for (const post of markdownPosts) {
       const body = generatedBody(post.slug);
-      expect(body.split(FILM_TOKEN).length - 1).toBe(post === intro ? 1 : 0);
-      expect(body.replace(FILM_TOKEN, "")).not.toContain("{{film");
+      expect(body).not.toContain(FILM_TOKEN);
+      expect(body).not.toContain("{{film");
     }
-    const body = generatedBody(intro.slug);
-    expect(body.indexOf("gob-fuse.png")).toBeLessThan(body.indexOf(FILM_TOKEN));
-    expect(body.indexOf(FILM_TOKEN)).toBeLessThan(body.indexOf("<h2"));
     expect(() => renderPostHtml("Text {{film}} inline.")).toThrow();
     expect(() => renderPostHtml("{{film}}\n\n{{film}}")).toThrow();
 
-    const html = postHtml(intro);
-    if (gobFilm === null) expect(html).not.toContain("<video");
-    else {
-      expect(html).toContain(filmHtml(gobFilm));
-      expect(html.split("<video").length - 1).toBe(1);
+    const intro = blogPosts.find((post) => post.slug === INTRODUCING_SLUG)!;
+    const feedHtml = postHtml(intro);
+    const page = renderToStaticMarkup(<BlogPostBody post={intro} />);
+    if (gobFilm === null) {
+      expect(feedHtml).not.toContain("<video");
+      expect(page).not.toContain("<video");
+    } else {
+      expect(feedHtml.startsWith(filmHtml(gobFilm))).toBe(true);
+      for (const html of [feedHtml, page]) expect(html.split("<video").length - 1).toBe(1);
+      expect(page.indexOf('id="film-player"')).toBeLessThan(page.indexOf('id="beat-what"'));
     }
   });
 
@@ -135,20 +141,19 @@ describe("Gobstopper blog", () => {
     expect(html).toContain("A &lt;b&gt;session&lt;/b&gt; &amp; its &quot;tokens&quot;");
     expect(html).toContain("It cost $2.25, not $$ or $&amp; or $&#x27;.");
 
-    const intro = blogPosts.find((post) => post.slug === "introducing-gobstopper")!;
-    const withFilm = generatedBody(intro.slug).replace(FILM_TOKEN, () => filmHtml(film));
+    const withFilm = renderPostHtml("Lead.\n\n{{film}}\n\n## Next").html.replace(FILM_TOKEN, () => filmHtml(film));
     expect(withFilm).toContain("It cost $2.25, not $$ or $&amp; or $&#x27;.");
     expect(withFilm.split('id="film-player"').length - 1).toBe(1);
   });
 
   test("every post image is a captioned figure whose file ships in the site", () => {
-    const intro = blogPosts.find((post) => post.slug === "introducing-gobstopper")!;
-    for (const post of blogPosts) {
+    const companion = blogPosts.find((post) => post.slug === "gobstopper-on-terminal-bench")!;
+    for (const post of markdownPosts) {
       const body = generatedBody(post.slug);
       const images = [...body.matchAll(/<img\b[^>]*\bsrc="([^"]+)"/gu)].map((match) => match[1]!);
       const figures = body.match(/<figure class="gob-post-figure"><img\b[\s\S]*?<figcaption>[\s\S]*?<\/figcaption><\/figure>/gu) ?? [];
       expect(figures.length).toBe(images.length);
-      if (post === intro) expect(figures.length).toBe(10);
+      if (post === companion) expect(figures.length).toBe(10);
       for (const src of images) {
         expect(src).toMatch(/^\/blog\//u);
         expect(existsSync(join(site, "public", src))).toBe(true);
@@ -227,7 +232,7 @@ describe("Gobstopper blog", () => {
   });
 });
 
-function generatedBody(slug: BlogPostRecord["slug"]): string {
+function generatedBody(slug: MarkdownSlug): string {
   return postBodiesForTest[slug].html;
 }
 

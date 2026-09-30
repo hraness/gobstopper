@@ -8,6 +8,7 @@
 @import "@hraness/design-kit/plain-publication.css";
 @import "@hraness/design-kit/typography.css";
 @import "@hraness/design-kit/status-page.css";
+@import "@hraness/design-kit/mockups.css";
 
 @import "../vendor/paper-theme/paper-theme.css";
 @import "@hraness/design-kit/palette-system.css";
@@ -777,3 +778,19 @@ main:has(> .plain-publication--embedded) {
     forced-color-adjust: none;
   }
 }
+
+/* Token meter mockup (app/_mockups/gob-mockups.tsx) */
+.gob-meter__body { display: grid; gap: 0.75rem; padding: 1rem 1.1rem; font-family: var(--hkm-mono); }
+.gob-meter__readout { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.35rem 0.75rem; }
+.gob-meter__label { color: var(--hkm-muted); font-size: 0.8rem; }
+.gob-meter__value { font-size: 1.6rem; font-weight: 600; font-variant-numeric: tabular-nums; color: var(--hkm-fg); }
+.gob-meter__value[data-mode="on"] { color: var(--hkm-accent); }
+.gob-meter__chart { inline-size: 100%; block-size: 150px; overflow: visible; }
+.gob-meter__threshold { stroke: var(--hkm-warn); stroke-width: 1.5; stroke-dasharray: 6 5; vector-effect: non-scaling-stroke; }
+.gob-meter__ghost { fill: none; stroke: var(--hkm-faint); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.gob-meter__line { fill: none; stroke: var(--hkm-fg); stroke-width: 2.25; stroke-linejoin: round; vector-effect: non-scaling-stroke; }
+.gob-meter__line[data-mode="on"] { stroke: var(--hkm-accent); }
+.gob-meter__dot { fill: var(--hkm-fg); }
+.gob-meter__dot[data-mode="on"] { fill: var(--hkm-accent); }
+.gob-meter__foot { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 0.25rem 1rem; color: var(--hkm-muted); font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+.gob-home-demo { display: grid; gap: 1.25rem; }
