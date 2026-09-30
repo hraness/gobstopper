@@ -3,6 +3,7 @@ import hashlib
 from pathlib import Path
 import os
 import re
+import shutil
 import subprocess
 import tempfile
 import textwrap
@@ -114,6 +115,68 @@ class ReleaseSigningTests(unittest.TestCase):
             archive.write_bytes(original)
             checksum.write_bytes(recorded.rstrip())
             self.assertNotEqual(execute(), 0)
+
+
+class PublishTagIdentityTests(unittest.TestCase):
+    """Execute the actual final publication step against local Git and a fake gh."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix='gobstopper-publish-tag-')
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.source = self.root / 'source'
+        self.source.mkdir()
+        self.environment = {**os.environ, 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': os.devnull,
+                            'GIT_AUTHOR_NAME': 'Fixture', 'GIT_AUTHOR_EMAIL': 'fixture@example.invalid',
+                            'GIT_COMMITTER_NAME': 'Fixture', 'GIT_COMMITTER_EMAIL': 'fixture@example.invalid'}
+        self.git('init', '-q', '-b', 'main', cwd=self.source)
+        (self.source / 'scripts').mkdir()
+        shutil.copyfile(ROOT / 'scripts/release_notes.py', self.source / 'scripts/release_notes.py')
+        self.git('add', 'scripts/release_notes.py', cwd=self.source)
+        self.git('commit', '-qm', 'reviewed source', cwd=self.source)
+        self.sha = self.git('rev-parse', 'HEAD', cwd=self.source)
+        self.git('tag', 'v0.7.6', cwd=self.source)
+        self.git('tag', '-a', 'v0.7.7', '-m', 'annotated', cwd=self.source)
+        self.checkout = self.root / 'checkout'
+        self.git('clone', '-q', '--no-local', str(self.source), str(self.checkout), cwd=self.root)
+        fakebin = self.root / 'bin'
+        fakebin.mkdir()
+        gh = fakebin / 'gh'
+        gh.write_text('#!/bin/sh\n[ "$1" = release ] && [ "$2" = create ] || exit 9\nprintf called > "$GH_CALLED"\n')
+        gh.chmod(0o755)
+        self.environment['PATH'] = str(fakebin) + os.pathsep + self.environment['PATH']
+        self.marker = self.root / 'gh-called'
+
+    def git(self, *arguments, cwd):
+        return subprocess.run(['git', *arguments], cwd=cwd, env=self.environment,
+                              check=True, capture_output=True, text=True, timeout=15).stdout.strip()
+
+    def publish(self, tag='v0.7.6', commit=None):
+        return subprocess.run(['/bin/bash', '-c', step_script('Publish', job('publish'))],
+                              cwd=self.checkout, env={**self.environment, 'TAG': tag,
+                              'COMMIT': commit or self.sha, 'GITHUB_REPOSITORY': 'fixture/gobstopper',
+                              'RUNNER_TEMP': str(self.root), 'GH_CALLED': str(self.marker)},
+                              capture_output=True, text=True, timeout=30)
+
+    def test_current_lightweight_and_annotated_tags_publish(self):
+        for tag in ('v0.7.6', 'v0.7.7'):
+            result = self.publish(tag)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertTrue(self.marker.exists())
+            self.marker.unlink()
+
+    def test_moved_tag_stops_before_any_release_mutation(self):
+        (self.source / 'changed').write_text('different source')
+        self.git('add', 'changed', cwd=self.source)
+        self.git('commit', '-qm', 'unreviewed source', cwd=self.source)
+        self.git('tag', '-f', 'v0.7.6', cwd=self.source)
+        self.assertNotEqual(self.publish().returncode, 0)
+        self.assertFalse(self.marker.exists())
+
+    def test_missing_tag_or_invalid_identity_stops_before_release_mutation(self):
+        for tag, commit in (('v0.7.8', self.sha), ('--upload-pack=unexpected', self.sha),
+                            ('v0.7.6', 'not-a-commit')):
+            self.assertNotEqual(self.publish(tag, commit).returncode, 0)
+            self.assertFalse(self.marker.exists())
 
 
 if __name__ == '__main__':

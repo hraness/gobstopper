@@ -9,6 +9,8 @@ workflow step, after credentials and the temporary keychain have been removed.
 import argparse
 import base64
 import hashlib
+import gzip
+import io
 import json
 import os
 from pathlib import Path
@@ -27,6 +29,7 @@ import zipfile
 TEAM_ID = "8AAP53VTW3"
 IDENTIFIER = "dev.hraness.gobstopper"
 MAX_BYTES = 128 * 1024 * 1024
+MAX_TAR_BYTES = MAX_BYTES + 10_240
 UUID_PATTERN = r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
 SECRET_NAMES = (
     "APPLE_DEVELOPER_ID_P12_BASE64", "APPLE_DEVELOPER_ID_P12_PASSWORD",
@@ -90,6 +93,21 @@ def unpack_artifact(archive, expected_digest, version, destination):
                 output.write(source.read(entry))
 
 
+def bounded_tar(data):
+    # tarfile consumes PAX/GNU extension bodies before yielding a member.
+    # Cap decompression first, including extension records and trailing data.
+    expanded = io.BytesIO()
+    with gzip.GzipFile(fileobj=io.BytesIO(data), mode="rb") as compressed:
+        while True:
+            block = compressed.read(min(65_536, MAX_TAR_BYTES + 1 - expanded.tell()))
+            if not block:
+                break
+            expanded.write(block)
+            require(expanded.tell() <= MAX_TAR_BYTES, "expanded archive byte limit")
+    expanded.seek(0)
+    return expanded
+
+
 def unpack_native(archive, version, binary):
     require(archive.name == archive_name(version, unsigned=True), "wrong unsigned archive name")
     data = regular_file(archive)
@@ -99,7 +117,7 @@ def unpack_native(archive, version, binary):
     recorded = parts[0]
     require(re.fullmatch(r"[0-9a-f]{64}", recorded) and digest(data) == recorded,
             "unsigned archive checksum mismatch")
-    with tarfile.open(archive, "r:gz") as source:
+    with bounded_tar(data) as expanded, tarfile.open(fileobj=expanded, mode="r:") as source:
         member = source.next()
         require(member is not None and member.name == "gobstopper" and member.isreg()
                 and not member.pax_headers and 0 < member.size <= MAX_BYTES,

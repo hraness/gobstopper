@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Behavioral tests use mocked Apple tools; no credentials or signing service."""
 import base64
+import gzip
 import importlib.util
 import io
 import json
@@ -251,6 +252,35 @@ class SigningTests(unittest.TestCase):
             self.sign()
         self.assertFalse(self.calls)
         self.assertFalse(self.work.exists())
+
+    def test_gzip_expansion_is_bounded_before_tar_headers_are_parsed(self):
+        self.archive.write_bytes(gzip.compress(b"x" * 2048))
+        Path(str(self.archive) + ".sha256").write_text(signing.digest(self.archive.read_bytes()) + "  " + self.archive.name + "\n")
+        with patch.object(signing, "MAX_TAR_BYTES", 1024), patch.object(signing.tarfile, "open") as parser:
+            with self.assertRaisesRegex(signing.SigningError, "expanded archive byte limit"):
+                self.sign()
+            parser.assert_not_called()
+        self.assertFalse(self.calls)
+        self.assertFalse(self.work.exists())
+        self.assertFalse(self.output.exists())
+
+    def test_oversized_pax_body_cannot_make_unbounded_gzip_reads(self):
+        extension = tarfile.TarInfo("extended")
+        extension.type = tarfile.XHDTYPE
+        extension.size = signing.MAX_TAR_BYTES * 1024
+        self.archive.write_bytes(gzip.compress(extension.tobuf()))
+        Path(str(self.archive) + ".sha256").write_text(signing.digest(self.archive.read_bytes()) + "  " + self.archive.name + "\n")
+        original_read = gzip.GzipFile.read
+        def guarded_read(stream, size=-1):
+            self.assertGreaterEqual(size, 0)
+            self.assertLessEqual(size, 65_536)
+            return original_read(stream, size)
+        with patch.object(gzip.GzipFile, "read", guarded_read):
+            with self.assertRaises((tarfile.ReadError, signing.SigningError)):
+                self.sign()
+        self.assertFalse(self.calls)
+        self.assertFalse(self.work.exists())
+        self.assertFalse(self.output.exists())
 
     def test_symlink_payload_rejected_before_apple_tools(self):
         self.native_archive(symlink=True)

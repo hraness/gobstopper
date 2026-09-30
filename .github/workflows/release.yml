@@ -386,6 +386,13 @@ jobs:
             --sha256sums artifacts/SHA256SUMS > "$RUNNER_TEMP/notes.md"
       - name: Publish
         run: |
+          set -euo pipefail
+          # --verify-tag proves existence, not that a tag still names the
+          # reviewed source. Re-fetch only this exact ref before mutation.
+          [[ "$TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || exit 1
+          [[ "$COMMIT" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          git fetch --no-tags --depth=1 origin "refs/tags/$TAG"
+          test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$COMMIT"
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --verify-tag \
             --title "$(python3 scripts/release_notes.py title --tag "$TAG")" \
             --notes-file "$RUNNER_TEMP/notes.md" artifacts/*
