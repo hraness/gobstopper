@@ -14,6 +14,7 @@ mod native_operations;
 mod power;
 mod proxy;
 mod proxy_agent;
+mod proxy_drain;
 mod proxy_observations;
 mod report;
 mod secrets;

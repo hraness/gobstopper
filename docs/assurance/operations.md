@@ -105,6 +105,38 @@ SessionStart pointer identifies a verified earlier archive of that local
 session/store; it does not claim that archive immediately preceded this
 compaction. Retrieved historical text remains untrusted data.
 
+## Managed proxy drain and restart
+
+Protocol-1 service control binds a drain to the owned service, executable, PID,
+process instance, owner token and monotonic epoch. Acquiring the waiting lease
+and starting inference share one mutex. New inference is refused while existing
+streams finish; status and control remain available. The waiting lease lasts at
+most 30 seconds between renewals and never exceeds its original deadline. An
+abandoned waiting controller therefore releases admission automatically.
+
+The controller commits the drain only after active inference reaches zero.
+Committed admission does not expire or reopen: an external service-manager stop
+may complete late. The private schema-1 drain-operation journal records intent
+before dispatch. A lost or failed stop acknowledgment remains unresolved and
+blocks replacement activation, including when the port is free or the job is
+unregistered. Do not delete that journal or downgrade to a binary that ignores
+it to force startup. Such uncertainty may need operator reconciliation; this
+protocol does not prove that every interruption can recover automatically.
+
+New managed definitions pin an absolute state directory. After binding its
+listener and before accepting inference, each replacement process checks the
+saved manifest and drain journal. Waiting intent permits recovery; commit intent,
+committed and dispatched stops, malformed data and identity mismatches refuse
+startup. This keeps a delayed manager stop from reaching new inference after a
+crash and supervisor respawn. Definitions installed before this guard retain
+idle-only control until explicitly replaced.
+
+Legacy idle-drain control remains limited to an idle responsive proxy. A
+registered service that cannot answer identity/status checks is preserved:
+observing a free port does not prevent its manager from restarting it. Native
+Linux and Windows service-manager behavior requires separate platform evidence;
+synthetic lease and recovery tests establish only their exercised boundaries.
+
 ## Bounds and trust
 
 The default transcript read bound is 512 MiB; supported overrides range from

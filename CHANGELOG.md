@@ -2,6 +2,15 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## v0.8.1 - 2026-09-30
+
+Managed service changes can wait for inference to finish while new requests receive a retry response. A timed wait reopens requests if its owner stops responding; once the service change begins, recovery checks its outcome before reopening requests.
+
+- Service changes use an owned, renewable wait with a separate final stop check. A stale owner cannot complete or cancel a newer wait.
+- The proxy keeps existing inference, provider retries and response forwarding active while waiting for them to finish. A timeout cancels the wait instead of stopping busy inference.
+- Interrupted service changes record their progress. An uncertain service-manager result keeps requests paused until recovery can safely reconcile it.
+- New service definitions prevent automatic restarts from accepting requests while an earlier stop remains unresolved. Older definitions retain idle-only upgrades until replaced.
+
 ## v0.8.0 - 2026-09-30
 
 Gobstopper can reserve a larger context for difficult work, carry original observations across repeated compactions, and record local session metrics. User services restart it after failure and request idle-sleep prevention during active inference.
