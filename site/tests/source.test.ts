@@ -575,10 +575,8 @@ describe("share card declaration", () => {
     for (const [name, page] of cards) {
       const fit = socialImageFit(socialImageSiteDetails(socialSite, page));
       expect({ name, issues: fit.issues }).toEqual({ name, issues: [] });
-      // The card drops an eyebrow that repeats the headline's opening; keep eyebrows that add a category.
-      if (page !== undefined) {
-        expect((page.headline ?? "").toLowerCase().startsWith((page.eyebrow ?? "").toLowerCase())).toBe(false);
-      }
+      // findings adds the review codes (description-reduced, eyebrow-missing, eyebrow-repeats-headline, ...).
+      expect({ name, findings: fit.findings.map((finding) => finding.code) }).toEqual({ name, findings: [] });
     }
   });
 });
