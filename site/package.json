@@ -18,7 +18,7 @@
     "postbuild": "bun test ./tests/runtime.test.ts",
     "start": "next start",
     "lint": "eslint . --ignore-pattern .next",
-    "test": "bun test ./tests/source.test.ts ./tests/home.test.tsx ./tests/compare.test.tsx ./scripts/readme-html.test.ts ./tests/ui-styles.test.tsx ./tests/blog.test.tsx ./tests/gobbench.test.tsx ./tests/launch.test.ts ./tests/mockups.test.tsx ./scripts/owned-browser.test.ts",
+    "test": "bun test ./tests/analytics.test.ts ./tests/source.test.ts ./tests/home.test.tsx ./tests/compare.test.tsx ./scripts/readme-html.test.ts ./tests/ui-styles.test.tsx ./tests/blog.test.tsx ./tests/gobbench.test.tsx ./tests/launch.test.ts ./tests/mockups.test.tsx ./scripts/owned-browser.test.ts",
     "typecheck": "tsc --noEmit",
     "check": "bun run check:theme && bun run sync:readme && bun run sync:blog && bun run sync:installers && bun run test && bun run lint && bun run typecheck && bun run build",
     "build:theme": "bun scripts/build-theme-bootstrap.ts",
@@ -26,7 +26,7 @@
   },
   "dependencies": {
     "@hraness/design-kit": "github:hraness/design-kit#v0.32.0",
-    "@hraness/posthog": "github:hraness/posthog#v0.1.3",
+    "@hraness/posthog": "https://github.com/hraness/posthog/releases/download/v0.3.5/hraness-posthog-0.3.5.tgz",
     "@hraness/site-footer": "github:hraness/site-footer#v0.20.1",
     "@hraness/ui": "github:hraness/ui#v0.5.18",
     "@hraness/web-discovery": "github:hraness/web-discovery#v0.13.0",
