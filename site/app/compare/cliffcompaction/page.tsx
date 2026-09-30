@@ -67,14 +67,14 @@ export default function CompareCliffCompaction() {
       <SiteHeader path="/compare/cliffcompaction" />
       <main id="main" tabIndex={-1}>
         <SiteDocument
-          dek="CliffCompaction and gobstopper proxy shrink a coding agent's context with the same rule: no model writes the summary, and the newest turns pass through untouched."
+          dek="CliffCompaction and Gobstopper build mechanical summaries and keep the newest turns untouched. Gobstopper adds selected evidence retention and temporary context budgets."
           eyebrow="Comparison"
           heading={title}
-          meta="Checked against the CliffCompaction paper and repository and Gobstopper's source on September 28, 2026"
+          meta="Checked against the CliffCompaction paper and repository and Gobstopper's source on September 28, 2026; Gobstopper behavior updated from source on September 30, 2026"
           toc={[
             { href: "#cliffcompaction-rule", label: "CliffCompaction summarizes older turns mechanically" },
             { href: "#gobstopper-port", label: "Gobstopper ports the rule and adds archived copies" },
-            { href: "#departures", label: "Seven departures, six on by default" },
+            { href: "#departures", label: "What Gobstopper adds to the request engine" },
             { href: "#side-by-side", label: "Side-by-side comparison" },
             { href: "#cliff-strategy", label: "The cliff strategy applies the rule to saved sessions" },
             { href: "#when-to-use-each", label: "When to use each" },
@@ -156,23 +156,24 @@ export default function CompareCliffCompaction() {
             127.0.0.1 between the agent and its provider. Past the
             threshold (128,000 estimated tokens by default, or 256,000 for
             an Anthropic request that declares a 1M-token window) it sends
-            the head, one mechanical summary, and the newest three turns
-            (more with <code>--keep-tail-percent</code>), so the provider
-            reports a smaller context and the client&apos;s own
-            auto-compaction does not reach its trigger. The session files
-            stay unchanged.
+            the head, one mechanical summary with selected original evidence,
+            and the newest three turns (more with <code>--keep-tail-percent</code>).
+            The provider reports a smaller context, which can delay the
+            client&apos;s own auto-compaction. The session files stay unchanged.
           </p>
           <Terminal code={`gobstopper proxy run -- claude       # one session through a temporary proxy
 gobstopper proxy serve               # background proxy on http://127.0.0.1:8260
 gobstopper proxy replay <session>    # what the proxy would have sent; calls no provider`} />
 
-          <h2 id="departures">Seven departures, six on by default</h2>
+          <h2 id="departures">What Gobstopper adds to the request engine</h2>
           <p>
             The summary format, prefix reuse between compactions, the harsher
             settings applied when one pass leaves a request over the
             threshold, and the retry after a length rejection are
-            CliffCompaction&apos;s. These seven behaviors are
-            Gobstopper&apos;s own, not the reference&apos;s:
+            CliffCompaction&apos;s. Gobstopper adds the behaviors below.
+            Temporary context budgets require a configured capacity supported
+            by your provider and client. Evidence retention has finite limits;
+            neither feature guarantees that every task fact survives.
           </p>
           <figure className="gob-departures">
             <table>
@@ -199,7 +200,7 @@ gobstopper proxy replay <session>    # what the proxy would have sent; calls no 
           <h2 id="side-by-side">Side-by-side comparison</h2>
           <figure>
             <table>
-              <caption>Read from CliffCompaction&apos;s documentation and source and from Gobstopper&apos;s on September 28, 2026</caption>
+              <caption>CliffCompaction checked September 28, 2026; Gobstopper source checked September 30, 2026</caption>
               <thead>
                 <tr>
                   <th scope="col">Aspect</th>

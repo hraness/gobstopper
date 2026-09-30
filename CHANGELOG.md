@@ -2,10 +2,15 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
-## Unreleased
+## v0.8.0 - 2026-09-30
 
-Future Mac releases will use a stable Apple Developer ID identity across updates.
+Gobstopper can reserve a larger context for difficult work, carry original observations across repeated compactions, and record local session metrics. User services restart it after failure and request idle-sleep prevention during active inference.
 
+- Temporary, capability-scoped context reservations have request counts, expiry, provider/client capacity limits and output headroom. Optional adaptive rescue responds to repeated unchanged evidence reads after eviction; it does not treat polling alone as a loop.
+- Bounded evidence carry retains selected original tool results and images with their invocation, identifies excerpts, and reconstructs from the original history after restart. Responses freeform tool input and semantic image/tool content now participate in summary and cache identity.
+- A versioned local SQLite event store separates requests, provider attempts, usage, context decisions and observed tool calls. Pure metric projections preserve unknowns and explain token-rate denominators. JSONL interchange, duplicate-safe import, backup, schema migration and integrity checks support local analysis without a cloud account.
+- Startup uses an owned macOS LaunchAgent, Linux systemd user service or Windows user task. Identity checks, readiness probes, rollback, diagnosis, repair and idle drain protect replacements. Legacy Mac service migration is explicit.
+- Inference activity holds a native idle-sleep assertion and releases it after the last request or process exit. Unsupported or unavailable platform integration is visible in status.
 - The release workflow signs and notarizes the Apple silicon binary after the exact source passes CI. Compilation runs without Apple credentials, and temporary signing credentials are removed before testing the final installer.
 - The Mac installer verifies the expected Apple signing team and Gobstopper identifier before executing the downloaded binary. Releases before 0.7.6 retain their original installation behavior.
 - Publication checks the exact artifact and file hashes returned by the signing job. A notarization timeout preserves the submission ID for investigation and stops publication.

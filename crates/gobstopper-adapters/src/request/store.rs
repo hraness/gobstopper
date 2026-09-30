@@ -8,10 +8,11 @@
 //! one base threshold, so an evicted entry is recomputed identically on
 //! demand, and an entry from another threshold is never substituted.
 
+use serde::Serialize;
 use serde_json::Value;
 use std::collections::{HashMap, VecDeque};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct Entry {
     pub head_len: usize,
     pub summary: Value,
@@ -25,10 +26,14 @@ pub struct Entry {
     /// (`CompactResult::carry`). Held in memory only; empty when carrying
     /// is off or a truncated summary dropped part of its text.
     pub carry: Vec<String>,
+    /// Versioned retention and request policy identity.
+    pub policy_identity: String,
+    /// Original observations carried into subsequent compactions.
+    pub evidence: Vec<super::EvidenceEntry>,
 }
 
-/// LRU cache bounded by entry count and total size: each entry's summary
-/// characters plus the characters of its carried parts.
+/// LRU cache bounded by entry count and serialized UTF-8 bytes of the
+/// complete entries and keys. Oversized entries are never admitted.
 #[derive(Debug)]
 pub struct PrefixStore {
     max_entries: usize,
@@ -47,7 +52,7 @@ impl Default for PrefixStore {
 impl PrefixStore {
     pub fn new(max_entries: usize, max_bytes: usize) -> Self {
         Self {
-            max_entries: max_entries.max(1),
+            max_entries,
             max_bytes,
             entries: HashMap::new(),
             order: VecDeque::new(),
@@ -70,24 +75,18 @@ impl PrefixStore {
     }
 
     pub fn put(&mut self, key: String, entry: Entry) {
-        let size = super::json_chars(&entry.summary)
-            + entry
-                .carry
-                .iter()
-                .map(|part| part.chars().count())
-                .sum::<usize>();
+        let size = super::evidence::serialized_size(&entry).saturating_add(key.len());
         if let Some((_, old)) = self.entries.remove(&key) {
             self.bytes -= old;
             self.order.retain(|k| *k != key);
         }
+        if self.max_entries == 0 || size > self.max_bytes {
+            return;
+        }
         self.bytes += size;
         self.entries.insert(key.clone(), (entry, size));
         self.order.push_back(key);
-        // Never evict down to empty: an entry over budget on its own is still
-        // the one the next request will look for.
-        while self.entries.len() > 1
-            && (self.entries.len() > self.max_entries || self.bytes > self.max_bytes)
-        {
+        while self.entries.len() > self.max_entries || self.bytes > self.max_bytes {
             let Some(oldest) = self.order.pop_front() else {
                 break;
             };
@@ -122,6 +121,8 @@ mod tests {
             cut: 3,
             base_threshold_tokens: 128_000,
             carry: Vec::new(),
+            policy_identity: "test-v2".into(),
+            evidence: Vec::new(),
         }
     }
 
@@ -138,34 +139,46 @@ mod tests {
     }
 
     #[test]
-    fn byte_bound_keeps_the_newest_entry_even_when_oversized() {
+    fn byte_bound_rejects_even_a_single_oversized_entry() {
         let mut store = PrefixStore::new(10, 10);
         store.put("a".into(), entry(&"x".repeat(100)));
         store.put("b".into(), entry(&"y".repeat(100)));
-        assert_eq!(store.len(), 1);
-        assert!(store.get("b").is_some());
+        assert_eq!(store.len(), 0);
+        assert!(store.get("b").is_none());
         store.put("b".into(), entry("z"));
+        assert_eq!(store.len(), 0);
+        assert_eq!(store.bytes(), 0);
+
+        let mut store = PrefixStore::new(10, entry_size("a", &entry("z")));
+        store.put("a".into(), entry("z"));
         assert_eq!(store.len(), 1);
-        assert_eq!(store.bytes(), json_size("z"));
+        store.put("a".into(), entry(&"é".repeat(100)));
+        assert_eq!(
+            store.len(),
+            0,
+            "oversized replacement cannot preserve stale data"
+        );
     }
 
     #[test]
-    fn an_entrys_size_counts_its_carried_characters() {
+    fn an_entrys_size_counts_utf8_carry_policy_and_metadata() {
         let carried = |text: &str, carry: &[&str]| Entry {
             carry: carry.iter().map(|part| part.to_string()).collect(),
             ..entry(text)
         };
         let mut store = PrefixStore::new(10, usize::MAX);
-        // Characters, not bytes: "é" counts once.
         store.put("a".into(), carried("s", &["user: abc", "assistant: dé"]));
-        assert_eq!(store.bytes(), json_size("s") + 9 + 13);
+        assert_eq!(
+            store.bytes(),
+            entry_size("a", &carried("s", &["user: abc", "assistant: dé"]))
+        );
         // Replacing the entry replaces its size.
         store.put("a".into(), carried("s", &[]));
-        assert_eq!(store.bytes(), json_size("s"));
+        assert_eq!(store.bytes(), entry_size("a", &entry("s")));
 
         // The byte bound sees the carry: two entries whose summaries fit
         // together but whose carries do not keep only the newest.
-        let bound = 2 * json_size("s") + 50;
+        let bound = 2 * entry_size("a", &carried("s", &["x"])) + 5;
         let mut store = PrefixStore::new(10, bound);
         store.put("a".into(), carried("s", &["x"]));
         store.put("b".into(), carried("s", &["y"]));
@@ -176,10 +189,13 @@ mod tests {
             store.get("c").map(|entry| entry.carry),
             Some(vec!["z".repeat(60)])
         );
-        assert_eq!(store.bytes(), json_size("s") + 60);
+        assert_eq!(
+            store.bytes(),
+            entry_size("c", &carried("s", &[&"z".repeat(60)]))
+        );
     }
 
-    fn json_size(text: &str) -> usize {
-        super::super::json_chars(&json!({"role": "user", "content": text}))
+    fn entry_size(key: &str, entry: &Entry) -> usize {
+        serde_json::to_vec(entry).unwrap().len() + key.len()
     }
 }

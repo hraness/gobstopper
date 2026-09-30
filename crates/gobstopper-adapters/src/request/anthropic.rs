@@ -8,8 +8,8 @@
 
 use super::{
     canonical_json, carry_assistant, carry_human, carry_part, digest_value, is_interrupt_marker,
-    queued_message, sha256_hex, str_field, strip_task_notifications, truncate, CliffConfig,
-    SUMMARY_HEADER,
+    other_fields, queued_message, sha256_hex, str_field, strip_task_notifications, truncate,
+    CliffConfig, SUMMARY_HEADER,
 };
 use serde_json::{json, Value};
 
@@ -32,42 +32,61 @@ fn result_text(content: Option<&Value>) -> String {
     }
 }
 
-fn canonical_block(block: &Value) -> Value {
+pub(super) fn canonical_block(block: &Value) -> Value {
     let kind = str_field(block, "type");
     match kind {
-        "text" => json!(["text", str_field(block, "text")]),
+        "text" => json!([
+            "text",
+            str_field(block, "text"),
+            other_fields(block, &["type", "text", "cache_control"])
+        ]),
         "tool_use" => json!([
             "tool_use",
             str_field(block, "id"),
             str_field(block, "name"),
             canonical_json(block.get("input").unwrap_or(&json!({}))),
+            other_fields(block, &["type", "id", "name", "input", "cache_control"]),
         ]),
         "tool_result" => json!([
             "tool_result",
             str_field(block, "tool_use_id"),
-            result_text(block.get("content")),
+            canonical_result_content(block.get("content")),
             block
                 .get("is_error")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            other_fields(
+                block,
+                &[
+                    "type",
+                    "tool_use_id",
+                    "content",
+                    "is_error",
+                    "cache_control"
+                ]
+            ),
         ]),
-        "thinking" => json!(["thinking", str_field(block, "thinking")]),
-        "redacted_thinking" => json!(["redacted_thinking", str_field(block, "data")]),
+        "thinking" => json!([
+            "thinking",
+            str_field(block, "thinking"),
+            other_fields(block, &["type", "thinking", "signature", "cache_control"])
+        ]),
+        "redacted_thinking" => json!([
+            "redacted_thinking",
+            str_field(block, "data"),
+            other_fields(block, &["type", "data", "cache_control"])
+        ]),
         "image" | "document" => {
-            let source = block.get("source").cloned().unwrap_or(Value::Null);
-            let payload = source
-                .get("data")
-                .or_else(|| source.get("url"))
-                .map(|value| match value {
-                    Value::String(text) => text.clone(),
-                    other => other.to_string(),
-                })
-                .unwrap_or_default();
-            json!([
-                kind,
-                str_field(&source, "type"),
-                sha256_hex(payload.as_bytes())
-            ])
+            let mut reduced = block.clone();
+            if let Some(fields) = reduced.as_object_mut() {
+                fields.remove("cache_control");
+                if let Some(source) = fields.get_mut("source").and_then(Value::as_object_mut) {
+                    if let Some(data) = source.get_mut("data") {
+                        *data = json!({"sha256": sha256_hex(canonical_json(data).as_bytes())});
+                    }
+                }
+            }
+            json!([kind, reduced])
         }
         _ => {
             let mut reduced = block.clone();
@@ -79,9 +98,31 @@ fn canonical_block(block: &Value) -> Value {
     }
 }
 
+/// Text extraction is for display, never identity. Images, documents and
+/// unfamiliar result blocks must participate in the cache fingerprint.
+fn canonical_result_content(content: Option<&Value>) -> Value {
+    match content {
+        Some(Value::String(text)) => json!([["text", text, {}]]),
+        Some(Value::Array(blocks)) => Value::Array(
+            blocks
+                .iter()
+                .map(|block| {
+                    if let Value::String(text) = block {
+                        json!(["text", text, {}])
+                    } else {
+                        canonical_block(block)
+                    }
+                })
+                .collect(),
+        ),
+        Some(other) => other.clone(),
+        None => Value::Null,
+    }
+}
+
 pub fn digest_message(message: &Value) -> String {
     let blocks: Vec<Value> = match message.get("content") {
-        Some(Value::String(text)) => vec![json!(["text", text])],
+        Some(Value::String(text)) => vec![json!(["text", text, {}])],
         Some(Value::Array(blocks)) => blocks
             .iter()
             .filter(|block| block.is_object())
@@ -89,7 +130,11 @@ pub fn digest_message(message: &Value) -> String {
             .collect(),
         _ => Vec::new(),
     };
-    digest_value(&json!([str_field(message, "role"), blocks]))
+    digest_value(&json!([
+        str_field(message, "role"),
+        blocks,
+        other_fields(message, &["role", "content", "cache_control"])
+    ]))
 }
 
 pub fn is_assistant(message: &Value) -> bool {
@@ -352,6 +397,23 @@ pub fn carry_parts(messages: &[Value]) -> Vec<String> {
 mod tests {
     use super::super::fixtures::*;
     use super::*;
+
+    #[test]
+    fn nested_image_payload_and_media_type_are_semantic() {
+        let original = json!({"role":"user", "content":[{"type":"tool_result", "tool_use_id":"read-1", "content":[
+            {"type":"text", "text":"same caption"},
+            {"type":"image", "source":{"type":"base64", "media_type":"image/png", "data":"AAAA"}}
+        ]}]});
+        let mut changed = original.clone();
+        changed["content"][0]["content"][1]["source"]["data"] = json!("BBBB");
+        assert_ne!(digest_message(&original), digest_message(&changed));
+        changed = original.clone();
+        changed["content"][0]["content"][1]["source"]["media_type"] = json!("image/jpeg");
+        assert_ne!(digest_message(&original), digest_message(&changed));
+        changed = original.clone();
+        changed["content"][0]["content"][1]["cache_control"] = json!({"type":"ephemeral"});
+        assert_eq!(digest_message(&original), digest_message(&changed));
+    }
 
     fn cfg() -> CliffConfig {
         CliffConfig::default()

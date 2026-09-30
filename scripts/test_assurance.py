@@ -79,6 +79,15 @@ class AssuranceTests(unittest.TestCase):
                            "sequence_elapsed_ms_limit": 90_000},
         }
 
+    def test_command_inventory_includes_tuple_variants(self):
+        source = """enum Cmd {
+    Unit,
+    Struct { value: String },
+    Tuple(context::ContextArgs),
+}
+"""
+        self.assertEqual({"Unit", "Struct", "Tuple"}, assurance.enum_variants(source, "Cmd"))
+
     def test_current_inventory(self):
         self.assertEqual([], assurance.validate(ROOT, self.documents))
 

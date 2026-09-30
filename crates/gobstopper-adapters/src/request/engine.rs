@@ -8,9 +8,10 @@
 //! `base_cut + (k - (base_head + 1))`.
 
 use super::calibrate::{calibrated_threshold, MAX_RATIO_PERMILLE, MIN_RATIO_PERMILLE};
+use super::evidence;
 use super::{
     billable_chars, chain_hashes, compact_within, CliffConfig, CompactResult, Dialect, Entry,
-    PrefixStore, CARRY_LABEL, MAX_KEEP_TAIL_PERCENT, PART_SEPARATOR, SUMMARY_HEADER,
+    EvidenceEntry, PrefixStore, CARRY_LABEL, MAX_KEEP_TAIL_PERCENT, PART_SEPARATOR, SUMMARY_HEADER,
 };
 use serde_json::{Map, Value};
 use std::sync::{Mutex, MutexGuard};
@@ -84,6 +85,20 @@ pub struct RequestCtx {
     /// included; 0 without a summary or without a section. A size only;
     /// set with `est_tokens_out`.
     pub carry_chars: usize,
+    /// Versioned config and caller policy fingerprint used by the cache.
+    pub policy_identity: String,
+    /// Whether the immutable fields and head alone exceed known capacity.
+    pub capacity_exceeded_by_floor: bool,
+    evidence: Vec<EvidenceEntry>,
+    /// Serialized bytes held in the bounded evidence reservoir.
+    pub evidence_bytes: usize,
+    /// Complete original observations retained in the summary.
+    pub retained_evidence_digests: Vec<String>,
+    /// Only an excerpt or omitted-payload notice remains for these results.
+    pub excerpted_evidence_digests: Vec<String>,
+    /// Compacted original results not fully retained (includes excerpts).
+    /// These are content hashes, never result bodies or provider call IDs.
+    pub evicted_evidence_digests: Vec<String>,
 }
 
 impl RequestCtx {
@@ -150,10 +165,47 @@ impl RequestCtx {
             None => 0,
         };
         self.est_tokens_out = est_out;
+        self.over_budget = est_out > self.threshold_tokens;
         self.est_head_tokens = head;
         self.est_summary_tokens = summary;
         self.est_tail_tokens = tail;
         self.carry_chars = carry_chars;
+    }
+
+    fn refresh_evidence(&mut self) {
+        if self.base_cut == 0 {
+            return;
+        }
+        self.evidence_bytes = if self.evidence.is_empty() {
+            0
+        } else {
+            evidence::serialized_bytes(&self.evidence)
+        };
+        let mut complete = evidence::complete_digests(&self.evidence);
+        self.retained_evidence_digests = complete.iter().cloned().collect();
+        self.retained_evidence_digests.sort();
+        self.excerpted_evidence_digests = self
+            .evidence
+            .iter()
+            .filter(|entry| !entry.complete)
+            .map(|entry| entry.observation.content_digest.clone())
+            .collect();
+        // A repeated copy still present in the verbatim tail is available.
+        complete.extend(
+            evidence::evidence_observations(&self.msgs[self.base_cut..], self.dialect)
+                .into_iter()
+                .map(|observation| observation.content_digest),
+        );
+        self.evicted_evidence_digests = evidence::evidence_observations(
+            &self.msgs[self.base_head..self.base_cut],
+            self.dialect,
+        )
+        .into_iter()
+        .map(|observation| observation.content_digest)
+        .filter(|digest| !complete.contains(digest))
+        .collect();
+        self.evicted_evidence_digests.sort();
+        self.evicted_evidence_digests.dedup();
     }
 }
 
@@ -169,12 +221,20 @@ struct Replay {
     steps: usize,
     /// The carry the next step renders and extends.
     carry: Vec<String>,
+    evidence: Vec<EvidenceEntry>,
 }
 
 impl Replay {
     /// Map a compaction of `working` back to original coordinates and adopt
     /// it. `false` means the result is unusable and the request fails open.
-    fn adopt(&mut self, result: CompactResult, original_len: usize) -> bool {
+    fn adopt(
+        &mut self,
+        mut result: CompactResult,
+        original_len: usize,
+        dialect: Dialect,
+        cfg: &CliffConfig,
+        evidence_budget: usize,
+    ) -> bool {
         let new_cut = if self.have_summary {
             if result.cut < self.head_len + 1 {
                 return false;
@@ -186,6 +246,15 @@ impl Replay {
         if !(1..=original_len).contains(&new_cut) {
             return false;
         }
+        self.evidence = evidence::merge(
+            &self.evidence,
+            &self.working[result.head_len..result.cut],
+            dialect,
+            cfg,
+            evidence_budget,
+        );
+        result.summary = evidence::render(&result.summary, dialect, &self.evidence);
+        result.messages[result.head_len] = result.summary.clone();
         let mut sizes = Vec::with_capacity(result.messages.len());
         sizes.extend_from_slice(&self.sizes[..result.head_len]);
         sizes.push(billable_chars(&result.summary) + 2);
@@ -231,8 +300,7 @@ impl Engine {
         self.store.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    /// `(entries, characters)` held by the prefix store: summary
-    /// characters plus carried characters.
+    /// `(entries, serialized UTF-8 bytes)` held by the prefix store.
     pub fn store_stats(&self) -> (usize, usize) {
         let store = self.store();
         (store.len(), store.bytes())
@@ -260,14 +328,31 @@ impl Engine {
     /// before it is compared with the threshold: the request compacts when
     /// its estimate exceeds `threshold_tokens * 1000 / ratio_permille`. The
     /// ratio is clamped to 1000..=2000, so calibration can only compact
-    /// earlier; at 1000 this is exactly `prepare_at`. Stored prefixes stay
-    /// keyed by `threshold_tokens`, so a changing ratio keeps reusing them.
+    /// earlier; at 1000 this is exactly `prepare_at`. A changed effective
+    /// policy reconstructs from the original history rather than reusing
+    /// evidence admitted under an incompatible budget.
     pub fn prepare_calibrated(
+        &self,
+        body: Map<String, Value>,
+        dialect: Dialect,
+        threshold_tokens: u64,
+        ratio_permille: u32,
+    ) -> Option<RequestCtx> {
+        self.prepare_with_policy(body, dialect, threshold_tokens, ratio_permille, "", None)
+    }
+
+    /// Prepare with an explicit caller policy generation and an optional
+    /// supported input capacity, already net of output/thinking headroom.
+    /// The verbatim-floor rule may never enlarge this capacity. Neither a
+    /// capacity nor a provider window is guessed when `None` is supplied.
+    pub fn prepare_with_policy(
         &self,
         mut body: Map<String, Value>,
         dialect: Dialect,
         threshold_tokens: u64,
         ratio_permille: u32,
+        policy_identity: &str,
+        hard_input_capacity: Option<u64>,
     ) -> Option<RequestCtx> {
         let ratio_permille = ratio_permille.clamp(MIN_RATIO_PERMILLE, MAX_RATIO_PERMILLE);
         let calibrated = calibrated_threshold(threshold_tokens, ratio_permille);
@@ -284,6 +369,16 @@ impl Engine {
         let Value::Object(body) = as_value else {
             return None;
         };
+        let policy_identity = super::digest_value(&serde_json::json!([
+            "gobstopper-request-policy-v3",
+            self.cfg,
+            dialect.name(),
+            threshold_tokens,
+            ratio_permille,
+            policy_identity,
+            hard_input_capacity,
+            super::digest_value(&Value::Object(body.clone())),
+        ]));
         let msg_chars: Vec<usize> = msgs.iter().map(|m| billable_chars(m) + 2).collect();
         let digests: Vec<String> = msgs.iter().map(|m| dialect.digest(m)).collect();
         let mut ctx = RequestCtx {
@@ -315,6 +410,13 @@ impl Engine {
             calibrated_threshold_tokens: calibrated,
             carry: Vec::new(),
             carry_chars: 0,
+            policy_identity,
+            capacity_exceeded_by_floor: false,
+            evidence: Vec::new(),
+            evidence_bytes: 0,
+            retained_evidence_digests: Vec::new(),
+            excerpted_evidence_digests: Vec::new(),
+            evicted_evidence_digests: Vec::new(),
         };
         ctx.est_tokens_in = ctx.tokens_of(&ctx.msg_chars);
         // The head (everything before the first model turn) is always sent
@@ -329,6 +431,11 @@ impl Engine {
         ctx.floor_chars = fixed_chars + ctx.msg_chars[..head_end].iter().sum::<usize>();
         let floor = (ctx.floor_chars / 4) as u64;
         ctx.threshold_tokens = calibrated.max(floor.saturating_add(calibrated / 2));
+        if let Some(capacity) = hard_input_capacity {
+            let capacity = calibrated_threshold(capacity, ratio_permille);
+            ctx.threshold_tokens = ctx.threshold_tokens.min(capacity);
+            ctx.capacity_exceeded_by_floor = (ctx.floor_chars.div_ceil(4) as u64) > capacity;
+        }
         self.substitute_longest_prefix(&mut ctx);
         ctx.refresh_estimate();
 
@@ -353,6 +460,7 @@ impl Engine {
             }
             ctx.over_budget = ctx.est_tokens_out > threshold;
         }
+        ctx.refresh_evidence();
         Some(ctx)
     }
 
@@ -403,7 +511,9 @@ impl Engine {
             let Some(entry) = store.get(&ctx.chain[i]) else {
                 continue;
             };
-            if entry.base_threshold_tokens != ctx.base_threshold_tokens {
+            if entry.base_threshold_tokens != ctx.base_threshold_tokens
+                || entry.policy_identity != ctx.policy_identity
+            {
                 // Computed under another threshold: a fresh prepare at this
                 // one would not produce it. Try a shallower prefix.
                 continue;
@@ -424,6 +534,7 @@ impl Engine {
             ctx.base_head = entry.head_len;
             ctx.substituted = Some((messages, sizes));
             ctx.carry = entry.carry;
+            ctx.evidence = entry.evidence;
             ctx.matched = true;
             ctx.modified = true;
             return;
@@ -451,7 +562,18 @@ impl Engine {
         let knobs = knobs.unwrap_or(&self.cfg);
         let threshold_chars = ctx.threshold_tokens.saturating_mul(4) as usize;
         // Constant for the request, so every replayed crossing uses it.
-        let budget = ctx.tail_budget_chars(knobs);
+        let evidence_budget =
+            if self.cfg.evidence_max_bytes == 0 || self.cfg.evidence_item_max_chars == 0 {
+                0
+            } else {
+                self.cfg.evidence_max_chars.min(ctx.headroom_chars() / 4)
+            };
+        let tail_budget = ctx.tail_budget_chars(knobs);
+        let budget = if tail_budget == 0 {
+            0
+        } else {
+            tail_budget.saturating_sub(evidence_budget).max(1)
+        };
         let carry_budget = self.carry_budget(ctx);
         let mut replay = if ctx.base_cut > 0 {
             Replay {
@@ -463,6 +585,7 @@ impl Engine {
                 last_summary: None,
                 steps: 0,
                 carry: ctx.carry.clone(),
+                evidence: ctx.evidence.clone(),
             }
         } else {
             Replay {
@@ -474,6 +597,7 @@ impl Engine {
                 last_summary: None,
                 steps: 0,
                 carry: Vec::new(),
+                evidence: Vec::new(),
             }
         };
         let original_len = ctx.msgs.len();
@@ -494,7 +618,7 @@ impl Engine {
                 ) else {
                     continue;
                 };
-                if !replay.adopt(result, original_len) {
+                if !replay.adopt(result, original_len, ctx.dialect, knobs, evidence_budget) {
                     return false;
                 }
                 chars = ctx.fixed_chars + replay.sizes.iter().sum::<usize>();
@@ -509,7 +633,7 @@ impl Engine {
                 &replay.carry,
                 carry_budget,
             ) {
-                if !replay.adopt(result, original_len) {
+                if !replay.adopt(result, original_len, ctx.dialect, knobs, evidence_budget) {
                     return false;
                 }
             }
@@ -523,9 +647,11 @@ impl Engine {
         ctx.chain_steps = replay.steps;
         ctx.substituted = Some((replay.working, replay.sizes));
         ctx.carry = replay.carry;
+        ctx.evidence = replay.evidence;
         ctx.modified = true;
         ctx.compacted = true;
         ctx.refresh_estimate();
+        ctx.refresh_evidence();
         self.store().put(
             key,
             Entry {
@@ -534,6 +660,8 @@ impl Engine {
                 cut: ctx.base_cut,
                 base_threshold_tokens: ctx.base_threshold_tokens,
                 carry: ctx.carry.clone(),
+                evidence: ctx.evidence.clone(),
+                policy_identity: ctx.policy_identity.clone(),
             },
         );
         true
@@ -557,8 +685,18 @@ impl Engine {
         if !ctx.compacted || ctx.base_cut == 0 {
             return false;
         }
+        if ctx.tokens_of(ctx.sizes()) <= ctx.threshold_tokens {
+            return false;
+        }
         let index = ctx.base_head;
         let text = summary_text(&ctx.messages()[index]);
+        // Native image blocks are removed by this last-resort rung. Drop
+        // the entire evidence section with them, including its completeness
+        // labels, so text cannot falsely claim an omitted image survived.
+        let evidence_start = format!("{PART_SEPARATOR}{}", evidence::EVIDENCE_LABEL);
+        let text = text
+            .split_once(&evidence_start)
+            .map_or(text.as_str(), |(before, _)| before);
         let Some(rest) = text.strip_prefix(SUMMARY_HEADER) else {
             return false;
         };
@@ -593,7 +731,7 @@ impl Engine {
         } else {
             format!("{SUMMARY_HEADER}\n\n{}", kept.join(PART_SEPARATOR))
         };
-        if new_text.chars().count() >= text.chars().count() {
+        if new_text.chars().count() >= text.chars().count() && ctx.evidence.is_empty() {
             return false;
         }
         let summary = ctx.dialect.user_message(new_text);
@@ -609,8 +747,13 @@ impl Engine {
             // text this truncation removed is an empty one.
             ctx.carry.clear();
         }
+        // Truncation no longer guarantees complete observation packets or
+        // image payloads. Do not retain stale completeness claims or carry
+        // content that this last-resort operation intentionally removed.
+        ctx.evidence.clear();
         ctx.modified = true;
         ctx.refresh_estimate();
+        ctx.refresh_evidence();
         let key = ctx.chain[ctx.base_cut - 1].clone();
         self.store().put(
             key,
@@ -620,6 +763,8 @@ impl Engine {
                 cut: ctx.base_cut,
                 base_threshold_tokens: ctx.base_threshold_tokens,
                 carry: ctx.carry.clone(),
+                evidence: ctx.evidence.clone(),
+                policy_identity: ctx.policy_identity.clone(),
             },
         );
         true
@@ -670,6 +815,234 @@ mod tests {
     use super::super::replay;
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn evidence_survives_multiple_compactions_and_fresh_reconstruction() {
+        let cfg = CliffConfig {
+            threshold_tokens: 12_000,
+            keep_recent: 1,
+            ..CliffConfig::default()
+        };
+        let live = Engine::new(cfg.clone());
+        let mut messages = vec![
+            a_user("resolve the cross-system lock bug"),
+            a_assistant(
+                "inspect locking",
+                Some(("critical", "read", json!({"path":"src/renderer/locks.rs"}))),
+            ),
+            a_result(
+                "critical",
+                "Invariant: acquire renderer lock before scheduler lock.",
+            ),
+        ];
+        let critical = evidence::evidence_observations(&messages, Dialect::Anthropic)[0]
+            .content_digest
+            .clone();
+        let mut compactions = 0;
+        for step in 0..20 {
+            messages.push(a_assistant(
+                "inspect another subsystem",
+                Some((&format!("r{step}"), "read", json!({"path":"large"}))),
+            ));
+            messages.push(a_result(
+                &format!("r{step}"),
+                &"large unchanged diagnostic ".repeat(1500),
+            ));
+            let current = live
+                .prepare(a_body(messages.clone()), Dialect::Anthropic)
+                .unwrap();
+            let fresh = Engine::new(cfg.clone())
+                .prepare(a_body(messages.clone()), Dialect::Anthropic)
+                .unwrap();
+            assert_eq!(current.messages(), fresh.messages(), "request {step}");
+            assert_eq!(current.evidence, fresh.evidence, "request {step}");
+            if current.base_cut > 3 {
+                assert!(current.retained_evidence_digests.contains(&critical));
+                assert!(summary_text(&current.messages()[current.base_head])
+                    .contains("renderer lock before scheduler lock"));
+                assert!(
+                    summary_text(&current.messages()[current.base_head])
+                        .contains("src/renderer/locks.rs"),
+                    "invocation provenance must outlive a second compaction"
+                );
+            }
+            compactions += usize::from(current.compacted);
+        }
+        assert!(compactions > 2);
+    }
+
+    #[test]
+    fn policy_generation_configuration_and_capacity_do_not_reuse_stale_prefixes() {
+        let cfg = CliffConfig {
+            threshold_tokens: 2000,
+            keep_recent: 1,
+            ..CliffConfig::default()
+        };
+        let engine = Engine::new(cfg.clone());
+        let body = a_body(a_session(15, 3000));
+        let first = engine
+            .prepare_with_policy(
+                body.clone(),
+                Dialect::Anthropic,
+                2000,
+                1000,
+                "phase-a",
+                Some(6000),
+            )
+            .unwrap();
+        assert!(first.compacted);
+        let reused = engine
+            .prepare_with_policy(
+                body.clone(),
+                Dialect::Anthropic,
+                2000,
+                1000,
+                "phase-a",
+                Some(6000),
+            )
+            .unwrap();
+        assert!(reused.matched);
+        let changed = engine
+            .prepare_with_policy(
+                body.clone(),
+                Dialect::Anthropic,
+                2000,
+                1000,
+                "phase-b",
+                Some(6000),
+            )
+            .unwrap();
+        assert!(!changed.matched);
+        let capped = engine
+            .prepare_with_policy(
+                body.clone(),
+                Dialect::Anthropic,
+                2000,
+                1000,
+                "phase-b",
+                Some(1800),
+            )
+            .unwrap();
+        assert!(!capped.matched && capped.threshold_tokens <= 1800);
+        let alternate = Engine::with_store(
+            CliffConfig {
+                evidence_max_chars: 0,
+                ..cfg
+            },
+            engine.into_store(),
+        );
+        let changed = alternate
+            .prepare_with_policy(body, Dialect::Anthropic, 2000, 1000, "phase-b", Some(1800))
+            .unwrap();
+        assert!(!changed.matched && changed.evidence.is_empty());
+    }
+
+    #[test]
+    fn immutable_head_cannot_raise_an_explicit_capacity() {
+        let engine = engine(2000, 1);
+        let body = a_body(vec![a_user(&"head ".repeat(8000))]);
+        let ctx = engine
+            .prepare_with_policy(body, Dialect::Anthropic, 2000, 1500, "bounded", Some(3000))
+            .unwrap();
+        assert_eq!(ctx.threshold_tokens, 2000);
+        assert!(ctx.capacity_exceeded_by_floor && ctx.over_budget);
+        assert!(!ctx.modified);
+    }
+
+    #[test]
+    fn changed_freeform_exec_input_cannot_reuse_a_cached_summary() {
+        let engine = engine(1500, 1);
+        let mut input = vec![json!({"type":"message", "role":"user", "content":"debug locks"})];
+        for step in 0..10 {
+            input.push(json!({"type":"custom_tool_call", "call_id":format!("c{step}"), "name":"exec", "input":format!("inspect({step})")}));
+            input.push(json!({"type":"custom_tool_call_output", "call_id":format!("c{step}"), "output":"x".repeat(3000)}));
+        }
+        let body = json!({"model":"test", "input":input});
+        let first = engine
+            .prepare(body.as_object().unwrap().clone(), Dialect::Responses)
+            .unwrap();
+        assert!(first.compacted && first.base_cut > 1);
+        let mut changed = body;
+        changed["input"][1]["input"] = json!("different_program()");
+        let next = engine
+            .prepare(changed.as_object().unwrap().clone(), Dialect::Responses)
+            .unwrap();
+        assert!(!next.matched);
+    }
+
+    #[test]
+    fn evidence_enabled_replay_agrees_across_dialects_and_tail_policies() {
+        for dialect in [
+            Dialect::Anthropic,
+            Dialect::Responses,
+            Dialect::ChatCompletions,
+        ] {
+            for keep_tail_percent in [0, 40] {
+                let cfg = CliffConfig {
+                    threshold_tokens: 4000,
+                    keep_recent: 1,
+                    keep_tail_percent,
+                    ..CliffConfig::default()
+                };
+                let live = Engine::new(cfg.clone());
+                let mut messages =
+                    vec![dialect.user_message("preserve the locking invariants".into())];
+                let mut compactions = 0;
+                for step in 0..35 {
+                    let id = format!("tool-{step}");
+                    let text = format!("diagnostic {}: {}", step % 3, "detail ".repeat(600));
+                    match dialect {
+                        Dialect::Anthropic => {
+                            messages.push(a_assistant(
+                                "inspect",
+                                Some((&id, "read", json!({"path":"source"}))),
+                            ));
+                            messages.push(a_result(&id, &text));
+                        }
+                        Dialect::Responses => {
+                            messages.push(json!({"type":"custom_tool_call", "call_id":id, "name":"exec", "input":"read_source()"}));
+                            messages.push(json!({"type":"custom_tool_call_output", "call_id":id, "output":text}));
+                        }
+                        Dialect::ChatCompletions => {
+                            messages.push(json!({"role":"assistant", "tool_calls":[{"id":id, "type":"function", "function":{"name":"read", "arguments":"{}"}}]}));
+                            messages
+                                .push(json!({"role":"tool", "tool_call_id":id, "content":text}));
+                        }
+                    }
+                    let mut body = Map::new();
+                    body.insert(dialect.messages_key().into(), json!(messages));
+                    let a = live.prepare(body.clone(), dialect).unwrap();
+                    let b = Engine::new(cfg.clone()).prepare(body, dialect).unwrap();
+                    assert!(
+                        a.messages() == b.messages(),
+                        "{} / tail {keep_tail_percent} / request {step}",
+                        dialect.name()
+                    );
+                    assert_eq!(a.evidence, b.evidence);
+                    assert!(a.evidence_bytes <= cfg.evidence_max_bytes);
+                    compactions += usize::from(a.compacted);
+                }
+                assert!(compactions >= 2);
+            }
+        }
+    }
+
+    #[test]
+    fn evidence_truncation_is_a_noop_when_fitting_and_clears_completeness_when_needed() {
+        let engine = engine(2000, 1);
+        let mut ctx = engine
+            .prepare(a_body(a_session(12, 3000)), Dialect::Anthropic)
+            .unwrap();
+        assert!(!ctx.evidence.is_empty());
+        ctx.threshold_tokens = u64::MAX;
+        let old = ctx.messages().to_vec();
+        assert!(!engine.truncate_summary(&mut ctx));
+        assert_eq!(ctx.messages(), old);
+        ctx.threshold_tokens = 1;
+        assert!(engine.truncate_summary(&mut ctx));
+        assert!(ctx.evidence.is_empty() && ctx.retained_evidence_digests.is_empty());
+        assert!(!summary_text(&ctx.messages()[ctx.base_head]).contains(evidence::EVIDENCE_LABEL));
+    }
 
     fn grow(messages: &[Value], start: usize, steps: usize, result_chars: usize) -> Vec<Value> {
         let mut out = messages.to_vec();
@@ -1577,7 +1950,10 @@ mod tests {
 
     #[test]
     fn a_lossy_truncation_empties_the_carry_and_a_no_op_keeps_it() {
-        let engine = carry_engine(6_000, 24_000);
+        let engine = Engine::new(CliffConfig {
+            evidence_max_chars: 0,
+            ..carry_engine(6_000, 24_000).config().clone()
+        });
         let mut ctx = talk_bodies(60, mixed_results)
             .into_iter()
             .map(|body| engine.prepare(body, Dialect::Anthropic).unwrap())
@@ -2027,7 +2403,7 @@ mod tests {
     }
 
     #[test]
-    fn a_changed_ratio_keeps_reusing_the_stored_prefix() {
+    fn a_changed_ratio_rebuilds_the_prefix_under_the_new_budget() {
         let engine = tail_engine(4_000, 3, 40);
         let bodies = stepped_bodies(60, mixed_results);
         let at = bodies
@@ -2042,6 +2418,9 @@ mod tests {
         let next = engine
             .prepare_calibrated(bodies[at + 1].clone(), Dialect::Anthropic, 4_000, 1150)
             .unwrap();
-        assert!(next.matched, "the entry is keyed by the base threshold");
+        assert!(
+            !next.matched,
+            "calibration changes the evidence and carry budget"
+        );
     }
 }

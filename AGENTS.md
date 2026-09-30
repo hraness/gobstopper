@@ -23,7 +23,7 @@
 - Every mutating path (`apply`, `watch`) snapshots into the vault before writing and emits a `compaction-events-v1` record after; telemetry failures are non-fatal, snapshot failures abort the edit.
 - The `auto` strategy prefers provider delegation for live sessions. Released native dispatch is disabled until provider ownership and correlation are verified. Separate copies require source binding and structural verification.
 - Keep dependency count small; prefer `std` + `serde_json` over new crates.
-- The proxy binds loopback only, passes request headers to `curl` through its environment (never argv), logs no request or response content, and forwards the client's original bytes on any parse, engine, or non-length provider failure.
+- The proxy binds loopback only, passes request headers to `curl` through its environment (never argv), logs no request or response content, and forwards the client's original bytes on parse, engine, or non-length provider failure unless an explicitly configured hard context capacity cannot be honored. That capacity must also apply to retries and unchanged fallbacks.
 
 # Local development and install
 
