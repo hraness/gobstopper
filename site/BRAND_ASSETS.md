@@ -1,27 +1,14 @@
 # Gobstopper website identity
 
-The website header adopts the checked Gobstopper catalog mark from Hraness,
-`public/marks/gobstopper.svg`. Its two authored paths and 32×32 viewBox are
-unchanged. This aligns the project header with the portfolio identity; it is
-an intentional replacement of the older concentric-candy PNG in the header.
-
-`MarketingSiteHeader` paints metallic foil with a subtle rainbow reflection
-on the transparent mark and product name. It preserves the original image as
-the fallback when masking is unavailable or forced colors are active. The
-enclosing home link names the product once. Do not use the opaque PNG as a mask.
-
-The catalog source is `projects/hraness/public/marks/gobstopper.svg` in
-[hraness/jungle](https://github.com/hraness/jungle).
-
-| File | SHA-256 |
-| --- | --- |
-| marks/gobstopper.svg | `d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a` |
-
-Browser and touch icons retain the existing layered-candy artwork and bytes;
-the content footer also keeps its current PNG.
+The favicon silhouette comes from the actual header mark, `public/marks/gobstopper.svg`. Browser variants render it in pure white on transparency. Apple touch variants use the same white mark on black. The visible bounds are centered horizontally and vertically and fill the square on their longest axis, preserving the aspect ratio with no added padding.
 
 | File | Size | SHA-256 |
 | --- | --- | --- |
-| icon.png | 512×512 | `8d4e6d605dff8f53f473640df2ec579ad8eaaba70f569fd9848d421318e4f98f` |
-| apple-icon.png | 180×180 | `fbc8ca53a9009433b161a839651c2f8fcb0203894e35b5bd6f6851922597a019` |
-| app/favicon.ico | 48×48, 32×32 (from icon.png) | `c06d5c860cd4a6626e28714887d052f3d74f88681ecdb0d9d69c3c8abcc1a061` |
+| public/marks/gobstopper.svg | SVG | `d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a` |
+| icon.png | 32×32 | `3006234dc5fc7e25978e91754da26a27bb828d325edd517f944b3af9acb9a6cb` |
+| apple-icon.png | 180×180 | `f4a7af06b904567a061f5265baeae1b30eddc6471ee75c661781675f2adff092` |
+| app/favicon.ico | 32×32 | `25a11ea6405cd3de62785ff4ec9e54837200a19384e0ffb33fdb3ab99fa64ab7` |
+| public/icon.png | 512×512 | `8ae05a78f84efb930d2423ba3ab2912cdad24e0d8a6b2114bda9b2704f5b435d` |
+| public/apple-icon.png | 180×180 | `f4a7af06b904567a061f5265baeae1b30eddc6471ee75c661781675f2adff092` |
+
+The header retains the shared metallic foil treatment and the checked catalog mark. Its SVG geometry remains unchanged.
