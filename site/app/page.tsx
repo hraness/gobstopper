@@ -13,6 +13,7 @@ import { PlatformBadges, PlatformInstall } from "@hraness/design-kit/react";
 
 import { Terminal } from "./_components/code-block";
 import { GobFilm } from "./_components/gob-film";
+import { GobMeterShowcase, GobVaultSteps } from "./_mockups/gob-mockups";
 import { GobTokens } from "./_components/gob-tokens";
 import { SiteHeader, SiteFooter } from "./_components/site-chrome";
 import { gobFilm } from "./_data/gob-film";
@@ -101,6 +102,7 @@ export default function Home() {
             summary="Start Claude Code through Gobstopper. Small requests pass through unchanged; large ones keep the system prompt, the first task, and the newest turns word for word while older turns become a summary."
           >
             <Terminal title="Run a session" code="gobstopper proxy run -- claude" />
+            <GobMeterShowcase />
             <p>
               The proxy starts on a free local port and stops when the agent exits.
               Its default threshold is 128,000 estimated tokens. It uses local rules
@@ -127,7 +129,10 @@ export default function Home() {
               { label: "Check before resuming", summary: "Copy checks cover record links, order, and tool-call pairs. They cannot guarantee provider resume, retention of every task fact, or what you will be billed." },
             ]}
           />
-          <Terminal title="Preview a saved session" code={`gobstopper detect\ngobstopper plan <session> --trigger 250000`} />
+          <div className="gob-home-demo">
+            <GobVaultSteps />
+            <Terminal title="Preview a saved session" code={`gobstopper detect\ngobstopper plan <session> --trigger 250000`} />
+          </div>
 
           <MarketingSection
             heading="38% smaller on requests it compacted."
@@ -166,6 +171,7 @@ export default function Home() {
               summary="No narration. Captions carry every line. The film never plays until you press play."
             >
               <GobFilm film={gobFilm} />
+              <p><a href="/blog/introducing-gobstopper">Read the launch post</a>.</p>
             </MarketingSection>
           )}
 

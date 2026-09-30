@@ -11,6 +11,7 @@ import { SiteFooter, SiteHeader } from "../../_components/site-chrome";
 import { serializeJsonLd } from "../../_lib/site";
 import { blogPosts, findPost, postHtml, postPath, postProvenance, postToc } from "../articles";
 import { postJsonLd, postMetadata } from "../discovery";
+import { IntroducingBody } from "../introducing/body";
 import "../post-media.css";
 
 type Params = Promise<{ slug: string }>;
@@ -60,7 +61,7 @@ export default async function BlogPost({ params }: Readonly<{ params: Params }>)
           published={post.published}
           toc={postToc(post)}
         >
-          <div dangerouslySetInnerHTML={{ __html: postHtml(post) }} />
+          {post.body === "beats" ? <IntroducingBody /> : <div dangerouslySetInnerHTML={{ __html: postHtml(post) }} />}
         </MarketingArticle>
       </main>
       <SiteFooter path={path} />

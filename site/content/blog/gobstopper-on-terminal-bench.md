@@ -8,7 +8,6 @@ A coding agent has no memory between steps, so every time it asks the model for 
 
 *Figure 1. Gobstopper keeps the start and the last three turns word for word and replaces the middle with a mechanical summary. No model writes it. Your files and your saved session are not changed.*
 
-{{film}}
 
 ## Every step resends the whole session
 
