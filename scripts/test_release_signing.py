@@ -1,12 +1,16 @@
 """Release credential boundaries and exact signed-artifact publication."""
 import hashlib
+import http.server
+import json
 from pathlib import Path
 import os
 import re
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import textwrap
+import threading
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -115,6 +119,83 @@ class ReleaseSigningTests(unittest.TestCase):
             archive.write_bytes(original)
             checksum.write_bytes(recorded.rstrip())
             self.assertNotEqual(execute(), 0)
+
+
+class CratesMetadataTests(unittest.TestCase):
+    def test_registry_requests_identify_the_release_workflow(self):
+        """Exercise preflight and post-publish HTTP using the actual step script."""
+        with tempfile.TemporaryDirectory(prefix='gobstopper-crates-http-') as temporary:
+            root = Path(temporary)
+            version = '0.8.0'
+            crates = ('gobstopper-core', 'gobstopper-adapters', 'gobstopper')
+            checksums = {}
+            for crate in crates:
+                archive = root / f'target/package/{crate}-{version}.crate'
+                archive.parent.mkdir(parents=True, exist_ok=True)
+                notices = ['LICENSE-MIT', 'LICENSE-APACHE']
+                if crate == 'gobstopper-adapters':
+                    notices.append('THIRD_PARTY_NOTICES.md')
+                with tarfile.open(archive, 'w:gz') as package:
+                    for notice in notices:
+                        package.add(ROOT / notice, arcname=f'{crate}-{version}/{notice}')
+                        shutil.copyfile(ROOT / notice, root / notice)
+                checksums[crate] = hashlib.sha256(archive.read_bytes()).hexdigest()
+            fakebin = root / 'bin'
+            fakebin.mkdir()
+            cargo = fakebin / 'cargo'
+            cargo.write_text('#!/bin/sh\nset -eu\noperation="$2"\n'
+                'for crate do :; done\n'
+                'case "$operation" in package) ;; publish) touch "$crate.published" ;; *) exit 9 ;; esac\n')
+            cargo.chmod(0o755)
+            requests = []
+
+            class Registry(http.server.BaseHTTPRequestHandler):
+                def log_message(self, *args):
+                    pass
+
+                def do_GET(self):
+                    parts = self.path.removeprefix('/api/v1/crates/').split('/')
+                    crate = parts[0]
+                    if crate not in checksums or len(parts) not in (1, 2):
+                        self.send_error(404)
+                        return
+                    published = (root / f'{crate}.published').exists()
+                    phase = 'latest' if len(parts) == 1 else 'published' if published else 'absent'
+                    requests.append((crate, phase, self.headers.get('User-Agent', '')))
+                    if 'hraness/gobstopper' not in requests[-1][2]:
+                        self.send_error(403, 'An identifying User-Agent is required')
+                        return
+                    if phase == 'absent':
+                        self.send_error(404)
+                        return
+                    data = ({'crate': {'max_stable_version': '0.7.5'}} if phase == 'latest' else
+                            {'version': {'crate': crate, 'num': version, 'yanked': False,
+                                         'checksum': checksums[crate]}})
+                    body = json.dumps(data).encode()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Content-Length', str(len(body)))
+                    self.end_headers()
+                    self.wfile.write(body)
+
+            with http.server.ThreadingHTTPServer(('127.0.0.1', 0), Registry) as server:
+                thread = threading.Thread(target=server.serve_forever, daemon=True)
+                thread.start()
+                try:
+                    base = f'http://127.0.0.1:{server.server_address[1]}'
+                    script = step_script('Publish the crates', job('crates')).replace('https://crates.io', base)
+                    result = subprocess.run(['/bin/bash', '-c', script], cwd=root,
+                        env={'PATH': str(fakebin) + os.pathsep + os.environ['PATH'],
+                             'CURL_HOME': str(root), 'RUNNER_TEMP': str(root), 'GOBSTOPPER_VERSION': version},
+                        capture_output=True, text=True, timeout=30)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    for crate in crates:
+                        for phase in ('absent', 'latest', 'published'):
+                            self.assertTrue(any(name == crate and state == phase and 'hraness/gobstopper' in agent
+                                                for name, state, agent in requests), (crate, phase, requests))
+                finally:
+                    server.shutdown()
+                    thread.join(timeout=5)
 
 
 class PublishTagIdentityTests(unittest.TestCase):

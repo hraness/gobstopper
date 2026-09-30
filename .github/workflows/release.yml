@@ -492,7 +492,8 @@ jobs:
               404) ;;
               *) echo "::error::crates.io answered $status for $crate $GOBSTOPPER_VERSION"; exit 1 ;;
             esac
-            curl --fail --silent --show-error --retry 3 "https://crates.io/api/v1/crates/$crate" > "$RUNNER_TEMP/crate-latest.json"
+            curl --fail --silent --show-error --retry 3 -A 'hraness/gobstopper release workflow' \
+              "https://crates.io/api/v1/crates/$crate" > "$RUNNER_TEMP/crate-latest.json"
             python3 - "$GOBSTOPPER_VERSION" "$RUNNER_TEMP/crate-latest.json" <<'PY'
           import json
           import sys
@@ -504,7 +505,7 @@ jobs:
             cargo +1.97.1 publish --locked -p "$crate"
             available=false
             for _ in $(seq 1 10); do
-              if curl --fail --silent --show-error \
+              if curl --fail --silent --show-error -A 'hraness/gobstopper release workflow' \
                 "https://crates.io/api/v1/crates/$crate/$GOBSTOPPER_VERSION" > "$RUNNER_TEMP/crate.json"; then
                 verify_archive
                 available=true
