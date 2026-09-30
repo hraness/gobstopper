@@ -225,6 +225,97 @@ fn additive_migration_preserves_observations_revision_and_namespace() {
 }
 
 #[test]
+fn current_schema_open_and_queries_do_not_take_the_writer_lock() {
+    let temp = Temp::new();
+    let mut store = temp.store();
+    let event = start();
+    store.append_batch(std::slice::from_ref(&event)).unwrap();
+    let identity = store.opaque("session", "same-native-id");
+    let writer = rusqlite::Connection::open(temp.database()).unwrap();
+    writer
+        .execute_batch("BEGIN IMMEDIATE; UPDATE metadata SET revision=revision+100;")
+        .unwrap();
+    // A zero busy timeout makes any unnecessary writer lock fail immediately.
+    // The query must see only committed data while the other writer is active.
+    let reader =
+        Store::open_with_busy_timeout(&temp.database(), std::time::Duration::ZERO).unwrap();
+    assert_eq!(reader.status().unwrap().revision, 1);
+    assert_eq!(reader.events(&Query::default()).unwrap(), vec![event]);
+    assert_eq!(reader.opaque("session", "same-native-id"), identity);
+    assert!(reader.check().unwrap().ok);
+    writer.execute_batch("ROLLBACK").unwrap();
+}
+
+#[test]
+fn current_schema_fast_path_rejects_wrong_application_and_negative_versions() {
+    for (version, application) in [(2, 123), (-1, 0x47534442)] {
+        let temp = Temp::new();
+        let mut store = temp.store();
+        store.append_batch(&[start()]).unwrap();
+        drop(store);
+        let connection = rusqlite::Connection::open(temp.database()).unwrap();
+        connection
+            .pragma_update(None, "user_version", version)
+            .unwrap();
+        connection
+            .pragma_update(None, "application_id", application)
+            .unwrap();
+        assert!(Store::open(&temp.database()).is_err());
+        assert_eq!(
+            connection
+                .pragma_query_value::<i32, _>(None, "user_version", |r| r.get(0))
+                .unwrap(),
+            version
+        );
+        assert_eq!(
+            connection
+                .pragma_query_value::<i32, _>(None, "application_id", |r| r.get(0))
+                .unwrap(),
+            application
+        );
+        assert_eq!(
+            connection
+                .query_row("SELECT count(*) FROM events", [], |r| r.get::<_, u64>(0))
+                .unwrap(),
+            1
+        );
+    }
+}
+
+#[test]
+fn concurrent_migration_rechecks_schema_and_preserves_observations_and_namespace() {
+    let temp = Temp::new();
+    let mut store = temp.store();
+    let event = start();
+    store.append_batch(std::slice::from_ref(&event)).unwrap();
+    let identity = store.opaque("session", "same-native-id");
+    drop(store);
+    let connection = rusqlite::Connection::open(temp.database()).unwrap();
+    connection.execute_batch("DROP INDEX events_time; DROP INDEX events_session; DROP INDEX events_attempt; PRAGMA user_version=1;").unwrap();
+    drop(connection);
+    let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
+    let workers: Vec<_> = (0..3)
+        .map(|_| {
+            let path = temp.database();
+            let barrier = barrier.clone();
+            let expected = event.clone();
+            std::thread::spawn(move || {
+                barrier.wait();
+                let store = Store::open(&path).unwrap();
+                assert_eq!(store.status().unwrap().schema_version, 2);
+                assert_eq!(store.status().unwrap().revision, 1);
+                assert_eq!(store.events(&Query::default()).unwrap(), vec![expected]);
+                assert!(store.check().unwrap().ok);
+                store.opaque("session", "same-native-id")
+            })
+        })
+        .collect();
+    for worker in workers {
+        assert_eq!(worker.join().unwrap(), identity);
+    }
+}
+
+#[test]
 fn backup_includes_committed_wal_and_preserves_identity() {
     let temp = Temp::new();
     let target = Temp::new();

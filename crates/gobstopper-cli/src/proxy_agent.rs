@@ -75,6 +75,14 @@ struct LegacySnapshot {
     label: String,
     bytes: Vec<u8>,
     arguments: Vec<String>,
+    #[serde(default)]
+    restoration: Option<LegacyRestoration>,
+}
+
+#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct LegacyRestoration {
+    bytes: Vec<u8>,
+    arguments: Vec<String>,
 }
 
 struct Paths {
@@ -392,9 +400,19 @@ impl std::fmt::Display for ManagerExit {
 impl std::error::Error for ManagerExit {}
 
 fn run_bounded(program: &Path, args: &[String]) -> Result<Vec<u8>> {
+    run_bounded_input(program, args, None)
+}
+fn run_bounded_input(program: &Path, args: &[String], input: Option<&[u8]>) -> Result<Vec<u8>> {
+    if input.is_some_and(|bytes| bytes.len() as u64 > MAX_FILE) {
+        bail!("service manager input exceeded the limit");
+    }
     let mut child = Command::new(program)
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -406,6 +424,11 @@ fn run_bounded(program: &Path, args: &[String]) -> Result<Vec<u8>> {
         let _ = (&mut stdout).take(MAX_FILE + 1).read_to_end(&mut data);
         data
     });
+    let writer = input.map(|bytes| {
+        let mut stdin = child.stdin.take().expect("piped manager stdin");
+        let bytes = bytes.to_vec();
+        std::thread::spawn(move || stdin.write_all(&bytes))
+    });
     let deadline = Instant::now() + Duration::from_secs(15);
     let status = loop {
         if let Some(status) = child.try_wait()? {
@@ -415,13 +438,24 @@ fn run_bounded(program: &Path, args: &[String]) -> Result<Vec<u8>> {
             let _ = child.kill();
             let _ = child.wait();
             let _ = reader.join();
+            if let Some(writer) = writer {
+                let _ = writer.join();
+            }
             bail!("service manager timed out; inspect proxy doctor before retrying");
         }
         std::thread::sleep(Duration::from_millis(25));
     };
     let bytes = reader.join().unwrap_or_default();
+    let written = writer.map(|writer| {
+        writer
+            .join()
+            .unwrap_or_else(|_| Err(std::io::Error::other("service manager input writer failed")))
+    });
     if !status.success() {
         return Err(ManagerExit(status.code().unwrap_or(-1)).into());
+    }
+    if let Some(written) = written {
+        written.context("service manager input failed")?;
     }
     if bytes.len() as u64 > MAX_FILE {
         bail!("service manager output exceeded the limit");
@@ -947,7 +981,188 @@ fn recover_pending(p: &Paths) -> Result<bool> {
     Ok(true)
 }
 
-fn legacy_job(snapshot: &LegacySnapshot) -> Result<bool> {
+fn parse_legacy(bytes: &[u8]) -> Result<Value> {
+    let json = run_bounded_input(
+        Path::new("/usr/bin/plutil"),
+        &strings(&["-convert", "json", "-o", "-", "-"]),
+        Some(bytes),
+    )?;
+    serde_json::from_slice(&json).context("legacy service is not a supported plist")
+}
+
+// Supported legacy settings contain JSON-compatible plist values. Stable
+// serialization lets recovery verify the prepared definition independently of
+// plutil's formatting, while the immutable original retains its exact bytes.
+fn plist_value(value: &Value) -> Result<String> {
+    fn text(value: &str) -> Result<String> {
+        if value.chars().any(|c| {
+            (c < ' ' && !matches!(c, '\t' | '\n' | '\r')) || matches!(c, '\u{fffe}' | '\u{ffff}')
+        }) {
+            bail!("legacy setting contains a character unsupported by XML plists");
+        }
+        Ok(xml(value).replace('\r', "&#13;"))
+    }
+    Ok(match value {
+        Value::String(s) => format!("<string>{}</string>", text(s)?),
+        Value::Bool(v) => format!("<{v}/>"),
+        Value::Number(v) => {
+            let tag = if v.is_i64() || v.is_u64() {
+                "integer"
+            } else {
+                "real"
+            };
+            format!("<{tag}>{v}</{tag}>")
+        }
+        Value::Array(values) => format!(
+            "<array>{}</array>",
+            values
+                .iter()
+                .map(plist_value)
+                .collect::<Result<Vec<_>>>()?
+                .join("")
+        ),
+        Value::Object(values) => {
+            let mut entries: Vec<_> = values.iter().collect();
+            entries.sort_by_key(|(key, _)| *key);
+            let entries = entries
+                .into_iter()
+                .map(|(key, value)| Ok(format!("<key>{}</key>{}", text(key)?, plist_value(value)?)))
+                .collect::<Result<Vec<_>>>()?;
+            format!("<dict>{}</dict>", entries.join(""))
+        }
+        Value::Null => bail!("legacy setting contains a null unsupported by plists"),
+    })
+}
+
+fn prepare_legacy_restoration(
+    original: &Value,
+    args: &[String],
+    effective: &[String],
+) -> Result<Option<LegacyRestoration>> {
+    if args.len() < 3
+        || args[1..3] != ["proxy", "serve"]
+        || original["ProgramArguments"] != json!(args)
+    {
+        bail!("legacy snapshot arguments differ from its original definition");
+    }
+    if effective == &args[3..] {
+        return Ok(None);
+    }
+    // Migration may add only the observed tail default; it cannot change an
+    // existing option or authorize unrelated execution through the journal.
+    let tail = effective
+        .last()
+        .and_then(|v| v.parse::<u64>().ok())
+        .context("invalid prepared legacy arguments")?;
+    if legacy_effective_args(&args[3..], &json!({"keep_tail_percent":tail}))? != effective {
+        bail!("prepared legacy arguments change unrecorded settings");
+    }
+    let mut arguments = args[..3].to_vec();
+    arguments.extend_from_slice(effective);
+    let mut restored = original.clone();
+    restored["ProgramArguments"] = json!(arguments);
+    let bytes = format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\">{}</plist>\n", plist_value(&restored)?).into_bytes();
+    Ok(Some(LegacyRestoration { bytes, arguments }))
+}
+
+fn validate_legacy_restoration(
+    candidate: &Manifest,
+    snapshot: &LegacySnapshot,
+    original: &Value,
+) -> Result<()> {
+    if original["Label"] != snapshot.label
+        || original["ProgramArguments"] != json!(snapshot.arguments)
+    {
+        bail!("legacy snapshot identity differs from its original definition");
+    }
+    let expected =
+        prepare_legacy_restoration(original, &snapshot.arguments, &candidate.serve_args)?;
+    if let Some(prepared) = &snapshot.restoration {
+        if expected.as_ref() != Some(prepared) {
+            bail!("prepared legacy restoration differs from the recorded migration");
+        }
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LegacyIdentity {
+    Original,
+    Restoration,
+}
+#[derive(Debug)]
+struct LoadedLegacy {
+    identity: LegacyIdentity,
+    pid: Option<u64>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum LegacyRecoveryPlan {
+    CompleteCandidate,
+    RestartOriginal,
+    Preserve(LegacyIdentity),
+    Restore(LegacyIdentity),
+}
+fn legacy_recovery_plan(
+    new_job: bool,
+    loaded: Option<LegacyIdentity>,
+    candidate_healthy: bool,
+    prepared: bool,
+) -> Result<LegacyRecoveryPlan> {
+    if new_job && loaded.is_some() {
+        bail!("both migration service identities are loaded; processes and files preserved");
+    }
+    if new_job && candidate_healthy {
+        return Ok(LegacyRecoveryPlan::CompleteCandidate);
+    }
+    Ok(match loaded {
+        Some(LegacyIdentity::Original) if prepared => LegacyRecoveryPlan::RestartOriginal,
+        Some(identity) => LegacyRecoveryPlan::Preserve(identity),
+        None => LegacyRecoveryPlan::Restore(if prepared {
+            LegacyIdentity::Restoration
+        } else {
+            LegacyIdentity::Original
+        }),
+    })
+}
+
+fn legacy_job_identity(snapshot: &LegacySnapshot, bytes: &[u8]) -> Result<LoadedLegacy> {
+    let text = String::from_utf8_lossy(bytes);
+    let args = launchd_arguments(&text).context("legacy job has no exact argument list")?;
+    let identity = if args == snapshot.arguments {
+        LegacyIdentity::Original
+    } else if snapshot
+        .restoration
+        .as_ref()
+        .is_some_and(|prepared| args == prepared.arguments)
+    {
+        LegacyIdentity::Restoration
+    } else {
+        bail!("legacy job differs from the migration snapshot; no process stopped");
+    };
+    if !text
+        .lines()
+        .any(|line| line.trim() == format!("path = {}", snapshot.path.display()))
+        || !text
+            .lines()
+            .any(|line| line.trim() == format!("program = {}", args[0]))
+    {
+        bail!(
+            "legacy job path or executable differs from the migration snapshot; no process stopped"
+        );
+    }
+    let pid = text
+        .lines()
+        .find_map(|line| {
+            line.trim()
+                .strip_prefix("pid = ")
+                .and_then(|pid| pid.parse::<u64>().ok())
+        })
+        .filter(|pid| *pid > 0);
+    Ok(LoadedLegacy { identity, pid })
+}
+
+fn legacy_job(snapshot: &LegacySnapshot) -> Result<Option<LoadedLegacy>> {
     let output = match run_manager(
         Platform::Macos,
         &["print".into(), format!("{}/{}", domain(), snapshot.label)],
@@ -958,19 +1173,92 @@ fn legacy_job(snapshot: &LegacySnapshot) -> Result<bool> {
                 .downcast_ref::<ManagerExit>()
                 .is_some_and(|e| e.0 == 113) =>
         {
-            return Ok(false)
+            return Ok(None)
         }
         Err(error) => return Err(error),
     };
-    let text = String::from_utf8_lossy(&output);
-    if launchd_arguments(&text) != Some(snapshot.arguments.clone())
-        || !text
-            .lines()
-            .any(|line| line.trim() == format!("path = {}", snapshot.path.display()))
+    legacy_job_identity(snapshot, &output).map(Some)
+}
+
+fn verify_legacy_files(p: &Paths, candidate: &Manifest, legacy: &LegacySnapshot) -> Result<()> {
+    let current = load(p)?;
+    if current
+        .as_ref()
+        .is_some_and(|m| !same_manifest(Some(m), Some(candidate)))
     {
-        bail!("legacy job differs from the migration snapshot; no process stopped");
+        bail!("migration manifest changed outside the recorded operation");
     }
-    Ok(true)
+    for path in [&p.definition, &legacy.path] {
+        if let Some(bytes) = read_file(path)? {
+            let is_legacy = path == &legacy.path
+                && (bytes == legacy.bytes
+                    || legacy
+                        .restoration
+                        .as_ref()
+                        .is_some_and(|r| bytes == r.bytes));
+            let is_candidate =
+                path == &p.definition && digest(&bytes) == candidate.definition_sha256;
+            if !is_legacy && !is_candidate {
+                bail!("migration definition was externally changed; files preserved");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn legacy_ready(
+    candidate: &Manifest,
+    legacy: &LegacySnapshot,
+    job: &LoadedLegacy,
+    live: &Value,
+) -> bool {
+    if live["name"] != "gobstopper-proxy" || live["port"] != candidate.port || job.pid.is_none() {
+        return false;
+    }
+    let tail = legacy
+        .restoration
+        .as_ref()
+        .and_then(|r| r.arguments.last())
+        .and_then(|v| v.parse::<u64>().ok());
+    // Pre-manifest releases did not expose process identity. Their observed
+    // setting still has to match if the journal records a known value.
+    if job.identity == LegacyIdentity::Original {
+        return live.get("pid").is_none_or(|pid| pid.as_u64() == job.pid)
+            && tail.is_none_or(|tail| live["keep_tail_percent"].as_u64() == Some(tail));
+    }
+    live["pid"].as_u64() == job.pid
+        && live["executable"]
+            .as_str()
+            .is_some_and(|s| Path::new(s) == candidate.executable)
+        && live["keep_tail_percent"].as_u64() == tail
+        && live["service_id"].as_str().is_none_or(str::is_empty)
+}
+
+fn legacy_restart_guard(candidate: &Manifest, job: &LoadedLegacy, live: &Value) -> Result<()> {
+    if job.identity != LegacyIdentity::Original
+        || job.pid.is_none()
+        || live["name"] != "gobstopper-proxy"
+        || live["port"] != candidate.port
+        || live.get("pid").is_some_and(|pid| pid.as_u64() != job.pid)
+    {
+        bail!("legacy process identity cannot be confirmed; process and journal preserved");
+    }
+    let connections = live["active_connections"]
+        .as_u64()
+        .context("legacy activity is unknown; process and journal preserved")?;
+    let inference = live
+        .get("keep_awake")
+        .map(|power| {
+            power["active_inference"]
+                .as_u64()
+                .context("legacy inference activity is unknown; process and journal preserved")
+        })
+        .transpose()?
+        .unwrap_or(0);
+    if connections > 1 || inference > 0 {
+        bail!("legacy proxy is active; process and journal preserved; pause clients then run proxy repair to preserve settings on future restarts");
+    }
+    Ok(())
 }
 fn recover_legacy(p: &Paths, candidate: &Manifest, legacy: &LegacySnapshot) -> Result<bool> {
     if Platform::current()? != Platform::Macos
@@ -982,23 +1270,17 @@ fn recover_legacy(p: &Paths, candidate: &Manifest, legacy: &LegacySnapshot) -> R
     {
         bail!("migration snapshot target is invalid");
     }
-    let current = load(p)?;
-    if current
-        .as_ref()
-        .is_some_and(|m| !same_manifest(Some(m), Some(candidate)))
+    if candidate.platform != Platform::Macos
+        || candidate.schema != SCHEMA
+        || digest(candidate.rendered_definition.as_bytes()) != candidate.definition_sha256
     {
-        bail!("migration manifest changed outside the recorded operation");
+        bail!("migration candidate snapshot is invalid");
     }
-    for path in [&p.definition, &legacy.path] {
-        if let Some(bytes) = read_file(path)? {
-            let is_legacy = path == &legacy.path && bytes == legacy.bytes;
-            let is_candidate =
-                path == &p.definition && digest(&bytes) == candidate.definition_sha256;
-            if !is_legacy && !is_candidate {
-                bail!("migration definition was externally changed; files preserved");
-            }
-        }
+    validate_legacy_restoration(candidate, legacy, &parse_legacy(&legacy.bytes)?)?;
+    if Path::new(&legacy.arguments[0]).canonicalize()? != candidate.executable {
+        bail!("legacy executable differs from the migration candidate; files preserved");
     }
+    verify_legacy_files(p, candidate, legacy)?;
     let registered_job = registered(candidate, p)?;
     let new_job = registered_job
         .as_ref()
@@ -1006,36 +1288,94 @@ fn recover_legacy(p: &Paths, candidate: &Manifest, legacy: &LegacySnapshot) -> R
     if registered_job.is_some() && !new_job && legacy.label != LABEL {
         bail!("an unrelated job owns the new service label; files preserved");
     }
-    if new_job {
-        if status(candidate.port).is_ok_and(|v| matches_identity(candidate, &v)) {
-            // A completed startup whose caller died before recording success
-            // needs no restart, even if its model requests are now active.
-            if read_file(&p.definition)?.is_none() {
-                write_atomic(&p.definition, candidate.rendered_definition.as_bytes())?;
-            }
-            verify_definition(candidate, p, false)?;
-            if legacy.path != p.definition && legacy.path.exists() {
-                fs::remove_file(&legacy.path)?;
-            }
-            clear_pending(p)?;
-            println!("Interrupted migration completed; the expected proxy is healthy.");
-            return Ok(true);
+    let mut loaded_legacy = if new_job && legacy.label == LABEL {
+        None
+    } else {
+        legacy_job(legacy)?
+    };
+    let plan = legacy_recovery_plan(
+        new_job,
+        loaded_legacy.as_ref().map(|job| job.identity),
+        new_job && status(candidate.port).is_ok_and(|v| matches_identity(candidate, &v)),
+        legacy.restoration.is_some(),
+    )?;
+    if plan == LegacyRecoveryPlan::CompleteCandidate {
+        // A completed startup whose caller died before recording success
+        // needs no restart, even if its model requests are now active.
+        verify_legacy_files(p, candidate, legacy)?;
+        if read_file(&p.definition)?.is_none() {
+            write_atomic(&p.definition, candidate.rendered_definition.as_bytes())?;
         }
+        verify_definition(candidate, p, false)?;
+        if load(p)?.is_none() {
+            write_atomic(&p.manifest, &serde_json::to_vec_pretty(candidate)?)?;
+        }
+        if legacy.path != p.definition && legacy.path.exists() {
+            fs::remove_file(&legacy.path)?;
+        }
+        clear_pending(p)?;
+        println!("Interrupted migration completed; the expected proxy is healthy.");
+        return Ok(true);
+    }
+    if new_job {
         ensure_free(candidate.port)?;
         stop(candidate, p)?;
     }
-    let old_loaded = legacy_job(legacy)?;
-    if !old_loaded {
+    if plan == LegacyRecoveryPlan::RestartOriginal {
+        let observed = loaded_legacy
+            .as_ref()
+            .context("original legacy job is missing")?;
+        let live = status(candidate.port)
+            .context("legacy proxy must be healthy before recovery can restart it")?;
+        legacy_restart_guard(candidate, observed, &live)?;
+        let fresh = legacy_job(legacy)?
+            .context("legacy job disappeared before restart; journal preserved")?;
+        if fresh.identity != observed.identity || fresh.pid != observed.pid {
+            bail!("legacy job changed before restart; process and journal preserved");
+        }
+        verify_legacy_files(p, candidate, legacy)?;
+        run_manager(
+            Platform::Macos,
+            &["bootout".into(), format!("{}/{}", domain(), legacy.label)],
+        )?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while ensure_free(candidate.port).is_err() {
+            if Instant::now() >= deadline {
+                bail!("legacy job did not release its port; journal retained");
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        loaded_legacy = None;
+    }
+    let expected = match plan {
+        LegacyRecoveryPlan::RestartOriginal => LegacyIdentity::Restoration,
+        LegacyRecoveryPlan::Preserve(identity) | LegacyRecoveryPlan::Restore(identity) => identity,
+        LegacyRecoveryPlan::CompleteCandidate => unreachable!("completed recovery returned above"),
+    };
+    if loaded_legacy.is_none() {
         ensure_free(candidate.port)?;
     }
+    // Recheck after manager/health operations before changing any recorded file.
+    verify_legacy_files(p, candidate, legacy)?;
     if legacy.path != p.definition && p.definition.exists() {
         fs::remove_file(&p.definition)?;
     }
-    write_atomic(&legacy.path, &legacy.bytes)?;
+    let restore_bytes = if expected == LegacyIdentity::Restoration {
+        &legacy
+            .restoration
+            .as_ref()
+            .context("prepared restoration is missing")?
+            .bytes
+    } else {
+        &legacy.bytes
+    };
+    if read_file(&legacy.path)?.as_deref() != Some(restore_bytes.as_slice()) {
+        write_atomic(&legacy.path, restore_bytes)?;
+    }
     if p.manifest.exists() {
         fs::remove_file(&p.manifest)?;
     }
-    if !old_loaded {
+    if loaded_legacy.is_none() {
         run_manager(
             Platform::Macos,
             &[
@@ -1047,7 +1387,11 @@ fn recover_legacy(p: &Paths, candidate: &Manifest, legacy: &LegacySnapshot) -> R
     }
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        if legacy_job(legacy)? && status(candidate.port).is_ok() {
+        if legacy_job(legacy)?.as_ref().is_some_and(|job| {
+            job.identity == expected
+                && status(candidate.port)
+                    .is_ok_and(|live| legacy_ready(candidate, legacy, job, &live))
+        }) {
             break;
         }
         if Instant::now() >= deadline {
@@ -1058,7 +1402,7 @@ fn recover_legacy(p: &Paths, candidate: &Manifest, legacy: &LegacySnapshot) -> R
         std::thread::sleep(Duration::from_millis(100));
     }
     clear_pending(p)?;
-    println!("Interrupted migration rolled back; the exact legacy service is healthy.");
+    println!("Migration recovered; the recorded legacy service is healthy and its known settings are preserved.");
     Ok(true)
 }
 
@@ -1217,6 +1561,26 @@ fn repair_locked(mut m: Manifest, p: &Paths) -> Result<()> {
     Ok(())
 }
 
+/// Preserve an observed legacy default that changed between released versions.
+/// Explicit arguments take precedence; older status schemas may omit this field.
+fn legacy_effective_args(args: &[String], live: &Value) -> Result<Vec<String>> {
+    let mut effective = args.to_vec();
+    if !args
+        .iter()
+        .any(|arg| arg == "--keep-tail-percent" || arg.starts_with("--keep-tail-percent="))
+    {
+        if let Some(value) = live.get("keep_tail_percent") {
+            let maximum = u64::from(gobstopper_adapters::request::MAX_KEEP_TAIL_PERCENT);
+            let value = value
+                .as_u64()
+                .filter(|value| *value <= maximum)
+                .with_context(|| format!("legacy keep_tail_percent must be an integer from 0 through {maximum}; no service was changed"))?;
+            effective.extend(["--keep-tail-percent".into(), value.to_string()]);
+        }
+    }
+    Ok(effective)
+}
+
 /// Explicitly adopt a pre-manifest macOS LaunchAgent. Its exact executable,
 /// argv, supported environment, and loaded job identity must all agree.
 /// Provider settings and source/session data are never changed.
@@ -1237,17 +1601,7 @@ pub fn migrate(print: bool) -> Result<()> {
     }
     let legacy_path = &files[0];
     let legacy_bytes = read_file(legacy_path)?.context("legacy service disappeared")?;
-    let raw = run_bounded(
-        Path::new("/usr/bin/plutil"),
-        &[
-            "-convert".into(),
-            "json".into(),
-            "-o".into(),
-            "-".into(),
-            legacy_path.display().to_string(),
-        ],
-    )?;
-    let value: Value = serde_json::from_slice(&raw)?;
+    let value = parse_legacy(&legacy_bytes)?;
     let label = value["Label"].as_str().context("legacy job has no label")?;
     if ![LABEL, LEGACY_LABEL].contains(&label)
         || legacy_path.file_stem().and_then(|p| p.to_str()) != Some(label)
@@ -1329,6 +1683,29 @@ pub fn migrate(print: bool) -> Result<()> {
     if port == 0 {
         bail!("legacy service has no stable port");
     }
+    let _lock = if print {
+        None
+    } else {
+        Some(ServiceLock::acquire(&p)?)
+    };
+    if !print
+        && (load(&p)?.is_some()
+            || read_file(legacy_path)?.as_deref() != Some(legacy_bytes.as_slice()))
+    {
+        bail!("service changed during migration; retry");
+    }
+    let target = format!("{}/{label}", domain());
+    let job = run_manager(Platform::Macos, &["print".into(), target.clone()])?;
+    let job = String::from_utf8_lossy(&job);
+    if launchd_arguments(&job) != Some(args.clone())
+        || !job
+            .lines()
+            .any(|l| l.trim() == format!("path = {}", legacy_path.display()))
+    {
+        bail!("loaded legacy job differs from its file; no process was stopped");
+    }
+    let live = status(port).context("legacy proxy must be healthy before migration")?;
+    let serve_args = legacy_effective_args(&serve_args, &live)?;
     let mut m = Manifest {
         schema: SCHEMA,
         platform: Platform::Macos,
@@ -1346,60 +1723,56 @@ pub fn migrate(print: bool) -> Result<()> {
     let bytes = definition(&m, &p.log).into_bytes();
     m.definition_sha256 = digest(&bytes);
     m.rendered_definition = String::from_utf8(bytes.clone())?;
+    let restoration = prepare_legacy_restoration(&value, &args, &m.serve_args)?;
+    let snapshot = LegacySnapshot {
+        path: legacy_path.clone(),
+        label: label.to_owned(),
+        bytes: legacy_bytes.clone(),
+        arguments: args,
+        restoration,
+    };
     if print {
         println!(
             "{}",
             serde_json::to_string_pretty(
-                &json!({"action":"migrate_legacy_service","source":legacy_path,"destination":p.definition,"executable":m.executable,"port":port,"proxy_settings_preserved":true,"backup_required":true})
+                &json!({"action":"migrate_legacy_service","source":legacy_path,"destination":p.definition,"executable":m.executable,"port":port,"serve_args":m.serve_args,"proxy_settings_preserved":true,"backup_required":true})
             )?
         );
         return Ok(());
     }
-    let _lock = ServiceLock::acquire(&p)?;
-    if load(&p)?.is_some() || read_file(legacy_path)?.as_deref() != Some(legacy_bytes.as_slice()) {
-        bail!("service changed during migration; retry");
-    }
-    let target = format!("{}/{label}", domain());
-    let job = run_manager(Platform::Macos, &["print".into(), target.clone()])?;
-    let job = String::from_utf8_lossy(&job);
-    if launchd_arguments(&job) != Some(args.clone())
-        || !job
-            .lines()
-            .any(|l| l.trim() == format!("path = {}", legacy_path.display()))
-    {
-        bail!("loaded legacy job differs from its file; no process was stopped");
-    }
-    let live = status(port).context("legacy proxy must be healthy before migration")?;
-    if live["keep_awake"]["active_inference"].as_u64().unwrap_or(0) > 0
-        || live["active_connections"].as_u64().unwrap_or(0) > 1
-    {
-        bail!("legacy proxy has active requests; retry migration after they finish");
-    }
+    let observed = legacy_job_identity(&snapshot, job.as_bytes())?;
+    legacy_restart_guard(&m, &observed, &live)?;
+    let pending = Pending {
+        schema: SCHEMA,
+        previous: None,
+        candidate: m.clone(),
+        legacy: Some(snapshot),
+    };
     let backup = p.root.join(format!("legacy-{}.plist", unique_id()));
     write_atomic(&backup, &legacy_bytes)?;
-    write_atomic(
-        &pending_path(&p),
-        &serde_json::to_vec_pretty(&Pending {
-            schema: SCHEMA,
-            previous: None,
-            candidate: m.clone(),
-            legacy: Some(LegacySnapshot {
-                path: legacy_path.clone(),
-                label: label.to_owned(),
-                bytes: legacy_bytes.clone(),
-                arguments: args,
-            }),
-        })?,
-    )?;
-    run_manager(Platform::Macos, &["bootout".into(), target])?;
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while ensure_free(port).is_err() {
-        if Instant::now() >= deadline {
-            bail!("legacy job did not release its port; original file and backup were preserved");
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
+    write_atomic(&pending_path(&p), &serde_json::to_vec_pretty(&pending)?)?;
     let result = (|| -> Result<()> {
+        let snapshot = pending
+            .legacy
+            .as_ref()
+            .context("legacy snapshot is missing")?;
+        let fresh = legacy_job(snapshot)?
+            .context("legacy job disappeared before migration; journal retained")?;
+        if fresh.identity != observed.identity || fresh.pid != observed.pid {
+            bail!("legacy job changed before migration; process and journal preserved");
+        }
+        legacy_restart_guard(&m, &fresh, &status(port)?)?;
+        verify_legacy_files(&p, &m, snapshot)?;
+        run_manager(Platform::Macos, &["bootout".into(), target])?;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while ensure_free(port).is_err() {
+            if Instant::now() >= deadline {
+                bail!(
+                    "legacy job did not release its port; original file and backup were preserved"
+                );
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
         if legacy_path != &p.definition {
             fs::remove_file(legacy_path)?;
         }
@@ -1408,30 +1781,12 @@ pub fn migrate(print: bool) -> Result<()> {
         activate(&mut m, &p)
     })();
     if let Err(error) = result {
-        // A new job is stopped only if its exact generated identity matches.
-        stop(&m, &p)?;
-        if legacy_path != &p.definition
-            && read_file(&p.definition)?.as_deref() == Some(bytes.as_slice())
-        {
-            fs::remove_file(&p.definition)?;
+        // The same identity and crash-boundary checks govern immediate failure
+        // and a later repair. Never blindly overwrite or bootstrap the original.
+        match recover_pending(&p) {
+            Ok(_) => bail!("migration failed: {error}; recorded service recovered; original backup {}", backup.display()),
+            Err(recovery) => bail!("migration failed: {error}; recovery requires attention: {recovery}; journal and original backup {} retained", backup.display()),
         }
-        write_atomic(legacy_path, &legacy_bytes)?;
-        if p.manifest.exists() {
-            fs::remove_file(&p.manifest)?;
-        }
-        let restored = run_manager(
-            Platform::Macos,
-            &[
-                "bootstrap".into(),
-                domain(),
-                legacy_path.display().to_string(),
-            ],
-        )
-        .is_ok();
-        if restored && status(port).is_ok() {
-            clear_pending(&p)?;
-        }
-        bail!("migration failed: {error}; legacy definition restored, manager restart accepted: {restored}; backup {}", backup.display());
     }
     clear_pending(&p)?;
     println!(
@@ -1852,6 +2207,348 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
     #[test]
+    fn migration_keeps_observed_tail_defaults_in_the_saved_arguments() {
+        // v0.7.2 defaulted to 40 with no flag; v0.7.3+ defaults to 0.
+        // Saving the argv alone would silently change this running service.
+        for percent in [0, 40, 60] {
+            let mut m = manifest(Platform::Macos);
+            let original = m.serve_args.clone();
+            m.serve_args = legacy_effective_args(
+                &original,
+                &json!({"version":"0.7.2","keep_tail_percent":percent}),
+            )
+            .unwrap();
+            assert_eq!(&m.serve_args[..original.len()], original);
+            let saved: Manifest = serde_json::from_slice(&serde_json::to_vec(&m).unwrap()).unwrap();
+            let rendered = definition(&saved, Path::new("/tmp/gobstopper.log"));
+            assert!(rendered
+                .lines()
+                .map(str::trim)
+                .collect::<Vec<_>>()
+                .windows(2)
+                .any(|lines| lines[0] == "<string>--keep-tail-percent</string>"
+                    && lines[1] == format!("<string>{percent}</string>")));
+            assert_eq!(
+                legacy_effective_args(&saved.serve_args, &json!({"keep_tail_percent":12})).unwrap(),
+                saved.serve_args
+            );
+        }
+    }
+    #[test]
+    fn migration_preserves_both_explicit_tail_argument_forms() {
+        for args in [
+            strings(&["--port", "8260", "--keep-tail-percent", "12"]),
+            strings(&["--keep-tail-percent=0", "--strict"]),
+        ] {
+            for live in [
+                json!({"keep_tail_percent":40}),
+                json!({"keep_tail_percent":"unused"}),
+                json!({}),
+            ] {
+                assert_eq!(legacy_effective_args(&args, &live).unwrap(), args);
+            }
+        }
+    }
+    #[test]
+    fn migration_rejects_invalid_observed_tail_and_does_not_invent_missing_settings() {
+        let args = strings(&["--threshold=128000", "--keep-recent", "3"]);
+        for invalid in [
+            json!(61),
+            json!(-1),
+            json!(40.0),
+            json!("40"),
+            json!(true),
+            json!(null),
+            json!([]),
+            json!({}),
+            json!(u64::MAX),
+        ] {
+            assert!(
+                legacy_effective_args(&args, &json!({"keep_tail_percent":invalid}))
+                    .unwrap_err()
+                    .to_string()
+                    .contains("legacy keep_tail_percent")
+            );
+        }
+        assert_eq!(
+            legacy_effective_args(&args, &json!({"version":"old"})).unwrap(),
+            args
+        );
+    }
+    fn legacy_fixture(label: &str) -> (Manifest, LegacySnapshot, Value) {
+        let mut candidate = manifest(Platform::Macos);
+        let mut arguments = vec![
+            candidate.executable.display().to_string(),
+            "proxy".into(),
+            "serve".into(),
+        ];
+        arguments.extend(candidate.serve_args.clone());
+        let original = json!({"Label":label,"ProgramArguments":arguments,"RunAtLoad":true,"KeepAlive":{"SuccessfulExit":false},"ThrottleInterval":30,"WorkingDirectory":"/a & b","EnvironmentVariables":{"HOME":"/user","PATH":"/bin\r/custom"},"StandardOutPath":"/old/log"});
+        candidate.serve_args =
+            legacy_effective_args(&candidate.serve_args, &json!({"keep_tail_percent":40})).unwrap();
+        let restoration =
+            prepare_legacy_restoration(&original, &arguments, &candidate.serve_args).unwrap();
+        let snapshot = LegacySnapshot {
+            path: PathBuf::from(format!("/tmp/{label}.plist")),
+            label: label.into(),
+            bytes: format!(
+                "<plist version=\"1.0\">{}</plist>",
+                plist_value(&original).unwrap()
+            )
+            .into_bytes(),
+            arguments,
+            restoration,
+        };
+        (candidate, snapshot, original)
+    }
+    fn legacy_job_output(snapshot: &LegacySnapshot, identity: LegacyIdentity) -> Vec<u8> {
+        let args = if identity == LegacyIdentity::Original {
+            &snapshot.arguments
+        } else {
+            &snapshot.restoration.as_ref().unwrap().arguments
+        };
+        format!(
+            "path = {}\nprogram = {}\npid = 123\narguments = {{\n{}\n}}\n",
+            snapshot.path.display(),
+            args[0],
+            args.join("\n")
+        )
+        .into_bytes()
+    }
+
+    #[test]
+    fn legacy_restoration_keeps_original_and_rejects_tampered_prepared_state() {
+        let (mut candidate, mut snapshot, original) = legacy_fixture(LEGACY_LABEL);
+        let original_bytes = snapshot.bytes.clone();
+        let original_args = snapshot.arguments.clone();
+        validate_legacy_restoration(&candidate, &snapshot, &original).unwrap();
+        let saved = serde_json::to_vec(&snapshot).unwrap();
+        let recovered: LegacySnapshot = serde_json::from_slice(&saved).unwrap();
+        assert_eq!(recovered.bytes, original_bytes);
+        assert_eq!(recovered.arguments, original_args);
+        assert_eq!(recovered.restoration, snapshot.restoration);
+        snapshot.restoration.as_mut().unwrap().bytes.push(b' ');
+        assert!(validate_legacy_restoration(&candidate, &snapshot, &original).is_err());
+        snapshot = serde_json::from_slice(&saved).unwrap();
+        snapshot.restoration.as_mut().unwrap().arguments[0] = "/another/program".into();
+        assert!(validate_legacy_restoration(&candidate, &snapshot, &original).is_err());
+        snapshot = serde_json::from_slice(&saved).unwrap();
+        candidate.serve_args.insert(0, "--strict".into());
+        assert!(validate_legacy_restoration(&candidate, &snapshot, &original).is_err());
+        assert_eq!(snapshot.bytes, original_bytes);
+        assert_eq!(snapshot.arguments, original_args);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn legacy_prepared_plist_roundtrips_all_original_settings_except_effective_arguments() {
+        let (candidate, snapshot, mut original) = legacy_fixture(LEGACY_LABEL);
+        assert_eq!(parse_legacy(&snapshot.bytes).unwrap(), original);
+        let prepared = snapshot.restoration.as_ref().unwrap();
+        original["ProgramArguments"] = json!(prepared.arguments);
+        assert_eq!(parse_legacy(&prepared.bytes).unwrap(), original);
+        assert_eq!(&prepared.arguments[3..], candidate.serve_args);
+        assert!(plist_value(&json!("\u{0000}")).is_err());
+        assert!(plist_value(&json!(null)).is_err());
+    }
+
+    #[test]
+    fn older_legacy_journals_decode_without_inventing_a_restoration() {
+        let (mut candidate, snapshot, original) = legacy_fixture(LEGACY_LABEL);
+        candidate.serve_args = snapshot.arguments[3..].to_vec();
+        let mut old = serde_json::to_value(&snapshot).unwrap();
+        old.as_object_mut().unwrap().remove("restoration");
+        let recovered: LegacySnapshot = serde_json::from_value(old).unwrap();
+        assert!(recovered.restoration.is_none());
+        validate_legacy_restoration(&candidate, &recovered, &original).unwrap();
+        assert_eq!(
+            legacy_recovery_plan(false, None, false, false).unwrap(),
+            LegacyRecoveryPlan::Restore(LegacyIdentity::Original)
+        );
+    }
+
+    #[test]
+    fn legacy_loaded_identities_and_health_are_checked_before_recovery_completes() {
+        let (candidate, snapshot, _) = legacy_fixture(LEGACY_LABEL);
+        for identity in [LegacyIdentity::Original, LegacyIdentity::Restoration] {
+            let bytes = legacy_job_output(&snapshot, identity);
+            let loaded = legacy_job_identity(&snapshot, &bytes).unwrap();
+            assert_eq!(loaded.identity, identity);
+            assert_eq!(loaded.pid, Some(123));
+            let mut live = json!({"name":"gobstopper-proxy","port":candidate.port,"keep_awake":{"active_inference":99}});
+            if identity == LegacyIdentity::Original {
+                // Old status needs no pid/executable fields but its known
+                // retained-history setting must still match the snapshot.
+                live["keep_tail_percent"] = json!(40);
+                assert!(legacy_ready(&candidate, &snapshot, &loaded, &live));
+                live["keep_tail_percent"] = json!(0);
+                assert!(!legacy_ready(&candidate, &snapshot, &loaded, &live));
+            } else {
+                assert!(!legacy_ready(&candidate, &snapshot, &loaded, &live));
+                live["pid"] = json!(123);
+                live["executable"] = json!(candidate.executable);
+                live["keep_tail_percent"] = json!(40);
+                assert!(legacy_ready(&candidate, &snapshot, &loaded, &live));
+                for (key, bad) in [
+                    ("pid", json!(124)),
+                    ("executable", json!("/another/program")),
+                    ("keep_tail_percent", json!(0)),
+                    ("service_id", json!(candidate.service_id)),
+                ] {
+                    let mut changed = live.clone();
+                    changed[key] = bad;
+                    assert!(
+                        !legacy_ready(&candidate, &snapshot, &loaded, &changed),
+                        "{key}"
+                    );
+                }
+            }
+            let text = String::from_utf8(bytes).unwrap();
+            assert!(legacy_job_identity(
+                &snapshot,
+                text.replace("path = /tmp/", "path = /other/").as_bytes()
+            )
+            .is_err());
+            assert!(legacy_job_identity(
+                &snapshot,
+                text.replace("program = ", "program = /other/").as_bytes()
+            )
+            .is_err());
+            assert!(legacy_job_identity(
+                &snapshot,
+                text.replace("\n8260\n", "\n8261\n").as_bytes()
+            )
+            .is_err());
+        }
+    }
+
+    #[test]
+    fn legacy_recovery_preserves_loaded_processes_across_crash_boundaries() {
+        for identity in [LegacyIdentity::Original, LegacyIdentity::Restoration] {
+            assert_eq!(
+                legacy_recovery_plan(false, Some(identity), false, true).unwrap(),
+                if identity == LegacyIdentity::Original {
+                    LegacyRecoveryPlan::RestartOriginal
+                } else {
+                    LegacyRecoveryPlan::Preserve(identity)
+                }
+            );
+            assert!(legacy_recovery_plan(true, Some(identity), true, true).is_err());
+            assert!(legacy_recovery_plan(true, Some(identity), false, true).is_err());
+        }
+        assert_eq!(
+            legacy_recovery_plan(false, Some(LegacyIdentity::Original), false, false).unwrap(),
+            LegacyRecoveryPlan::Preserve(LegacyIdentity::Original)
+        );
+        // After old stop, candidate file/write/start failure, and restoration
+        // write before bootstrap all require the prepared effective arguments.
+        for new_job in [false, true] {
+            assert_eq!(
+                legacy_recovery_plan(new_job, None, false, true).unwrap(),
+                LegacyRecoveryPlan::Restore(LegacyIdentity::Restoration)
+            );
+        }
+        // A crash after healthy candidate startup must not interrupt inference.
+        assert_eq!(
+            legacy_recovery_plan(true, None, true, true).unwrap(),
+            LegacyRecoveryPlan::CompleteCandidate
+        );
+    }
+
+    #[test]
+    fn legacy_original_restart_requires_matching_process_and_proven_idle_activity() {
+        let (candidate, snapshot, _) = legacy_fixture(LEGACY_LABEL);
+        let loaded = legacy_job_identity(
+            &snapshot,
+            &legacy_job_output(&snapshot, LegacyIdentity::Original),
+        )
+        .unwrap();
+        let idle = json!({"name":"gobstopper-proxy","port":8260,"active_connections":1,"keep_tail_percent":40});
+        legacy_restart_guard(&candidate, &loaded, &idle).unwrap();
+        for (key, value) in [
+            ("active_connections", json!(2)),
+            ("active_connections", json!(null)),
+            ("active_connections", json!("0")),
+            ("pid", json!(124)),
+            ("name", json!("foreign")),
+            ("port", json!(8261)),
+            ("keep_awake", json!({"active_inference":1})),
+            ("keep_awake", json!({"active_inference":"0"})),
+            ("keep_awake", json!({})),
+        ] {
+            let mut changed = idle.clone();
+            changed[key] = value;
+            assert!(
+                legacy_restart_guard(&candidate, &loaded, &changed).is_err(),
+                "{key}"
+            );
+        }
+        // Already respawned under the new implicit default: an idle process can
+        // be repaired to the recorded 40%, but it cannot pass readiness as-is.
+        let mut reset = idle;
+        reset["keep_tail_percent"] = json!(0);
+        assert!(!legacy_ready(&candidate, &snapshot, &loaded, &reset));
+        legacy_restart_guard(&candidate, &loaded, &reset).unwrap();
+    }
+
+    #[test]
+    fn legacy_recovery_admits_only_recorded_files_at_each_crash_boundary() {
+        for label in [LABEL, LEGACY_LABEL] {
+            let dir =
+                std::env::temp_dir().join(format!("gobstopper-legacy-recovery-{}", unique_id()));
+            fs::create_dir_all(&dir).unwrap();
+            let p = Paths {
+                root: dir.clone(),
+                manifest: dir.join("manifest.json"),
+                definition: dir.join(format!("{LABEL}.plist")),
+                log: dir.join("log"),
+            };
+            let (mut candidate, mut legacy, _) = legacy_fixture(label);
+            legacy.path = dir.join(format!("{label}.plist"));
+            candidate.rendered_definition = definition(&candidate, &p.log);
+            candidate.definition_sha256 = digest(candidate.rendered_definition.as_bytes());
+            let stages = [
+                Some(legacy.bytes.clone()),
+                None,
+                Some(candidate.rendered_definition.as_bytes().to_vec()),
+                Some(legacy.restoration.as_ref().unwrap().bytes.clone()),
+            ];
+            for bytes in stages {
+                for path in [&p.definition, &legacy.path, &p.manifest] {
+                    if path.exists() {
+                        fs::remove_file(path).unwrap();
+                    }
+                }
+                if let Some(bytes) = bytes {
+                    let dest = if bytes == candidate.rendered_definition.as_bytes() {
+                        &p.definition
+                    } else {
+                        &legacy.path
+                    };
+                    write_atomic(dest, &bytes).unwrap();
+                }
+                // Interrupted manifest removal is also a recognized boundary.
+                for manifest_present in [false, true] {
+                    if manifest_present {
+                        write_atomic(&p.manifest, &serde_json::to_vec(&candidate).unwrap())
+                            .unwrap();
+                    }
+                    verify_legacy_files(&p, &candidate, &legacy).unwrap();
+                }
+            }
+            write_atomic(&legacy.path, b"external edit").unwrap();
+            assert!(verify_legacy_files(&p, &candidate, &legacy).is_err());
+            assert_eq!(read_file(&legacy.path).unwrap().unwrap(), b"external edit");
+            write_atomic(&legacy.path, &legacy.bytes).unwrap();
+            let mut foreign = candidate.clone();
+            foreign.service_id = "different".into();
+            write_atomic(&p.manifest, &serde_json::to_vec(&foreign).unwrap()).unwrap();
+            assert!(verify_legacy_files(&p, &candidate, &legacy).is_err());
+            fs::remove_dir_all(dir).unwrap();
+        }
+    }
+
+    #[test]
     fn migration_recovery_rejects_unrecognized_definition_target() {
         let candidate = manifest(Platform::Macos);
         let p = Paths {
@@ -1865,6 +2562,7 @@ mod tests {
             label: LEGACY_LABEL.into(),
             bytes: vec![],
             arguments: vec![],
+            restoration: None,
         };
         assert!(recover_legacy(&p, &candidate, &snapshot)
             .unwrap_err()

@@ -225,36 +225,50 @@ impl Store {
         )?;
         connection.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0)?;
         connection.execute_batch("PRAGMA trusted_schema=OFF; PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY; PRAGMA synchronous=FULL; PRAGMA fullfsync=ON;")?;
-        // Inspect schema identity under the initialization lock. A concurrent
-        // first opener must see the committed schema and preserve its namespace.
-        let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let version: u32 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        let application: i32 = tx.pragma_query_value(None, "application_id", |r| r.get(0))?;
+        // Read a coherent schema identity without taking the writer lock. Most
+        // opens are metrics queries against an already initialized database.
+        let snapshot = connection.transaction()?;
+        let version: u32 = snapshot.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        let application: i32 = snapshot.pragma_query_value(None, "application_id", |r| r.get(0))?;
         if version > SCHEMA_VERSION {
             bail!("data_schema_newer_than_binary");
         }
-        if version == 0 {
-            let tables: u64 =
-                tx.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))?;
-            if application != 0 || tables != 0 {
-                bail!("data_unknown_database");
-            }
-            let mut namespace = [0; 32];
-            getrandom::fill(&mut namespace)
-                .map_err(|_| anyhow::anyhow!("data_random_unavailable"))?;
-            tx.execute_batch("CREATE TABLE metadata(singleton INTEGER PRIMARY KEY CHECK(singleton=1), namespace BLOB NOT NULL CHECK(length(namespace)=32), revision INTEGER NOT NULL CHECK(revision>=0)) STRICT;
-                    CREATE TABLE events(sequence INTEGER PRIMARY KEY, event_id TEXT NOT NULL UNIQUE, source_id TEXT NOT NULL, observed_at_ms INTEGER NOT NULL CHECK(observed_at_ms>=0), kind TEXT NOT NULL, session_id TEXT, attempt_id TEXT, lifecycle_key TEXT UNIQUE, envelope TEXT NOT NULL, digest BLOB NOT NULL CHECK(length(digest)=32)) STRICT;")?;
-            tx.execute(
-                "INSERT INTO metadata VALUES(1,?1,0)",
-                [namespace.as_slice()],
-            )?;
-            tx.pragma_update(None, "application_id", APPLICATION_ID)?;
-            tx.pragma_update(None, "user_version", 1)?;
-        } else if application != APPLICATION_ID {
+        if version != 0 && application != APPLICATION_ID {
             bail!("data_wrong_application");
         }
-        tx.commit()?;
-        migrate(&mut connection)?;
+        snapshot.commit()?;
+        if version < SCHEMA_VERSION {
+            // Recheck under the initialization lock: another opener may have
+            // initialized or migrated the database after our read snapshot.
+            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let version: u32 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
+            let application: i32 = tx.pragma_query_value(None, "application_id", |r| r.get(0))?;
+            if version > SCHEMA_VERSION {
+                bail!("data_schema_newer_than_binary");
+            }
+            if version == 0 {
+                let tables: u64 =
+                    tx.query_row("SELECT count(*) FROM sqlite_master", [], |r| r.get(0))?;
+                if application != 0 || tables != 0 {
+                    bail!("data_unknown_database");
+                }
+                let mut namespace = [0; 32];
+                getrandom::fill(&mut namespace)
+                    .map_err(|_| anyhow::anyhow!("data_random_unavailable"))?;
+                tx.execute_batch("CREATE TABLE metadata(singleton INTEGER PRIMARY KEY CHECK(singleton=1), namespace BLOB NOT NULL CHECK(length(namespace)=32), revision INTEGER NOT NULL CHECK(revision>=0)) STRICT;
+                        CREATE TABLE events(sequence INTEGER PRIMARY KEY, event_id TEXT NOT NULL UNIQUE, source_id TEXT NOT NULL, observed_at_ms INTEGER NOT NULL CHECK(observed_at_ms>=0), kind TEXT NOT NULL, session_id TEXT, attempt_id TEXT, lifecycle_key TEXT UNIQUE, envelope TEXT NOT NULL, digest BLOB NOT NULL CHECK(length(digest)=32)) STRICT;")?;
+                tx.execute(
+                    "INSERT INTO metadata VALUES(1,?1,0)",
+                    [namespace.as_slice()],
+                )?;
+                tx.pragma_update(None, "application_id", APPLICATION_ID)?;
+                tx.pragma_update(None, "user_version", 1)?;
+            } else if application != APPLICATION_ID {
+                bail!("data_wrong_application");
+            }
+            tx.commit()?;
+            migrate(&mut connection)?;
+        }
         connection.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=256; PRAGMA max_page_count=262144;",
         )?;

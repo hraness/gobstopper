@@ -2167,10 +2167,14 @@
         {
           "path": "crates/gobstopper-cli/src/session_data/store.rs",
           "anchor": "pub fn append"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+          "anchor": "impl RecorderWorker"
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Batch cap 10000 events; query cap 100000; import cap 64 MiB; database page limit 1 GiB. Proxy recording has bounded queue/batch/backoff and explicit loss/degraded counters.",
+      "bounds": "Batch cap 10000 events; query cap 100000; import cap 64 MiB; database page limit 1 GiB. Current-schema identity checks use one read snapshot; initialization and migration recheck under writer locks. Proxy recording buffers at most 1024 events, flushes at most 256 per normal batch, and configures a 25 ms SQLite busy timeout. One owned worker drains pending batches and retries failures after 1–60 seconds even without new requests; it sleeps while healthy and idle, and is stopped and joined before the final shutdown flush. Atomic health publication follows counter updates; status does not wait on the database mutex. Background retry availability and loss/degraded counters are explicit.",
       "exclusions": [
         "No complete-observation guarantee after process crash, dropped queue or full storage",
         "Windows ACLs inherit OS user-directory policy; Unix mode checks do not prove equivalent ACL restrictions"

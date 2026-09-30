@@ -517,8 +517,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-30-080-everlasting-startup-stress.json",
-        "sha256": "6c9736ab8443a6ea5b0b9f81ecb1f6354b9cc8e7e041cb543f716f349dffea38"
+        "path": "docs/assurance/receipts/2026-09-30-080-everlasting-final-recovery-stress.json",
+        "sha256": "6eb8a4cd2202284d42de448071d158667d6fff30830ae56dbb16d5b3f96bac9b"
       }
     },
     {

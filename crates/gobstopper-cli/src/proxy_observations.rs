@@ -8,9 +8,10 @@ use serde_json::{json, Value};
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
 use std::sync::{
-    atomic::{AtomicU64, Ordering},
-    Mutex, OnceLock, TryLockError,
+    atomic::{AtomicU64, AtomicU8, Ordering},
+    Arc, Condvar, Mutex, OnceLock, TryLockError,
 };
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const MAX_PENDING_EVENTS: usize = 1024;
@@ -21,10 +22,9 @@ struct RecorderState {
     path: Option<PathBuf>,
     next_retry: Option<Instant>,
     backoff: Duration,
-    degraded: bool,
 }
 
-pub struct Recorder {
+struct RecorderShared {
     state: Mutex<RecorderState>,
     pending: Mutex<VecDeque<Envelope>>,
     namespace: OnceLock<data::IdentityNamespace>,
@@ -35,6 +35,93 @@ pub struct Recorder {
     failures: AtomicU64,
     dropped: AtomicU64,
     recoveries: AtomicU64,
+    // 0: disabled/unopened, 1: available, 2: degraded. Status never waits on I/O.
+    health: AtomicU8,
+    wake: Arc<RecorderWake>,
+}
+pub struct Recorder {
+    shared: Arc<RecorderShared>,
+    worker: Option<RecorderWorker>,
+}
+#[derive(Default)]
+struct RecorderWake {
+    state: Mutex<RecorderWakeState>,
+    ready: Condvar,
+}
+#[derive(Default)]
+struct RecorderWakeState {
+    stopped: bool,
+    notified: bool,
+}
+impl RecorderWake {
+    fn notify(&self) {
+        self.state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .notified = true;
+        self.ready.notify_one();
+    }
+}
+struct RecorderWorker {
+    wake: Arc<RecorderWake>,
+    thread: Option<JoinHandle<()>>,
+}
+impl RecorderWorker {
+    fn start(shared: Arc<RecorderShared>) -> std::io::Result<Self> {
+        let wake = Arc::clone(&shared.wake);
+        let thread = thread::Builder::new()
+            .name("gobstopper-session-data".into())
+            .spawn(move || {
+                let mut delay = shared.next_flush_delay();
+                loop {
+                    let state = shared.wake.state.lock().unwrap_or_else(|e| e.into_inner());
+                    let mut state = match delay {
+                        Some(delay) => {
+                            shared
+                                .wake
+                                .ready
+                                .wait_timeout_while(state, delay, |s| !s.stopped && !s.notified)
+                                .unwrap_or_else(|e| e.into_inner())
+                                .0
+                        }
+                        None => shared
+                            .wake
+                            .ready
+                            .wait_while(state, |s| !s.stopped && !s.notified)
+                            .unwrap_or_else(|e| e.into_inner()),
+                    };
+                    if state.stopped {
+                        break;
+                    }
+                    state.notified = false;
+                    drop(state);
+                    shared.flush(false);
+                    delay = shared.next_flush_delay();
+                }
+            })?;
+        Ok(Self {
+            wake,
+            thread: Some(thread),
+        })
+    }
+    fn is_running(&self) -> bool {
+        self.thread
+            .as_ref()
+            .is_some_and(|thread| !thread.is_finished())
+    }
+}
+impl Drop for RecorderWorker {
+    fn drop(&mut self) {
+        self.wake
+            .state
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .stopped = true;
+        self.wake.ready.notify_one();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
 }
 impl Recorder {
     pub fn disabled() -> Self {
@@ -64,13 +151,12 @@ impl Recorder {
             profile: "gobstopper-proxy-v1".into(),
         });
         let unavailable = enabled && source.is_none();
-        let recorder = Self {
+        let shared = Arc::new(RecorderShared {
             state: Mutex::new(RecorderState {
                 store: None,
                 path,
                 next_retry: None,
                 backoff: Duration::from_secs(1),
-                degraded: unavailable,
             }),
             pending: Mutex::new(VecDeque::new()),
             namespace: OnceLock::new(),
@@ -81,28 +167,51 @@ impl Recorder {
             failures: AtomicU64::new(u64::from(unavailable)),
             dropped: AtomicU64::new(0),
             recoveries: AtomicU64::new(0),
+            health: AtomicU8::new(if unavailable { 2 } else { 0 }),
+            wake: Arc::new(RecorderWake::default()),
+        });
+        shared.flush(false);
+        let worker = if shared.source.is_some() {
+            match RecorderWorker::start(Arc::clone(&shared)) {
+                Ok(worker) => Some(worker),
+                Err(_) => {
+                    shared.failures.fetch_add(1, Ordering::Relaxed);
+                    None
+                }
+            }
+        } else {
+            None
         };
-        recorder.flush(false);
-        recorder
+        Self { shared, worker }
     }
     pub fn status(&self) -> Value {
-        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
-        let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner()).len();
-        json!({"enabled":self.enabled,"available":state.store.is_some()&&!state.degraded,
-            "degraded":state.degraded,"write_failures":self.failures.load(Ordering::Relaxed),
-            "recoveries":self.recoveries.load(Ordering::Relaxed),"pending_events":pending,
-            "dropped_events":self.dropped.load(Ordering::Relaxed),"pending_limit":MAX_PENDING_EVENTS,
-            "runtime_id":self.runtime,"content_recorded":false})
+        let health = self.shared.health.load(Ordering::Acquire);
+        let pending = self
+            .shared
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .len();
+        json!({"enabled":self.shared.enabled,"available":health == 1,
+            "degraded":health == 2,
+            "background_retry":self.worker.as_ref().is_some_and(RecorderWorker::is_running),"write_failures":self.shared.failures.load(Ordering::Relaxed),
+            "recoveries":self.shared.recoveries.load(Ordering::Relaxed),"pending_events":pending,
+            "dropped_events":self.shared.dropped.load(Ordering::Relaxed),"pending_limit":MAX_PENDING_EVENTS,
+            "runtime_id":self.shared.runtime,"content_recorded":false})
     }
     pub fn request_id(&self) -> Option<OpaqueId> {
-        self.flush(false);
-        self.source.as_ref().and_then(|_| OpaqueId::random().ok())
+        self.shared.flush(false);
+        self.shared
+            .source
+            .as_ref()
+            .and_then(|_| OpaqueId::random().ok())
     }
     /// Provider-native session ID only. An unopened store has no persistent
     /// identity namespace, so early requests retain an explicitly unknown session.
     pub fn session_id(&self, native: Option<&str>) -> Option<OpaqueId> {
         let native = native.filter(|s| !s.is_empty() && s.len() <= 256)?;
-        self.namespace
+        self.shared
+            .namespace
             .get()
             .map(|namespace| namespace.opaque("session", native))
     }
@@ -110,27 +219,86 @@ impl Recorder {
         self.emit_many(std::iter::once((identity, event)));
     }
     fn emit_many(&self, events: impl IntoIterator<Item = (Identity, Event)>) {
-        let Some(source) = &self.source else {
+        let Some(source) = &self.shared.source else {
             return;
         };
-        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
+        let mut pending = self
+            .shared
+            .pending
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         for (identity, event) in events {
             match Envelope::new(source.clone(), identity, event) {
                 Ok(envelope) => {
                     if pending.len() < MAX_PENDING_EVENTS {
                         pending.push_back(envelope);
                     } else {
-                        self.dropped.fetch_add(1, Ordering::Relaxed);
+                        self.shared.dropped.fetch_add(1, Ordering::Relaxed);
                     }
                 }
                 Err(_) => {
-                    self.failures.fetch_add(1, Ordering::Relaxed);
-                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                    self.shared.failures.fetch_add(1, Ordering::Relaxed);
+                    self.shared.dropped.fetch_add(1, Ordering::Relaxed);
                 }
             }
         }
         drop(pending);
-        self.flush(false);
+        self.shared.flush(false);
+        self.shared.wake.notify();
+    }
+    pub fn start<'a>(
+        &'a self,
+        request: Option<OpaqueId>,
+        session: Option<OpaqueId>,
+        dialect: Dialect,
+        model: Option<&str>,
+    ) -> Attempt<'a> {
+        let identity = request.and_then(|request| {
+            OpaqueId::random().ok().map(|attempt| Identity {
+                runtime_id: self.shared.runtime.clone(),
+                session_id: session,
+                request_id: Some(request),
+                attempt_id: Some(attempt),
+                tool_id: None,
+            })
+        });
+        if let Some(identity) = &identity {
+            let provider = match dialect {
+                Dialect::Anthropic => "anthropic",
+                Dialect::Responses => "responses",
+                Dialect::ChatCompletions => "chat_completions",
+            };
+            self.emit(
+                identity.clone(),
+                Event::RequestStarted {
+                    provider: provider.into(),
+                    model: model.filter(|m| data::safe_label(m)).map(String::from),
+                },
+            );
+        }
+        Attempt {
+            recorder: self,
+            identity,
+            started: Instant::now(),
+            finished: false,
+        }
+    }
+}
+impl RecorderShared {
+    fn next_flush_delay(&self) -> Option<Duration> {
+        let state = self.state.lock().unwrap_or_else(|e| e.into_inner());
+        if state.store.is_some()
+            && self
+                .pending
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .is_empty()
+        {
+            return None;
+        }
+        Some(state.next_retry.map_or(Duration::ZERO, |retry| {
+            retry.saturating_duration_since(Instant::now())
+        }))
     }
     /// One writer and one bounded batch per call. Concurrent request threads
     /// only enqueue while another writer is active, and failed storage is retried
@@ -184,65 +352,32 @@ impl Recorder {
         })();
         match result {
             Ok(()) => {
-                if state.degraded {
+                if self.health.load(Ordering::Relaxed) == 2 {
                     self.recoveries.fetch_add(1, Ordering::Relaxed);
                 }
-                state.degraded = false;
                 state.next_retry = None;
                 state.backoff = Duration::from_secs(1);
+                self.health.store(1, Ordering::Release);
             }
             Err(_) => {
                 self.failures.fetch_add(1, Ordering::Relaxed);
-                state.degraded = true;
                 state.next_retry = Some(Instant::now() + state.backoff);
                 state.backoff = (state.backoff * 2).min(Duration::from_secs(60));
+                self.health.store(2, Ordering::Release);
             }
-        }
-    }
-    pub fn start<'a>(
-        &'a self,
-        request: Option<OpaqueId>,
-        session: Option<OpaqueId>,
-        dialect: Dialect,
-        model: Option<&str>,
-    ) -> Attempt<'a> {
-        let identity = request.and_then(|request| {
-            OpaqueId::random().ok().map(|attempt| Identity {
-                runtime_id: self.runtime.clone(),
-                session_id: session,
-                request_id: Some(request),
-                attempt_id: Some(attempt),
-                tool_id: None,
-            })
-        });
-        if let Some(identity) = &identity {
-            let provider = match dialect {
-                Dialect::Anthropic => "anthropic",
-                Dialect::Responses => "responses",
-                Dialect::ChatCompletions => "chat_completions",
-            };
-            self.emit(
-                identity.clone(),
-                Event::RequestStarted {
-                    provider: provider.into(),
-                    model: model.filter(|m| data::safe_label(m)).map(String::from),
-                },
-            );
-        }
-        Attempt {
-            recorder: self,
-            identity,
-            started: Instant::now(),
-            finished: false,
         }
     }
 }
 impl Drop for Recorder {
     fn drop(&mut self) {
-        self.flush(true);
+        // The worker owns only Shared, never Recorder or its join handle.
+        // Stop/join before the final flush so no writer can outlive the owner.
+        drop(self.worker.take());
+        self.shared.flush(true);
         let pending = self
+            .shared
             .pending
-            .get_mut()
+            .lock()
             .unwrap_or_else(|e| e.into_inner())
             .len();
         if pending > 0 {
@@ -289,7 +424,7 @@ impl Attempt<'_> {
             )];
             if let (Some(metrics), Some(namespace), Some(attempt)) = (
                 metrics,
-                self.recorder.tool_namespace.as_ref(),
+                self.recorder.shared.tool_namespace.as_ref(),
                 identity.attempt_id.as_ref(),
             ) {
                 for (call_id, name) in metrics.observed_tools() {
@@ -306,6 +441,7 @@ impl Attempt<'_> {
                     ));
                 }
                 self.recorder
+                    .shared
                     .dropped
                     .fetch_add(metrics.dropped_tools, Ordering::Relaxed);
             }
@@ -831,6 +967,21 @@ mod tests {
         attempt.finish(Outcome::Success, Some(200), None);
     }
 
+    fn wait_for_idle_recorder(recorder: &Recorder) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let status = recorder.status();
+            if status["pending_events"] == 0 && status["available"] == true {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "idle recorder did not recover: {status}"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     #[cfg(unix)]
     #[test]
     fn recorder_recovers_initial_open_failure_without_changing_runtime_or_resetting_data() {
@@ -843,11 +994,10 @@ mod tests {
         assert_eq!(recorder.status()["available"], false);
         no_usage_attempt(&recorder);
         assert_eq!(recorder.status()["pending_events"], 2);
-        assert_eq!(recorder.status()["write_failures"], 1);
+        assert!(recorder.status()["write_failures"].as_u64().unwrap() >= 1);
         assert!(recorder.session_id(Some("native-session")).is_none());
         std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
-        recorder.state.lock().unwrap().next_retry = None;
-        assert!(recorder.request_id().is_some());
+        wait_for_idle_recorder(&recorder);
         assert_eq!(recorder.status()["runtime_id"], runtime);
         assert_eq!(recorder.status()["available"], true);
         assert_eq!(recorder.status()["pending_events"], 0);
@@ -863,24 +1013,111 @@ mod tests {
     }
 
     #[test]
-    fn recorder_retries_one_busy_batch_then_recovers_all_pending_events() {
+    fn recorder_recovers_busy_batch_while_idle_without_new_requests() {
         let temp = Temp::new();
         let recorder = Recorder::open_path(true, Some(temp.path()));
         let connection = rusqlite::Connection::open(temp.path()).unwrap();
         connection.execute_batch("BEGIN IMMEDIATE").unwrap();
         no_usage_attempt(&recorder);
-        assert_eq!(recorder.status()["write_failures"], 1);
+        assert!(recorder.status()["write_failures"].as_u64().unwrap() >= 1);
         assert_eq!(recorder.status()["available"], false);
         assert_eq!(recorder.status()["pending_events"], 2);
         connection.execute_batch("ROLLBACK").unwrap();
-        recorder.state.lock().unwrap().next_retry = None;
-        recorder.request_id();
+        // No request, explicit flush, or retry-clock manipulation follows release.
+        wait_for_idle_recorder(&recorder);
         assert_eq!(recorder.status()["recoveries"], 1);
         assert_eq!(recorder.status()["pending_events"], 0);
         assert_eq!(
             Store::open(&temp.path()).unwrap().status().unwrap().events,
             2
         );
+    }
+
+    #[test]
+    fn recorder_drains_more_than_one_batch_without_another_request() {
+        let temp = Temp::new();
+        let recorder = Recorder::open_path(true, Some(temp.path()));
+        let count = MAX_FLUSH_EVENTS + 17;
+        recorder.emit_many((0..count).map(|_| {
+            (
+                Identity {
+                    runtime_id: recorder.shared.runtime.clone(),
+                    request_id: Some(OpaqueId::random().unwrap()),
+                    attempt_id: Some(OpaqueId::random().unwrap()),
+                    ..Identity::default()
+                },
+                Event::RequestStarted {
+                    provider: "responses".into(),
+                    model: None,
+                },
+            )
+        }));
+        wait_for_idle_recorder(&recorder);
+        assert_eq!(
+            Store::open(&temp.path()).unwrap().status().unwrap().events,
+            count as u64
+        );
+        assert_eq!(recorder.status()["write_failures"], 0);
+        assert_eq!(recorder.status()["dropped_events"], 0);
+    }
+
+    #[test]
+    fn recorder_status_is_nonblocking_and_concurrent_tail_drains_without_new_requests() {
+        let temp = Temp::new();
+        let recorder = Recorder::open_path(true, Some(temp.path()));
+        // Deterministically make every synchronous flush take WouldBlock, as
+        // when another writer has already snapshotted its batch.
+        let writer = recorder.shared.state.lock().unwrap();
+        no_usage_attempt(&recorder);
+        // This used to acquire the SQLite writer mutex and would deadlock.
+        let status = recorder.status();
+        assert_eq!(status["pending_events"], 2);
+        assert_eq!(status["write_failures"], 0);
+        drop(writer);
+        wait_for_idle_recorder(&recorder);
+        assert_eq!(
+            Store::open(&temp.path()).unwrap().status().unwrap().events,
+            2
+        );
+    }
+
+    #[test]
+    fn recorder_owns_and_joins_worker_then_flushes_exact_pending_events() {
+        let disabled = Recorder::disabled();
+        assert_eq!(disabled.status()["background_retry"], false);
+        assert!(disabled.worker.is_none());
+        let temp = Temp::new();
+        let recorder = Recorder::open_path(true, Some(temp.path()));
+        assert_eq!(recorder.status()["background_retry"], true);
+        let shared = Arc::downgrade(&recorder.shared);
+        let connection = rusqlite::Connection::open(temp.path()).unwrap();
+        connection.execute_batch("BEGIN IMMEDIATE").unwrap();
+        no_usage_attempt(&recorder);
+        let pending: std::collections::BTreeSet<_> = recorder
+            .shared
+            .pending
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|event| event.event_id.clone())
+            .collect();
+        assert_eq!(pending.len(), 2);
+        connection.execute_batch("ROLLBACK").unwrap();
+        // Drop interrupts the worker's backoff wait, joins it, and performs
+        // the final flush without changing queued identities.
+        drop(recorder);
+        assert!(
+            shared.upgrade().is_none(),
+            "recorder worker retained shared state"
+        );
+        let saved: std::collections::BTreeSet<_> = Store::open(&temp.path())
+            .unwrap()
+            .events(&data::Query::default())
+            .unwrap()
+            .into_iter()
+            .map(|event| event.event_id)
+            .collect();
+        assert_eq!(saved, pending);
     }
 
     #[cfg(unix)]
@@ -893,7 +1130,7 @@ mod tests {
         recorder.emit_many((0..MAX_PENDING_EVENTS + 2).map(|_| {
             (
                 Identity {
-                    runtime_id: recorder.runtime.clone(),
+                    runtime_id: recorder.shared.runtime.clone(),
                     request_id: Some(OpaqueId::random().unwrap()),
                     attempt_id: Some(OpaqueId::random().unwrap()),
                     ..Identity::default()
@@ -907,7 +1144,7 @@ mod tests {
         assert_eq!(recorder.status()["pending_events"], MAX_PENDING_EVENTS);
         assert_eq!(recorder.status()["dropped_events"], 2);
         std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
-        recorder.flush(true);
+        wait_for_idle_recorder(&recorder);
         assert_eq!(recorder.status()["pending_events"], 0);
         assert_eq!(
             Store::open(&temp.path()).unwrap().status().unwrap().events,
@@ -969,6 +1206,7 @@ mod tests {
             assert!(tap.usage.is_none());
         }
         attempt.finish(Outcome::Success, Some(200), Some(&tap));
+        wait_for_idle_recorder(&recorder);
         let records = Store::open(&temp.path())
             .unwrap()
             .events(&data::Query::default())
@@ -991,6 +1229,7 @@ mod tests {
         }
         tap.event(&json!({"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":100,"output_tokens":20,"output_tokens_details":{"reasoning_tokens":10}}}}));
         attempt.finish(Outcome::Success, Some(200), Some(&tap));
+        wait_for_idle_recorder(&recorder);
         let store = Store::open(&temp.path()).unwrap();
         let events = store.events(&data::Query::default()).unwrap();
         let tools = data::metrics::tools(&events);
