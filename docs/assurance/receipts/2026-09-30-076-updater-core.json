@@ -1,7 +1,7 @@
 {
-  "schema": "gobstopper.core-kani-check.v1",
+  "schema": "gobstopper.assurance-receipt.v1",
   "observed_at": "2026-09-30T19:28:51.998853+00:00",
-  "scope": "production scalar kernels over full numeric domains; index lengths 0/1/2/4 and four-edit sequence",
+  "scope": "Selected production Rust admission, arithmetic, usage and evidence-agreement kernels under Kani.",
   "passed": true,
   "inputs_unchanged": true,
   "source_sha256": {

@@ -1,6 +1,6 @@
 {
-  "schema": "gobstopper.bounded-stress.v1",
-  "observed_at": "2026-09-30T19:41:14.872487+00:00",
+  "schema": "gobstopper.assurance-receipt.v1",
+  "observed_at": "2026-09-30T20:10:05.512285+00:00",
   "source_sha256": {
     "Cargo.lock": "3a1cc7938429b360881d42cd5a1932f96a9f597cefb7e0017016e7081c3d7612",
     "Cargo.toml": "c1990f9bac8fba453bbcf778da774589538ea97022dbeb233bc65355e5282257",
@@ -61,7 +61,7 @@
     "crates/gobstopper-cli/src/report.rs": "ee4e09f62069f64ee9e06199c7476f9ec59471b5323658e19f25f5c035e34b59",
     "crates/gobstopper-cli/src/secrets.rs": "669cd44695a4498ca28a90bbe5fbfb8675f8a90be054ec01e248d067f1c28966",
     "crates/gobstopper-cli/src/self_update/unix/files.rs": "e03c72bdab235c74b084d4bbded655004ee0deee846b41244ccad2fcaeb665d6",
-    "crates/gobstopper-cli/src/self_update/unix.rs": "620263860afb088851bd01e49e8bb35914790d0676cbf701a379581c89345567",
+    "crates/gobstopper-cli/src/self_update/unix.rs": "02cc67097ab6dd0daeffb7068d3c78b12e8a7fc6284ed08d461f16198f506fa9",
     "crates/gobstopper-cli/src/self_update.rs": "7f27e430e0af0c56b31d01d548a100aa114305c4043a1192d5aad9d4176098a7",
     "crates/gobstopper-cli/src/telemetry.rs": "f637d3f2baed2b0857285c7505a444f2efeaafce749c9ddda3181b4b65de143c",
     "crates/gobstopper-cli/src/ux.rs": "087c2205ad38b67118c715d2f88a8d5e67590e01bc039ff7ac28aca82604dfbf",
@@ -137,8 +137,8 @@
         "steps": 64,
         "corruption_recoveries": 16,
         "peak_files": 402,
-        "peak_bytes": 337989,
-        "elapsed_ms": 27786
+        "peak_bytes": 339021,
+        "elapsed_ms": 27030
       },
       "case": "sequence",
       "argv": [
@@ -156,9 +156,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "8fcdcbf92ccacb70ebe51ace3759c794e7dc48dcb3c640036da998f62686552f",
-      "elapsed_seconds": 29.790747749997536,
-      "largest_reaped_child_rss_bytes": 533741568
+      "log_sha256": "58271f75b8cd562433dd6d0710c6ac2a6bc0f9dd10d0e5dc905f857128f20c87",
+      "elapsed_seconds": 27.25036404200364,
+      "largest_reaped_child_rss_bytes": 55263232
     },
     {
       "passed": true,
@@ -215,9 +215,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "f7144466a3759312e80a9ec23626936a8e3ec7c5ba3ec996b7840fe8362f6649",
-      "elapsed_seconds": 12.336691917007556,
-      "largest_reaped_child_rss_bytes": 533741568
+      "log_sha256": "04fcdbfad042325e19233796696c86e3f65b11361f7c4ebf73e9ec8d4eca80d3",
+      "elapsed_seconds": 4.718015666003339,
+      "largest_reaped_child_rss_bytes": 55263232
     },
     {
       "passed": true,
@@ -268,9 +268,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "97e9754c98ed62ac0de6660a5a2bcf274253f07aba48e7dc3edacc9ac532bfa0",
-      "elapsed_seconds": 0.1298433330084663,
-      "largest_reaped_child_rss_bytes": 533741568
+      "log_sha256": "7035ee7a4edac1c8d27dac172cb436c80c8c863fdfc678c4a06955b7bdb30717",
+      "elapsed_seconds": 0.12344154101447202,
+      "largest_reaped_child_rss_bytes": 55263232
     },
     {
       "passed": true,
@@ -299,9 +299,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "d5c19fe00a40731768aa854783cd703d125686ed1e4de0a53a9696d5f4b62c15",
-      "elapsed_seconds": 8.70056758399005,
-      "largest_reaped_child_rss_bytes": 55672832
+      "log_sha256": "5a41061f1dec73e495057555cf9729f18e0e6db57ef72c9415133dc2cbbf0b03",
+      "elapsed_seconds": 1.0017896670033224,
+      "largest_reaped_child_rss_bytes": 55263232
     },
     {
       "passed": true,
@@ -347,9 +347,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "e973464ff09e55787f677330ca607c6437a9895a77fb328975ee45e3fd0c0238",
-      "elapsed_seconds": 0.49868645798414946,
-      "largest_reaped_child_rss_bytes": 55672832
+      "log_sha256": "f1d568740bf117e6849b77dc2e4adadf21d98e564600e1ae1991b90f69f86e8e",
+      "elapsed_seconds": 0.5114398339937907,
+      "largest_reaped_child_rss_bytes": 55263232
     },
     {
       "passed": true,
@@ -430,9 +430,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "b799523012fe36e8da03545595373c9db05a5c864fb8560b46a7303c75de08b5",
-      "elapsed_seconds": 38.26492975000292,
-      "largest_reaped_child_rss_bytes": 533741568
+      "log_sha256": "9e34d7fea27903070ea77efa2a071491e8723c75a745df9baf2955bb2910ac81",
+      "elapsed_seconds": 38.36004237498855,
+      "largest_reaped_child_rss_bytes": 55263232
     },
     {
       "passed": true,
@@ -461,9 +461,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "3ac0eb7884b47fe53a7901efd20cff10a6e545c9a491a10d2721ba08219704c4",
-      "elapsed_seconds": 5.202188875002321,
-      "largest_reaped_child_rss_bytes": 533741568
+      "log_sha256": "23497be6e9d0d7cb3898c70c552ea2b770699a9c11d8d62c388c60cea11d7e84",
+      "elapsed_seconds": 4.880153041012818,
+      "largest_reaped_child_rss_bytes": 55263232
     },
     {
       "passed": true,
@@ -511,9 +511,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "7650918877c28c225e0a94926be1a8c85c12a665bf5c72cda17758a9450c8e39",
-      "elapsed_seconds": 2.2172703340183944,
-      "largest_reaped_child_rss_bytes": 533741568
+      "log_sha256": "6246c2cfd80142146734be308d531375cb9c696e6af637765ef848a7c120320c",
+      "elapsed_seconds": 2.1003323339973576,
+      "largest_reaped_child_rss_bytes": 55525376
     },
     {
       "passed": true,
@@ -560,9 +560,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "c30efa1f1a90f40488cd95f491112a8043c7252f7387284f9e4830cedffd433b",
-      "elapsed_seconds": 5.036817334010266,
-      "largest_reaped_child_rss_bytes": 533741568
+      "log_sha256": "244ee25359ddd194c425493b924f0f89a4420303b027c677a2aac3041514c4df",
+      "elapsed_seconds": 4.010924540983979,
+      "largest_reaped_child_rss_bytes": 55263232
     },
     {
       "passed": true,
@@ -617,9 +617,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "2890456e396d4fc69b77145f5a5c1c6198be1d62602f7e21ba2d23564c1ab158",
-      "elapsed_seconds": 2.3178862079803366,
-      "largest_reaped_child_rss_bytes": 533741568
+      "log_sha256": "33378ff78e05caefd9fb143f034f777f418ba90d4ab35dab69d80ff8f5487493",
+      "elapsed_seconds": 0.1313397080230061,
+      "largest_reaped_child_rss_bytes": 55263232
     },
     {
       "passed": true,
@@ -721,9 +721,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "dc6d9deb218a853d82d9bf198ec0710371d5f482f93524e7d55f97927e83ebb8",
-      "elapsed_seconds": 14.45486300002085,
-      "largest_reaped_child_rss_bytes": 533741568
+      "log_sha256": "28d99c1c17f2f6b440d8aee46ac33ec8edde0e94af1d38729a95662038e19ba3",
+      "elapsed_seconds": 14.915496417001123,
+      "largest_reaped_child_rss_bytes": 55263232
     }
   ],
   "identity_log_sha256": {
@@ -741,8 +741,22 @@
     "native journal faults are covered; not every target-registry persistence boundary has a process-crash fault seam"
   ],
   "inputs_unchanged": true,
-  "elapsed_seconds": 49.774998000008054,
-  "raw_receipt_sha256": "83d7f96a3b0302e516e121907f264b693af7d6dbab40654c47a27dd6120a20a1",
+  "elapsed_seconds": 42.0714056249999,
+  "raw_receipt_sha256": "ce96e1122e5580aa47d715c930977c6fe0b8e8049484be9071d395b68f2c7b0f",
+  "scope": "Bounded synthetic operation, process and fault suites.",
+  "raw_bounds": {
+    "total_seconds": 900,
+    "max_log_bytes_per_command": 8388608,
+    "cargo_jobs": 2,
+    "test_threads": 1,
+    "suite_workers": 3,
+    "max_observed_single_child_rss_bytes": 2147483648,
+    "sequence_steps": 64,
+    "sequence_corruption_recoveries": 16,
+    "sequence_post_step_file_limit": 1200,
+    "sequence_post_step_bytes_limit": 16777216,
+    "sequence_elapsed_ms_limit": 90000
+  },
   "exclusions": [
     "No physical power-loss or real full-volume qualification",
     "No whole-process-tree RSS theorem",

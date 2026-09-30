@@ -1,7 +1,7 @@
 {
-  "schema": "gobstopper.transcript-lean-check.v1",
+  "schema": "gobstopper.assurance-receipt.v1",
   "observed_at": "2026-09-30T19:46:35.469592+00:00",
-  "scope": "unbounded structural list laws; finite synthetic production correspondence for three provider dialects",
+  "scope": "Unbounded Lean structural list laws plus finite actual Rust dialect correspondence.",
   "source_sha256": {
     "Cargo.lock": "3a1cc7938429b360881d42cd5a1932f96a9f597cefb7e0017016e7081c3d7612",
     "Cargo.toml": "c1990f9bac8fba453bbcf778da774589538ea97022dbeb233bc65355e5282257",
