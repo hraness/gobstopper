@@ -1851,6 +1851,73 @@
         "E-FOUNDATION-SOURCE"
       ],
       "next_gate": "C15"
+    },
+    {
+      "id": "apple-release-signing",
+      "owner": "release workflow owner",
+      "reads": [
+        "release_artifact",
+        "release_credentials",
+        "release_signing_config"
+      ],
+      "writes": [
+        {
+          "state": "release_credentials",
+          "mode": "create_delete",
+          "condition": "0600 temporary P12/API key files and an isolated Keychain under the dedicated runner temporary directory; cleanup on success, failure, or handled termination."
+        },
+        {
+          "state": "release_artifact",
+          "mode": "create",
+          "condition": "Exact checked unsigned input is signed into a fresh output archive only after Accepted notarization and strict notarization verification."
+        },
+        {
+          "state": "release_submission",
+          "mode": "create_replace",
+          "condition": "Allowlisted submission UUID, status, and file hashes outside credential cleanup; no private keys or service logs."
+        },
+        {
+          "state": "process_state",
+          "mode": "spawn",
+          "condition": "Bounded fixed-path Apple security, codesign, and notarytool subprocesses with an allowlisted environment; downloaded executable is not run by the helper."
+        }
+      ],
+      "outbound": [
+        "Apple certificate timestamping and notarization via system signing tools; one submission followed by a bounded wait, without automatic retry."
+      ],
+      "authority": "Explicit release workflow on a protected release tag, exact-source successful Required CI, and dedicated signing environment credentials. Standalone helper invocation requires the caller to supply that same signing authority.",
+      "invariants": [
+        "ID-1",
+        "PRIV-1",
+        "RES-1",
+        "OBS-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-AUTH",
+        "A-EXT"
+      ],
+      "source": [
+        {
+          "path": "scripts/sign-macos-release.py",
+          "anchor": "def sign("
+        },
+        {
+          "path": ".github/workflows/release.yml",
+          "anchor": "environment: hraness-apple-release"
+        }
+      ],
+      "status": "specified",
+      "bounds": "128 MiB input limit; 180-second submission transport, 15-minute Apple wait with 960-second process deadline; temporary keychain and credentials removed before any installer smoke execution.",
+      "exclusions": [
+        "No transcript, vault, or provider-account access",
+        "No automatic resubmission or publication after uncertain Apple result",
+        "No implicit Documents access or permission retention claim"
+      ],
+      "evidence": [
+        "E-APPLE-RELEASE-SOURCE"
+      ],
+      "next_gate": "C15"
     }
   ],
   "cli": [
@@ -2601,6 +2668,12 @@
       "path": "verify/stress/check.py",
       "effects": [
         "formal-runner"
+      ]
+    },
+    {
+      "path": "scripts/sign-macos-release.py",
+      "effects": [
+        "apple-release-signing"
       ]
     }
   ],

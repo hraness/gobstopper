@@ -38,12 +38,16 @@ else
 fi
 
 name="gobstopper-$version-$platform.tar.gz"
+# Only the isolated Developer ID job may create the final Mac release name.
+if [ "$platform" = darwin-aarch64 ]; then
+  name="gobstopper-$version-$platform.unsigned.tar.gz"
+fi
 mkdir -p artifacts
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 install -m 0755 "$binary" "$work/gobstopper"
 # One member, no AppleDouble companions or directory entries.
-COPYFILE_DISABLE=1 tar -czf "artifacts/$name" -C "$work" gobstopper
+COPYFILE_DISABLE=1 tar --format=ustar -czf "artifacts/$name" -C "$work" gobstopper
 printf '%s  %s\n' "$(sha256 "artifacts/$name")" "$name" > "artifacts/$name.sha256"
 
 # Re-admit the packaged bytes the way the installer will.

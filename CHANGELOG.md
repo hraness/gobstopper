@@ -2,6 +2,14 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## Unreleased
+
+Future Mac releases will use a stable Apple Developer ID identity across updates.
+
+- The release workflow signs and notarizes the Apple silicon binary after the exact source passes CI. Compilation runs without Apple credentials, and temporary signing credentials are removed before testing the final installer.
+- The Mac installer verifies the expected Apple signing team and Gobstopper identifier before executing the downloaded binary. Releases before 0.7.6 retain their original installation behavior.
+- Publication checks the exact artifact and file hashes returned by the signing job. A notarization timeout preserves the submission ID for investigation and stops publication.
+
 ## v0.7.5 - 2026-09-29
 
 Gobstopper's source packages now declare the registry versions needed for installation through crates.io once their dependencies are published.
