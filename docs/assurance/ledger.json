@@ -145,9 +145,9 @@
     },
     {
       "id": "service_state",
-      "meaning": "Owned service manifest, pending intent, immutable predecessor configuration, migration backup and logs",
+      "meaning": "Owned service manifest, pending intent, drain-operation journal, immutable predecessor configuration, migration backup and logs",
       "owner": "CLI proxy_agent",
-      "boundary": "Exact manifest/file/registration/instance identity controls repair, replacement and rollback. Unknown ownership and damaged state refuse; user sessions and credentials remain external."
+      "boundary": "Exact manifest/file/registration/process-incarnation identity controls repair, replacement and rollback. Durable external-stop uncertainty blocks activation even when a job is unregistered or its port is free. Unknown ownership and damaged state refuse; user sessions and credentials remain external."
     },
     {
       "id": "idle_sleep",
@@ -433,8 +433,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-30-080-everlasting-core.json",
-        "sha256": "c071ac043ba5156a76bdeea4628fa7568fad511c3adfee1cffb40b0546b472b7"
+        "path": "docs/assurance/receipts/2026-09-30-081-drain-core.json",
+        "sha256": "029fff6a84c519dbbe3047b44de2d05bd4da0c4959768968002ddd1013e3c615"
       }
     },
     {
@@ -496,8 +496,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-30-080-everlasting-transcript.json",
-        "sha256": "6c57ac2f41b447a7cfafaa160ebf91222859bedd5666281ef7770c2501aad983"
+        "path": "docs/assurance/receipts/2026-09-30-081-drain-transcript.json",
+        "sha256": "a2255dd14c5fd1e62669c5dc95c3e849b34b50a1a1bb081d2201f3b0df9ddb8e"
       }
     },
     {
@@ -517,8 +517,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-30-080-everlasting-final-recovery-stress.json",
-        "sha256": "6eb8a4cd2202284d42de448071d158667d6fff30830ae56dbb16d5b3f96bac9b"
+        "path": "docs/assurance/receipts/2026-09-30-081-drain-stress.json",
+        "sha256": "e6d1eaee184c5f5b2c3120608fcbb9ca917971382a895bc3abcb267ea2e319c4"
       }
     },
     {
@@ -553,8 +553,8 @@
     {
       "id": "E-EVERLASTING-SOURCE",
       "kind": "source_review",
-      "revision": "current-source; delivery revision recorded by the v0.8.0 integration PR",
-      "scope": "Current request identity/evidence, context reservations, local observation storage, service ownership and inference power-effect classifications.",
+      "revision": "current-source; delivery revisions recorded by the v0.8.0 and v0.8.1 integration PRs",
+      "scope": "Current request identity/evidence, context reservations, local observation storage, service ownership, drain-lease recovery and inference power-effect classifications.",
       "bounds": "Source inspection and synthetic test definitions; fresh execution and native platform qualification remain separate evidence.",
       "references": [
         {
@@ -592,6 +592,9 @@
         },
         {
           "path": "crates/gobstopper-cli/src/proxy.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_drain.rs"
         }
       ],
       "exclusions": [

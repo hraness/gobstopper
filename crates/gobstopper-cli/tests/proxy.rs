@@ -1,6 +1,9 @@
 //! `gobstopper proxy` end to end: the real binary between a raw HTTP client
 //! and a fake upstream, over real sockets and the system curl.
 
+#[path = "proxy/drain.rs"]
+mod drain;
+
 use gobstopper_adapters::request::{CliffConfig, Dialect, SUMMARY_HEADER};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};

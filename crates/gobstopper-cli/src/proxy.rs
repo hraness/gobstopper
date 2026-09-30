@@ -63,6 +63,7 @@ const STRIP_REQUEST: &[&str] = &[
     "trailer",
     "upgrade",
     "x-gobstopper-scope",
+    "x-gobstopper-service-id",
 ];
 /// Never relayed to the client: framing is re-established here.
 const STRIP_RESPONSE: &[&str] = &[
@@ -203,6 +204,8 @@ pub struct ProxyOpts {
     adaptive_context: bool,
     #[arg(long, hide = true)]
     service_id: Option<String>,
+    #[arg(long, hide = true, requires = "service_id")]
+    service_state_dir: Option<std::path::PathBuf>,
     /// Compact when the estimated outgoing request exceeds this many tokens;
     /// Anthropic requests that declare a 1M-token window use --threshold-1m.
     /// Keep it below the client's own auto-compaction point.
@@ -825,13 +828,20 @@ struct Proxy {
     port: u16,
     started: Instant,
     active: AtomicUsize,
-    draining: AtomicBool,
+    admission: Mutex<crate::proxy_drain::Admission>,
+    instance_id: String,
+    startup_guard: bool,
     stats: Stats,
     stats_log: StatsLog,
 }
 
 impl Proxy {
     fn new(opts: &ProxyOpts, port: u16) -> Result<Self> {
+        crate::proxy_agent::check_startup_drain(
+            opts.service_id.as_deref(),
+            opts.service_state_dir.as_deref(),
+            port,
+        )?;
         let cfg = CliffConfig {
             threshold_tokens: opts.threshold,
             keep_recent: opts.keep_recent,
@@ -862,7 +872,9 @@ impl Proxy {
             port,
             started: Instant::now(),
             active: AtomicUsize::new(0),
-            draining: AtomicBool::new(false),
+            admission: Mutex::new(crate::proxy_drain::Admission::default()),
+            instance_id: crate::proxy_agent::unique_id(),
+            startup_guard: opts.service_state_dir.is_some(),
             stats: Stats::default(),
             stats_log: StatsLog::open(),
         })
@@ -877,6 +889,12 @@ impl Proxy {
         let (entries, chars) = self.engine.store_stats();
         let totals = self.stats_log.totals(&self.stats);
         let context_available = self.control.available.load(Ordering::Acquire);
+        let mut drain = self
+            .admission
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .snapshot(Instant::now());
+        drain["startup_guard"] = json!(self.startup_guard);
         json!({
             "name": "gobstopper-proxy",
             "pid": std::process::id(),
@@ -915,7 +933,9 @@ impl Proxy {
             "all_time_est_tokens_out": totals.1,
             "stats_file": self.stats_log.path.as_ref().map(|p| p.display().to_string()),
             "active_connections": self.active.load(Ordering::Relaxed),
-            "draining": self.draining.load(Ordering::SeqCst),
+            "draining": drain["phase"] != "open",
+            "drain_control": drain,
+            "instance_id": self.instance_id,
             "uptime_secs": self.started.elapsed().as_secs(),
         })
     }
@@ -1264,10 +1284,7 @@ impl Proxy {
                 &body,
             );
         }
-        if matches!(
-            request.path(),
-            "/gobstopper/service/drain" | "/gobstopper/service/resume"
-        ) {
+        if request.path().starts_with("/gobstopper/service/") {
             if request.method != "POST"
                 || request.header("origin").is_some()
                 || self
@@ -1282,30 +1299,80 @@ impl Proxy {
                     "owned service identity is required",
                 );
             }
-            let drain = request.path().ends_with("/drain");
-            // Requests check this before AND after acquiring their activity guard.
-            // Once this store is visible, no new upstream inference may begin.
-            self.draining.store(drain, Ordering::SeqCst);
-            if drain
-                && self.power.status()["active_inference"]
-                    .as_u64()
-                    .unwrap_or(0)
-                    > 0
-            {
-                self.draining.store(false, Ordering::SeqCst);
+            if request.body.len() > 4096 {
                 return write_error(
                     &mut client,
-                    409,
-                    "active_inference",
-                    "inference is active; service was preserved",
+                    400,
+                    "invalid_request_error",
+                    "drain control body exceeds 4096 bytes",
                 );
             }
+            let mut admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+            let active = self.power.status()["active_inference"]
+                .as_u64()
+                .unwrap_or(u64::MAX);
+            let result = if let Some(action) = request
+                .path()
+                .strip_prefix("/gobstopper/service/drain-lease/")
+            {
+                let body: Value = match serde_json::from_slice(&request.body) {
+                    Ok(body) => body,
+                    Err(_) => {
+                        drop(admission);
+                        return write_error(
+                            &mut client,
+                            400,
+                            "invalid_request_error",
+                            "invalid drain control body",
+                        );
+                    }
+                };
+                if body["instance_id"] != self.instance_id || body["pid"] != std::process::id() {
+                    drop(admission);
+                    return write_error(
+                        &mut client,
+                        409,
+                        "service_identity_changed",
+                        "proxy process incarnation differs",
+                    );
+                }
+                admission
+                    .control(action, &body, active, Instant::now())
+                    .map(|mut result| {
+                        result["instance_id"] = json!(self.instance_id);
+                        result["pid"] = json!(std::process::id());
+                        result
+                    })
+            } else if matches!(
+                request.path(),
+                "/gobstopper/service/drain" | "/gobstopper/service/resume"
+            ) {
+                let drain = request.path().ends_with("/drain");
+                admission
+                    .legacy(drain, active, Instant::now())
+                    .map(|()| json!({"drained":drain}))
+            } else {
+                drop(admission);
+                return write_error(
+                    &mut client,
+                    404,
+                    "not_found",
+                    "unknown local service control action",
+                );
+            };
+            drop(admission);
+            let body = match result {
+                Ok(body) => body,
+                Err(error) => {
+                    return write_error(&mut client, 409, "service_control_conflict", error)
+                }
+            };
             return write_buffered(
                 &mut client,
                 200,
                 "OK",
                 &[("content-type".into(), "application/json".into())],
-                &serde_json::to_vec(&json!({"drained":drain}))?,
+                &serde_json::to_vec(&body)?,
             );
         }
         self.stats.requests.fetch_add(1, Ordering::Relaxed);
@@ -1319,23 +1386,21 @@ impl Proxy {
         // must not be rewritten by the ordinary Responses adapter.
         let inference = dialect.is_some()
             || (request.method == "POST" && request.path().ends_with("/responses/compact"));
-        if inference && self.draining.load(Ordering::SeqCst) {
-            return write_error(
-                client,
-                503,
-                "service_draining",
-                "the owned proxy is restarting; retry shortly",
-            );
-        }
-        let _awake = inference.then(|| self.power.acquire());
-        if inference && self.draining.load(Ordering::SeqCst) {
-            return write_error(
-                client,
-                503,
-                "service_draining",
-                "the owned proxy is restarting; retry shortly",
-            );
-        }
+        let _awake = if inference {
+            // Lease acquisition and inference admission share one lock. A drain
+            // can therefore never observe zero while a request slips upstream.
+            let mut admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
+            if admission.blocked(Instant::now()) {
+                drop(admission);
+                return write_buffered(client, 503, "Service Unavailable", &[
+                    ("content-type".into(), "application/json".into()),
+                    ("retry-after".into(), "1".into()),
+                ], br#"{"error":{"type":"service_draining","message":"the owned proxy is restarting; retry shortly"}}"#);
+            }
+            Some(self.power.acquire())
+        } else {
+            None
+        };
         let scoped = dialect.is_some() && request.header("x-gobstopper-scope").is_some();
         let control = scoped.then(|| self.control.get()).flatten();
         if scoped && control.is_none() {
@@ -2804,7 +2869,9 @@ mod tests {
             control: ContextAccess::new(None),
             context_window: None,
             service_id: None,
-            draining: AtomicBool::new(false),
+            admission: Mutex::new(crate::proxy_drain::Admission::default()),
+            instance_id: crate::proxy_agent::unique_id(),
+            startup_guard: false,
             engine: Engine::new(CliffConfig {
                 threshold_tokens,
                 ..CliffConfig::default()

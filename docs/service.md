@@ -18,7 +18,7 @@ gobstopper proxy doctor --json
 gobstopper proxy install --replace --port 8260 --no-keep-awake
 ```
 
-A replacement refuses the operation while inference is active. When idle, the owned proxy atomically stops admitting new inference before the service manager stops it. Requests arriving during replacement receive a retryable error. Retry replacement after active requests finish. An occupied port belonging to another process also stops installation. Gobstopper doesn't stop that process to obtain the port.
+On proxies with drain-lease protocol 1 and the managed startup guard, replacement pauses new inference requests and waits up to ten minutes for current requests to finish. New requests receive HTTP 503 with `Retry-After: 1`; they are not queued or forwarded. The controller renews a 30-second lease while waiting. If it disappears before committing the stop, waiting expires and admission resumes on the next status or request check. A timeout releases the waiting lease and preserves active requests. Older managed proxies retain their idle-only replacement behavior. An occupied port belonging to another process also stops installation. Gobstopper doesn't stop that process to obtain the port.
 
 | Platform | Startup and restart behavior | Requirements |
 | --- | --- | --- |
@@ -37,13 +37,27 @@ gobstopper proxy repair
 gobstopper proxy uninstall
 ```
 
-The doctor reports configuration ownership, registration with the service manager, the executable and port, any pending operation, live health, and sleep-inhibition state. A matching HTTP response alone doesn't establish that startup is configured correctly.
+The doctor reports configuration ownership, registration with the service manager, the executable and port, any pending operation, live health, sleep-inhibition state, and the drain phase. Waiting and committed drains are reported as unhealthy for ordinary use. The public status response exposes the proxy process identity, drain protocol, epoch, phase, and remaining wait; it does not expose the controller token. A matching HTTP response alone doesn't establish that startup is configured correctly.
 
-Repair recreates missing managed definitions and restarts an absent owned job. Running repair or an identical installation from the service's recorded executable also restarts an idle proxy when its running version differs from the installed version. It resumes inference admission if an interrupted stop left a healthy owned proxy paused. Installations record an immutable configuration snapshot and a journal before replacement. Repair reconciles an interrupted operation only when its files and loaded job match those recorded identities. It restores the predecessor configuration when available, or completes a first installation. It leaves externally edited files and unrelated jobs intact, and reports the mismatch.
+Repair recreates missing managed definitions and restarts an absent owned job. Running repair or an identical installation from the service's recorded executable also restarts a proxy when its running version differs from the installed version, using the same waiting lease on capable proxies. It resumes a legacy idle pause and reconciles recorded lease operations before starting a service. Installations record an immutable configuration snapshot and a journal before replacement. Repair reconciles an interrupted operation only when its files and loaded job match those recorded identities. It restores the predecessor configuration when available, or completes a first installation. It leaves externally edited files and unrelated jobs intact, and reports the mismatch.
 
 A damaged manifest, a missing executable, unavailable service manager, or changed job requires investigation before repair can proceed. On Windows, a process interruption between task registration and recording the queried task definition can require manual reconciliation; repair won't overwrite a task whose ownership it cannot establish.
 
-Uninstall stops an owned idle service and removes its startup definition. It retains observation data, logs, and backups. It refuses while inference is active or an operation needs recovery.
+Uninstall uses the same drain procedure, then removes the owned startup definition. It retains observation data, logs, and backups. Older proxies require idle inference; unresolved operations require recovery first.
+
+### Interrupted upgrades
+
+Generated service definitions record their private state directory. At startup, the proxy checks its recorded identity and that directory's journal before accepting inference. It refuses startup for commit intent, committed or submitted stops, and damaged journals. This prevents an automatic replacement process from accepting work that a delayed stop could interrupt. Public status reports `drain_control.startup_guard`.
+
+Service definitions without the recorded directory use idle-only replacement. Run `proxy install --replace` with the intended proxy settings while idle to generate a guarded definition. Older running binaries cannot gain the startup check until that first upgrade.
+
+Once active inference reaches zero, the controller commits the drain before asking the operating system to stop the service. A committed drain does not expire: reopening it after an uncertain stop could admit work that a delayed operating-system command then interrupts. Other controllers and the legacy resume endpoint cannot release it.
+
+The service journal records waiting, commit intent, committed, stop started, and stop acknowledged stages. Repair checks that journal even when the old listener or startup job has disappeared. It restarts only after the stop is acknowledged and the port is free. Startup health must identify the expected service, accepting requests, and the installed version when repair runs from the recorded executable.
+
+If the controller dies or loses a response after recording `stop_started`, repair leaves the service paused and reports the unresolved stop. Inspect `proxy doctor --json` and reconcile the operating-system operation before restarting. A dead controller, an expired timeout, or an absent listener cannot prove that a previously submitted stop will not run later. This boundary deliberately requires investigation; automatic recovery covers waiting and acknowledged stops. A crash after commit intent can prevent the replacement process from starting; if no responsive owned process remains, that state also requires investigation. Do not delete the journal or resume requests to bypass an unknown outcome.
+
+A registered but unresponsive proxy is also preserved. The controller cannot prove that new work is paused, including across an automatic process restart, so it refuses to issue a stop. The platform's own restart policy remains responsible for ordinary process exits.
 
 ### Migrate a legacy macOS service
 
