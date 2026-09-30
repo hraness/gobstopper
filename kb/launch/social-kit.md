@@ -60,10 +60,10 @@ Post 9 of 10, 202 characters
 That was one trial per setup with a non-Anthropic model, so the gap in tasks solved is within noise. It used a 45,000-token threshold, not the 128,000 default, and most tokens saved were cached rereads.
 ```
 
-Post 10 of 10, 204 characters
+Post 10 of 10, 233 characters
 
 ```text
-Status: Latest release: v0.7.4. Free and open source. The proxy and saved-session tools run on Apple silicon Macs and Linux; on Windows, the proxy works.
+Latest release: v0.7.4. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows. On Windows the proxy works; the saved-session tools need a Mac or Linux.
 
 https://gobstopper.sh/blog/introducing-gobstopper
 ```
@@ -124,10 +124,10 @@ Post 9 of 10, 202 characters
 That was one trial per setup with a non-Anthropic model, so the gap in tasks solved is within noise. It used a 45,000-token threshold, not the 128,000 default, and most tokens saved were cached rereads.
 ```
 
-Post 10 of 10, 204 characters
+Post 10 of 10, 233 characters
 
 ```text
-Status: Latest release: v0.7.4. Free and open source. The proxy and saved-session tools run on Apple silicon Macs and Linux; on Windows, the proxy works.
+Latest release: v0.7.4. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows. On Windows the proxy works; the saved-session tools need a Mac or Linux.
 
 https://gobstopper.sh/blog/introducing-gobstopper
 ```
@@ -188,10 +188,10 @@ Post 9 of 10, 202 characters
 That was one trial per setup with a non-Anthropic model, so the gap in tasks solved is within noise. It used a 45,000-token threshold, not the 128,000 default, and most tokens saved were cached rereads.
 ```
 
-Post 10 of 10, 204 characters
+Post 10 of 10, 233 characters
 
 ```text
-Status: Latest release: v0.7.4. Free and open source. The proxy and saved-session tools run on Apple silicon Macs and Linux; on Windows, the proxy works.
+Latest release: v0.7.4. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows. On Windows the proxy works; the saved-session tools need a Mac or Linux.
 
 https://gobstopper.sh/blog/introducing-gobstopper
 ```
@@ -217,7 +217,7 @@ The goal: an agent that can work for hours without dragging its whole history al
 
 That was one trial per setup with a non-Anthropic model, so the gap in tasks solved is within noise. It used a 45,000-token threshold, not the 128,000 default, and most tokens saved were cached rereads.
 
-Status: Latest release: v0.7.4. Free and open source. The proxy and saved-session tools run on Apple silicon Macs and Linux; on Windows, the proxy works.
+Latest release: v0.7.4. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows. On Windows the proxy works; the saved-session tools need a Mac or Linux.
 
 https://gobstopper.sh/blog/introducing-gobstopper
 ```
@@ -245,7 +245,7 @@ Topics: Developer Tools, Open Source, Artificial Intelligence
 - The proxy runs locally and builds the summary with fixed rules, not by asking a model. No account, nothing to sign up for, and it never edits the session files on your disk.
 - On Terminal-Bench 2.1, Claude Code through the proxy solved 61 of 89 tasks, against 60 without it, and sent 29% fewer input tokens. Built for people who run long agent sessions every day.
 - That was one trial per setup with a non-Anthropic model, so the gap in tasks solved is within noise. It used a 45,000-token threshold, not the 128,000 default, and most tokens saved were cached rereads.
-- Status: Latest release: v0.7.4. Free and open source. The proxy and saved-session tools run on Apple silicon Macs and Linux; on Windows, the proxy works.
+- Latest release: v0.7.4. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows. On Windows the proxy works; the saved-session tools need a Mac or Linux.
 - Latest release: v0.7.4. https://gobstopper.sh/blog/introducing-gobstopper
 
 ## Beats

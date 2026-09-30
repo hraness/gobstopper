@@ -32,7 +32,7 @@ const authoredBeats: readonly LaunchBeat[] = [
     headline: "Gobstopper keeps long coding sessions small",
     post: "Gobstopper is a free, open-source tool that makes long Claude Code and Codex sessions smaller. It swaps the stale middle of a session for a short summary, and keeps the original so you can get any of it back.",
     visual: { kind: "diagram", src: `${FIGURES}/gob-fuse.png` },
-    alt: "Diagram: a tall stack of blocks crosses a threshold line; with Gobstopper, the task, a summary and recent turns fit below.",
+    alt: "A tall stack of blocks crosses a threshold line; with Gobstopper, the task, a summary and recent turns fit below.",
   },
   {
     id: "resend",
@@ -40,7 +40,7 @@ const authoredBeats: readonly LaunchBeat[] = [
     headline: "Every step sends the whole session again",
     post: "A coding agent has no memory between steps. On step {stepNow} it resends the {stepsBefore} steps before it: old test logs, file listings, stack traces for bugs you already fixed. The model rereads all of it, every time.",
     visual: { kind: "diagram", src: `${FIGURES}/gob-resend.png` },
-    alt: "Diagram: columns of stacked blocks, one per step, each one block taller than the last because every step resends the rest.",
+    alt: "Columns of stacked blocks, one per step, each one block taller than the last because every step resends the rest.",
     facts: ["stepNow", "stepsBefore"],
   },
   {
@@ -49,7 +49,7 @@ const authoredBeats: readonly LaunchBeat[] = [
     headline: "Put it between your agent and the model",
     post: "Run your agent through gobstopper proxy. Once a request passes {threshold} tokens, it keeps your task and the last {keepRecent} turns word for word and replaces the old middle with a short summary. The request shrinks and keeps going.",
     visual: { kind: "mockup", id: "meter", state: { mode: "on" } },
-    alt: "Illustration: request size in one recorded session, climbing to a threshold and dropping back each time the proxy summarizes.",
+    alt: "Request size in one recorded session, as an illustration: it climbs to a threshold and drops back each time it is summarized.",
     facts: ["threshold", "keepRecent"],
     detailHref: `${COMPANION_PATH}#how-it-keeps-the-cache-warm`,
   },
@@ -59,7 +59,7 @@ const authoredBeats: readonly LaunchBeat[] = [
     headline: "Shrink a saved session, and see the cut first",
     post: "Got a saved Claude Code or Codex session that grew too big? Preview what would go, then write a smaller copy. Old tool output becomes a one-line note that says how big it was. Your messages stay word for word.",
     visual: { kind: "mockup", id: "elide", state: { mode: "copy" } },
-    alt: "Illustration: a saved coding session where old tool outputs are replaced by one-line notes and recent ones stay whole.",
+    alt: "A saved session in an illustration with a made-up project: old tool outputs become one-line notes, recent ones stay whole.",
   },
   {
     id: "undo",
@@ -67,7 +67,7 @@ const authoredBeats: readonly LaunchBeat[] = [
     headline: "Nothing is thrown away",
     post: "Before Gobstopper writes a smaller copy, it saves the original bytes in an archive on your machine. Search it for a detail the copy left out, or undo to get the original back as a session you can resume.",
     visual: { kind: "mockup", id: "vault", state: {} },
-    alt: "Illustration: terminal steps to find a session, preview a cut, write a copy, search the saved original, and undo.",
+    alt: "Terminal steps in an illustration: find a session, preview a cut, write a copy, search the saved original, and undo.",
     detailHref: `${COMPANION_PATH}#saved-sessions-and-the-vault`,
   },
   {
@@ -76,7 +76,7 @@ const authoredBeats: readonly LaunchBeat[] = [
     headline: "It runs on your machine, with no extra model call",
     post: "The proxy runs locally and builds the summary with fixed rules, not by asking a model. No account, nothing to sign up for, and it never edits the session files on your disk.",
     visual: { kind: "mockup", id: "proxy", state: {} },
-    alt: "Illustration: a terminal starts gobstopper proxy with its default threshold, then launches the coding agent through it.",
+    alt: "A terminal in an illustration: gobstopper proxy starts with its default threshold and launches the coding agent through it.",
   },
   {
     id: "bench",
@@ -94,7 +94,7 @@ const authoredBeats: readonly LaunchBeat[] = [
     headline: "Long sessions should not cost more with every step",
     post: "The goal: an agent that can work for hours without dragging its whole history along, where cutting context is always something you can check and take back.",
     visual: { kind: "mockup", id: "meter", state: { mode: "off" } },
-    alt: "Illustration: the same recorded session without a proxy, where the request size only ever grows.",
+    alt: "The same recorded session without a proxy, as an illustration: the request size only ever grows.",
   },
   {
     id: "limits",
@@ -110,9 +110,9 @@ const authoredBeats: readonly LaunchBeat[] = [
     id: "status",
     part: "status",
     headline: "Free and open source, out now",
-    post: "Status: {status}. Free and open source. The proxy and saved-session tools run on Apple silicon Macs and Linux; on Windows, the proxy works.",
+    post: "{status}. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows. On Windows the proxy works; the saved-session tools need a Mac or Linux.",
     visual: { kind: "mockup", id: "install", state: {} },
-    alt: "Illustration: the one-line install script, then gobstopper --version printing the current release.",
+    alt: "The one-line install script in an illustration, then gobstopper --version printing the current release.",
     facts: ["status"],
   },
 ];

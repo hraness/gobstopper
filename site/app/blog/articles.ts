@@ -57,7 +57,7 @@ export type BlogPost = Readonly<{
 }>;
 
 /** The launch beats were written, and their sources rechecked, on this date. */
-const BEATS_REVIEWED_ON: ArticleIsoDate = "2026-09-30";
+const BEATS_REVIEWED_ON: ArticleIsoDate = "2026-09-29";
 
 const introducing: BlogPost = {
   slug: INTRODUCING_SLUG,
