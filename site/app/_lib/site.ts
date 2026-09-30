@@ -1,9 +1,10 @@
-export const SITE_ORIGIN = "https://gobstopper.sh";
-export const SITE_NAME = "Gobstopper";
-export const SITE_TAGLINE = "Context compaction you can undo.";
-export const SITE_TITLE = `${SITE_NAME}: context compaction proxy for Claude Code and Codex`;
-export const SITE_DESCRIPTION =
-  "Gobstopper makes long coding sessions smaller. A local proxy compacts live Claude Code, Codex, opencode, Crush, Aider, and Goose requests, and file commands write a compacted copy with every original byte kept in a local vault.";
+import { productMessaging, productName, productCanonicalUrl } from "../messaging";
+
+export const SITE_ORIGIN = productCanonicalUrl;
+export const SITE_NAME = productName;
+export const SITE_TAGLINE = productMessaging.tagline;
+export const SITE_TITLE = productMessaging.headings["home-search-title"];
+export const SITE_DESCRIPTION = productMessaging.meta;
 export const GITHUB_URL = "https://github.com/hraness/gobstopper";
 /** The Hraness organization node, identified by the @id hraness.com publishes. */
 export const HRANESS_ORGANIZATION = {
