@@ -53,3 +53,13 @@ test("no social channel outside the kit", async () => {
   const kit = await read("kb/launch/social-kit.md");
   expect(kit).not.toMatch(/mastodon/iu);
 });
+
+test("social posts carry claims only: no limits beat and no platform caveat", () => {
+  const all = [...socialKit.x, ...socialKit.bluesky, ...socialKit.threads, socialKit.linkedin, ...socialKit.showHnFacts].join("\n");
+  const limits = launchBeats.find((beat) => beat.part === "limits")!;
+  expect(all).not.toContain(limits.post);
+  expect(all).not.toMatch(/within noise|cached rereads|need a Mac or Linux/iu);
+  expect(socialKit.x.length).toBe(launchBeats.length - 1);
+  // The benchmark post names the threshold it ran at, so its token figure stands on its own.
+  expect(all).toContain(`${launchFacts.benchThreshold.value}-token threshold`);
+});

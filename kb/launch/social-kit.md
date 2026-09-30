@@ -6,192 +6,174 @@ Posts go out from the @hraness account. The status is Latest release: v0.7.5. Ea
 
 ## X thread
 
-Post 1 of 10, 208 characters
+Post 1 of 9, 208 characters
 
 ```text
 Gobstopper is a free, open-source tool that makes long Claude Code and Codex sessions smaller. It swaps the stale middle of a session for a short summary, and keeps the original so you can get any of it back.
 ```
 
-Post 2 of 10, 201 characters
+Post 2 of 9, 201 characters
 
 ```text
 A coding agent has no memory between steps. On step 40 it resends the 39 steps before it: old test logs, file listings, stack traces for bugs you already fixed. The model rereads all of it, every time.
 ```
 
-Post 3 of 10, 223 characters
+Post 3 of 9, 223 characters
 
 ```text
 Run your agent through gobstopper proxy. Once a request passes 128,000 tokens, it keeps your task and the last three turns word for word and replaces the old middle with a short summary. The request shrinks and keeps going.
 ```
 
-Post 4 of 10, 209 characters
+Post 4 of 9, 209 characters
 
 ```text
 Got a saved Claude Code or Codex session that grew too big? Preview what would go, then write a smaller copy. Old tool output becomes a one-line note that says how big it was. Your messages stay word for word.
 ```
 
-Post 5 of 10, 203 characters
+Post 5 of 9, 203 characters
 
 ```text
 Before Gobstopper writes a smaller copy, it saves the original bytes in an archive on your machine. Search it for a detail the copy left out, or undo to get the original back as a session you can resume.
 ```
 
-Post 6 of 10, 173 characters
+Post 6 of 9, 173 characters
 
 ```text
 The proxy runs locally and builds the summary with fixed rules, not by asking a model. No account, nothing to sign up for, and it never edits the session files on your disk.
 ```
 
-Post 7 of 10, 187 characters
+Post 7 of 9, 217 characters
 
 ```text
-On Terminal-Bench 2.1, Claude Code through the proxy solved 61 of 89 tasks, against 60 without it, and sent 29% fewer input tokens. Built for people who run long agent sessions every day.
+On Terminal-Bench 2.1, Claude Code through the proxy with a 45,000-token threshold solved 61 of 89 tasks, against 60 without it, and sent 29% fewer input tokens. Built for people who run long agent sessions every day.
 ```
 
-Post 8 of 10, 155 characters
+Post 8 of 9, 155 characters
 
 ```text
 The goal: an agent that can work for hours without dragging its whole history along, where cutting context is always something you can check and take back.
 ```
 
-Post 9 of 10, 202 characters
+Post 9 of 9, 160 characters
 
 ```text
-That was one trial per setup with a non-Anthropic model, so the gap in tasks solved is within noise. It used a 45,000-token threshold, not the 128,000 default, and most tokens saved were cached rereads.
-```
-
-Post 10 of 10, 233 characters
-
-```text
-Latest release: v0.7.5. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows. On Windows the proxy works; the saved-session tools need a Mac or Linux.
+Latest release: v0.7.5. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows.
 
 https://gobstopper.sh/blog/introducing-gobstopper
 ```
 
 ## Bluesky thread
 
-Post 1 of 10, 208 characters
+Post 1 of 9, 208 characters
 
 ```text
 Gobstopper is a free, open-source tool that makes long Claude Code and Codex sessions smaller. It swaps the stale middle of a session for a short summary, and keeps the original so you can get any of it back.
 ```
 
-Post 2 of 10, 201 characters
+Post 2 of 9, 201 characters
 
 ```text
 A coding agent has no memory between steps. On step 40 it resends the 39 steps before it: old test logs, file listings, stack traces for bugs you already fixed. The model rereads all of it, every time.
 ```
 
-Post 3 of 10, 223 characters
+Post 3 of 9, 223 characters
 
 ```text
 Run your agent through gobstopper proxy. Once a request passes 128,000 tokens, it keeps your task and the last three turns word for word and replaces the old middle with a short summary. The request shrinks and keeps going.
 ```
 
-Post 4 of 10, 209 characters
+Post 4 of 9, 209 characters
 
 ```text
 Got a saved Claude Code or Codex session that grew too big? Preview what would go, then write a smaller copy. Old tool output becomes a one-line note that says how big it was. Your messages stay word for word.
 ```
 
-Post 5 of 10, 203 characters
+Post 5 of 9, 203 characters
 
 ```text
 Before Gobstopper writes a smaller copy, it saves the original bytes in an archive on your machine. Search it for a detail the copy left out, or undo to get the original back as a session you can resume.
 ```
 
-Post 6 of 10, 173 characters
+Post 6 of 9, 173 characters
 
 ```text
 The proxy runs locally and builds the summary with fixed rules, not by asking a model. No account, nothing to sign up for, and it never edits the session files on your disk.
 ```
 
-Post 7 of 10, 187 characters
+Post 7 of 9, 217 characters
 
 ```text
-On Terminal-Bench 2.1, Claude Code through the proxy solved 61 of 89 tasks, against 60 without it, and sent 29% fewer input tokens. Built for people who run long agent sessions every day.
+On Terminal-Bench 2.1, Claude Code through the proxy with a 45,000-token threshold solved 61 of 89 tasks, against 60 without it, and sent 29% fewer input tokens. Built for people who run long agent sessions every day.
 ```
 
-Post 8 of 10, 155 characters
+Post 8 of 9, 155 characters
 
 ```text
 The goal: an agent that can work for hours without dragging its whole history along, where cutting context is always something you can check and take back.
 ```
 
-Post 9 of 10, 202 characters
+Post 9 of 9, 160 characters
 
 ```text
-That was one trial per setup with a non-Anthropic model, so the gap in tasks solved is within noise. It used a 45,000-token threshold, not the 128,000 default, and most tokens saved were cached rereads.
-```
-
-Post 10 of 10, 233 characters
-
-```text
-Latest release: v0.7.5. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows. On Windows the proxy works; the saved-session tools need a Mac or Linux.
+Latest release: v0.7.5. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows.
 
 https://gobstopper.sh/blog/introducing-gobstopper
 ```
 
 ## Threads thread
 
-Post 1 of 10, 208 characters
+Post 1 of 9, 208 characters
 
 ```text
 Gobstopper is a free, open-source tool that makes long Claude Code and Codex sessions smaller. It swaps the stale middle of a session for a short summary, and keeps the original so you can get any of it back.
 ```
 
-Post 2 of 10, 201 characters
+Post 2 of 9, 201 characters
 
 ```text
 A coding agent has no memory between steps. On step 40 it resends the 39 steps before it: old test logs, file listings, stack traces for bugs you already fixed. The model rereads all of it, every time.
 ```
 
-Post 3 of 10, 223 characters
+Post 3 of 9, 223 characters
 
 ```text
 Run your agent through gobstopper proxy. Once a request passes 128,000 tokens, it keeps your task and the last three turns word for word and replaces the old middle with a short summary. The request shrinks and keeps going.
 ```
 
-Post 4 of 10, 209 characters
+Post 4 of 9, 209 characters
 
 ```text
 Got a saved Claude Code or Codex session that grew too big? Preview what would go, then write a smaller copy. Old tool output becomes a one-line note that says how big it was. Your messages stay word for word.
 ```
 
-Post 5 of 10, 203 characters
+Post 5 of 9, 203 characters
 
 ```text
 Before Gobstopper writes a smaller copy, it saves the original bytes in an archive on your machine. Search it for a detail the copy left out, or undo to get the original back as a session you can resume.
 ```
 
-Post 6 of 10, 173 characters
+Post 6 of 9, 173 characters
 
 ```text
 The proxy runs locally and builds the summary with fixed rules, not by asking a model. No account, nothing to sign up for, and it never edits the session files on your disk.
 ```
 
-Post 7 of 10, 187 characters
+Post 7 of 9, 217 characters
 
 ```text
-On Terminal-Bench 2.1, Claude Code through the proxy solved 61 of 89 tasks, against 60 without it, and sent 29% fewer input tokens. Built for people who run long agent sessions every day.
+On Terminal-Bench 2.1, Claude Code through the proxy with a 45,000-token threshold solved 61 of 89 tasks, against 60 without it, and sent 29% fewer input tokens. Built for people who run long agent sessions every day.
 ```
 
-Post 8 of 10, 155 characters
+Post 8 of 9, 155 characters
 
 ```text
 The goal: an agent that can work for hours without dragging its whole history along, where cutting context is always something you can check and take back.
 ```
 
-Post 9 of 10, 202 characters
+Post 9 of 9, 160 characters
 
 ```text
-That was one trial per setup with a non-Anthropic model, so the gap in tasks solved is within noise. It used a 45,000-token threshold, not the 128,000 default, and most tokens saved were cached rereads.
-```
-
-Post 10 of 10, 233 characters
-
-```text
-Latest release: v0.7.5. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows. On Windows the proxy works; the saved-session tools need a Mac or Linux.
+Latest release: v0.7.5. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows.
 
 https://gobstopper.sh/blog/introducing-gobstopper
 ```
@@ -211,13 +193,11 @@ Before Gobstopper writes a smaller copy, it saves the original bytes in an archi
 
 The proxy runs locally and builds the summary with fixed rules, not by asking a model. No account, nothing to sign up for, and it never edits the session files on your disk.
 
-On Terminal-Bench 2.1, Claude Code through the proxy solved 61 of 89 tasks, against 60 without it, and sent 29% fewer input tokens. Built for people who run long agent sessions every day.
+On Terminal-Bench 2.1, Claude Code through the proxy with a 45,000-token threshold solved 61 of 89 tasks, against 60 without it, and sent 29% fewer input tokens. Built for people who run long agent sessions every day.
 
 The goal: an agent that can work for hours without dragging its whole history along, where cutting context is always something you can check and take back.
 
-That was one trial per setup with a non-Anthropic model, so the gap in tasks solved is within noise. It used a 45,000-token threshold, not the 128,000 default, and most tokens saved were cached rereads.
-
-Latest release: v0.7.5. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows. On Windows the proxy works; the saved-session tools need a Mac or Linux.
+Latest release: v0.7.5. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows.
 
 https://gobstopper.sh/blog/introducing-gobstopper
 ```
@@ -229,7 +209,7 @@ Tagline: Context compaction you can undo.
 Description:
 
 ```text
-Gobstopper makes long Claude Code and Codex sessions smaller. Preview each cut, write a compacted copy, and keep every original byte in a local vault.
+Gobstopper makes long Claude Code and Codex sessions smaller. A local proxy compacts live requests, and saved sessions get a smaller copy beside the original.
 ```
 
 Topics: Developer Tools, Open Source, Artificial Intelligence
@@ -243,9 +223,8 @@ Topics: Developer Tools, Open Source, Artificial Intelligence
 - Got a saved Claude Code or Codex session that grew too big? Preview what would go, then write a smaller copy. Old tool output becomes a one-line note that says how big it was. Your messages stay word for word.
 - Before Gobstopper writes a smaller copy, it saves the original bytes in an archive on your machine. Search it for a detail the copy left out, or undo to get the original back as a session you can resume.
 - The proxy runs locally and builds the summary with fixed rules, not by asking a model. No account, nothing to sign up for, and it never edits the session files on your disk.
-- On Terminal-Bench 2.1, Claude Code through the proxy solved 61 of 89 tasks, against 60 without it, and sent 29% fewer input tokens. Built for people who run long agent sessions every day.
-- That was one trial per setup with a non-Anthropic model, so the gap in tasks solved is within noise. It used a 45,000-token threshold, not the 128,000 default, and most tokens saved were cached rereads.
-- Latest release: v0.7.5. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows. On Windows the proxy works; the saved-session tools need a Mac or Linux.
+- On Terminal-Bench 2.1, Claude Code through the proxy with a 45,000-token threshold solved 61 of 89 tasks, against 60 without it, and sent 29% fewer input tokens. Built for people who run long agent sessions every day.
+- Latest release: v0.7.5. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows.
 - Latest release: v0.7.5. https://gobstopper.sh/blog/introducing-gobstopper
 
 ## Beats
@@ -258,8 +237,7 @@ Topics: Developer Tools, Open Source, Artificial Intelligence
 6. It runs on your machine, with no extra model call
 7. Tested on real terminal tasks
 8. Long sessions should not cost more with every step
-9. What one benchmark run does not show
-10. Free and open source, out now
+9. Free and open source, out now
 
 ## Facts and their records
 
