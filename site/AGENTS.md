@@ -18,4 +18,4 @@ This block is written and re-added by `next dev` — verify at `node_modules/nex
 - Copy-only changes can rely on CI. Pull requests that touch only the site skip the Rust gates, so the site result arrives in about two minutes.
 - `GOBSTOPPER_BROWSER_CONTEXTS` sets how many (width, theme) contexts run at once (default 3). Set it to 1 to reproduce a failure serially; failure screenshots are saved per context as `failure-<width>-<theme>.png`.
 
-- Website names, product descriptions, hero copy, and named headings read the repository-root `portfolio-messaging.generated.json` projection of `https://hraness.com/portfolio.json`. Edit the canonical Jungle portfolio registry and refresh that snapshot; ordinary builds never fetch or rewrite it.
+- Website names, product descriptions, hero copy, and named headings read the website-local `portfolio-messaging.generated.json` projection of `https://hraness.com/portfolio.json`. Edit the canonical Jungle portfolio registry and refresh that snapshot; ordinary builds never fetch or rewrite it.
