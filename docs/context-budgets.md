@@ -78,6 +78,9 @@ reservation that must be re-armed:
 gobstopper context create --context-window 1000000 --client-context-window 1000000 --threshold 512000 --json
 ```
 
+After upgrading Gobstopper, restart any running proxy before using a standing
+threshold.
+
 Requests in that scope compact at the scope's threshold instead of
 `--threshold` or `--threshold-1m`, and `limiting_reason` reports
 `scope_threshold`. The same capacity rules apply: a threshold above the
