@@ -21,7 +21,8 @@ test("the launch kit passes the shared checks", () => {
 test("the status comes from the release record", () => {
   expect(String(LAUNCH_STATUS)).toBe(`Latest release: v${publishedRelease!.version}`);
   const status = launchBeats.find((beat) => beat.id === "status")!;
-  expect(status.post).toContain(LAUNCH_STATUS);
+  expect(status.socialPost).toContain(LAUNCH_STATUS);
+  expect(status.post).not.toContain(LAUNCH_STATUS);
 });
 
 test("request defaults match the proxy source", async () => {

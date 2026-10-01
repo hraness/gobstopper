@@ -17,14 +17,13 @@ export const BLOG_PATH = "/blog";
 export const BLOG_FEED_PATH = "/blog/feed.xml";
 export const BLOG_TITLE = "Gobstopper blog";
 export const BLOG_DESCRIPTION =
-  "How Gobstopper compacts Claude Code and Codex sessions, and how its archive and edit limits are model-checked and proved, with what each check leaves out.";
+  "Understand context compaction, interpret token measurements, and explore the checks behind Gobstopper’s transcript edits and local archive.";
 
-const REVIEWER = "Claude Opus 5.5 (claude-opus-5-5) editorial review";
-const REVIEWED_ON: ArticleIsoDate = "2026-09-27";
-const REASSESS_ON: ArticleIsoDate = "2026-11-05";
+const REVIEWER = "Codex editorial review (AI)";
+const REVIEWED_ON: ArticleIsoDate = "2026-09-30";
+const REASSESS_ON: ArticleIsoDate = "2026-11-10";
 // The introduction was rewritten around the Terminal-Bench study and reviewed again.
-const INTRO_REVIEWED_ON: ArticleIsoDate = "2026-09-28";
-const INTRO_REASSESS_ON: ArticleIsoDate = "2026-11-09";
+const INTRO_REVIEWED_ON: ArticleIsoDate = "2026-09-30";
 
 function repo(path: string, name = "gobstopper"): string {
   return `https://github.com/hraness/${name}/blob/main/${path}`;
@@ -52,12 +51,13 @@ export type BlogPost = Readonly<{
   shareHeadline?: string;
   eyebrow: string;
   published: ArticleIsoDate;
+  updated?: ArticleIsoDate;
   keywords: readonly string[];
   admission: ArticleAdmission;
 }>;
 
 /** The launch beats were written, and their sources rechecked, on this date. */
-const BEATS_REVIEWED_ON: ArticleIsoDate = "2026-09-29";
+const BEATS_REVIEWED_ON: ArticleIsoDate = "2026-09-30";
 
 const introducing: BlogPost = {
   slug: INTRODUCING_SLUG,
@@ -67,12 +67,13 @@ const introducing: BlogPost = {
   shareLine: "Keeps long Claude Code and Codex sessions small, and keeps the original.",
   eyebrow: "Release",
   published: "2026-09-24",
+  updated: "2026-09-30",
   keywords: ["Gobstopper", "context compaction", "coding agents", "Claude Code", "Codex", "token usage", "Terminal-Bench"],
   admission: {
     href: "/blog/introducing-gobstopper",
     lifecycle: "indexable",
     readerJob: "Decide whether to try Gobstopper, in the time it takes to read a short thread.",
-    nonObviousAnswer: "A coding agent resends its whole session on every step, so the fix is not a bigger window but a smaller request: keep the task and the latest turns, summarize the stale middle without a model, and keep the original so every cut can be checked and undone.",
+    nonObviousAnswer: "Earlier context accumulates in model requests. The proxy summarizes older turns while retaining the recent work; saved-session edits use separate copies with the original archived for recovery.",
     originalContribution: "The launch announcement as ten short beats that each make one claim and show one visual: a diagram from the benchmark, or a code-built illustration driven by real gobstopper output and one recorded session replayed offline. Every number comes from the launch facts module; the depth lives in the Terminal-Bench companion post each beat links to.",
     hostFit: "Gobstopper is the product this post introduces, published on its own site.",
     nearestUrls: [
@@ -91,16 +92,15 @@ const introducing: BlogPost = {
       source("Gobstopper public writing rules", repo("STYLE.md"), BEATS_REVIEWED_ON),
     ],
     observations: [
-      "The earlier introduction led with the benchmark; it moved to /blog/gobstopper-on-terminal-bench unchanged, and this post leads with what the tool does, keeping one beat for the result and one for its limits.",
-      "The benchmark ran at a 45,000-token threshold while the default is 128,000; the proxy beat states the default and the limits beat states both, so no beat implies the run used the default.",
-      "The meter illustration replays one recorded session offline with estimated tokens, not billed tokens, and says so in its caption; the saved-session illustrations print real gobstopper v0.7.4 output on a made-up project.",
+      "The copy now distinguishes requests sent through the proxy from the separate saved-session edit/archive workflow.",
+      "The repeated-context explanation avoids claiming the agent has no state, and the install beat presents the action without a release-status label."
     ],
-    scores: { readerUtility: 2, originalEvidence: 1, factualConfidence: 2, hostFit: 2, voiceIntegrity: 2, maintenanceValue: 1 },
+    scores: {"readerUtility": 2, "originalEvidence": 1, "factualConfidence": 2, "hostFit": 2, "voiceIntegrity": 2, "maintenanceValue": 2},
     owner: "Hraness",
     drafting: "ai-from-source",
-    review: { reviewer: REVIEWER, reviewerType: "ai", reviewedOn: BEATS_REVIEWED_ON },
+    review: { reviewer: REVIEWER, reviewerType: "ai", reviewedOn: REVIEWED_ON },
     humanReview: null,
-    reassessOn: "2026-11-09",
+    reassessOn: REASSESS_ON,
     harmIfWrong: "A reader could take one single-trial run as proof that the proxy never costs tasks, or assume the benchmark's 45,000-token threshold is the default.",
     refreshTriggers: [
       "A new gobstopper release tag (the status beat reads the release record)",
@@ -116,12 +116,13 @@ const introducing: BlogPost = {
 const terminalBench: BlogPost = {
   slug: "gobstopper-on-terminal-bench",
   body: "markdown",
-  title: "Gobstopper on Terminal-Bench: fewer tokens, the same tasks solved",
-  dek: "On Terminal-Bench 2.1 (one trial per arm, 45,000-token threshold), Claude Code behind gobstopper proxy solved about as many tasks as without it (61 vs 60 of 89, within single-trial noise) and sent 29% fewer input tokens.",
-  shareLine: "About as many tasks solved, with 29% fewer input tokens sent.",
+  title: "What a compaction benchmark can tell you",
+  dek: "Gobstopper’s Terminal-Bench study shows why input tokens, task completion, and cost need separate interpretation when you evaluate compaction.",
+  shareLine: "Read token counts, task completion, and cost separately.",
   shareHeadline: "Terminal-Bench 2.1",
   eyebrow: "Benchmark",
   published: "2026-09-24",
+  updated: "2026-09-30",
   keywords: ["context compaction", "coding agents", "Claude Code", "Terminal-Bench", "prompt caching", "CliffCompaction"],
   admission: {
     href: "/blog/gobstopper-on-terminal-bench",
@@ -149,16 +150,15 @@ const terminalBench: BlogPost = {
       source("Registered xcb relation sentence", repo("src/portfolio.generated.json", "design-kit")),
     ],
     observations: [
-      "Total input was 84.31M tokens for tail 0 against 118.55M with no proxy, while uncached input (15.6M against 15.9M) and output (2.64M against 2.71M) were about equal, so the difference is cache reads of resent context.",
-      "Tail 40, the default until v0.7.3, cost 39% more than tail 0 in provider-reported terms, the only cost interval that excludes zero, and five tasks carry 105% of that $2.25 gap.",
-      "The benchmark ran at a 45,000-token threshold while the shipped default is 128,000, so every default claim in the post is limited to the tail setting and says how to match the run.",
+      "The study separates input volume, task completion and dollar cost; the observed token reduction is not presented as established task or cost improvement.",
+      "The historical model, threshold, one-trial setup and build/log limitations stay with the data, while the surrounding lesson explains how to evaluate other workflows."
     ],
-    scores: { readerUtility: 2, originalEvidence: 2, factualConfidence: 1, hostFit: 2, voiceIntegrity: 2, maintenanceValue: 1 },
+    scores: {"readerUtility": 2, "originalEvidence": 2, "factualConfidence": 2, "hostFit": 2, "voiceIntegrity": 2, "maintenanceValue": 2},
     owner: "Hraness",
     drafting: "ai-from-source",
-    review: { reviewer: REVIEWER, reviewerType: "ai", reviewedOn: INTRO_REVIEWED_ON },
+    review: { reviewer: REVIEWER, reviewerType: "ai", reviewedOn: REVIEWED_ON },
     humanReview: null,
-    reassessOn: INTRO_REASSESS_ON,
+    reassessOn: REASSESS_ON,
     harmIfWrong: "A reader could trust a single-trial resolution or cost difference as a ranking, read gateway dollars for one model as their own bill, or assume the 128,000-token default behaves like the 45,000-token benchmark.",
     refreshTriggers: [
       "A new gobstopper release tag (the status line must be rechecked)",
@@ -176,18 +176,19 @@ const proofs: BlogPost = {
   slug: "proofs-for-the-admission-math",
   body: "markdown",
   title: "What Kani and Lean prove about Gobstopper's compaction",
-  dek: "Gobstopper uses Kani to check its edit limits and token sums for every value of their numeric inputs, and Lean to prove that masking keeps each record's ID, order, and tool links.",
+  dek: "Kani checks Gobstopper’s numeric edit limits. Lean proves which transcript relationships survive masking, and tests connect that model to the program.",
   shareLine: "Kani checks limits; Lean proves masking laws.",
   shareHeadline: "What Kani and Lean prove about compaction",
   eyebrow: "Technique",
   published: "2026-09-24",
+  updated: "2026-09-30",
   keywords: ["Kani", "Lean", "Rust", "formal proofs", "context compaction", "coding agents"],
   admission: {
     href: "/blog/proofs-for-the-admission-math",
     lifecycle: "indexable",
     readerJob: "Find out which parts of Gobstopper's compaction logic are proved, with which tools, and what the proofs leave out.",
     nonObviousAnswer: "The proofs cover edit-plan limits, token-estimate arithmetic and structural masking laws, not the context budget or recovery of the original transcript; a Rust test replays the Lean cases through the shipped Codex and Claude Code code paths, and planted bugs show each check can fail.",
-    originalContribution: "Shows the real Kani harness and Lean theorem statements from the repository, lists the laws in plain words, and states the fixed sizes, trusted components, and correspondence coverage the proofs leave out.",
+    originalContribution: "Explains admission boundaries and transcript masking laws with a concrete retry example, then distinguishes model statements from the Rust parsing and file-edit path.",
     hostFit: "A product-specific technique post about Gobstopper's own proofs, on Gobstopper's host.",
     nearestUrls: [
       { url: "/blog/vault-models-that-fail-on-purpose", distinction: "That post covers the TLA+ models of the archive; this one covers Kani and Lean proofs of edit limits and masking." },
@@ -208,11 +209,10 @@ const proofs: BlogPost = {
       source("Public wording rule for verification claims", repo("STYLE.md")),
     ],
     observations: [
-      "The v0.2.1 release tag contains neither the limit module nor the verify directory; both first shipped in v0.3.0, and the proof files are unchanged between the v0.5.0 tag and the main branch of September 26, 2026.",
-      "The working title claimed the proofs bound the context budget; reading the harnesses showed they bound edit-plan limits and token arithmetic instead, and the title was changed to say so.",
-      "On September 24, 2026 the source hashes in the Kani and Lean run records still matched the main branch the post was checked against.",
+      "Scalar boundary checks and transcript list laws answer distinct failure questions; neither substitutes for the other.",
+      "The revised fixed-ID/protection-flag masking law and file-edit scope avoid implying the proxy or every public repeated request inherits the model proof."
     ],
-    scores: { readerUtility: 2, originalEvidence: 2, factualConfidence: 2, hostFit: 2, voiceIntegrity: 2, maintenanceValue: 1 },
+    scores: {"readerUtility": 2, "originalEvidence": 2, "factualConfidence": 2, "hostFit": 2, "voiceIntegrity": 2, "maintenanceValue": 2},
     owner: "Hraness",
     drafting: "ai-from-source",
     review: { reviewer: REVIEWER, reviewerType: "ai", reviewedOn: REVIEWED_ON },
@@ -220,7 +220,7 @@ const proofs: BlogPost = {
     reassessOn: REASSESS_ON,
     harmIfWrong: "A reader could believe Gobstopper proves more than it does, such as staying under a context budget or recovering the original transcript.",
     refreshTriggers: [
-      "A new gobstopper release tag (the status sentence says the release includes the proofs)",
+      "Changes to the admission limits or transcript masking behavior",
       "Change to crates/gobstopper-core/src/admission.rs or estimate.rs (limits, constants, Kani harnesses)",
       "Change to verify/transcript/Transcript.lean theorem count or names, or to the correspondence case and step counts",
       "New run record or status change for CLAIM-CORE or CLAIM-TRANSCRIPT in docs/assurance/claims.json",
@@ -234,11 +234,12 @@ const vault: BlogPost = {
   slug: "vault-models-that-fail-on-purpose",
   body: "markdown",
   title: "How Gobstopper model-checks its archive against crashes",
-  dek: "Gobstopper model-checks its archive design with a crash allowed at every step, and each model has broken copies, each with one safety rule switched off, that must reproduce the loss that rule prevents.",
+  dek: "A save can succeed while cleanup deletes its data. Gobstopper’s archive models show how locks and recovery pins prevent that race.",
   shareLine: "Switching off any rule must reproduce a loss.",
   shareHeadline: "Model-checking the archive for crashes",
   eyebrow: "Technique",
   published: "2026-09-24",
+  updated: "2026-09-30",
   keywords: ["Gobstopper", "TLA+", "model checking", "property testing", "crash recovery", "transcripts"],
   admission: {
     href: "/blog/vault-models-that-fail-on-purpose",
@@ -266,11 +267,10 @@ const vault: BlogPost = {
       source("CI workflow: ledger check on every run and a job that reruns both models", repo(".github/workflows/ci.yml")),
     ],
     observations: [
-      "The TLA+ models were added on September 23, 2026, after the v0.2.1 tag of September 18; v0.3.0 was the first release to include them.",
-      "The September 26 edit said each safety rule has a broken copy; the archive model checks four rules with two broken copies (verify/vault/README.md), so the September 27 fact review changed the dek and opening to say each model has broken copies.",
-      "Cleanup does not keep every indexed snapshot: it keeps the ones its retention setting selects plus pinned ones, and the CLI's prune keeps the newest 10 per session by default.",
+      "Locks protect overlapping operations while durable pins retain recovery data after a process has ended.",
+      "The shrunk Rust regression examples connect finite model claims to concrete transform bugs, including a replacement larger than its input and changes on a repeated edit."
     ],
-    scores: { readerUtility: 1, originalEvidence: 2, factualConfidence: 2, hostFit: 2, voiceIntegrity: 2, maintenanceValue: 1 },
+    scores: {"readerUtility": 2, "originalEvidence": 2, "factualConfidence": 2, "hostFit": 2, "voiceIntegrity": 2, "maintenanceValue": 2},
     owner: "Hraness",
     drafting: "ai-from-source",
     review: { reviewer: REVIEWER, reviewerType: "ai", reviewedOn: REVIEWED_ON },
@@ -278,8 +278,8 @@ const vault: BlogPost = {
     reassessOn: REASSESS_ON,
     harmIfWrong: "A reader could trust the archive through failures the models do not cover, such as a power cut that loses unsynced writes.",
     refreshTriggers: [
-      "A new gobstopper release tag (the status sentence says the release includes the models and tests)",
-      "Any change to verify/vault/Vault.tla, Publication.tla, verify/watch/Watch.tla or their configs, or a new receipt in docs/assurance/receipts (state counts 25,810 / 28,082 / 32,251, variant and witness counts)",
+      "Changes to the file-edit/archive behavior described by the article",
+      "Any change to verify/vault/Vault.tla, Publication.tla, verify/watch/Watch.tla or their configs, or a new receipt in docs/assurance/receipts",
       "Change to the save order, lock scheme, pin rule or prune retention default (newest 10 per session) in the vault code",
       "Change to surgery_hegel.rs command range (1 to 12), case count (64) or the two regression tests",
       "Native compaction requests enabled in released builds",

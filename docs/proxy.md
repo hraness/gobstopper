@@ -5,8 +5,8 @@ provider. When a request passes the threshold, it sends the head verbatim,
 one mechanical summary of the older turns, and the last three turns
 verbatim; a positive `--keep-tail-percent` can keep older whole turns too.
 The provider then reports the smaller
-size back to the client, so the client's own auto-compaction does not reach
-its trigger. Session files are not changed. The summary rule is
+size back to the client, which can delay the client’s own auto-compaction
+trigger. Session files are not changed. The summary rule is
 CliffCompaction's (Nguyen, Cho, Chen and Dettmers,
 [arXiv:2609.26779](https://arxiv.org/abs/2609.26779)); the port's MIT notice
 is in [THIRD_PARTY_NOTICES.md](../THIRD_PARTY_NOTICES.md), and
@@ -21,13 +21,7 @@ custom provider address can use it:
 | OpenAI Responses | `.../responses` | Codex |
 | OpenAI Chat Completions | `.../chat/completions` | opencode, Crush, Aider, Goose, other OpenAI-compatible clients |
 
-The proxy has shipped in tagged releases since v0.3.1, and the Chat
-Completions dialect since v0.4.0. The tail budget (`--keep-tail-percent`) and
-the separate 1M threshold (`--threshold-1m`) shipped in v0.5.0, carrying the
-conversation across compactions (`--carry-max-chars`) in v0.6.0, and
-estimate calibration (`--no-calibrate`) in v0.7.0. The tail budget defaults
-to 0 since v0.7.3; it was 40 from v0.5.0 through v0.7.2. The proxy needs the
-system `curl`, version 8.3 or later (`curl --version`).
+The proxy requires system `curl` 8.3 or later. Check it with `curl --version`.
 
 ## What you get
 
@@ -44,9 +38,9 @@ system `curl`, version 8.3 or later (`curl --version`).
 - **A stable prompt cache.** Between compactions, every request carries the
   same compacted prefix byte for byte, so the provider's prompt cache keeps
   matching until the next compaction.
-- **The agent's own compaction stays idle.** The provider reports the
-  compacted size, so the client does not reach its auto-compaction trigger.
-  Its transcript keeps the full history, and resume works as before.
+- **Fewer native compaction triggers.** The provider reports the compacted
+  size, which can keep the client below its trigger. Client limits still
+  apply, and its transcript keeps the full history.
 - **Failures send the original.** An unparseable body, an internal error, or
   a provider rejection for any reason other than length sends the client's
   original bytes when they fit an explicitly configured hard context capacity.
@@ -251,7 +245,7 @@ declares a 1M-token window, pass `--threshold 256000`.
 | `--threshold` | 128000 | Compact when the estimated outgoing request exceeds this many tokens. Applies to every OpenAI-dialect request and to Anthropic requests that do not declare a 1M-token window; those that do use `--threshold-1m`. Keep it below the client's own auto-compaction point. |
 | `--threshold-1m` | 256000, or `--threshold` if higher | `serve` and `run` only. The threshold for Anthropic Messages requests whose `anthropic-beta` header lists a token starting with `context-1m`. It can't be lower than `--threshold`; an equal value applies one threshold to every request. Keep it below the client's own auto-compaction point, including any `claude --autocompact` value. |
 | `--keep-recent` | 3 | Newest assistant steps kept verbatim. A request still over the threshold after one pass keeps one. |
-| `--keep-tail-percent` | 0 | Share of the room under the threshold, after the fixed request fields and the head, that the summary and the kept steps may fill. Older whole steps are kept while they fit. From 0 to 60; `0` keeps exactly `--keep-recent` steps, as CliffCompaction does. The default was 40 before v0.7.3; `--keep-tail-percent 40` restores it. |
+| `--keep-tail-percent` | 0 | Share of the room under the threshold, after the fixed request fields and the head, that the summary and the kept steps may fill. Older whole steps are kept while they fit. From 0 to 60; `0` keeps exactly `--keep-recent` steps, as CliffCompaction does. Use a positive value to keep additional older turns. |
 | `--result-max-chars` | 500 | Older tool results longer than this are dropped from the summary; shorter ones stay verbatim. |
 | `--carry-max-chars` | 24000 | Characters of the human's words and the assistant's visible replies that each summary carries forward from the turns earlier compactions summarized. The oldest text drops out first, and the carried text takes at most a quarter of the room under the threshold after the fixed request fields and the head. `0` turns carrying off. |
 | `--drop-thinking` | off | Leave thinking and reasoning text out of summaries. |
@@ -310,8 +304,7 @@ lines are illustrative.*
   files and command output the agent read most recently, which the summary
   omits once they pass 500 characters unless evidence carry selects them.
   At the default, 0, the tail is
-  exactly the newest `--keep-recent` turns. At 40%, the default through
-  v0.7.2, a compacted request leaves 60% of that room for new turns before
+  exactly the newest `--keep-recent` turns. At 40%, a compacted request leaves 60% of that room for new turns before
   the next compaction. A higher floor leaves less room, so we expect the
   proxy to compact more often and every request between compactions to be
   larger. Replay agrees in direction: over 24 recorded sessions, tail 40
@@ -405,8 +398,7 @@ lines are illustrative.*
 ### Where it departs from CliffCompaction
 
 The proxy ports CliffCompaction's summary rule, prefix reuse, and retry on a
-length rejection. It departs from the reference in seven ways, six of them
-on by default.
+length rejection. The options below control its departures from that rule.
 
 | # | Departure | Default | Restore the reference |
 |---|---|---|---|
@@ -438,10 +430,8 @@ sessions before you lower it.
 ## Estimate calibration
 
 The proxy estimates a request at four characters per token. Claude models
-count more: on the September 26, 2026 incident session, provider-reported
-input ran 13% to 38% above the estimate, so the 128,000-token threshold
-fired at 144,000 to 176,000 reported tokens, too late for a client with a
-200,000-token window.
+count more: the ratio depends on the model and the request. Calibration uses reported
+usage to adjust later compaction thresholds when the byte estimate runs low.
 
 - After relaying a response, the proxy reads its `usage`: for Anthropic
   Messages, `input_tokens` plus `cache_creation_input_tokens` and

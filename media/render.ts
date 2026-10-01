@@ -15,6 +15,8 @@
  * lives in the repository's shared Git directory, so every worktree sees the same one.
  */
 import { createHash, randomBytes } from "node:crypto";
+import { createRequire } from "node:module";
+import { pinnedBrowserExecutable } from "../site/scripts/owned-browser.mjs";
 import { existsSync, readFileSync, statfsSync } from "node:fs";
 import { copyFile, mkdir, open, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
@@ -33,7 +35,7 @@ const RECEIPTS = join(OUT, "receipts");
 const DATA_DIR = join(REPO, "site/public/benchmarks/2026-09-28");
 const DATA_FILES = ["terminal-bench-results.json", "replay-grid.json", "sawtooth-series.json"] as const;
 const SLOPCAMERA = process.env.SLOPCAMERA_BIN ?? join(process.env.HOME ?? "", ".bun/bin/slopcamera");
-const EXPECTED_SLOPCAMERA = "3.4.0";
+const EXPECTED_SLOPCAMERA = "3.9.1";
 const FPS = 30;
 const SEED = 20260928;
 const MAX_HTML_BYTES = 1024 * 1024;
@@ -405,6 +407,8 @@ function slopcameraVersion(): string {
 }
 
 async function slopcamera(requestPath: string, dryRun: boolean, logPath: string): Promise<Record<string, unknown>> {
+  const siteRequire = createRequire(join(REPO, "site/package.json"));
+  const browser = await pinnedBrowserExecutable(siteRequire("playwright-core").chromium.executablePath());
   const args = [SLOPCAMERA, "html", "render", "--input", relative(MEDIA, requestPath), "--json"];
   if (dryRun) args.push("--dry-run");
   const logFile = await open(logPath, "w", 0o600);
@@ -413,7 +417,7 @@ async function slopcamera(requestPath: string, dryRun: boolean, logPath: string)
   try {
     const child = Bun.spawn(args, {
       cwd: MEDIA,
-      env: { ...process.env, SLOPCAMERA_REPOSITORY_ROOT: MEDIA },
+      env: { ...process.env, SLOPCAMERA_REPOSITORY_ROOT: MEDIA, SLOPCAMERA_HTML_BROWSER: browser },
       stdout: "pipe",
       stderr: logFile.fd,
       timeout: RENDER_TIMEOUT_MS,

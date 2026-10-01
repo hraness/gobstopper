@@ -41,7 +41,7 @@ export function renderPostHtml(source: string): RenderedPost {
   return { html: highlightCodeBlocks(rendered), toc };
 }
 
-const FIGURE = /<p>(<img [^>]*\/?>)<\/p>\n<p><em>(Figure \d+\.[\s\S]*?)<\/em>(?:\n([\s\S]*?))?<\/p>/gu;
+const FIGURE = /<p>(<img [^>]*\/?>)<\/p>\n<p><em>([\s\S]+?)<\/em>(?:\n([\s\S]*?))?<\/p>/gu;
 
 function captionFigures(html: string): string {
   let index = 0;
@@ -51,6 +51,6 @@ function captionFigures(html: string): string {
     const source = provenance?.trim() ? `<span class="gob-post-figure__prov">${provenance.trim()}</span>` : "";
     return `<figure class="gob-post-figure">${img}<figcaption><span class="gob-post-figure__caption">${caption.trim()}</span>${source}</figcaption></figure>`;
   });
-  if (/<p>\s*<img\b|<p><img\b/u.test(figured)) throw new Error("Every post image needs an italic \"Figure N.\" caption paragraph right after it.");
+  if (/<p>\s*<img\b|<p><img\b/u.test(figured)) throw new Error("Every post image needs an italic caption paragraph right after it.");
   return figured;
 }

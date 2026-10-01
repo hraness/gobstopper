@@ -14,7 +14,7 @@ const localOrigin = localVerificationOrigin(values['local-origin'], values.produ
 const repository = resolve(import.meta.dirname, '..');
 const artifacts = resolve(repository, '.impeccable/review', `public-${Date.now()}`);
 await mkdir(artifacts, { recursive: true });
-const routes = ['/', '/docs', '/benchmarks', '/methodology', '/compare/claude-code-compact', '/compare/cliffcompaction', '/blog', '/blog/introducing-gobstopper', '/blog/proofs-for-the-admission-math', '/blog/vault-models-that-fail-on-purpose', '/missing-public-verification'];
+const routes = ['/', '/docs', '/benchmarks', '/methodology', '/compare/claude-code-compact', '/compare/cliffcompaction', '/blog', '/blog/introducing-gobstopper', '/blog/gobstopper-on-terminal-bench', '/blog/proofs-for-the-admission-math', '/blog/vault-models-that-fail-on-purpose', '/missing-public-verification'];
 const anchors = ['/#terminal-bench', '/benchmarks#terminal-bench-2026-09-28'];
 const errors = [];
 const records = [];
@@ -104,6 +104,7 @@ try {
       const response = await page.goto(origin + path, { waitUntil: 'load' });
       assert.equal(response.status(), path === '/missing-public-verification' ? 404 : 200, label);
       await page.evaluate(async () => { await document.fonts.ready; });
+      await page.locator('img').evaluateAll(images => Promise.all(images.map(image => { image.loading = 'eager'; return image.decode(); })));
       assert.match(await page.title(), /Gobstopper/i, label);
       assert.equal(await page.locator('h1').count(), 1, label);
       assert.equal(await page.locator('#hraness-site-footer').count(), 1, label);

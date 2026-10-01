@@ -24,9 +24,10 @@ media/
 
 ## Prerequisites
 
-- Slopcamera 3.4.0 at `~/.bun/bin/slopcamera` (`slopcamera --version` prints `3.4.0`). Set `SLOPCAMERA_BIN` to use another path.
+- Slopcamera 3.9.1 at `~/.bun/bin/slopcamera` (`slopcamera --version` prints `3.9.1`). Set `SLOPCAMERA_BIN` to use another path.
 - ffmpeg 7.1.x on `PATH`.
 - Bun 1.3.14.
+- The site dependencies installed from `site/bun.lock`, and Chromium provisioned with `bun site/node_modules/playwright-core/cli.js install chromium`. The renderer resolves that pinned executable and rejects installed Google Chrome.
 - `uv`, for the soundtrack.
 
 Run commands from the repository root.
@@ -72,7 +73,7 @@ bun media/render.ts stills && bun media/render.ts shots && uv run --with numpy -
 
 ## One render at a time
 
-Each render starts its own Chrome. Only one may run on the machine at a time, including renders from other worktrees of this repository.
+Each render uses the site’s pinned Playwright Chrome for Testing through Slopcamera’s `SLOPCAMERA_HTML_BROWSER` setting. The Slopcamera profile mutes audio and disables `PaintHolding,MacAppCodeSignClone`. It creates a temporary browser profile and closes its browser after rendering. Only one may run on the machine at a time, including renders from other worktrees of this repository.
 
 `render.ts` enforces this with a lock file in the repository's shared Git directory (`git rev-parse --git-common-dir`, file `gob-render.lock`), so every worktree sees the same lock. Set `GOB_RENDER_LOCK` to use another path. A render that finds the lock taken checks again every 30 seconds and gives up after 20 minutes. It removes a lock it did not create only when that lock belongs to a single render whose process no longer exists on this machine, for example after the render was killed or the machine restarted. It logs `reclaimed-stale-lock` when it does. A session lock from `lock hold` is never removed this way, because its `hold` process exits by design.
 

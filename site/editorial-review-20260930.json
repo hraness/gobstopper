@@ -1,0 +1,120 @@
+{
+  "reviews": [
+    {
+      "slug": "introducing-gobstopper",
+      "file": "site/app/launch/beats.ts",
+      "bodySha256": "8b71d7d3f957beedbfc8decf757217cd6d6e6b37af9eb4cbc7b785c5a3ba9ee9",
+      "approved": true,
+      "reviewScope": "Written content; final changed chart renderings await visual inspection.",
+      "reviewer": "Codex editorial review (AI)",
+      "reviewerType": "ai",
+      "reviewedOn": "2026-09-30",
+      "humanReview": null,
+      "scores": {
+        "readerUtility": 2,
+        "originalEvidence": 1,
+        "factualConfidence": 2,
+        "hostFit": 2,
+        "voiceIntegrity": 2,
+        "maintenanceValue": 2
+      },
+      "total": 11,
+      "observations": [
+        "The copy now distinguishes requests sent through the proxy from the separate saved-session edit/archive workflow.",
+        "The repeated-context explanation avoids claiming the agent has no state, and the install beat presents the action without a release-status label."
+      ]
+    },
+    {
+      "slug": "gobstopper-on-terminal-bench",
+      "file": "site/content/blog/gobstopper-on-terminal-bench.md",
+      "bodySha256": "d5964983f9cc10cbf63fd38222edb557413ccbde6bad7dbc59d3e0be25b54ded",
+      "approved": true,
+      "reviewScope": "Written content; final changed chart renderings await visual inspection.",
+      "reviewer": "Codex editorial review (AI)",
+      "reviewerType": "ai",
+      "reviewedOn": "2026-09-30",
+      "humanReview": null,
+      "scores": {
+        "readerUtility": 2,
+        "originalEvidence": 2,
+        "factualConfidence": 2,
+        "hostFit": 2,
+        "voiceIntegrity": 2,
+        "maintenanceValue": 2
+      },
+      "total": 12,
+      "observations": [
+        "The study separates input volume, task completion and dollar cost; the observed token reduction is not presented as established task or cost improvement.",
+        "The historical model, threshold, one-trial setup and build/log limitations stay with the data, while the surrounding lesson explains how to evaluate other workflows."
+      ]
+    },
+    {
+      "slug": "proofs-for-the-admission-math",
+      "file": "site/content/blog/proofs-for-the-admission-math.md",
+      "bodySha256": "6d06d0acde88de237076b16b6e935a935e0cd386d3f0565865cab4cd886b8faf",
+      "approved": true,
+      "reviewScope": "Written content; final changed chart renderings await visual inspection.",
+      "reviewer": "Codex editorial review (AI)",
+      "reviewerType": "ai",
+      "reviewedOn": "2026-09-30",
+      "humanReview": null,
+      "scores": {
+        "readerUtility": 2,
+        "originalEvidence": 2,
+        "factualConfidence": 2,
+        "hostFit": 2,
+        "voiceIntegrity": 2,
+        "maintenanceValue": 2
+      },
+      "total": 12,
+      "observations": [
+        "Scalar boundary checks and transcript list laws answer distinct failure questions; neither substitutes for the other.",
+        "The revised fixed-ID/protection-flag masking law and file-edit scope avoid implying the proxy or every public repeated request inherits the model proof."
+      ]
+    },
+    {
+      "slug": "vault-models-that-fail-on-purpose",
+      "file": "site/content/blog/vault-models-that-fail-on-purpose.md",
+      "bodySha256": "df078910678d2e76ebabf396168f855b117d1765a2e6fa783ad5b0f3dfecfa02",
+      "approved": true,
+      "reviewScope": "Written content; final changed chart renderings await visual inspection.",
+      "reviewer": "Codex editorial review (AI)",
+      "reviewerType": "ai",
+      "reviewedOn": "2026-09-30",
+      "humanReview": null,
+      "scores": {
+        "readerUtility": 2,
+        "originalEvidence": 2,
+        "factualConfidence": 2,
+        "hostFit": 2,
+        "voiceIntegrity": 2,
+        "maintenanceValue": 2
+      },
+      "total": 12,
+      "observations": [
+        "Locks protect overlapping operations while durable pins retain recovery data after a process has ended.",
+        "The shrunk Rust regression examples connect finite model claims to concrete transform bugs, including a replacement larger than its input and changes on a repeated edit."
+      ]
+    }
+  ],
+  "followUpReviews": [
+    {
+      "slug": "introducing-gobstopper",
+      "file": "site/app/launch/beats.ts",
+      "bodySha256": "b1cabbc2fa20cff30c06f22623c2e908602e511b78f9f9f14492d435fa113e52",
+      "factsFile": "site/app/launch/facts.ts",
+      "factsSha256": "16ce70c8dea95000b709788f0abff16391f88068a06da80c31acc58e76138548",
+      "reviewer": "Codex editorial review (AI)",
+      "reviewerType": "ai",
+      "reviewedOn": "2026-09-30",
+      "reviewScope": "Independent follow-up by the integration agent: entire current launch beats and facts after the 0.8.3 release promotion; no tests or visual review in this follow-up.",
+      "approved": true,
+      "observations": [
+        "Proxy/file-edit distinction remains clear.",
+        "Benchmark claims retain their setup, uncertainty and fact sources.",
+        "Platform limitation remains; transient release status appears only in social text."
+      ],
+      "bodyFindings": []
+    }
+  ]
+}
