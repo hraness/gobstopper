@@ -48,7 +48,7 @@ export default function Docs() {
           heading={title}
           meta={
             <>
-              Generated from the Gobstopper README ·{" "}
+
               <a href="https://github.com/hraness/gobstopper/blob/main/README.md">Source on GitHub</a>
             </>
           }

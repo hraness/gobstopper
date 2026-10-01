@@ -126,6 +126,48 @@
           "blog": "site/public/blog/introducing-gobstopper/gob-tokens.png"
         }
       }
+    },
+    {
+      "job": "still-tokens",
+      "id": "tokens",
+      "slopcamera": "3.9.1",
+      "renderedAt": "2026-10-01T01:21:00.723Z",
+      "seconds": 41,
+      "canvas": {
+        "width": 2400,
+        "height": 1350,
+        "deviceScaleFactor": 1,
+        "layoutWidth": 1600,
+        "layoutHeight": 900,
+        "layoutZoom": 1.5
+      },
+      "holdSeconds": 0,
+      "sceneHtmlSha256": "c3346070c536a2b067ee6ecb3555bf69569fe16cafc0ccb3e4d35e904e44a090",
+      "sceneSource": "scenes/stills/tokens.html",
+      "sceneSourceSha256": "5356ab8f92d1e0dccf6a39dcdf82bd3c19743ee6adb558ef9c1cd6c21385ee52",
+      "data": {
+        "terminal-bench-results.json": "73bac5e0e26789ac9e80c0fe21c31ddb57d9e2b1c7ba3d51b2f479efa06ef5d7",
+        "replay-grid.json": "b0a2242f554e23b24db0ec4ab010fdb474cb45258870b28511681dddb8519a9f",
+        "sawtooth-series.json": "81f308e9b070a083d109873b4f84765486c9762aad1549dbdaa02a43b28b89b8"
+      },
+      "fonts": {
+        "brand/fonts/NebulaSans-Book.woff2": "4d396c7c7f93b3f9d8e90d5a8c5e28b29266243946d4320783abc3628d9ef8df",
+        "brand/fonts/NebulaSans-Medium.woff2": "5d185acda0c62e1cc156a7508a98c37c56014690e79697c071b0fd2babcb00cb",
+        "brand/fonts/NebulaSans-Semibold.woff2": "0e7cd15b1fea9ed847b48f8d53dca88f54f016c352aaa8f895731b3d44d8fc64",
+        "brand/fonts/GeistMono-wght.woff2": "afaacc4c5fbba89d2ebf7a02dc4070208540874592a5504d57175782fe893101",
+        "brand/mark.svg": "d69bc56860c4af2c2ada232787a99404297e5f0b4d806731bc77eed54f6e359a"
+      },
+      "output": {
+        "width": 2400,
+        "height": 1350,
+        "bytes": 245862,
+        "sha256": "afc4741bcfaa462482e4d23997afbea25d09fb5ccf8b576360f93cbf47d4e6c6",
+        "source": "captured frame 0",
+        "copies": {
+          "docs": "docs/assets/gob-tokens.png",
+          "blog": "site/public/blog/introducing-gobstopper/gob-tokens.png"
+        }
+      }
     }
   ]
 }

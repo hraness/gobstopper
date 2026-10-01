@@ -69,7 +69,6 @@ export default function CompareClaudeCodeCompact() {
           dek="Claude Code's /compact swaps history for a model-written summary with no preview; Gobstopper previews the cut, archives the original, and can undo it."
           eyebrow="Comparison"
           heading={title}
-          meta="Checked against Anthropic's Claude Code documentation and Gobstopper's README and source on September 26, 2026"
           toc={[
             { href: "#side-by-side", label: "Side-by-side comparison" },
             { href: "#compact-summary", label: "/compact replaces history with a model-written summary" },
@@ -93,7 +92,7 @@ export default function CompareClaudeCodeCompact() {
               { label: "Coding agents", values: ["Claude Code", "Claude Code, Codex and more"] },
               { label: "Added AI usage", values: ["Summary uses model tokens", "None by default"] },
             ]}
-            note={<>Checked September 26, 2026. Gobstopper’s file previews apply to saved copies; proxy mode handles live requests. See the source notes for limits and evidence.</>}
+            note={<>File previews apply to saved copies; proxy mode handles live requests.</>}
           />
           <details className="gob-comparison-sources">
             <summary>Read the source notes</summary>

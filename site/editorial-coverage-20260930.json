@@ -1,0 +1,82 @@
+{
+  "schemaVersion": 1,
+  "project": "gobstopper",
+  "reviewedOn": "2026-09-30",
+  "articleCount": 4,
+  "independentArticleReview": "site/editorial-review-20260930.json",
+  "scope": "Public website article bodies, marketing pages, and first-use/reference documentation; technical histories and protocol evidence keep their measurement and version context.",
+  "preservedEvidence": [
+    "Historical benchmark setup and measured results",
+    "Source-check and publication dates in structured records",
+    "Security and operational limits that change setup decisions",
+    "Existing proof receipts and internal implementation histories"
+  ],
+  "siteActions": {
+    "articles": "All four rewritten or refined with independent AI review; benchmark explains task/input/cost separately.",
+    "marketing": "Homepage inspected; comparison-page date wrappers removed; chart labels scoped to the observed study. Canonical portfolio messaging retained.",
+    "docs": "README-derived website docs and proxy reference remove release chronology, retain installation/platform requirements and protocol detail; methodology separates saved copies from live proxy requests.",
+    "rendering": "Shared date display option adopted; figure captions no longer require numbered labels."
+  },
+  "visualAudit": {
+    "family": "Existing code-authored Slopcamera analytical figures on neutral paper, with series colors and hatching for quantitative comparison; shared code mockups for product behavior.",
+    "changedScenes": [
+      "media/scenes/stills/tokens.html",
+      "media/scenes/stills/tail.html",
+      "media/scenes/stills/resend.html"
+    ],
+    "renderTool": "Slopcamera 3.9.1, site-pinned Chrome for Testing via SLOPCAMERA_HTML_BROWSER",
+    "generativeArt": "No generative editorial artwork in this collection; analytical figures retain exact source data.",
+    "pixelInspection": "All three corrected Slopcamera figures inspected. Refreshed article, home, and proof-page screenshots inspected at phone/desktop sizes in both themes; all article figures are decoded before full-page screenshots.",
+    "renderedAssets": [
+      {
+        "path": "docs/assets/gob-tokens.png",
+        "sha256": "afc4741bcfaa462482e4d23997afbea25d09fb5ccf8b576360f93cbf47d4e6c6"
+      },
+      {
+        "path": "docs/assets/gob-tail.png",
+        "sha256": "8b696ed686968f8558d4f92338c71f4ae888db4ba1d887223e2d38543bad44b9"
+      },
+      {
+        "path": "docs/assets/gob-resend.png",
+        "sha256": "9a700b4aa40bbcbdef4d56b105c890496c830b47a8caf11522b4cc40cb741b44"
+      }
+    ]
+  },
+  "validation": {
+    "state": "passed",
+    "siteGate": {
+      "command": "bun run check && bun test ../media/film.test.ts",
+      "siteTestsPassed": 169,
+      "runtimeTestsPassed": 3,
+      "filmTestsPassed": 14,
+      "failed": 0,
+      "lint": "passed",
+      "typecheck": "passed",
+      "build": "passed"
+    },
+    "stills": {
+      "command": "bun test media/stills.test.ts && bun media/scenes/film/sync.ts --check",
+      "testsPassed": 17,
+      "failed": 0,
+      "sceneSync": "passed"
+    },
+    "browser": {
+      "command": "node scripts/check-public-site-browser.mjs",
+      "checks": 72,
+      "widths": [
+        360,
+        390,
+        1440
+      ],
+      "themes": [
+        "light",
+        "dark"
+      ],
+      "browserVersion": "149.0.7827.55",
+      "browserErrors": 0,
+      "passed": true
+    },
+    "browserVerifierLint": "passed"
+  },
+  "benchmarkMirror": "Reviewed hf/MAINTAINING.md and manifest: these edited illustrations are outside the dataset allowlist; source benchmark results, protocols and mirror artifacts are unchanged."
+}

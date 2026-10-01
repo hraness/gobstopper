@@ -34,7 +34,7 @@ export const comparisonRows: readonly ComparisonRow[] = [
   {
     aspect: "Recompaction",
     cliff: "Rebuilt from the original history; the prior summary is discarded",
-    gobstopper: "The proxy rebuilds from the original history, and each summary keeps the human's words and the assistant's visible replies from the turns earlier compactions summarized, up to 24,000 characters (since v0.6.0); `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy",
+    gobstopper: "The proxy rebuilds from the original history, and each summary keeps the human's words and the assistant's visible replies from the turns earlier compactions summarized, up to 24,000 characters; `cliff` on a copy drops the same records as one pass over the source when both passes produce a plan; strategies that inject a state card carry it forward into the next copy",
   },
   {
     aspect: "What holds the originals",

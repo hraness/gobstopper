@@ -66,6 +66,7 @@ export function postDiscovery(post: BlogPost): ArticleDiscovery {
     },
     keywords: post.keywords,
     publishedTime: publishedTime(post.published),
+    ...(post.updated ? { modifiedTime: publishedTime(post.updated) } : {}),
     publisher,
     section: post.eyebrow,
     title: post.title,

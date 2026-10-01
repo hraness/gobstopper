@@ -8,17 +8,17 @@ export function GobTail() {
   return (
     <GobFigure
       alt="Diagram: two stacks after a rewrite. Tail 0 keeps your task, a summary and the last three turns. Tail 40 also keeps older turns, so it sits closer to the threshold and is rewritten again sooner."
-      caption={`In the benchmark, tail 0 cost ${F.newVsOldAbs} less in total than tail 40 in provider-reported terms, at a 45,000-token threshold (paired 95% interval ${F.oldVsNewCI}). It is one trial per task, and five tasks drive the gap. v0.7.3 makes tail 0 the default.`}
+      caption={`In the benchmark, tail 0 cost ${F.newVsOldAbs} less in total than tail 40 in provider-reported terms, at a 45,000-token threshold (paired 95% interval ${F.oldVsNewCI}). It is one trial per task, and five tasks drive the gap. Tail 0 is the default.`}
       id="tail"
       kind="diagram"
       provenance={P_TB_FULL}
-      title="Keeping more old turns meant more rewrites and more tokens"
+      title="A larger recent tail leaves less room before the next rewrite"
     >
       <GobStacks
         columns={[
-          { title: "Gobstopper, tail 0 (the new default)", slabs: TAIL.tail0 },
+          { title: "Gobstopper, tail 0 (default)", slabs: TAIL.tail0 },
           {
-            title: "Gobstopper, tail 40 (old default)",
+            title: "Gobstopper, tail 40 (larger tail)",
             slabs: TAIL.tail40,
             note: <><span aria-hidden="true" className="gob-arrow">↓</span> less room left, so the next rewrite comes sooner</>,
           },

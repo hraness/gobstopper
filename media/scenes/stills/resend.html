@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Every step resends the whole session</title>
+<title>Without compaction, earlier context accumulates</title>
 </head>
 <body>
 <script>
@@ -10,7 +10,7 @@
 Gob.scene({ palette: "paper" }, (s) => {
   const { SLAB, resendColumns } = Gob.geometry;
   const frame = s.still({
-    title: "Every step resends the whole session",
+    title: "Without compaction, earlier context accumulates",
     legend: Gob.legend([
       { label: "your task", fill: "var(--slab)", edge: "var(--ink)" },
       { label: "one step of chat and tool output", fill: "var(--slab)", edge: "color-mix(in oklab, var(--slab-edge) 45%, transparent)" },
@@ -59,7 +59,7 @@ Gob.scene({ palette: "paper" }, (s) => {
       s.text("label", "everything, again", { x: x - 60, y: topY - 22 - 14 - 10 - labelH, w: bw + 120 }, { align: "center", weight: 600 });
     }
   });
-  s.text("label", "every stacked slab is sent, and billed, again", { x: p.x, y: base + 26 + labelH + 26, w: p.w }, { align: "center", color: "var(--ink-2)" });
+  s.text("label", "earlier messages are included in the next request", { x: p.x, y: base + 26 + labelH + 26, w: p.w }, { align: "center", color: "var(--ink-2)" });
 });
 </script>
 </body>

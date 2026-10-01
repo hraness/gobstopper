@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 
+import { articleProvenanceSentence } from "@hraness/design-kit";
+import { blogPosts, postProvenance } from "../app/blog/articles";
+
 import { publishedRelease } from "../app/publication";
 
 const site = join(import.meta.dir, "..");
@@ -161,13 +164,15 @@ describe("built Gobstopper site", () => {
       const indexHtml = canonical(await index.text());
       expect(indexHtml).toContain('<link rel="canonical" href="https://gobstopper.sh/blog"');
       expect(indexHtml).toContain('"@type":"Blog"');
-      for (const slug of ["introducing-gobstopper", "proofs-for-the-admission-math", "vault-models-that-fail-on-purpose"]) {
+      for (const post of blogPosts) {
+        const { slug } = post;
         const response = await fetch(`${server.origin}/blog/${slug}`, { redirect: "manual" });
         expect(response.status).toBe(200);
         const html = canonical(await response.text());
         expect(html).toContain(`<link rel="canonical" href="https://gobstopper.sh/blog/${slug}"`);
         expect(html).toContain('"@type":"BlogPosting"');
-        expect(html).toContain("Drafted with AI from the source code and reviewed by Claude Opus 5.5 (claude-opus-5-5) editorial review.");
+        expect(html).toContain(articleProvenanceSentence(postProvenance(post)));
+        expect(html).not.toContain("<time");
         expect(html).toMatch(/<meta\s+property="og:type"\s+content="article"/u);
         expect(html).not.toMatch(/<meta\s+name="robots"\s+content="noindex/u);
         const card = await fetch(`${server.origin}/blog/${slug}/opengraph-image`, { redirect: "manual" });
@@ -182,7 +187,10 @@ describe("built Gobstopper site", () => {
       expect(await feed.text()).toContain("<id>https://gobstopper.sh/blog/introducing-gobstopper</id>");
       const sitemap = await (await fetch(`${server.origin}/sitemap.xml`, { redirect: "manual" })).text();
       expect(sitemap).toContain("<loc>https://gobstopper.sh/blog/introducing-gobstopper</loc>");
-      expect(sitemap).toContain("<lastmod>2026-09-24T00:00:00.000Z</lastmod>");
+      for (const post of blogPosts) {
+        const entry = sitemap.split("<url>").find(item => item.includes(`<loc>https://gobstopper.sh/blog/${post.slug}</loc>`));
+        expect(entry).toContain(`<lastmod>${post.updated ?? post.published}T00:00:00.000Z</lastmod>`);
+      }
     } finally {
       await stopBuiltSite(server);
     }

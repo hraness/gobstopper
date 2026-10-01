@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Same tasks solved, 29% fewer tokens sent</title>
+<title>29% fewer input tokens in one benchmark</title>
 </head>
 <body>
 <script>
@@ -13,8 +13,8 @@ Gob.scene({ palette: "paper" }, (s) => {
   // The two segments are named on the first bar itself, so no legend has to stand in
   // for three different arm colours.
   const frame = s.still({
-    title: `Same tasks solved, ${F.inputFewer} fewer tokens sent`,
-    subtitle: "Gobstopper at its default tail vs Claude Code, no proxy · same tasks solved within single-trial noise",
+    title: `${F.inputFewer} fewer input tokens in one benchmark`,
+    subtitle: "Gobstopper, tail 0, versus Claude Code without a proxy · task counts overlap within single-trial noise",
     provenance: PROV.tbFull,
   });
   const p = frame.plot;

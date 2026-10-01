@@ -76,7 +76,7 @@ export function GobTokens({ variant }: { readonly variant: "home" | "full" }) {
           rows={ARM_ORDER.map((id) => [ARM_LABEL[id], F.solved[id], F.input[id], F.cache[id], F.uncached[id]])}
         />
       }
-      title={`About as many tasks solved, ${F.inputFewer} fewer tokens sent`}
+      title={`${F.inputFewer} fewer input tokens in one benchmark`}
       titleHidden={home}
       variant={variant}
     >
