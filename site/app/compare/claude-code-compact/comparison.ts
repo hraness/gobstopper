@@ -92,6 +92,6 @@ export const comparisonQuestions = [
   {
     question: "Can I run gobstopper proxy and still use /compact?",
     answer:
-      "Yes. The proxy compacts each request over its threshold, so Claude Code's auto-compaction triggers later or not at all, and `/compact` remains a command you can run. Gobstopper's file commands work on saved session files, outside the running session.",
+      "Yes. The proxy compacts outgoing requests over its threshold, which can delay Claude Code's auto-compaction. The client still controls its own trigger, and `/compact` remains a command you can run. Gobstopper's file commands work on saved session files, outside the running session.",
   },
 ] as const;
