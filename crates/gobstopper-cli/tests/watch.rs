@@ -917,17 +917,71 @@ fn wait_for_file(path: &std::path::Path) {
     }
 }
 
+struct HeldNativeProvider {
+    owner: std::process::Child,
+    release: PathBuf,
+}
+
+impl HeldNativeProvider {
+    fn stop_owner(&mut self) -> bool {
+        let _ = self.owner.kill();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            match self.owner.try_wait() {
+                Ok(Some(_)) => return true,
+                Err(_) => return false,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+                Ok(None) => return false,
+            }
+        }
+    }
+
+    fn assert_pending(&mut self, fixture: &Fixture) {
+        assert!(
+            self.owner.try_wait().unwrap().is_none(),
+            "fixture owner exited before the concurrent custody assertion"
+        );
+        assert!(
+            !fixture.0.join("codex/provider-finished").exists(),
+            "held fixture completed before its explicit release"
+        );
+    }
+}
+
+impl Drop for HeldNativeProvider {
+    fn drop(&mut self) {
+        // Assertions must not leave the owned watcher or held fixture behind.
+        // Reaping is bounded; release also runs when the assertion panics.
+        let _ = self.stop_owner();
+        let _ = fs::write(&self.release, "release");
+        // Keep Fixture::drop from removing the release marker before the
+        // orphaned test provider has consumed it after an assertion panic.
+        let finished = self.release.with_file_name("provider-finished");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !finished.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+}
+
 #[test]
 fn two_watchers_and_process_death_cannot_replay_dispatched_operation() {
     let f = Fixture::new();
     f.idle(&f.0.join("codex/sessions/rollout-fixture.jsonl"));
-    let mut owner = f
+    let owner = f
         .native_codex("hold")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()
         .unwrap();
+    let mut owner = HeldNativeProvider {
+        owner,
+        release: f.0.join("codex/provider-release"),
+    };
     wait_for_file(&f.0.join("codex/provider-dispatched"));
+    owner.assert_pending(&f);
     let requests = fs::read(f.0.join("codex/requests.log")).unwrap();
     let competing = f
         .native_codex("noop")
@@ -935,9 +989,9 @@ fn two_watchers_and_process_death_cannot_replay_dispatched_operation() {
         .output()
         .unwrap();
     assert!(competing.status.success());
+    owner.assert_pending(&f);
     assert_eq!(fs::read(f.0.join("codex/requests.log")).unwrap(), requests);
-    owner.kill().unwrap();
-    owner.wait().unwrap();
+    assert!(owner.stop_owner(), "fixture owner did not stop within 10s");
     // The fixture releases its own bounded provider process after killing the
     // watcher. Real providers may outlive a caller; that is why state is durable.
     fs::write(f.0.join("codex/provider-release"), "release").unwrap();
