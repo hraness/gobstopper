@@ -98,15 +98,22 @@ a:focus-visible {
 .hraness-marketing-question__answer a {
   color: var(--foreground);
   text-decoration-line: underline;
-  text-decoration-color: color-mix(in srgb, var(--foreground) 35%, transparent);
   text-underline-offset: 0.18em;
 }
 
-.install-note a:hover,
-.hraness-marketing-data-table__note a:hover,
-.hraness-marketing-maker__links a:hover,
-.hraness-marketing-question__answer a:hover {
-  text-decoration-color: currentColor;
+@media (forced-colors: none) {
+  .install-note a,
+  .hraness-marketing-data-table__note a,
+  .hraness-marketing-maker__links a,
+  .hraness-marketing-question__answer a {
+    text-decoration-color: color-mix(in srgb, var(--foreground) 35%, transparent);
+  }
+  .install-note a:hover,
+  .hraness-marketing-data-table__note a:hover,
+  .hraness-marketing-maker__links a:hover,
+  .hraness-marketing-question__answer a:hover {
+    text-decoration-color: currentColor;
+  }
 }
 
 .install-note {
@@ -812,8 +819,13 @@ main:has(> .plain-publication--embedded) {
 /* Shared studio convention for text links; controls retain their own decoration line. */
 a[href] {
   text-decoration-style: dotted;
-  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
   text-decoration-thickness: 1px;
   text-underline-offset: 0.2em;
 }
-a[href]:where(:hover, :focus-visible) { text-decoration-color: currentColor; }
+@media (forced-colors: none) {
+  a[href] { text-decoration-color: color-mix(in srgb, currentColor 40%, transparent); }
+  a[href]:where(:hover, :focus-visible) { text-decoration-color: currentColor; }
+}
+@media (forced-colors: active) {
+  a[href] { text-decoration-color: LinkText; }
+}
