@@ -42,6 +42,12 @@ impl Sandbox {
             .env("CLAUDE_CONFIG_DIR", self.0.join("claude"))
             .args(args)
             .stdin(Stdio::null());
+        // Winsock loads its provider using %SystemRoot%, even for loopback.
+        #[cfg(windows)]
+        command.env(
+            "SystemRoot",
+            std::env::var_os("SystemRoot").expect("Windows requires SystemRoot for socket tests"),
+        );
         for (key, value) in env {
             command.env(key, value);
         }
@@ -304,6 +310,89 @@ fn proxy_status_says_how_to_start_the_proxy() {
     std::fs::write(agents.join("sh.gobstopper.proxy.plist"), "<plist/>").unwrap();
     let installed = sandbox.run(&["proxy", "status", "--port", &port], &[]);
     assert!(text(&installed.stderr).contains("gobstopper proxy install"));
+}
+
+#[test]
+fn proxy_status_uses_the_managed_port_and_explicit_port_overrides_damaged_manifest() {
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::time::Duration;
+
+    let sandbox = Sandbox::new("status-managed-port");
+    let service = if cfg!(windows) {
+        sandbox.0.join("local-app-data/Gobstopper/service")
+    } else {
+        sandbox.0.join("config/gobstopper/service")
+    };
+    std::fs::create_dir_all(&service).unwrap();
+    let platform = if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "macos"
+    } else {
+        "linux"
+    };
+    for explicit in [false, true] {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let manifest = if explicit {
+            b"damaged manifest".to_vec()
+        } else {
+            serde_json::to_vec(&serde_json::json!({
+                "schema":1,"platform":platform,"service_id":"aabbcc",
+                "executable":"/unused/gobstopper","serve_args":["--port",port.to_string()],
+                "port":port,"definition_sha256":"","rendered_definition":""
+            }))
+            .unwrap()
+        };
+        std::fs::write(service.join("manifest.json"), manifest).unwrap();
+        let server = std::thread::spawn(move || {
+            listener.set_nonblocking(true).unwrap();
+            let deadline = std::time::Instant::now() + Duration::from_secs(5);
+            let mut socket = loop {
+                match listener.accept() {
+                    Ok((socket, _)) => break socket,
+                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                        assert!(
+                            std::time::Instant::now() < deadline,
+                            "status did not use the expected port"
+                        );
+                        std::thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(error) => panic!("accept failed: {error}"),
+                }
+            };
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            socket
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0; 1024];
+            let count = socket.read(&mut request).unwrap();
+            assert!(request[..count].starts_with(b"GET /gobstopper/status "));
+            let body = serde_json::json!({"name":"gobstopper-proxy","port":port}).to_string();
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        let port_arg = port.to_string();
+        let args = if explicit {
+            vec!["proxy", "status", "--port", &port_arg, "--json"]
+        } else {
+            vec!["proxy", "status", "--json"]
+        };
+        let result = sandbox.run(&args, &[]);
+        server
+            .join()
+            .unwrap_or_else(|_| panic!("status fixture failed; CLI output: {result:?}"));
+        assert!(result.status.success(), "{}", text(&result.stdout));
+        let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
+        assert_eq!(value["port"], port);
+    }
 }
 
 #[test]

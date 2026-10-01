@@ -445,8 +445,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-30-083-sqlite-open-core.json",
-        "sha256": "fddbfe130dc395ceec752e16cca7387b1ffe74b618a71d8de5188a082eaf841a"
+        "path": "docs/assurance/receipts/2026-10-01-084-resilience-core.json",
+        "sha256": "086cc39e117268562102a2720219ba3f2cf3c3aaabff58796fbe4b2a349e7469"
       }
     },
     {
@@ -508,8 +508,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-30-083-sqlite-open-transcript.json",
-        "sha256": "362feede04d00b293557d1518783cbff44c6a7d99738babc2bad8acf386af6e0"
+        "path": "docs/assurance/receipts/2026-10-01-084-resilience-transcript.json",
+        "sha256": "4e867eae29a62366b148c6c6a4fe7c21d78efdae7baa121269a5f0a9665fcbfb"
       }
     },
     {
@@ -529,8 +529,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-01-083-watch-fixture-stress.json",
-        "sha256": "06ff9a57d1c4257d5d991419f261ff696e3813967ec5f8960daf8b9fcbe9ca7c"
+        "path": "docs/assurance/receipts/2026-10-01-084-resilience-inventory-stress.json",
+        "sha256": "cf276f0114cda369bea616e78c7019b70864ee5c47b46c6541155c6815649a0f"
       }
     },
     {
@@ -613,6 +613,61 @@
         "No whole-system correctness or task-quality theorem",
         "No Linux/Windows service-manager or power native qualification claim",
         "No inference-provider qualification from synthetic fixtures"
+      ]
+    },
+    {
+      "id": "E-RESILIENCE-SOURCE",
+      "kind": "source_review",
+      "revision": "current-source; delivery revision recorded by the v0.8.4 integration PR",
+      "scope": "Bounded proxy readiness/status, optional compaction, background telemetry, isolated scoped I/O and power ownership, and invocation-local client fallback effects.",
+      "bounds": "Source review and isolated test definitions; execution receipts, exact release provenance, live provider behavior, and native operational activation remain separate evidence.",
+      "references": [
+        {
+          "path": "crates/gobstopper-cli/src/proxy.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_agent.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_launch.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_log.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_stats.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_work.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_resilience_tests.rs"
+        },
+        {
+          "path": "crates/gobstopper-adapters/src/request/engine.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/tests/proxy_launch.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/tests/cli_ux.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_context.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/power.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_observations.rs"
+        }
+      ],
+      "exclusions": [
+        "No universal availability or whole-system correctness theorem",
+        "No client fallback after a request or child has started",
+        "No proof of task quality, actual authentication, or all supported platform runtime behavior from synthetic fixtures",
+        "No claim that best-effort telemetry preserves every observation",
+        "No immediate or force-cancelled native power operation; a stalled or stopped backend remains observable without blocking inference"
       ]
     }
   ],
@@ -1394,7 +1449,8 @@
       "status": "source_reviewed",
       "evidence": [
         "E-FOUNDATION-SOURCE",
-        "E-TEST-DEFINITIONS"
+        "E-TEST-DEFINITIONS",
+        "E-RESILIENCE-SOURCE"
       ],
       "assumptions": [
         "A-OS",
@@ -1475,7 +1531,8 @@
       "evidence": [
         "E-FOUNDATION-SOURCE",
         "E-TEST-DEFINITIONS",
-        "E-STRESS-CURRENT"
+        "E-STRESS-CURRENT",
+        "E-RESILIENCE-SOURCE"
       ],
       "assumptions": [
         "A-OS",

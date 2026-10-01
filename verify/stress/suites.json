@@ -224,6 +224,7 @@
       ],
       "source": "crates/gobstopper-cli/src/main.rs",
       "tests": [
+        "proxy::launch::tests::codex_launch_uses_one_process_and_preserves_existing_provider_authentication",
         "tests::codex_compact_initializes_resumes_then_compacts",
         "tests::codex_compact_reports_failed_turn_as_error",
         "tests::codex_compact_propagates_request_errors",

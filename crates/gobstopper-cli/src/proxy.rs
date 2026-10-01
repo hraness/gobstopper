@@ -25,18 +25,31 @@ use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 pub const DEFAULT_PORT: u16 = 8260;
+#[path = "proxy_launch.rs"]
+mod launch;
+#[path = "proxy_context.rs"]
+mod scoped_context;
 const STATUS_PATH: &str = "/gobstopper/status";
+const READY_PATH: &str = "/gobstopper/ready";
 const MAX_HEAD_BYTES: usize = 64 * 1024;
 const MAX_BODY_BYTES: usize = 256 * 1024 * 1024;
 const MAX_ERROR_BODY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_CONNECTIONS: usize = 256;
+const CONTROL_RESERVE: usize = 16;
+const REQUEST_HEAD_TIMEOUT: Duration = Duration::from_secs(5);
+const REQUEST_BODY_TIMEOUT: Duration = Duration::from_secs(120);
+const CONTROL_WRITE_TIMEOUT: Duration = Duration::from_millis(300);
+const REJECT_DRAIN_TIMEOUT: Duration = Duration::from_millis(300);
+const REJECT_DRAIN_BYTES: usize = 64 * 1024;
+#[path = "proxy_work.rs"]
+mod work;
 /// Most (upstream, model) pairs the proxy keeps a calibration for; later
 /// pairs are not calibrated.
 const MAX_CALIBRATIONS: usize = 64;
@@ -96,6 +109,12 @@ pub enum ProxyCmd {
         /// The command and its arguments, after `--`.
         #[arg(last = true, required = true)]
         command: Vec<String>,
+    },
+    /// Start Claude with bounded direct fallback, or Codex on its existing healthy proxy.
+    /// Checks before launch; never changes saved settings or replays a request.
+    Launch {
+        #[command(flatten)]
+        opts: launch::LaunchOptions,
     },
     /// Preview what the proxy would have sent over a recorded Claude Code or
     /// Codex session. Reads the transcript and calls no provider; sizes are
@@ -174,8 +193,9 @@ pub enum ProxyCmd {
     },
     /// Show a running proxy's settings and counters.
     Status {
-        #[arg(long, default_value_t = DEFAULT_PORT)]
-        port: u16,
+        /// Loopback port; defaults to the installed service's port, or 8260.
+        #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
+        port: Option<u16>,
         /// Emit JSON.
         #[arg(long)]
         json: bool,
@@ -184,6 +204,10 @@ pub enum ProxyCmd {
 
 #[derive(Args, Clone)]
 pub struct ProxyOpts {
+    /// Deadline for optional compaction work; timeout sends the original request
+    /// unless an explicit capacity requires verified sizing.
+    #[arg(long, default_value_t = 5000, value_parser = clap::value_parser!(u64).range(1..=60000))]
+    transform_timeout_ms: u64,
     /// Allow idle sleep during inference. Display sleep is always allowed.
     #[arg(long)]
     no_keep_awake: bool,
@@ -432,11 +456,7 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
                 .with_context(|| format!("bind 127.0.0.1:{port}"))?;
             let port = listener.local_addr()?.port();
             let proxy = Arc::new(Proxy::new(opts, port)?);
-            println!("gobstopper proxy listening on http://127.0.0.1:{port}");
-            std::io::stdout().flush()?;
-            crate::ux::next_hint(&format!(
-                "export ANTHROPIC_BASE_URL=http://127.0.0.1:{port} in the shell that starts Claude Code"
-            ));
+            diagnostics::startup(port);
             log(&format!(
                 "{}, result_max_chars {}{}{}",
                 proxy.settings(),
@@ -452,7 +472,10 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             let port = listener.local_addr()?.port();
             let proxy = Arc::new(Proxy::new(opts, port)?);
             let server = Arc::clone(&proxy);
-            std::thread::spawn(move || serve(listener, server));
+            std::thread::Builder::new()
+                .name("gobstopper-listener".into())
+                .spawn(move || serve(listener, server))
+                .context("start scoped proxy listener")?;
             let scope = proxy
                 .control
                 .get()
@@ -482,6 +505,7 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             log(&proxy.summary());
             std::process::exit(status.code().unwrap_or(1));
         }
+        ProxyCmd::Launch { opts } => launch::run(opts),
         ProxyCmd::Install {
             opts,
             port,
@@ -502,23 +526,27 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             Ok(())
         }
         ProxyCmd::Status { port, json } => {
-            let status = match fetch_status(*port) {
+            let port = crate::proxy_agent::status_port(*port)?;
+            let status = match fetch_status(port) {
                 Ok(status) => status,
-                Err(error) if is_refused(&error) => return Err(proxy_down(*port)),
+                Err(error) if is_unavailable(&error) => return Err(proxy_down(port)),
                 Err(error) => return Err(error),
             };
             if *json {
                 println!("{}", serde_json::to_string_pretty(&status)?);
             } else {
-                print!("{}", status_text(*port, &status));
+                print!("{}", status_text(port, &status));
             }
             Ok(())
         }
     }
 }
 
+#[path = "proxy_log.rs"]
+mod diagnostics;
+
 fn log(message: &str) {
-    eprintln!("{} gobstopper proxy: {message}", rfc3339_now());
+    diagnostics::write(&format!("{} gobstopper proxy: {message}", rfc3339_now()));
 }
 
 /// The `proxy status` text for a server's status JSON. Keys added after
@@ -647,64 +675,11 @@ struct Stats {
     est_tokens_out: AtomicU64,
 }
 
-/// One JSONL record per compactable request, appended under the gobstopper
-/// data dir so totals survive restarts. Records carry sizes and flags only.
-struct StatsLog {
-    writer: Mutex<Option<std::io::BufWriter<std::fs::File>>>,
-    /// Totals recovered from the file at startup, before this process adds.
-    prior_in: u64,
-    prior_out: u64,
-    path: Option<std::path::PathBuf>,
-}
+#[path = "proxy_stats.rs"]
+mod stats_log;
+use stats_log::StatsLog;
 
 impl StatsLog {
-    fn open() -> Self {
-        let path = match std::env::var_os("GOBSTOPPER_STATS_FILE") {
-            Some(value) if value == "off" => None,
-            Some(value) => Some(std::path::PathBuf::from(value)),
-            None => default_stats_path(),
-        };
-        let mut stats_log = StatsLog {
-            writer: Mutex::new(None),
-            prior_in: 0,
-            prior_out: 0,
-            path: None,
-        };
-        let Some(path) = path else { return stats_log };
-        if let Ok(file) = std::fs::File::open(&path) {
-            for line in std::io::BufRead::lines(std::io::BufReader::new(file)).map_while(Result::ok)
-            {
-                if let Ok(record) = serde_json::from_str::<Value>(&line) {
-                    stats_log.prior_in += record["est_tokens_in"].as_u64().unwrap_or(0);
-                    stats_log.prior_out += record["est_tokens_out"].as_u64().unwrap_or(0);
-                }
-            }
-        }
-        let opened = path
-            .parent()
-            .and_then(|dir| std::fs::create_dir_all(dir).ok())
-            .and_then(|_| {
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(&path)
-                    .ok()
-            });
-        match opened {
-            Some(file) => {
-                stats_log.writer = Mutex::new(Some(std::io::BufWriter::new(file)));
-                stats_log.path = Some(path);
-            }
-            None => {
-                log(&format!(
-                    "stats file {} is not writable; continuing without it",
-                    path.display()
-                ));
-            }
-        }
-        stats_log
-    }
-
     fn record(&self, ctx: &RequestCtx, request: &Request, shadow: bool) {
         if self.path.is_none() {
             return;
@@ -735,29 +710,8 @@ impl StatsLog {
             "rung": ctx.rung,
             "shadow": shadow,
         });
-        if let Ok(mut guard) = self.writer.lock() {
-            if let Some(writer) = guard.as_mut() {
-                use std::io::Write;
-                let _ = writeln!(writer, "{record}").and_then(|()| writer.flush());
-            }
-        }
+        self.enqueue(&record);
     }
-
-    fn totals(&self, stats: &Stats) -> (u64, u64) {
-        (
-            self.prior_in + stats.est_tokens_in.load(Ordering::Relaxed),
-            self.prior_out + stats.est_tokens_out.load(Ordering::Relaxed),
-        )
-    }
-}
-
-fn default_stats_path() -> Option<std::path::PathBuf> {
-    let data = std::env::var_os("XDG_DATA_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| std::path::PathBuf::from(home).join(".local/share"))
-        })?;
-    Some(data.join("gobstopper").join("proxy-stats.jsonl"))
 }
 
 /// A failed initial open must not disable scoped inference for the lifetime of
@@ -767,6 +721,8 @@ struct ContextAccess {
     path: Option<std::path::PathBuf>,
     state: Mutex<ContextAccessState>,
     available: AtomicBool,
+    jobs: work::Workers,
+    observer: scoped_context::Observer,
 }
 
 struct ContextAccessState {
@@ -776,26 +732,24 @@ struct ContextAccessState {
 
 impl ContextAccess {
     fn new(path: Option<std::path::PathBuf>) -> Self {
-        let control = path
-            .as_ref()
-            .and_then(|path| crate::context::Control::open(path).ok())
-            .map(Arc::new);
         Self {
-            available: AtomicBool::new(control.is_some()),
+            available: AtomicBool::new(false),
+            jobs: work::Workers::default(),
+            observer: scoped_context::Observer::default(),
             path,
             state: Mutex::new(ContextAccessState {
-                control,
-                retry_after: Instant::now() + Duration::from_secs(30),
+                control: None,
+                retry_after: Instant::now(),
             }),
         }
     }
 
     fn current(&self) -> Option<Arc<crate::context::Control>> {
-        self.state.lock().ok()?.control.clone()
+        self.state.try_lock().ok()?.control.clone()
     }
 
     fn get(&self) -> Option<Arc<crate::context::Control>> {
-        let mut state = self.state.lock().ok()?;
+        let mut state = self.state.try_lock().ok()?;
         if state.control.is_none() && Instant::now() >= state.retry_after {
             if let Some(path) = &self.path {
                 state.control = crate::context::Control::open(path).ok().map(Arc::new);
@@ -808,11 +762,23 @@ impl ContextAccess {
     }
 }
 
+struct Prepared {
+    ctx: RequestCtx,
+    key: (String, String),
+    capacity: Option<u64>,
+    outgoing: Option<Vec<u8>>,
+    evidence: Option<Vec<gobstopper_adapters::request::EvidenceObservation>>,
+}
+struct PreparationUnavailable;
+
 struct Proxy {
-    engine: Engine,
+    engine: Arc<Engine>,
+    transforms: work::Workers,
+    transform_timeout: Duration,
+    memory: work::MemoryBudget,
     power: crate::power::Power,
     observations: crate::proxy_observations::Recorder,
-    control: ContextAccess,
+    control: Arc<ContextAccess>,
     context_window: Option<u64>,
     service_id: Option<String>,
     /// Threshold for Anthropic requests that declare a 1M-token window.
@@ -828,6 +794,9 @@ struct Proxy {
     port: u16,
     started: Instant,
     active: AtomicUsize,
+    forwarding: AtomicUsize,
+    inference: AtomicUsize,
+    executable: Option<String>,
     admission: Mutex<crate::proxy_drain::Admission>,
     instance_id: String,
     startup_guard: bool,
@@ -854,7 +823,7 @@ impl Proxy {
             strict: opts.strict,
             ..CliffConfig::default()
         };
-        let control = ContextAccess::new(crate::context::default_path().ok());
+        let control = Arc::new(ContextAccess::new(crate::context::default_path().ok()));
         Ok(Self {
             power: crate::power::Power::new(!opts.no_keep_awake),
             observations: crate::proxy_observations::Recorder::open(!opts.no_session_data),
@@ -862,7 +831,10 @@ impl Proxy {
             context_window: opts.context_window,
             service_id: opts.service_id.clone(),
             threshold_1m: threshold_1m(opts.threshold, opts.threshold_1m)?,
-            engine: Engine::new(cfg),
+            engine: Arc::new(Engine::new(cfg)),
+            transforms: work::Workers::default(),
+            transform_timeout: Duration::from_millis(opts.transform_timeout_ms),
+            memory: work::MemoryBudget::new(work::BODY_BUDGET),
             shadow: opts.shadow,
             calibrate: !opts.no_calibrate,
             calibrations: Mutex::new(HashMap::new()),
@@ -872,6 +844,12 @@ impl Proxy {
             port,
             started: Instant::now(),
             active: AtomicUsize::new(0),
+            forwarding: AtomicUsize::new(0),
+            inference: AtomicUsize::new(0),
+            executable: std::env::current_exe()
+                .ok()
+                .and_then(|path| path.canonicalize().ok())
+                .map(|path| path.display().to_string()),
             admission: Mutex::new(crate::proxy_drain::Admission::default()),
             instance_id: crate::proxy_agent::unique_id(),
             startup_guard: opts.service_state_dir.is_some(),
@@ -884,10 +862,42 @@ impl Proxy {
         counter.load(Ordering::Relaxed)
     }
 
+    /// Readiness must not wait for optional storage, compaction or power APIs.
+    /// A busy admission lock is conservatively unavailable, never permission to
+    /// bypass a drain. Process identity remains available in either state.
+    fn readiness(&self) -> Value {
+        let mut drain = match self.admission.try_lock() {
+            Ok(mut admission) => Some(admission.snapshot(Instant::now())),
+            Err(std::sync::TryLockError::Poisoned(error)) => {
+                Some(error.into_inner().snapshot(Instant::now()))
+            }
+            Err(std::sync::TryLockError::WouldBlock) => None,
+        };
+        if let Some(drain) = &mut drain {
+            drain["startup_guard"] = json!(self.startup_guard);
+        }
+        let ready = drain.as_ref().is_some_and(|value| value["phase"] == "open");
+        json!({
+            "name":"gobstopper-proxy", "version":env!("CARGO_PKG_VERSION"),
+            "port":self.port, "pid":std::process::id(), "service_id":self.service_id,
+            "instance_id":self.instance_id, "executable":self.executable,
+            "official_upstreams": self.anthropic == "https://api.anthropic.com"
+                && self.openai == "https://api.openai.com"
+                && self.chatgpt == "https://chatgpt.com",
+            "context_constrained": self.context_window.is_some() || self.engine.config().strict,
+            "ready":ready, "drain_control":drain,
+            "active_inference":self.inference.load(Ordering::Acquire),
+            "active_connections":self.active.load(Ordering::Relaxed),
+        })
+    }
+
     fn status(&self) -> Value {
         let cfg = self.engine.config();
-        let (entries, chars) = self.engine.store_stats();
-        let totals = self.stats_log.totals(&self.stats);
+        let store = self.engine.try_store_stats();
+        let totals = self.stats_log.totals(
+            self.count(&self.stats.est_tokens_in),
+            self.count(&self.stats.est_tokens_out),
+        );
         let context_available = self.control.available.load(Ordering::Acquire);
         let mut drain = self
             .admission
@@ -895,10 +905,10 @@ impl Proxy {
             .unwrap_or_else(|e| e.into_inner())
             .snapshot(Instant::now());
         drain["startup_guard"] = json!(self.startup_guard);
-        json!({
+        let mut status = json!({
             "name": "gobstopper-proxy",
             "pid": std::process::id(),
-            "executable": std::env::current_exe().ok().and_then(|p| p.canonicalize().ok()).map(|p| p.display().to_string()),
+            "executable": self.executable,
             "service_id": self.service_id,
             "keep_awake": self.power.status(),
             "observations": self.observations.status(),
@@ -918,8 +928,8 @@ impl Proxy {
             "strict": cfg.strict,
             "calibrate": self.calibrate,
             "calibrations": self.calibration_status(),
-            "store_entries": entries,
-            "store_chars": chars,
+            "store_entries": store.map(|sizes| sizes.0),
+            "store_chars": store.map(|sizes| sizes.1),
             "requests": self.count(&self.stats.requests),
             "compacted": self.count(&self.stats.compacted),
             "matched": self.count(&self.stats.matched),
@@ -937,7 +947,19 @@ impl Proxy {
             "drain_control": drain,
             "instance_id": self.instance_id,
             "uptime_secs": self.started.elapsed().as_secs(),
-        })
+        });
+        status["store_details_available"] = json!(store.is_some());
+        status["stats_persistence"] = self.stats_log.status();
+        status["transforms"] = self.transforms.status();
+        status["transforms"]["timeout_ms"] = json!(self.transform_timeout.as_millis());
+        status["request_memory"] =
+            json!({"used_bytes":self.memory.used(),"limit_bytes":work::BODY_BUDGET});
+        status["diagnostic_log"] = diagnostics::status();
+        status["context_control"]["operations"] = self.control.jobs.status();
+        status["context_control"]["operations"]["timeout_ms"] =
+            json!(scoped_context::TIMEOUT.as_millis());
+        status["context_control"]["observations"] = self.control.observer.status();
+        status
     }
 
     fn calibrations(&self) -> std::sync::MutexGuard<'_, HashMap<(String, String), Calibration>> {
@@ -965,17 +987,6 @@ impl Proxy {
                 })
                 .collect(),
         )
-    }
-
-    /// The ratio to apply to a request to `upstream` for `model`, in
-    /// thousandths: 1000 when calibration is off and before enough samples.
-    fn ratio_for(&self, key: &(String, String)) -> u32 {
-        if !self.calibrate {
-            return 1000;
-        }
-        self.calibrations()
-            .get(key)
-            .map_or(1000, Calibration::ratio_permille)
     }
 
     /// Record the provider's input count for a forwarded request whose
@@ -1057,17 +1068,25 @@ impl Proxy {
     #[cfg(test)]
     fn prepare(&self, request: &Request) -> Option<(RequestCtx, (String, String))> {
         self.prepare_scoped(request, None)
+            .ok()
+            .flatten()
+            .map(|mut prepared| {
+                self.engine.publish_prepared(&mut prepared.ctx);
+                (prepared.ctx, prepared.key)
+            })
     }
 
     fn prepare_scoped(
         &self,
         request: &Request,
         budget: Option<&crate::context::Decision>,
-    ) -> Option<(RequestCtx, (String, String))> {
+    ) -> std::result::Result<Option<Prepared>, PreparationUnavailable> {
         if request.method != "POST" || request.body.is_empty() {
-            return None;
+            return Ok(None);
         }
-        let dialect = Dialect::detect(request.path())?;
+        let Some(dialect) = Dialect::detect(request.path()) else {
+            return Ok(None);
+        };
         if request
             .header("content-encoding")
             .is_some_and(|encoding| !encoding.eq_ignore_ascii_case("identity"))
@@ -1078,73 +1097,110 @@ impl Proxy {
                 dialect.name(),
                 request.path()
             ));
-            return None;
+            return Ok(None);
         }
-        let parsed = match serde_json::from_slice::<Value>(&request.body) {
-            Ok(Value::Object(map)) => map,
-            _ => {
-                self.stats.fail_open.fetch_add(1, Ordering::Relaxed);
-                return None;
+        if request.body.len() > work::TRANSFORM_LIMIT {
+            self.stats.fail_open.fetch_add(1, Ordering::Relaxed);
+            return Ok(None);
+        }
+        let Some(job) = self.transforms.acquire(&self.memory, request.body.len()) else {
+            self.stats.fail_open.fetch_add(1, Ordering::Relaxed);
+            return Err(PreparationUnavailable);
+        };
+        // A stuck optional calibration lock cannot stall inference either. Do
+        // not substitute a weaker sizing ratio when capacity is explicit.
+        let calibrations = if self.calibrate {
+            match self.calibrations.try_lock() {
+                Ok(values) => values.clone(),
+                Err(std::sync::TryLockError::Poisoned(error)) => error.into_inner().clone(),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    self.stats.fail_open.fetch_add(1, Ordering::Relaxed);
+                    return Err(PreparationUnavailable);
+                }
             }
+        } else {
+            HashMap::new()
         };
         let ordinary = self.threshold_for(request, dialect);
-        let threshold = budget.map_or(ordinary, |b| b.effective_input_tokens);
-        let output = requested_output(&parsed);
-        let capacity = budget
-            .and_then(|b| b.input_capacity_tokens)
-            .or_else(|| self.context_window.map(|n| n.saturating_sub(output)));
-        let policy = budget.map_or_else(String::new, crate::context::Decision::policy_identity);
-        let observations = budget.filter(|b| b.adaptive).map(|_| {
-            let messages = parsed
-                .get(if dialect == Dialect::Responses {
-                    "input"
-                } else {
-                    "messages"
-                })
-                .and_then(Value::as_array)
-                .map(Vec::as_slice)
-                .unwrap_or(&[]);
-            gobstopper_adapters::request::evidence_observations(messages, dialect)
-        });
-        let model = parsed
-            .get("model")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let key = (self.upstream_for(request).to_string(), model);
-        let ratio = self.ratio_for(&key);
-        // Engine failures must never fail the request.
-        let prepared = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            self.engine
-                .prepare_with_policy(parsed, dialect, threshold, ratio, &policy, capacity)
-        }));
-        match prepared {
-            Ok(ctx) => ctx.map(|ctx| {
-                if !self.shadow && budget.is_some() {
-                    if let (Some(control), Some(scope), Some(observations), Some(budget)) = (
-                        self.control.current(),
-                        request.header("x-gobstopper-scope"),
-                        observations,
-                        budget,
-                    ) {
-                        if control
-                            .observe(scope, &observations, &ctx.evicted_evidence_digests, budget)
-                            .unwrap_or(false)
-                        {
-                            log("context rescue reserved after repeated unchanged evidence reads");
-                        }
-                    }
-                }
-                (ctx, key)
-            }),
-            Err(_) => {
-                self.stats.fail_open.fetch_add(1, Ordering::Relaxed);
-                log(&format!(
-                    "{} {}: engine error, forwarded unchanged",
-                    dialect.name(),
-                    request.path()
-                ));
+        let budget = budget.cloned();
+        let context_window = self.context_window;
+        let body = request.body.clone();
+        let upstream = self.upstream_for(request).to_string();
+        let engine = Arc::clone(&self.engine);
+        let shadow = self.shadow;
+        let result = job.run(self.transform_timeout, move || {
+            let Value::Object(parsed) = serde_json::from_slice::<Value>(&body).ok()? else {
+                return None;
+            };
+            let threshold = budget
+                .as_ref()
+                .map_or(ordinary, |b| b.effective_input_tokens);
+            let capacity = budget
+                .as_ref()
+                .and_then(|b| b.input_capacity_tokens)
+                .or_else(|| context_window.map(|n| n.saturating_sub(requested_output(&parsed))));
+            let policy = budget
+                .as_ref()
+                .map_or_else(String::new, crate::context::Decision::policy_identity);
+            let evidence = budget.as_ref().filter(|b| b.adaptive).map(|_| {
+                let messages = parsed
+                    .get(dialect.messages_key())
+                    .and_then(Value::as_array)
+                    .map(Vec::as_slice)
+                    .unwrap_or(&[]);
+                gobstopper_adapters::request::evidence_observations(messages, dialect)
+            });
+            let model = parsed
+                .get("model")
+                .and_then(Value::as_str)
+                .filter(|m| m.len() <= 1024)
+                .unwrap_or_default()
+                .to_string();
+            let key = (upstream, model);
+            let ratio = calibrations
+                .get(&key)
+                .map_or(1000, Calibration::ratio_permille);
+            let ctx =
+                engine.prepare_deferred(parsed, dialect, threshold, ratio, &policy, capacity)?;
+            let outgoing = if ctx.modified && !shadow {
+                Some(serde_json::to_vec(&ctx.outgoing_body()).ok()?)
+            } else {
                 None
+            };
+            Some(Prepared {
+                ctx,
+                key,
+                capacity,
+                outgoing,
+                evidence,
+            })
+        });
+        let prepared = result.map_err(|_| PreparationUnavailable);
+        if !matches!(&prepared, Ok(Some(_))) {
+            self.stats.fail_open.fetch_add(1, Ordering::Relaxed);
+        }
+        prepared
+    }
+
+    fn publish_prepared(
+        &self,
+        prepared: &mut Prepared,
+        request: &Request,
+        budget: Option<&crate::context::Decision>,
+    ) {
+        self.engine.publish_prepared(&mut prepared.ctx);
+        if !self.shadow {
+            if let (Some(scope), Some(evidence), Some(budget)) = (
+                request.header("x-gobstopper-scope"),
+                prepared.evidence.take(),
+                budget,
+            ) {
+                self.control.observe(
+                    scope,
+                    evidence,
+                    &prepared.ctx.evicted_evidence_digests,
+                    budget,
+                );
             }
         }
     }
@@ -1243,35 +1299,109 @@ impl Proxy {
         }
     }
 
-    fn handle(&self, mut client: TcpStream) -> Result<()> {
-        client.set_read_timeout(Some(Duration::from_secs(120)))?;
-        client.set_write_timeout(Some(Duration::from_secs(600)))?;
-        let _ = client.set_nodelay(true);
-        let mut request = match read_request(&mut client) {
+    fn handle(&self, mut client: TcpStream, limit: usize) -> Result<()> {
+        let mut wire = Wire {
+            stream: &mut client,
+            buffer: Vec::new(),
+            deadline: Instant::now() + REQUEST_HEAD_TIMEOUT,
+        };
+        let mut request = match read_request_head(&mut wire) {
             Ok(request) => request,
             Err(error) => {
-                return write_error(
-                    &mut client,
-                    400,
-                    "invalid_request_error",
-                    &format!("gobstopper proxy: {error}"),
-                );
+                return reject_unread(wire.stream, |client| {
+                    write_error(
+                        client,
+                        400,
+                        "invalid_request_error",
+                        &format!("gobstopper proxy: {error}"),
+                    )
+                });
             }
         };
         if !host_is_loopback(request.header("host")) {
-            return write_error(
-                &mut client,
-                403,
-                "permission_error",
-                "gobstopper proxy: only loopback hosts are served",
-            );
+            return reject_unread(wire.stream, |client| {
+                write_error(
+                    client,
+                    403,
+                    "permission_error",
+                    "gobstopper proxy: only loopback hosts are served",
+                )
+            });
         }
         if let Err(error) = request.bind_scope() {
-            return write_error(
+            return reject_unread(wire.stream, |client| {
+                write_error(client, 400, "gobstopper_invalid_scope", &error.to_string())
+            });
+        }
+        let control = matches!(request.path(), STATUS_PATH | READY_PATH)
+            || request.path().starts_with("/gobstopper/service/");
+        // Reserve capacity before reading a possibly slow or large body. The
+        // reserve serves local control only; it never adds inference capacity.
+        let _forwarding = if control {
+            None
+        } else if let Some(slot) = CountGuard::try_acquire(&self.forwarding, limit) {
+            Some(slot)
+        } else {
+            return reject_unread(wire.stream, |client| {
+                write_error(
+                    client,
+                    503,
+                    "overloaded_error",
+                    "gobstopper proxy: too many requests; retry shortly",
+                )
+            });
+        };
+        wire.deadline = Instant::now()
+            + if control {
+                REQUEST_HEAD_TIMEOUT
+            } else {
+                REQUEST_BODY_TIMEOUT
+            };
+        let mut body_memory = self.memory.lease();
+        if let Err(error) = read_request_body(
+            &mut wire,
+            &mut request,
+            if control { 4096 } else { MAX_BODY_BYTES },
+            (!control).then_some(&mut body_memory),
+        ) {
+            if error.is::<work::MemoryExhausted>() {
+                return reject_unread(wire.stream, |client| {
+                    write_buffered(client, 503, "Service Unavailable", &[
+                    ("content-type".into(), "application/json".into()), ("retry-after".into(), "1".into()),
+                ], br#"{"error":{"type":"proxy_overloaded","message":"request memory is temporarily full; retry shortly"}}"#)
+                });
+            }
+            return reject_unread(wire.stream, |client| {
+                write_error(
+                    client,
+                    400,
+                    "invalid_request_error",
+                    &format!("gobstopper proxy: {error}"),
+                )
+            });
+        }
+        drop(wire);
+        if request.path() == READY_PATH {
+            if request.method != "GET" {
+                return write_error(
+                    &mut client,
+                    405,
+                    "invalid_request_error",
+                    "readiness requires GET",
+                );
+            }
+            let body = self.readiness();
+            let (status, reason) = if body["ready"] == true {
+                (200, "OK")
+            } else {
+                (503, "Service Unavailable")
+            };
+            return write_buffered(
                 &mut client,
-                400,
-                "gobstopper_invalid_scope",
-                &error.to_string(),
+                status,
+                reason,
+                &[("content-type".into(), "application/json".into())],
+                &serde_json::to_vec(&body)?,
             );
         }
         if request.path() == STATUS_PATH {
@@ -1308,9 +1438,7 @@ impl Proxy {
                 );
             }
             let mut admission = self.admission.lock().unwrap_or_else(|e| e.into_inner());
-            let active = self.power.status()["active_inference"]
-                .as_u64()
-                .unwrap_or(u64::MAX);
+            let active = self.inference.load(Ordering::Acquire) as u64;
             let result = if let Some(action) = request
                 .path()
                 .strip_prefix("/gobstopper/service/drain-lease/")
@@ -1375,6 +1503,7 @@ impl Proxy {
                 &serde_json::to_vec(&body)?,
             );
         }
+        client.set_write_timeout(Some(Duration::from_secs(600)))?;
         self.stats.requests.fetch_add(1, Ordering::Relaxed);
         self.forward(&request, &mut client)
     }
@@ -1397,35 +1526,46 @@ impl Proxy {
                     ("retry-after".into(), "1".into()),
                 ], br#"{"error":{"type":"service_draining","message":"the owned proxy is restarting; retry shortly"}}"#);
             }
-            Some(self.power.acquire())
+            let inference = CountGuard::acquire(&self.inference);
+            drop(admission);
+            Some((inference, self.power.acquire()))
         } else {
             None
         };
         let scoped = dialect.is_some() && request.header("x-gobstopper-scope").is_some();
-        let control = scoped.then(|| self.control.get()).flatten();
-        if scoped && control.is_none() {
+        if scoped && request.body.len() > work::TRANSFORM_LIMIT {
             return write_error(
                 client,
-                503,
-                "gobstopper_scope_unavailable",
-                "context state is unavailable; inspect gobstopper proxy status",
+                400,
+                "gobstopper_capacity_unknown",
+                "payload exceeds the bounded sizing limit for an explicit context scope",
             );
         }
-        let budget = if let (Some(control), Some(scope), Some(dialect)) =
-            (&control, request.header("x-gobstopper-scope"), dialect)
+        let budget = if let (Some(scope), Some(dialect)) =
+            (request.header("x-gobstopper-scope"), dialect)
         {
-            let output = serde_json::from_slice::<Value>(&request.body)
-                .ok()
-                .and_then(|v| v.as_object().map(requested_output))
-                .unwrap_or(32_000);
             let base = if declares_1m_window(request, dialect) {
                 self.threshold_1m
             } else {
                 self.engine.config().threshold_tokens
             };
-            match control.consume(scope, base, self.context_window, output) {
+            match self.control.consume(
+                &self.memory,
+                &request.body,
+                scope,
+                scoped_context::Policy {
+                    base,
+                    window: self.context_window,
+                },
+                scoped_context::TIMEOUT,
+            ) {
                 Ok(decision) => Some(decision),
-                Err(_) => {
+                Err(scoped_context::Failure::Unavailable) => {
+                    return write_buffered(client, 503, "Service Unavailable", &[
+                        ("content-type".into(), "application/json".into()), ("retry-after".into(), "1".into()),
+                    ], br#"{"error":{"type":"gobstopper_scope_unavailable","message":"context storage is temporarily unavailable; no inference was sent; retry shortly"}}"#);
+                }
+                Err(scoped_context::Failure::Invalid) => {
                     return write_error(
                         client,
                         400,
@@ -1437,34 +1577,33 @@ impl Proxy {
         } else {
             None
         };
-        let input_capacity = budget
-            .as_ref()
-            .and_then(|b| b.input_capacity_tokens)
-            .or_else(|| {
-                self.context_window.map(|limit| {
-                    limit.saturating_sub(
-                        serde_json::from_slice::<Value>(&request.body)
-                            .ok()
-                            .and_then(|v| v.as_object().map(requested_output))
-                            .unwrap_or(32_000),
-                    )
-                })
-            });
-        let mut prepared = self.prepare_scoped(request, budget.as_ref());
-        if dialect.is_some() && input_capacity.is_some() && prepared.is_none() {
+        let (mut prepared, preparation_unavailable) =
+            match self.prepare_scoped(request, budget.as_ref()) {
+                Ok(prepared) => (prepared, false),
+                Err(_) => (None, true),
+            };
+        let input_capacity = prepared.as_ref().and_then(|p| p.capacity);
+        let explicit_capacity = self.context_window.is_some()
+            || budget
+                .as_ref()
+                .is_some_and(|b| b.input_capacity_tokens.is_some());
+        let sizing_required = explicit_capacity || (self.engine.config().strict && !self.shadow);
+        if dialect.is_some() && sizing_required && prepared.is_none() {
+            if preparation_unavailable {
+                return write_buffered(client, 503, "Service Unavailable", &[
+                    ("content-type".into(), "application/json".into()), ("retry-after".into(), "1".into()),
+                ], br#"{"error":{"type":"proxy_transform_unavailable","message":"context sizing is temporarily unavailable; retry shortly"}}"#);
+            }
             return write_error(
                 client,
                 400,
                 "gobstopper_capacity_unknown",
-                "cannot verify the explicit context capacity for this payload",
+                "cannot verify the configured context policy for this payload",
             );
         }
         let mut body: Cow<[u8]> = Cow::Borrowed(&request.body);
-        if let Some((ctx, _)) = &prepared {
-            self.report(ctx, request);
-            if ctx.modified && !self.shadow {
-                body = Cow::Owned(serde_json::to_vec(&ctx.outgoing_body())?);
-            }
+        if let Some(prepared) = &mut prepared {
+            let ctx = &prepared.ctx;
             let sent_tokens = if self.shadow {
                 ctx.est_tokens_in
             } else {
@@ -1486,16 +1625,21 @@ impl Proxy {
                     ),
                 );
             }
+            self.publish_prepared(prepared, request, budget.as_ref());
+            self.report(&prepared.ctx, request);
+            if let Some(outgoing) = prepared.outgoing.take() {
+                body = Cow::Owned(outgoing);
+            }
         }
         let request_id = dialect.and_then(|_| self.observations.request_id());
         let session = self.observations.session_id(request.header("session_id"));
         let kind = dialect.unwrap_or(Dialect::Responses);
-        let model = prepared.as_ref().map(|(_, key)| key.1.as_str());
+        let model = prepared.as_ref().map(|p| p.key.1.as_str());
         let mut attempt = self
             .observations
             .start(request_id.clone(), session.clone(), kind, model);
-        if let Some((ctx, _)) = &prepared {
-            record_context(&attempt, ctx, self.shadow, budget.as_ref());
+        if let Some(prepared) = &prepared {
+            record_context(&attempt, &prepared.ctx, self.shadow, budget.as_ref());
         }
         let response = match send_upstream(request, upstream, &body) {
             Ok(response) => response,
@@ -1505,11 +1649,11 @@ impl Proxy {
             }
         };
         match prepared.as_mut() {
-            Some((ctx, key)) if response.status == 400 && !self.shadow => self.reactive(
+            Some(prepared) if response.status == 400 && !self.shadow => self.reactive(
                 request,
                 upstream,
-                ctx,
-                key,
+                &mut prepared.ctx,
+                &prepared.key,
                 response,
                 client,
                 attempt,
@@ -1518,18 +1662,18 @@ impl Proxy {
                 budget.as_ref(),
                 input_capacity,
             ),
-            Some((ctx, key)) => self.relay_observed(
+            Some(prepared) => self.relay_observed(
                 client,
                 response,
                 request,
                 attempt,
                 kind,
                 Some((
-                    key.clone(),
+                    prepared.key.clone(),
                     if self.shadow {
-                        ctx.est_tokens_in
+                        prepared.ctx.est_tokens_in
                     } else {
-                        ctx.est_tokens_out
+                        prepared.ctx.est_tokens_out
                     },
                 )),
             ),
@@ -1634,12 +1778,15 @@ impl Proxy {
                 }
             };
         }
-        while is_context_error(&data)
-            && self.guarded_step(ctx.dialect, request.path(), || self.engine.reactive(ctx))
-        {
-            if !within_input_capacity(ctx.est_tokens_out, ctx.ratio_permille, input_capacity) {
+        while is_context_error(&data) {
+            let Some((mut next, body)) = self.reactive_step(ctx, request.body.len()) else {
+                break;
+            };
+            if !within_input_capacity(next.est_tokens_out, next.ratio_permille, input_capacity) {
                 break;
             }
+            self.engine.publish_prepared(&mut next);
+            *ctx = next;
             self.stats.reactive_retries.fetch_add(1, Ordering::Relaxed);
             log(&format!(
                 "{} {}: retrying length rejection at ~{}k est tokens (step {})",
@@ -1648,7 +1795,6 @@ impl Proxy {
                 ctx.est_tokens_out / 1000,
                 ctx.rung
             ));
-            let body = serde_json::to_vec(&ctx.outgoing_body())?;
             let mut retry = self.observations.start(
                 request_id.clone(),
                 session.clone(),
@@ -1685,20 +1831,24 @@ impl Proxy {
         write_buffered(client, status, "Bad Request", &headers, &data)
     }
 
-    /// One reactive ladder step, which runs the compaction chain outside the
-    /// `catch_unwind` in `prepare`. A panic there must not fail the request:
-    /// it counts `fail_open` and stops the ladder (`false`), so the caller
-    /// relays the provider's last 400 unchanged.
-    fn guarded_step(&self, dialect: Dialect, path: &str, step: impl FnOnce() -> bool) -> bool {
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(step)) {
-            Ok(retry) => retry,
+    fn reactive_step(&self, ctx: &RequestCtx, input_bytes: usize) -> Option<(RequestCtx, Vec<u8>)> {
+        let Some(job) = self.transforms.acquire(&self.memory, input_bytes) else {
+            self.stats.fail_open.fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
+        let mut next = ctx.clone();
+        let engine = Arc::clone(&self.engine);
+        match job.run(self.transform_timeout, move || {
+            if !engine.reactive(&mut next) {
+                return None;
+            }
+            let body = serde_json::to_vec(&next.outgoing_body()).ok()?;
+            Some((next, body))
+        }) {
+            Ok(next) => next,
             Err(_) => {
                 self.stats.fail_open.fetch_add(1, Ordering::Relaxed);
-                log(&format!(
-                    "{} {path}: engine error during the length retry; relaying the provider's response",
-                    dialect.name()
-                ));
-                false
+                None
             }
         }
     }
@@ -1763,33 +1913,90 @@ fn record_context(
     });
 }
 
+struct CountGuard<'a>(&'a AtomicUsize);
+
+impl<'a> CountGuard<'a> {
+    fn acquire(count: &'a AtomicUsize) -> Self {
+        count.fetch_add(1, Ordering::AcqRel);
+        Self(count)
+    }
+
+    fn try_acquire(count: &'a AtomicUsize, limit: usize) -> Option<Self> {
+        count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                (value < limit).then_some(value + 1)
+            })
+            .ok()
+            .map(|_| Self(count))
+    }
+}
+
+impl Drop for CountGuard<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+/// Own the slot before spawning, so a failed spawn drops both the socket and
+/// its accounting. Nothing in the accept loop writes to a client socket.
+struct ConnectionSlot(Arc<Proxy>);
+
+impl Drop for ConnectionSlot {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+fn dispatch_connection(
+    stream: TcpStream,
+    proxy: Arc<Proxy>,
+    limit: usize,
+    spawn: impl FnOnce(Box<dyn FnOnce() + Send>) -> std::io::Result<()>,
+) {
+    if proxy
+        .active
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+            (value < limit + CONTROL_RESERVE).then_some(value + 1)
+        })
+        .is_err()
+    {
+        // Even a rejection can block on a stopped reader. At the hard socket
+        // bound close without a response; a later client connection can retry.
+        return;
+    }
+    let slot = ConnectionSlot(proxy);
+    if stream.set_read_timeout(Some(REQUEST_HEAD_TIMEOUT)).is_err()
+        || stream
+            .set_write_timeout(Some(CONTROL_WRITE_TIMEOUT))
+            .is_err()
+    {
+        return;
+    }
+    let _ = stream.set_nodelay(true);
+    let job = Box::new(move || {
+        if let Err(error) = slot.0.handle(stream, limit) {
+            log(&format!("connection error: {error:#}"));
+        }
+        drop(slot);
+    });
+    if let Err(error) = spawn(job) {
+        log(&format!("connection worker unavailable: {error}"));
+    }
+}
+
 fn serve(listener: TcpListener, proxy: Arc<Proxy>) {
     for stream in listener.incoming() {
-        let Ok(mut stream) = stream else {
+        let Ok(stream) = stream else {
+            // A persistent resource failure must not turn accept into a CPU
+            // spin. Existing workers keep custody of their requests.
+            std::thread::sleep(Duration::from_millis(10));
             continue;
         };
-        if proxy.active.load(Ordering::Relaxed) >= MAX_CONNECTIONS {
-            let _ = write_error(
-                &mut stream,
-                503,
-                "overloaded_error",
-                "gobstopper proxy: too many connections",
-            );
-            continue;
-        }
-        let proxy = Arc::clone(&proxy);
-        proxy.active.fetch_add(1, Ordering::Relaxed);
-        std::thread::spawn(move || {
-            struct Active<'a>(&'a AtomicUsize);
-            impl Drop for Active<'_> {
-                fn drop(&mut self) {
-                    self.0.fetch_sub(1, Ordering::Relaxed);
-                }
-            }
-            let _active = Active(&proxy.active);
-            if let Err(error) = proxy.handle(stream) {
-                log(&format!("connection error: {error:#}"));
-            }
+        dispatch_connection(stream, Arc::clone(&proxy), MAX_CONNECTIONS, |job| {
+            std::thread::Builder::new()
+                .name("gobstopper-request".into())
+                .spawn(job)
+                .map(|_| ())
         });
     }
 }
@@ -1893,10 +2100,17 @@ impl Request {
 struct Wire<'a> {
     stream: &'a mut TcpStream,
     buffer: Vec<u8>,
+    deadline: Instant,
 }
 
 impl Wire<'_> {
     fn fill(&mut self) -> Result<()> {
+        let remaining = self
+            .deadline
+            .checked_duration_since(Instant::now())
+            .filter(|left| !left.is_zero())
+            .context("request deadline exceeded")?;
+        self.stream.set_read_timeout(Some(remaining))?;
         let mut chunk = [0u8; 16 * 1024];
         let read = self.stream.read(&mut chunk)?;
         if read == 0 {
@@ -1909,6 +2123,9 @@ impl Wire<'_> {
     fn take_until(&mut self, delimiter: &[u8], limit: usize) -> Result<Vec<u8>> {
         loop {
             if let Some(at) = find(&self.buffer, delimiter) {
+                if at > limit {
+                    bail!("request head too large");
+                }
                 let taken = self.buffer[..at].to_vec();
                 self.buffer.drain(..at + delimiter.len());
                 return Ok(taken);
@@ -1921,10 +2138,25 @@ impl Wire<'_> {
     }
 
     fn take_exact(&mut self, len: usize) -> Result<Vec<u8>> {
-        while self.buffer.len() < len {
-            self.fill()?;
+        let mut result = Vec::new();
+        self.extend_exact(&mut result, len)?;
+        Ok(result)
+    }
+
+    fn extend_exact(&mut self, result: &mut Vec<u8>, len: usize) -> Result<()> {
+        result
+            .try_reserve_exact(len)
+            .map_err(|_| work::MemoryExhausted)?;
+        let mut left = len;
+        while left > 0 {
+            if self.buffer.is_empty() {
+                self.fill()?;
+            }
+            let take = left.min(self.buffer.len());
+            result.extend(self.buffer.drain(..take));
+            left -= take;
         }
-        Ok(self.buffer.drain(..len).collect())
+        Ok(())
     }
 }
 
@@ -1934,11 +2166,7 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
         .position(|window| window == needle)
 }
 
-fn read_request(stream: &mut TcpStream) -> Result<Request> {
-    let mut wire = Wire {
-        stream,
-        buffer: Vec::new(),
-    };
+fn read_request_head(wire: &mut Wire<'_>) -> Result<Request> {
     let head = wire.take_until(b"\r\n\r\n", MAX_HEAD_BYTES)?;
     let head = String::from_utf8(head).context("request head is not UTF-8")?;
     let mut lines = head.split("\r\n");
@@ -1958,12 +2186,20 @@ fn read_request(stream: &mut TcpStream) -> Result<Request> {
         };
         headers.push((name.trim().to_string(), value.trim().to_string()));
     }
-    let mut request = Request {
+    Ok(Request {
         method: method.to_string(),
         target: target.to_string(),
         headers,
         body: Vec::new(),
-    };
+    })
+}
+
+fn read_request_body(
+    wire: &mut Wire<'_>,
+    request: &mut Request,
+    limit: usize,
+    mut memory: Option<&mut work::MemoryLease>,
+) -> Result<()> {
     if request
         .header("expect")
         .is_some_and(|value| value.eq_ignore_ascii_case("100-continue"))
@@ -1985,21 +2221,27 @@ fn read_request(stream: &mut TcpStream) -> Result<Request> {
                 while !wire.take_until(b"\r\n", MAX_HEAD_BYTES)?.is_empty() {}
                 break;
             }
-            if body.len() + size > MAX_BODY_BYTES {
+            if size > limit.saturating_sub(body.len()) {
                 bail!("request body too large");
             }
-            body.extend(wire.take_exact(size)?);
+            if memory.as_mut().is_some_and(|m| !m.grow(size)) {
+                return Err(work::MemoryExhausted.into());
+            }
+            wire.extend_exact(&mut body, size)?;
             wire.take_exact(2)?;
         }
         request.body = body;
     } else if let Some(length) = request.header("content-length") {
         let length: usize = length.parse().context("invalid content-length")?;
-        if length > MAX_BODY_BYTES {
+        if length > limit {
             bail!("request body too large");
+        }
+        if memory.as_mut().is_some_and(|m| !m.grow(length)) {
+            return Err(work::MemoryExhausted.into());
         }
         request.body = wire.take_exact(length)?;
     }
-    Ok(request)
+    Ok(())
 }
 
 /// A response streaming from a curl child.
@@ -2096,9 +2338,18 @@ fn send_upstream(request: &Request, upstream: &str, body: &[u8]) -> Result<Upstr
     let mut child = command.spawn().context("start curl (is it installed?)")?;
     if let Some(mut stdin) = child.stdin.take() {
         let body = body.to_vec();
-        std::thread::spawn(move || {
-            let _ = stdin.write_all(&body);
-        });
+        if let Err(error) = std::thread::Builder::new()
+            .name("gobstopper-upload".into())
+            .spawn(move || {
+                let _ = stdin.write_all(&body);
+            })
+        {
+            // Curl may already have connected. Preserve the no-replay rule,
+            // and retain custody even though no response wrapper exists yet.
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error).context("start upstream upload worker");
+        }
     }
     let stdout = child.stdout.take().context("curl stdout")?;
     let mut stdout = BufReader::new(stdout);
@@ -2227,6 +2478,37 @@ fn write_buffered(
     )?;
     client.write_all(body)?;
     client.flush()?;
+    Ok(())
+}
+
+/// Send an early final response before discarding any unread request bytes.
+/// Closing immediately can reset TCP and hide the response from the client.
+/// Half-close first, then give a cooperative peer a bounded chance to finish;
+/// a stalled or flooding sender cannot retain a worker indefinitely.
+fn reject_unread(
+    client: &mut TcpStream,
+    respond: impl FnOnce(&mut TcpStream) -> Result<()>,
+) -> Result<()> {
+    respond(client)?;
+    client.shutdown(Shutdown::Write)?;
+    let deadline = Instant::now() + REJECT_DRAIN_TIMEOUT;
+    let mut remaining = REJECT_DRAIN_BYTES;
+    let mut buffer = [0u8; 4096];
+    while remaining > 0 {
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        if left.is_zero() || client.set_read_timeout(Some(left)).is_err() {
+            break;
+        }
+        let count = remaining.min(buffer.len());
+        match client.read(&mut buffer[..count]) {
+            Ok(0) => break,
+            Ok(read) => remaining -= read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
     Ok(())
 }
 
@@ -2499,11 +2781,21 @@ fn serve_args_after_install(args: &[String]) -> Vec<String> {
     out
 }
 
-fn is_refused(error: &anyhow::Error) -> bool {
+fn is_unavailable(error: &anyhow::Error) -> bool {
     error
         .chain()
         .filter_map(|cause| cause.downcast_ref::<std::io::Error>())
-        .any(|error| error.kind() == std::io::ErrorKind::ConnectionRefused)
+        .any(|error| {
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionRefused
+                    | std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::TimedOut
+                    | std::io::ErrorKind::WouldBlock
+                    | std::io::ErrorKind::BrokenPipe
+            )
+        })
 }
 
 /// What to do when nothing answers on the status port.
@@ -2529,24 +2821,172 @@ fn proxy_down(port: u16) -> anyhow::Error {
 }
 
 fn fetch_status(port: u16) -> Result<Value> {
-    let mut stream = TcpStream::connect((Ipv4Addr::LOCALHOST, port))
+    fetch_status_with_timeout(port, Duration::from_secs(2))
+}
+
+fn fetch_status_with_timeout(port: u16, timeout: Duration) -> Result<Value> {
+    fetch_control_with_timeout(port, STATUS_PATH, timeout)
+}
+
+fn fetch_control_with_timeout(port: u16, path: &str, timeout: Duration) -> Result<Value> {
+    const MAX_STATUS_BYTES: usize = 256 * 1024;
+    let deadline = Instant::now() + timeout;
+    let remaining = || -> std::io::Result<Duration> {
+        deadline
+            .checked_duration_since(Instant::now())
+            .filter(|remaining| !remaining.is_zero())
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::TimedOut, "proxy status timed out")
+            })
+    };
+    let address = (Ipv4Addr::LOCALHOST, port).into();
+    let mut stream = TcpStream::connect_timeout(&address, remaining()?)
         .with_context(|| format!("no gobstopper proxy on 127.0.0.1:{port}"))?;
-    stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+    stream.set_write_timeout(Some(remaining()?))?;
     stream.write_all(
-        format!(
-            "GET {STATUS_PATH} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n"
-        )
-        .as_bytes(),
+        format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1:{port}\r\nConnection: close\r\n\r\n")
+            .as_bytes(),
     )?;
     let mut response = Vec::new();
-    stream.read_to_end(&mut response)?;
+    loop {
+        // Recompute one deadline after each read: a peer sending occasional
+        // bytes must not keep a diagnostic command alive indefinitely.
+        stream.set_read_timeout(Some(remaining()?))?;
+        let mut chunk = [0; 8192];
+        let count = stream.read(&mut chunk)?;
+        if count == 0 {
+            break;
+        }
+        if count > MAX_STATUS_BYTES.saturating_sub(response.len()) {
+            bail!("proxy status response exceeds its size limit");
+        }
+        response.extend_from_slice(&chunk[..count]);
+    }
     let at = find(&response, b"\r\n\r\n").context("malformed status response")?;
-    serde_json::from_slice(&response[at + 4..]).context("status response is not JSON")
+    let header = std::str::from_utf8(&response[..at]).context("malformed status headers")?;
+    let first: Vec<_> = header
+        .lines()
+        .next()
+        .unwrap_or_default()
+        .split_whitespace()
+        .collect();
+    if first.len() < 2
+        || !matches!(first[0], "HTTP/1.0" | "HTTP/1.1")
+        || (first[1] != "200" && !(path == READY_PATH && first[1] == "503"))
+    {
+        bail!("proxy status did not return HTTP 200");
+    }
+    let value: Value =
+        serde_json::from_slice(&response[at + 4..]).context("status response is not JSON")?;
+    if value["name"] != "gobstopper-proxy" || value["port"] != port {
+        bail!("status response belongs to a different service or port");
+    }
+    Ok(value)
 }
+
+#[cfg(test)]
+#[path = "proxy_resilience_tests.rs"]
+mod resilience_tests;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn status_fixture(
+        response: impl FnOnce(u16) -> Vec<u8> + Send + 'static,
+    ) -> (u16, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            socket
+                .set_write_timeout(Some(Duration::from_secs(2)))
+                .unwrap();
+            let mut request = [0; 1024];
+            assert!(socket.read(&mut request).unwrap() > 0);
+            // Oversized-response tests intentionally close before all bytes send.
+            let _ = socket.write_all(&response(port));
+        });
+        (port, server)
+    }
+
+    #[test]
+    fn proxy_status_accepts_legacy_identity_and_rejects_unrelated_or_error_responses() {
+        for case in 0..5 {
+            let (port, server) = status_fixture(move |port| {
+                let status = if case == 1 {
+                    "503 Unavailable"
+                } else {
+                    "200 OK"
+                };
+                let name = if case == 2 {
+                    "unrelated"
+                } else {
+                    "gobstopper-proxy"
+                };
+                let port = if case == 3 { 0 } else { port };
+                let body = if case == 4 {
+                    "not json".to_string()
+                } else {
+                    json!({"name":name,"port":port,"version":"0.4.1"}).to_string()
+                };
+                format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\n\r\n{body}",
+                    body.len()
+                )
+                .into_bytes()
+            });
+            let result = fetch_status(port);
+            assert_eq!(result.is_ok(), case == 0, "case {case}: {result:?}");
+            server.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn proxy_status_bounds_response_bytes() {
+        let (port, server) = status_fixture(|_| vec![b' '; 256 * 1024 + 1]);
+        let error = fetch_status(port).unwrap_err();
+        assert!(error.to_string().contains("size limit"), "{error}");
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn proxy_status_deadline_covers_unresponsive_and_trickling_peers() {
+        for trickle in [false, true] {
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let (done, finished) = std::sync::mpsc::channel();
+            let server = std::thread::spawn(move || {
+                let (mut socket, _) = listener.accept().unwrap();
+                socket
+                    .set_write_timeout(Some(Duration::from_millis(100)))
+                    .unwrap();
+                loop {
+                    match finished.recv_timeout(Duration::from_millis(10)) {
+                        Ok(()) | Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                    }
+                    if trickle && socket.write_all(b" ").is_err() {
+                        break;
+                    }
+                }
+            });
+            let started = Instant::now();
+            let result = fetch_status_with_timeout(port, Duration::from_millis(100));
+            let elapsed = started.elapsed();
+            let _ = done.send(());
+            server.join().unwrap();
+            let error = result.unwrap_err();
+            assert!(is_unavailable(&error), "{error}");
+            assert!(
+                elapsed < Duration::from_secs(2),
+                "status deadline exceeded: {elapsed:?}"
+            );
+        }
+    }
 
     #[test]
     fn context_access_recovers_existing_reservation_once_after_storage_returns() {
@@ -2587,7 +3027,17 @@ mod tests {
                 let scope = scope.clone();
                 std::thread::spawn(move || {
                     barrier.wait();
-                    let control = access.get().expect("recover existing context database");
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    let control = loop {
+                        if let Some(control) = access.get() {
+                            break control;
+                        }
+                        assert!(
+                            Instant::now() < deadline,
+                            "recover existing context database"
+                        );
+                        std::thread::sleep(Duration::from_millis(1));
+                    };
                     let decision = control.consume(&scope, 128_000, None, 32_000).unwrap();
                     assert_eq!(decision.effective_input_tokens, 500_000);
                     control
@@ -2601,6 +3051,26 @@ mod tests {
         drop(controls);
         drop(access);
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn context_access_initialization_never_touches_optional_storage() {
+        let path = std::env::temp_dir().join(format!(
+            "gobstopper-lazy-context-{}",
+            crate::proxy_agent::unique_id()
+        ));
+        let access = ContextAccess::new(Some(path.clone()));
+        assert!(!path.exists());
+        assert!(access.current().is_none());
+        assert!(!access.available.load(Ordering::Acquire));
+        // Simulate a filesystem open stalled while holding the initialization lock.
+        let held = access.state.lock().unwrap();
+        let started = Instant::now();
+        assert!(access.get().is_none());
+        assert!(access.current().is_none());
+        assert!(started.elapsed() < Duration::from_secs(1));
+        drop(held);
+        assert!(!path.exists());
     }
 
     #[test]
@@ -2862,20 +3332,23 @@ mod tests {
     }
 
     /// A proxy without a stats file, so unit tests touch no disk.
-    fn test_proxy(threshold_tokens: u64, threshold_1m: u64) -> Proxy {
+    pub(super) fn test_proxy(threshold_tokens: u64, threshold_1m: u64) -> Proxy {
         Proxy {
             power: crate::power::Power::new(false),
             observations: crate::proxy_observations::Recorder::disabled(),
-            control: ContextAccess::new(None),
+            control: Arc::new(ContextAccess::new(None)),
             context_window: None,
             service_id: None,
             admission: Mutex::new(crate::proxy_drain::Admission::default()),
             instance_id: crate::proxy_agent::unique_id(),
             startup_guard: false,
-            engine: Engine::new(CliffConfig {
+            engine: Arc::new(Engine::new(CliffConfig {
                 threshold_tokens,
                 ..CliffConfig::default()
-            }),
+            })),
+            transforms: work::Workers::default(),
+            transform_timeout: Duration::from_secs(5),
+            memory: work::MemoryBudget::new(work::BODY_BUDGET),
             threshold_1m,
             shadow: false,
             calibrate: true,
@@ -2886,13 +3359,11 @@ mod tests {
             port: 0,
             started: Instant::now(),
             active: AtomicUsize::new(0),
+            forwarding: AtomicUsize::new(0),
+            inference: AtomicUsize::new(0),
+            executable: None,
             stats: Stats::default(),
-            stats_log: StatsLog {
-                writer: Mutex::new(None),
-                prior_in: 0,
-                prior_out: 0,
-                path: None,
-            },
+            stats_log: StatsLog::at(None),
         }
     }
 
@@ -2946,21 +3417,6 @@ mod tests {
             (&json!(256_000), &json!(1))
         );
         assert_eq!(status["threshold_tokens"], 128_000);
-    }
-
-    #[test]
-    fn a_panicking_reactive_step_fails_open_and_stops_the_ladder() {
-        let proxy = test_proxy(128_000, 256_000);
-        let path = "/v1/messages";
-        assert!(proxy.guarded_step(Dialect::Anthropic, path, || true));
-        assert!(!proxy.guarded_step(Dialect::Anthropic, path, || false));
-        assert_eq!(proxy.count(&proxy.stats.fail_open), 0);
-        let retry = proxy.guarded_step(Dialect::Anthropic, path, || {
-            panic!("synthetic engine failure")
-        });
-        assert!(!retry, "a panic stops the ladder");
-        assert_eq!(proxy.count(&proxy.stats.fail_open), 1);
-        assert_eq!(proxy.status()["fail_open"], 1);
     }
 
     #[test]

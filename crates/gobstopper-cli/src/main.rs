@@ -5430,7 +5430,9 @@ fn main() -> std::process::ExitCode {
                 | Cmd::Hook { .. }
                 | Cmd::Watch { .. }
                 | Cmd::Proxy {
-                    command: proxy::ProxyCmd::Serve { .. } | proxy::ProxyCmd::Run { .. }
+                    command: proxy::ProxyCmd::Serve { .. }
+                        | proxy::ProxyCmd::Run { .. }
+                        | proxy::ProxyCmd::Launch { .. }
                 }
         )
     );

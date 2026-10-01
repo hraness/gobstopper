@@ -282,6 +282,99 @@ fn load(p: &Paths) -> Result<Option<Manifest>> {
     Ok(Some(manifest))
 }
 
+/// Diagnostics follow the installed endpoint without contacting the service
+/// manager. An explicit port also works when the saved configuration is damaged.
+pub fn status_port(explicit: Option<u16>) -> Result<u16> {
+    if let Some(port) = explicit {
+        if port == 0 {
+            bail!("proxy status requires a nonzero port");
+        }
+        return Ok(port);
+    }
+    let platform = Platform::current()?;
+    installed_status_port(&paths(platform)?, platform)
+}
+
+fn installed_status_port(p: &Paths, platform: Platform) -> Result<u16> {
+    let Some(manifest) = load(p)? else {
+        return Ok(crate::proxy::DEFAULT_PORT);
+    };
+    if manifest.platform != platform {
+        bail!("service manifest belongs to another platform; use proxy status --port to inspect an explicit endpoint");
+    }
+    Ok(manifest.port)
+}
+
+pub(crate) struct LaunchTarget {
+    pub port: u16,
+    pub service_id: Option<String>,
+    pub context_constrained: bool,
+}
+
+/// Read configuration only. Launching a client never invokes a service manager,
+/// repairs a service, or mutates its definition or pending operation.
+pub(crate) fn launch_target(explicit: Option<u16>) -> Result<LaunchTarget> {
+    let platform = Platform::current()?;
+    configured_launch_target(load(&paths(platform)?)?, platform, explicit)
+}
+
+fn configured_launch_target(
+    manifest: Option<Manifest>,
+    platform: Platform,
+    explicit: Option<u16>,
+) -> Result<LaunchTarget> {
+    if explicit == Some(0) {
+        bail!("proxy launch requires a nonzero port");
+    }
+    let Some(manifest) = manifest else {
+        return Ok(LaunchTarget {
+            port: explicit.unwrap_or(crate::proxy::DEFAULT_PORT),
+            service_id: None,
+            context_constrained: false,
+        });
+    };
+    if manifest.platform != platform {
+        bail!("proxy service manifest belongs to another platform");
+    }
+    let port = explicit.unwrap_or(manifest.port);
+    if port != manifest.port {
+        bail!("proxy launch port differs from the managed service; use the configured port");
+    }
+    for (index, arg) in manifest.serve_args.iter().enumerate() {
+        for (flag, expected) in [
+            ("--anthropic-upstream", "https://api.anthropic.com"),
+            ("--openai-upstream", "https://api.openai.com"),
+            ("--chatgpt-upstream", "https://chatgpt.com"),
+        ] {
+            let value = if arg == flag {
+                manifest.serve_args.get(index + 1).map(String::as_str)
+            } else {
+                arg.strip_prefix(&format!("{flag}="))
+            };
+            if value.is_some_and(|value| value.trim_end_matches('/') != expected)
+                || (arg == flag && value.is_none())
+            {
+                bail!("custom proxy upstream is configured; launch cannot redirect its authentication");
+            }
+        }
+    }
+    let context_constrained = manifest.serve_args.iter().any(|arg| {
+        [
+            "--context-window",
+            "--client-context-window",
+            "--adaptive-context",
+            "--strict",
+        ]
+        .iter()
+        .any(|flag| arg == flag || arg.starts_with(&format!("{flag}=")))
+    });
+    Ok(LaunchTarget {
+        port,
+        service_id: Some(manifest.service_id),
+        context_constrained,
+    })
+}
+
 struct ServiceLock {
     _file: File,
 }
@@ -2254,6 +2347,36 @@ mod tests {
             environment: BTreeMap::new(),
         }
     }
+
+    #[test]
+    fn proxy_status_port_follows_manifest_and_preserves_explicit_diagnostics() {
+        let root = std::env::temp_dir().join(format!("gobstopper-status-port-{}", unique_id()));
+        fs::create_dir_all(&root).unwrap();
+        let p = Paths {
+            manifest: root.join("manifest.json"),
+            definition: root.join("service.plist"),
+            log: root.join("proxy.log"),
+            root: root.clone(),
+        };
+        assert_eq!(
+            installed_status_port(&p, Platform::Macos).unwrap(),
+            crate::proxy::DEFAULT_PORT
+        );
+        let mut m = manifest(Platform::Macos);
+        m.port = 18360;
+        fs::write(&p.manifest, serde_json::to_vec(&m).unwrap()).unwrap();
+        assert_eq!(installed_status_port(&p, Platform::Macos).unwrap(), 18360);
+        assert!(installed_status_port(&p, Platform::Linux).is_err());
+        m.port = 0;
+        fs::write(&p.manifest, serde_json::to_vec(&m).unwrap()).unwrap();
+        assert!(installed_status_port(&p, Platform::Macos).is_err());
+        fs::write(&p.manifest, b"broken").unwrap();
+        assert!(installed_status_port(&p, Platform::Macos).is_err());
+        assert_eq!(status_port(Some(18361)).unwrap(), 18361);
+        assert!(status_port(Some(0)).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
     #[test]
     fn definitions_bound_restart_and_do_not_request_display_wake_or_admin() {
         let mac = definition(&manifest(Platform::Macos), Path::new("/tmp/gobstopper.log"));

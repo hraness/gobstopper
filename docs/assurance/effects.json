@@ -1780,12 +1780,17 @@
         {
           "state": "idle_sleep",
           "mode": "native",
-          "condition": "Enabled active inference holds a process-owned idle-sleep assertion through retries and releases on completion/cancellation."
+          "condition": "Enabled active inference requests one process-owned assertion through a single asynchronous backend worker; release follows completion/cancellation, with pending/stalled status exposed."
         },
         {
           "state": "process_state",
           "mode": "in_memory",
           "condition": "Process-incarnation-bound drain leases close new inference admission under the inference-guard mutex; waiting leases expire, committed stops remain closed. Public status excludes the owner token."
+        },
+        {
+          "state": "process_state",
+          "mode": "spawn",
+          "condition": "Bounded optional compaction workers hold input-byte and worker leases until actual exit; independent best-effort diagnostic/stat workers use bounded nonblocking queues."
         }
       ],
       "outbound": [
@@ -1810,17 +1815,27 @@
         {
           "path": "crates/gobstopper-adapters/src/request/engine.rs",
           "anchor": "pub fn prepare"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_log.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_stats.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_work.rs"
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Loopback host validation; 64 KiB request heads, 256 MiB bodies, 256 connections; curl connect 30 s, stall 900 s, total 7200 s. Explicit hard context capacity applies to prepared output, raw fallbacks and retries using calibrated estimates. Prefix/evidence cache has hard serialized-byte bounds. Observation parsing is bounded and cannot reinterpret incomplete/unsupported responses as successful completion. Read-only MCP does not expose context mutation. Scoped traffic shares one recovery attempt for unavailable startup context storage, with a 30-second cooldown after each attempt; requests fail explicitly until it succeeds. Status remains responsive, and recovery does not replace an existing healthy control handle. Managed startup binds its listener before validating the pinned absolute service-state path, manifest identity and durable stop journal; unresolved commit/stop stages fail before inference.",
+      "bounds": "Loopback host validation; 64 KiB request heads, 256 MiB bodies, 256 forwarding slots plus 16 control-reserve connections. Early rejections send and half-close output, then discard at most 64 KiB within 300 ms using a fixed 4 KiB buffer; the hard socket cap still closes immediately. curl connect 30 s, stall 900 s, total 7200 s. Explicit hard context capacity applies to prepared output, raw fallbacks and retries using calibrated estimates. Prefix/evidence cache has hard serialized-byte bounds. Observation parsing is bounded and cannot reinterpret incomplete/unsupported responses as successful completion. Read-only MCP does not expose context mutation. Scoped traffic shares one recovery attempt for unavailable startup context storage, with a 30-second cooldown after each attempt; requests fail explicitly until it succeeds. Status remains responsive, and recovery does not replace an existing healthy control handle. Managed startup binds its listener before validating the pinned absolute service-state path, manifest identity and durable stop journal; unresolved commit/stop stages fail before inference. Optional compaction may fall back to the original request only when existing capacity and scope checks allow it. Timed-out worker results cannot publish cache state. Status/readiness bypass bulk request work; stats recovery and diagnostic output do not block the listener. Telemetry can be dropped with visible counters under I/O failure or queue saturation; it is not a complete accounting ledger.",
       "exclusions": [
         "No live task-quality or billing claim",
         "Character/token estimates and calibrated ratios are approximations, not provider-capacity proof",
         "Context/evidence memory cannot recover material already removed by native client compaction"
       ],
       "evidence": [
-        "E-EVERLASTING-SOURCE"
+        "E-EVERLASTING-SOURCE",
+        "E-RESILIENCE-SOURCE"
       ],
       "next_gate": "C15"
     },
@@ -2147,6 +2162,11 @@
           "state": "session_data",
           "mode": "sql_transaction",
           "condition": "Private database creation, schema migration, WAL metadata and append-only idempotent observations. Opening status/check/query commands can initialize or migrate schema; damaged/newer schemas refuse. Source event corrections require explicit new evidence."
+        },
+        {
+          "state": "process_state",
+          "mode": "spawn",
+          "condition": "Enabled proxy recording spawns one background owner for local observation storage; foreground producers only enqueue, and drop signals the worker without waiting for filesystem or SQLite operations."
         }
       ],
       "outbound": [],
@@ -2180,13 +2200,14 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Batch cap 10000 events; query cap 100000; import cap 64 MiB; database page limit 1 GiB. Current-schema identity checks use one read snapshot; initialization and migration recheck under writer locks. Proxy recording buffers at most 1024 events, flushes at most 256 per normal batch, and configures a 25 ms SQLite busy timeout. One owned worker drains pending batches and retries failures after 1\u201360 seconds even without new requests; it sleeps while healthy and idle, and is stopped and joined before the final shutdown flush. Atomic health publication follows counter updates; status does not wait on the database mutex. Background retry availability and loss/degraded counters are explicit.",
+      "bounds": "Batch cap 10000 events; query cap 100000; import cap 64 MiB; database page limit 1 GiB. Current-schema identity checks use one read snapshot; initialization and migration recheck under writer locks. Proxy recording has one background owner of database open/append/retry/destruction, a 1024-event queue and 256-event batches, and a 25 ms SQLite busy timeout. Producers use try_lock and drop/count events on contention or a full queue; wakeups are atomic and coalesced. Cached status never waits on storage. The worker retries failures after 1\u201360 seconds without new requests and sleeps when idle. Recorder drop only signals the worker, without joining it; the worker attempts at most four final 256-event batches, stopping after the first failure and counts/drops unsaved events. Process exit may lose buffered events. Stable event identities make uncertain append recovery idempotent; retry availability and degradation remain explicit.",
       "exclusions": [
         "No complete-observation guarantee after process crash, dropped queue or full storage",
         "Windows ACLs inherit OS user-directory policy; Unix mode checks do not prove equivalent ACL restrictions"
       ],
       "evidence": [
-        "E-EVERLASTING-SOURCE"
+        "E-EVERLASTING-SOURCE",
+        "E-RESILIENCE-SOURCE"
       ],
       "next_gate": "C15"
     },
@@ -2350,17 +2371,17 @@
         {
           "state": "idle_sleep",
           "mode": "native",
-          "condition": "Acquire process-owned idle-sleep inhibition during active inference and release on last guard drop or process termination."
+          "condition": "One background owner acquires process-owned idle-sleep inhibition for active inference and asynchronously releases it after the last guard; process termination independently releases native ownership."
         },
         {
           "state": "process_state",
           "mode": "spawn",
-          "condition": "Linux only: fixed-path systemd-inhibit helper owns EOF-bound stdin; cleanup collects the owned helper. macOS/Windows call native power APIs."
+          "condition": "One optional background thread exclusively owns native acquire, liveness and destruction. Linux uses a fixed-path systemd-inhibit helper with EOF-bound stdin and owned-child cleanup; macOS/Windows use native power APIs."
         },
         {
           "state": "process_state",
           "mode": "in_memory",
-          "condition": "Reference count, backend status and bounded retry cooldown."
+          "condition": "Atomic active-request count and cached backend phase; coalesced worker wakeups, nonblocking optional error snapshots and bounded retry cooldown."
         }
       ],
       "outbound": [],
@@ -2383,13 +2404,16 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "One shared assertion; 30-second acquisition failure backoff; failures observable and nonfatal. macOS IOKit, Windows power request or Linux idle inhibition only.",
+      "bounds": "At most one worker and one native assertion per Power; no native backend calls or worker joins on request/status/drop paths. Acquisition errors back off for 30 seconds. Acquire/check/release phases become visibly stalled after two seconds; a stuck native operation consumes the existing worker without spawning replacements. Native completion is not force-cancelled.",
       "exclusions": [
         "No display-wake/lid-close override",
-        "No Linux/Windows native runtime qualification claim"
+        "No Linux/Windows native runtime qualification claim",
+        "No instantaneous acquisition/release guarantee or native syscall deadline",
+        "A failed worker remains visibly unavailable until the owning process restarts; no automatic worker replay"
       ],
       "evidence": [
-        "E-EVERLASTING-SOURCE"
+        "E-EVERLASTING-SOURCE",
+        "E-RESILIENCE-SOURCE"
       ],
       "next_gate": "C15"
     },
@@ -2573,6 +2597,64 @@
       ],
       "evidence": [
         "E-EVERLASTING-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "client-launch",
+      "owner": "CLI proxy launcher",
+      "reads": [
+        "config",
+        "service_state",
+        "process_state"
+      ],
+      "writes": [
+        {
+          "state": "process_state",
+          "mode": "spawn",
+          "condition": "Start exactly one caller-selected client: Claude gets invocation-local route overrides; Codex keeps its existing provider, configuration and environment; preserve its exit status and never restart or replay it. On macOS one bounded presence-only preference worker checks effective managed Codex configuration; failed or timed-out inspection refuses launch without returning preference content."
+        },
+        {
+          "state": "output",
+          "mode": "emit",
+          "condition": "Report proxy/direct route selection or sanitized launch rejection; --print reports route metadata without starting a client."
+        }
+      ],
+      "outbound": [
+        "One bounded readiness query to the configured loopback endpoint. The launched client uses its existing authentication for the selected official provider route."
+      ],
+      "authority": "Explicit proxy launch invocation for a new local client. The wrapper does not load client credential stores or print credential values, change saved client settings, or perform service-manager or packet-filter actions.",
+      "invariants": [
+        "ID-1",
+        "PRIV-1",
+        "RES-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-IDENTITY",
+        "A-AUTH",
+        "A-EXT"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/proxy_launch.rs",
+          "anchor": "pub fn run"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+          "anchor": "pub(crate) fn launch_target"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Read bounded regular client configuration files; cap combined configuration bytes. Probe readiness with one two-second deadline. Validate managed identity and official upstreams. Claude direct fallback rejects configured custom routes, scoped reservations (including literal/environment headers across configuration layers), explicit capacity constraints, uncertain authentication sources and conflicting route/settings arguments. Codex requires an existing explicitly selected custom proxy provider and verified healthy readiness. Codex direct fallback and provider synthesis are unavailable: cloud layer completeness is not established. Healthy Codex launch preserves the existing provider table and all environment values. Uninspected system/managed Codex files and effective macOS managed preferences refuse; the native preference probe has a two-second deadline. Codex requires an explicit authentication dialect and a separate foreground client process.",
+      "exclusions": [
+        "No rerouting or recovery of already-running clients or in-flight inference",
+        "No sandboxing of the launched client, its tools, settings effects, or provider calls",
+        "No qualification of every client version or real authentication from local fixtures"
+      ],
+      "evidence": [
+        "E-RESILIENCE-SOURCE"
       ],
       "next_gate": "C15"
     }
@@ -2959,9 +3041,10 @@
         "inspect",
         "output",
         "native-update-storage",
-        "native-update-network"
+        "native-update-network",
+        "client-launch"
       ],
-      "contract": "Loopback proxy for Anthropic Messages, OpenAI Responses and Chat Completions; bounded evidence and scoped budgets, content-free observation recording and inference-only idle-sleep inhibition. Hard configured capacity constrains fallbacks and retries. Replay reads a selected transcript without a provider call. Explicit current-user install/migrate/repair/uninstall preserve service identity, recover owned interrupted operations and leave user data intact. Replay, doctor and status suppress automatic release checks; all commands retain their native installation lease.",
+      "contract": "Loopback proxy for Anthropic Messages, OpenAI Responses and Chat Completions; bounded evidence and scoped budgets, content-free observation recording and inference-only idle-sleep inhibition. Hard configured capacity constrains fallbacks and retries. Replay reads a selected transcript without a provider call. Explicit current-user install/migrate/repair/uninstall preserve service identity, recover owned interrupted operations and leave user data intact. Replay, doctor and status suppress automatic release checks; all commands retain their native installation lease. Launch selects one healthy proxy or direct official route before starting a new client; invocation-local overrides preserve saved settings and configured authentication. It does not reroute existing sessions or replay inference. Status follows the managed port unless explicitly overridden.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -6179,14 +6262,15 @@
       "path": "crates/gobstopper-cli/src/power.rs",
       "symbol": "new",
       "effects": [
-        "memory"
+        "memory",
+        "inference-power"
       ]
     },
     {
       "path": "crates/gobstopper-cli/src/power.rs",
       "symbol": "status",
       "effects": [
-        "inference-power"
+        "memory"
       ]
     },
     {
@@ -6715,6 +6799,174 @@
       "symbol": "check_startup_drain",
       "effects": [
         "service-startup-check"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/engine.rs",
+      "symbol": "prepare_deferred",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/engine.rs",
+      "symbol": "publish_prepared",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "launch_target",
+      "effects": [
+        "service-inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "status_port",
+      "effects": [
+        "service-inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_context.rs",
+      "symbol": "consume",
+      "effects": [
+        "context-control"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_context.rs",
+      "symbol": "observe",
+      "effects": [
+        "context-control"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_context.rs",
+      "symbol": "status",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_launch.rs",
+      "symbol": "run",
+      "effects": [
+        "client-launch"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_log.rs",
+      "symbol": "startup",
+      "effects": [
+        "request-proxy"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_log.rs",
+      "symbol": "status",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_log.rs",
+      "symbol": "write",
+      "effects": [
+        "request-proxy"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_stats.rs",
+      "symbol": "at",
+      "effects": [
+        "request-proxy"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_stats.rs",
+      "symbol": "enqueue",
+      "effects": [
+        "request-proxy"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_stats.rs",
+      "symbol": "open",
+      "effects": [
+        "request-proxy"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_stats.rs",
+      "symbol": "status",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_stats.rs",
+      "symbol": "totals",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_work.rs",
+      "symbol": "acquire",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_work.rs",
+      "symbol": "grow",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_work.rs",
+      "symbol": "lease",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_work.rs",
+      "symbol": "new",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_work.rs",
+      "symbol": "run",
+      "effects": [
+        "request-proxy"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_work.rs",
+      "symbol": "status",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_work.rs",
+      "symbol": "used",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/request/engine.rs",
+      "symbol": "try_store_stats",
+      "effects": [
+        "pure"
       ]
     }
   ],

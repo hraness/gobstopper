@@ -103,6 +103,22 @@ gh release verify-asset v0.0.0 gobstopper-0.0.0-linux-x86_64.tar.gz --repo hrane
 
 `gh attestation verify` confirms that the archive was built by this repository's release workflow from the tagged commit. `gh release verify` confirms that the release, its tag and its files have not changed since it was published. `gh release verify-asset` confirms that the file you downloaded is the one attached to that release. `cargo install --git https://github.com/hraness/gobstopper --tag v0.0.0 --locked gobstopper` builds the same source on any platform.
 
+For a macOS download, verify the extracted executable with access to macOS trust
+services and Apple's online notarization service:
+
+```sh
+/usr/bin/codesign --verify --strict --all-architectures --check-notarization \
+  --test-requirement '=anchor apple generic and identifier "dev.hraness.gobstopper" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "8AAP53VTW3"' \
+  ./gobstopper
+```
+
+A restricted agent sandbox can report `invalid signature` or an internal
+Code Signing subsystem error when it cannot reach macOS trust services. If that
+happens, repeat the same check on the same bytes in an authorized environment
+with that access before diagnosing a damaged release. Verification must succeed
+before installation. The leading `=` in the requirement argument is required;
+without it, `codesign` interprets the requirement as a filename.
+
 ## Cut a release
 
 1. In the version bump pull request, set `version` under `[workspace.package]` in `Cargo.toml` and the exact `gobstopper-core` and `gobstopper-adapters` versions under `[workspace.dependencies]` together. Turn the `## Unreleased` section of `CHANGELOG.md` into `## vX.Y.Z - YYYY-MM-DD`. The section needs a summary paragraph and at least one bullet. Start a new empty `## Unreleased` section only when there is something to put in it.
