@@ -336,8 +336,9 @@ consumers need the same interface — is met.
   ([Preserved thinking](https://platform.claude.com/docs/en/build-with-claude/preserved-thinking)).
   The proxy keeps the tail verbatim, thinking included, after a replaced
   summary, so on such an account and model a compacted request whose kept
-  turns replay a thinking block is rejected, and the proxy resends the
-  original, counted as `fail_open` in `gobstopper proxy status` (test
+  turns replay a thinking block is rejected. The proxy can resend the
+  original when it fits configured input capacity, counted as `fail_open`
+  in `gobstopper proxy status` (test
   `a_rejected_compaction_falls_back_to_the_original_request`). Open: drop
   thinking from the kept tail, or use the `drop_block` behavior.
 - Window selection without a header. The proxy applies `--threshold-1m` only

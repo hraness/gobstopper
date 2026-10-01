@@ -115,9 +115,9 @@ export default function CompareClaudeCodeCompact() {
             moment, and you see what it kept only afterward. Gobstopper shows
             the cut first, writes a separate compacted copy, and keeps the
             source bytes in a local vault you can search later. For a session
-            that is still running, <code>gobstopper proxy</code> keeps each
-            request small enough that Claude Code&apos;s auto-compaction does
-            not reach its trigger. If a model-chosen summary is good enough
+            that is still running, <code>gobstopper proxy</code> can reduce
+            outgoing requests and delay Claude Code&apos;s auto-compaction.
+            The client still controls its own trigger. If a model-chosen summary is good enough
             and you want nothing to install, <code>/compact</code> is the
             simpler choice.
           </p>
@@ -187,8 +187,9 @@ gobstopper undo <session>         # restore a vaulted snapshot into a new fork`}
             Run <code>/compact</code> when a live session is bloated and a
             model-chosen summary is an acceptable trade: it is already
             installed, it works in place, and focus instructions steer it. Run{" "}
-            <code>gobstopper proxy</code> to keep a running Claude Code or Codex
-            session under a threshold so auto-compaction does not fire mid-task.
+            <code>gobstopper proxy</code> to reduce outgoing context above a
+            threshold you choose. This can delay native auto-compaction;
+            it cannot disable the client&apos;s own trigger.
             Use Gobstopper&apos;s file commands when you want to see the cut
             before it happens, keep the source bytes, and be able to undo into
             a new fork. To compare the proxy with the CliffCompaction research
