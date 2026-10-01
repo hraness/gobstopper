@@ -529,8 +529,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-01-084-resilience-rejection-stress.json",
-        "sha256": "b9f65ed70add22fb59c6d12ebb227ee25b227096fe236cc33e65fe0172d51419"
+        "path": "docs/assurance/receipts/2026-10-01-084-resilience-inventory-stress.json",
+        "sha256": "cf276f0114cda369bea616e78c7019b70864ee5c47b46c6541155c6815649a0f"
       }
     },
     {
