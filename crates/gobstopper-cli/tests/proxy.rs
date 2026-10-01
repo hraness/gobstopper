@@ -184,6 +184,93 @@ impl Drop for ProxyProcess {
     }
 }
 
+#[cfg(unix)]
+#[test]
+fn stalled_startup_stdout_does_not_block_proxy_readiness() {
+    use std::io::Read;
+    use std::os::fd::OwnedFd;
+    use std::os::unix::net::UnixStream;
+    use std::time::Instant;
+
+    let (unread, mut output) = UnixStream::pair().unwrap();
+    output.set_nonblocking(true).unwrap();
+    loop {
+        match output.write(&[b'x'; 4096]) {
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => break,
+            Err(error) => panic!("fill task-owned output socket: {error}"),
+        }
+    }
+    output.set_nonblocking(false).unwrap();
+    let output: OwnedFd = output.into();
+    let reservation = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let port = reservation.local_addr().unwrap().port();
+    let data_root = std::env::temp_dir().join(format!(
+        "gobstopper-blocked-startup-{}-{port}",
+        std::process::id()
+    ));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gobstopper"));
+    for (key, _) in std::env::vars_os() {
+        if key.to_string_lossy().starts_with("GOBSTOPPER_") {
+            command.env_remove(key);
+        }
+    }
+    command
+        .env("HRANESS_AUDIENCE", "quiet")
+        .env("HRANESS_NO_UPDATE", "1")
+        .env("XDG_CONFIG_HOME", data_root.join("config"))
+        .env("GOBSTOPPER_DATA_DIR", data_root.join("data"))
+        .env("GOBSTOPPER_STATS_FILE", "off")
+        .args([
+            "proxy",
+            "serve",
+            "--port",
+            &port.to_string(),
+            "--no-keep-awake",
+        ])
+        .stdout(Stdio::from(output))
+        .stderr(Stdio::null());
+    drop(reservation);
+    let mut proxy = ProxyProcess {
+        child: command.spawn().unwrap(),
+        port,
+        data_root,
+    };
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut stream = loop {
+        if let Ok(stream) = TcpStream::connect(("127.0.0.1", port)) {
+            break stream;
+        }
+        assert!(Instant::now() < deadline, "proxy never bound its port");
+        assert!(
+            proxy.child.try_wait().unwrap().is_none(),
+            "proxy exited during startup"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    };
+    stream
+        .set_read_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(Duration::from_secs(2)))
+        .unwrap();
+    stream
+        .write_all(
+            b"GET /gobstopper/ready HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n",
+        )
+        .unwrap();
+    let mut response = String::new();
+    stream.read_to_string(&mut response).unwrap();
+    assert!(response.starts_with("HTTP/1.1 200"), "{response}");
+    let (_, body) = response.split_once("\r\n\r\n").unwrap();
+    let ready: Value = serde_json::from_str(body).unwrap();
+    assert_eq!(ready["pid"], proxy.child.id());
+    assert_eq!(ready["ready"], true);
+    // Stop only our test child before closing its deliberately unread stdout.
+    drop(proxy);
+    drop(unread);
+}
+
 fn start_proxy(upstream: &str, extra: &[&str]) -> ProxyProcess {
     start_proxy_with(upstream, upstream, extra)
 }
@@ -1166,13 +1253,14 @@ fn proxy_status_prints_no_null_for_an_older_server() {
     let dir = scratch_dir("status-text");
     // A 0.4.1 server: no threshold_1m_tokens, keep_tail_percent or requests_1m.
     let old = TcpListener::bind("127.0.0.1:0").unwrap();
-    let port = old.local_addr().unwrap().port().to_string();
+    let listen_port = old.local_addr().unwrap().port();
+    let port = listen_port.to_string();
     let server = std::thread::spawn(move || {
         let (stream, _) = old.accept().unwrap();
         let mut reader = BufReader::new(stream.try_clone().unwrap());
         let (line, _) = read_head(&mut reader).unwrap();
         let body = serde_json::to_vec(&json!({
-            "name": "gobstopper-proxy", "version": "0.4.1", "port": 8260,
+            "name": "gobstopper-proxy", "version": "0.4.1", "port": listen_port,
             "threshold_tokens": 128_000, "keep_recent": 3, "result_max_chars": 500,
             "keep_thinking": true, "shadow": false, "strict": false,
             "store_entries": 0, "store_chars": 0, "requests": 5, "compacted": 1,

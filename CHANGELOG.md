@@ -2,6 +2,16 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## v0.8.4 - 2026-10-01
+
+Gobstopper keeps slow clients, optional storage and compaction work from holding up proxy controls. A new launcher checks the proxy before starting Claude Code or Codex. Claude can use its direct provider when the proxy is unavailable; Codex keeps its existing configuration and requires a healthy proxy.
+
+- Request headers and bodies have time and memory limits. Proxy readiness and status use short deadlines, and compaction uses a separate worker pool with a forwarding deadline. Expired compaction work cannot publish a cached prefix or a context observation.
+- Statistics and diagnostic logs write through bounded background queues and report dropped entries or write failures. Context storage opens when a scoped request needs it, retries after temporary failure and preserves existing reservations.
+- Sleep inhibition runs in a background worker, so slow native power calls cannot block request forwarding or status.
+- `gobstopper proxy launch` checks readiness before starting a client. Claude direct fallback preserves authentication and refuses routing it cannot safely reproduce. Codex launches only with an existing explicit custom proxy provider and a healthy proxy; direct fallback remains unavailable because effective cloud configuration cannot be fully verified. It does not replay a request already sent to a provider.
+- Service recovery documentation records the one-time legacy migration filter outage and its cleanup. Future updates use the managed drain protocol without firewall changes.
+
 ## v0.8.3 - 2026-09-30
 
 Gobstopper retries temporary database locking failures when several commands start at once.

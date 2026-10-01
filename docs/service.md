@@ -39,6 +39,27 @@ gobstopper proxy uninstall
 
 The doctor reports configuration ownership, registration with the service manager, the executable and port, any pending operation, live health, sleep-inhibition state, and the drain phase. Waiting and committed drains are reported as unhealthy for ordinary use. The public status response exposes the proxy process identity, drain protocol, epoch, phase, and remaining wait; it does not expose the controller token. A matching HTTP response alone doesn't establish that startup is configured correctly.
 
+`proxy status` uses the installed service's recorded port. An explicit `--port`
+checks that address even when the saved service configuration is damaged. Its
+network check has a two-second total deadline and a bounded response size, so
+a listening socket that never responds cannot hang the command indefinitely.
+If a background transform holds the prefix-store lock, status returns
+`store_details_available: false` and null store sizes instead of waiting for it.
+
+`GET /gobstopper/ready` is a small local check of the listener and request
+admission state. It returns the process and service identity, active inference
+count, and whether admission is open. It returns 503 while draining or when
+admission state is busy. It does not wait for statistics, calibration, context
+storage, or power-status collection. This checks Gobstopper's ability to admit
+work, not provider credentials or upstream availability.
+
+Normal forwarding has its own concurrency limit. Extra capacity remains for
+health and service-control requests. Request headers and bodies have total
+read deadlines, including clients that keep sending small amounts of data.
+At the absolute socket limit, new sockets close immediately so the accept
+thread continues handling connections. Existing inference is not restarted
+or replayed to recover capacity.
+
 Repair recreates missing managed definitions and restarts an absent owned job. Running repair or an identical installation from the service's recorded executable also restarts a proxy when its running version differs from the installed version, using the same waiting lease on capable proxies. It resumes a legacy idle pause and reconciles recorded lease operations before starting a service. Installations record an immutable configuration snapshot and a journal before replacement. Repair reconciles an interrupted operation only when its files and loaded job match those recorded identities. It restores the predecessor configuration when available, or completes a first installation. It leaves externally edited files and unrelated jobs intact, and reports the mismatch.
 
 A damaged manifest, a missing executable, unavailable service manager, or changed job requires investigation before repair can proceed. On Windows, a process interruption between task registration and recording the queried task definition can require manual reconciliation; repair won't overwrite a task whose ownership it cannot establish.
@@ -72,19 +93,68 @@ Explicit proxy arguments are preserved. When `--keep-tail-percent` is omitted, m
 
 Legacy versions cannot atomically pause new requests. Stop initiating requests from connected clients before migrating and keep them paused until migration completes. The legacy idle check observes current activity; it cannot prevent a later request from starting during that first upgrade. Subsequent managed upgrades use the admission handshake above.
 
+Do not add temporary firewall or packet-filter rules to automate that first
+upgrade. An external filter can outlive its controller and block client
+connections even when the replacement proxy is healthy. Gobstopper's service
+commands do not install network filters; managed upgrades use the proxy's
+request-admission protocol.
+
 Migration keeps the original plist bytes in its backup and journal. If rollback must restart the legacy job using the upgraded binary, a separate prepared definition makes the observed retained-history setting explicit and preserves the original label, environment, working directory, logging, and other settings. This prevents rollback from switching an implicit 40% setting to the newer 0% default. Explicit proxy arguments remain authoritative.
 
 Immediate failure and `proxy repair` share recovery checks. Matching prepared legacy processes are preserved; an already healthy upgraded installation completes without restarting it. An original process whose implicit settings need preservation can keep running while busy, with the journal retained. After clients are paused and idle activity is confirmed, repair revalidates the original process and restarts it with the prepared settings; launchd otherwise retains the old implicit arguments for future process restarts. Prepared legacy startup must report the expected process, executable, and retained-history setting before recovery completes. A failed readiness check retains the journal and backup, including after interruption between restoration and bootstrap. Edited files and unrelated jobs are rejected. Older journals without a prepared definition remain readable and retain their original exact-file recovery behavior.
 
+## Launch with a direct fallback
+
+```sh
+gobstopper proxy launch --client claude --print
+gobstopper proxy launch --client claude
+gobstopper proxy launch --client codex --codex-auth chatgpt
+gobstopper proxy launch --client codex --codex-auth api-key
+```
+
+The launcher checks the configured proxy with a two-second network deadline,
+then starts one client. Claude can use its official provider directly when
+the proxy is unavailable and the recorded route permits it. Codex requires
+a healthy proxy and an existing explicitly selected custom provider that
+already points to it. Codex direct fallback is unavailable: cloud configuration
+can contain provider fields the launcher cannot completely verify. If the
+check fails, run Codex normally with its existing settings or repair the proxy.
+
+`--print` reports proxy readiness and the Claude route, or that Codex will use
+its existing settings, without starting a client. It does not verify Codex's
+effective cloud or project route. Saved settings and authentication are
+retained; pass ordinary client arguments after `--`. For Codex, `--codex-auth`
+identifies the existing ChatGPT or API-key route to check; it does not sign in
+or obtain a key.
+
+Claude direct fallback refuses custom upstreams, uncertain provider or
+authentication settings, scoped context reservations, and configured capacity
+constraints. This includes `X-Gobstopper-Scope` inside Claude's
+`ANTHROPIC_CUSTOM_HEADERS` in environment or settings. Healthy launches
+preserve scoped headers. Codex retains its entire existing provider table,
+including literal and environment-backed headers: the launcher does not
+override its provider selection, URL, headers or environment. Built-in Codex
+providers and existing direct routes are refused.
+
+The launcher also refuses Codex system and managed configuration layers it
+cannot inspect. Checking effective macOS managed preferences has a two-second
+deadline; unavailable inspection refuses launch. Pass short client options
+separately, since combined flags can conceal a change of working directory or
+settings.
+
+This choice happens before the client starts. It does not change existing
+sessions, retry a failed client, or replay inference. Sessions already using
+a fixed proxy URL still need that listener to remain available.
+
 ## Sleep during inference
 
-The proxy prevents idle system sleep while it handles model inference requests. Requests share one assertion: it remains held until the last overlapping request finishes, fails, or disconnects. Status calls and an otherwise idle proxy don't keep the computer awake. Display sleep remains allowed.
+The proxy requests idle system sleep prevention while it handles model inference requests. Requests share one assertion. A background worker acquires it when inference starts and releases it after the last overlapping request finishes, fails, or disconnects. Acquisition and release are asynchronous; native power calls do not run on request threads. Status calls and an otherwise idle proxy don't keep the computer awake. Display sleep remains allowed.
 
 - macOS uses an IOKit `PreventUserIdleSystemSleep` assertion.
 - Linux inhibits logind's configured idle action through `systemd-inhibit --what=idle`, with a helper whose lifetime follows the proxy's open input pipe. It requires logind support and permission to acquire the inhibitor. Desktop-managed automatic suspend may still proceed; Linux desktop behavior is not yet qualified.
 - Windows uses a system power request held by the proxy process.
 
-Operating-system policy, explicit sleep, and closing a laptop lid can override idle-sleep prevention. A failed assertion appears in `keep_awake.last_error`; inference can continue and later requests retry after a bounded delay. `--no-keep-awake` disables this feature for `proxy serve`, `proxy run`, or `proxy install`.
+Operating-system policy, explicit sleep, and closing a laptop lid can override idle-sleep prevention. Cached status reports transitions through `keep_awake.pending` and slow native calls through `keep_awake.stalled`. A failed assertion appears in `keep_awake.last_error`; inference continues, and ordinary acquisition errors retry every 30 seconds while inference remains active. If the worker panics or cannot start, `keep_awake.worker_alive` is false and the enabled feature requires a proxy restart to recover. `--no-keep-awake` disables this feature for `proxy serve`, `proxy run`, or `proxy install`.
 
 Process exit releases the native assertion or closes the Linux helper's pipe. macOS qualification tests also inspect the assertion by the owned test process's PID and verify its removal after that process dies.
 
@@ -93,3 +163,17 @@ Process exit releases the native assertion or closes the Linux helper's pipe. ma
 On macOS and Linux, service state lives in `$XDG_CONFIG_HOME/gobstopper/service`, or `~/.config/gobstopper/service` when that variable is unset. Windows uses `%LOCALAPPDATA%\gobstopper\service`. The directory contains the manifest, operation lock, and any recovery journal or backup.
 
 macOS writes the LaunchAgent under `~/Library/LaunchAgents/` and logs under `~/Library/Logs/gobstopper-proxy.log`. Linux writes its user unit under the configuration root's `systemd/user/` directory; use the user journal to inspect output. Windows saves the generated task XML in its service directory; Task Scheduler provides task status. Gobstopper's local observation journal is separate from these startup files.
+
+Diagnostic log writes also use a bounded background queue; `diagnostic_log` reports dropped lines and write failures. Startup output does not delay the listener, and the context database opens lazily when a scoped request needs it. Scoped requests fail closed while context storage is unavailable.
+
+Scoped policy reads and reservation consumption have a separate worker limit and a two-second response deadline. Unavailable storage returns a retryable 503 before inference is sent. A timed-out reservation consumption may have completed, so Gobstopper never retries or restores it internally. Adaptive evidence observations use a bounded background queue; `context_control.observations` reports dropped batches and write failures.
+
+Legacy token totals in `proxy-stats.jsonl` are loaded and appended by a
+background worker. A slow or unwritable disk does not delay forwarding.
+The queue is bounded; status reports dropped events and write failures under
+`stats_persistence`. A later request retries storage after a write failure,
+without replaying a record whose append result is uncertain. Existing bytes
+are preserved. Totals can be partial while `loading_history` is true; an
+unreadable, malformed, or incomplete historical record sets
+`history_incomplete`. These counters describe legacy JSONL persistence, not
+the separate session observation database.
