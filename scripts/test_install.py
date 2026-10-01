@@ -135,6 +135,50 @@ class InstallShTests(unittest.TestCase):
         self.assertIn("checksum mismatch", result.stderr)
         self.assertFalse((self.prefix / "bin" / "gobstopper").exists())
 
+    def test_loopback_cannot_replace_a_managed_native_install(self):
+        self.publish(archive({"gobstopper": FAKE}))
+        binary = self.prefix / "bin" / "gobstopper"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(b"preserve managed executable")
+        state = binary.parent / ".hraness-cli-update-gobstopper"
+        state.mkdir()
+        (state / "activity.lock").write_bytes(b"")
+        result = self.install()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("native update coordination", result.stderr)
+        self.assertEqual(binary.read_bytes(), b"preserve managed executable")
+
+    def public_dispatch_fixture(self):
+        # Exercise public-version dispatch against the private loopback fixture;
+        # actual canonical release verification remains the candidate's job.
+        source = self.installer.read_text()
+        old = "http://127.0.0.1:*) native_transaction=no ;;"
+        self.assertIn(old, source)
+        self.installer.write_text(source.replace(old,
+            'http://127.0.0.1:*) if supports_native_update "$version"; then native_transaction=yes; else native_transaction=no; fi ;;'))
+
+    def test_signed_pre_updater_release_uses_its_compatible_install_path(self):
+        self.version = "0.8.1"
+        candidate = b"#!/bin/sh\n[ \"$1\" = --version ] || exit 42\necho 'gobstopper 0.8.1'\n"
+        self.publish(archive({"gobstopper": candidate}))
+        self.public_dispatch_fixture()
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.prefix / "bin" / "gobstopper").read_bytes(), candidate)
+
+    def test_first_updater_release_delegates_to_its_native_transaction(self):
+        self.version = "0.8.2"
+        candidate = b'#!/bin/sh\ncase "$1" in\n--version) echo "gobstopper 0.8.2" ;;\n__install-release) printf "%s\\n" "$@" > "$FIXTURE_TRANSACTION_LOG" ;;\n*) exit 42 ;;\nesac\n'
+        self.publish(archive({"gobstopper": candidate}))
+        self.public_dispatch_fixture()
+        transaction = self.dir / "transaction"
+        result = self.install(FIXTURE_TRANSACTION_LOG=str(transaction))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        arguments = transaction.read_text().splitlines()
+        self.assertEqual(arguments[0], "__install-release")
+        self.assertIn("--pinned", arguments)
+        self.assertIn(str(self.prefix), arguments)
+
     def test_archive_with_other_members_is_refused(self):
         self.publish(archive({"gobstopper": FAKE, "extra": b"x"}))
         result = self.install()

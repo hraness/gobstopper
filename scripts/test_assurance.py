@@ -15,6 +15,10 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class AssuranceTests(unittest.TestCase):
+    def test_command_inventory_includes_tuple_variants(self):
+        source = "enum Cmd {\n    Named {\n        value: bool,\n    },\n    Tuple(Arguments),\n    Unit,\n}\n"
+        self.assertEqual(assurance.enum_variants(source, "Cmd"), {"Named", "Tuple", "Unit"})
+
     @classmethod
     def setUpClass(cls):
         cls.documents = assurance.load_documents(ROOT)

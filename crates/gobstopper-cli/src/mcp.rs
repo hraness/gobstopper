@@ -723,6 +723,7 @@ mod tests {
 
     fn cli() -> Cli {
         Cli {
+            no_update: true,
             codex_home: None,
             claude_home: None,
             codex_bin: None,

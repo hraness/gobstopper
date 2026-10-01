@@ -25,7 +25,7 @@ case "$(uname -s)/$(uname -m)" in
 esac
 
 cd "$root"
-"$CARGO" build --release --locked -p gobstopper
+GOBSTOPPER_BUILD_RELEASE_TAG="v$version" "$CARGO" build --release --locked -p gobstopper
 binary="${CARGO_TARGET_DIR:-$root/target}/release/gobstopper"
 reported=$("$binary" --version)
 [ "$reported" = "gobstopper $version" ] \

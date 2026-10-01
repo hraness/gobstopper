@@ -279,7 +279,9 @@ fn blocked_stdin_and_stderr_flood_share_the_deadline_and_output_budget() {
 fn inherited_pipe_outside_group_cannot_hold_runner_threads() {
     let fixture = Fixture::new();
     let done = fixture.0.join("done");
-    let mut command = Command::new("/usr/bin/python3");
+    // Use the test environment's Python interpreter. On macOS /usr/bin/python3
+    // is an Xcode launcher that can emit SDK diagnostics into the 64-byte cap.
+    let mut command = Command::new("python3");
     // The leader may exit only after its child leaves the owned group. Without
     // this handshake, correct group cleanup can kill the child before setsid.
     command
@@ -314,7 +316,10 @@ sys.stdout.write('ok');sys.stdout.flush();os._exit(0)
     while !done.exists() && Instant::now() < deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(done.exists());
+    assert!(
+        done.exists(),
+        "escaped fixture did not finish after the runner returned: {result:?}"
+    );
     assert!(
         returned_before_done,
         "runner waited for an escaped descendant to close its inherited pipes"
