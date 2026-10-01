@@ -529,8 +529,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-30-082-updater-stress.json",
-        "sha256": "f5ea814785dfa053cc3c44f8b3d8b2ab6c2d0e6cdf28ff87b5875848b5f56bba"
+        "path": "docs/assurance/receipts/2026-09-30-083-sqlite-open-stress.json",
+        "sha256": "ba5ecaa83489b43f014920b90f81022361343f886dc580d989b7bc7e39adcb06"
       }
     },
     {
