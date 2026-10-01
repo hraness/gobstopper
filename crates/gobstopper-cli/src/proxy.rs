@@ -485,6 +485,7 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
                     opts.client_context_window,
                     opts.output_reserve,
                     opts.adaptive_context,
+                    None,
                 )?;
             let base = format!("http://127.0.0.1:{port}/__gobstopper/s/{scope}");
             log(&format!(
@@ -3003,7 +3004,7 @@ mod tests {
         let path = directory.join("context.sqlite3");
         let original = crate::context::Control::open(&path).unwrap();
         let scope = original
-            .create(Some(1_000_000), Some(1_000_000), 32_000, false)
+            .create(Some(1_000_000), Some(1_000_000), 32_000, false, None)
             .unwrap();
         original.reserve(&scope, 500_000, 32, 60).unwrap();
         drop(original);

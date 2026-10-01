@@ -67,6 +67,30 @@ reservations and their remaining request allowances.
 After every client using it has stopped, run
 `gobstopper context close --scope <capability>`.
 
+## Give a long-lived agent a standing threshold
+
+A reservation suits a phase; it ends by request count or time. An agent that
+should always run wider than the proxy default — a coordinator holding one
+session for days — needs a threshold that belongs to its scope rather than to a
+reservation that must be re-armed:
+
+```sh
+gobstopper context create --context-window 1000000 --client-context-window 1000000 --threshold 512000 --json
+```
+
+After upgrading Gobstopper, restart any running proxy before using a standing
+threshold.
+
+Requests in that scope compact at the scope's threshold instead of
+`--threshold` or `--threshold-1m`, and `limiting_reason` reports
+`scope_threshold`. The same capacity rules apply: a threshold above the
+declared input capacity is clipped to it, and with no declared capacity only a
+threshold below the proxy's own takes effect. A reservation still wins while it
+is live; when it expires or is released, the scope returns to its standing
+threshold rather than the proxy default. `context status` reports the standing
+value as `scope_threshold_tokens`. Keep it below the client's own
+auto-compaction point.
+
 ## Optional automatic rescue
 
 `--adaptive-context` on `proxy run`, or `--adaptive` on `context create`, enables a

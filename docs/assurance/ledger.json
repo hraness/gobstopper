@@ -445,8 +445,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-01-084-resilience-core.json",
-        "sha256": "086cc39e117268562102a2720219ba3f2cf3c3aaabff58796fbe4b2a349e7469"
+        "path": "docs/assurance/receipts/2026-10-01-085-standing-threshold-core.json",
+        "sha256": "e91da06600e6cc14664061238a3ad3c7ce32cd037e5733597249f97eb27ff98a"
       }
     },
     {
@@ -508,8 +508,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-01-084-resilience-transcript.json",
-        "sha256": "4e867eae29a62366b148c6c6a4fe7c21d78efdae7baa121269a5f0a9665fcbfb"
+        "path": "docs/assurance/receipts/2026-10-01-085-standing-threshold-transcript.json",
+        "sha256": "27248220e17ff0ce1174a3fdef85ac13595b8400d2d1f2863d0642ef26fa4788"
       }
     },
     {
@@ -529,8 +529,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-01-084-resilience-inventory-stress.json",
-        "sha256": "cf276f0114cda369bea616e78c7019b70864ee5c47b46c6541155c6815649a0f"
+        "path": "docs/assurance/receipts/2026-10-01-085-standing-threshold-stress.json",
+        "sha256": "beb2594e96e6a47757b923d42069d362401242cdb2122ff19b6389b10d915f48"
       }
     },
     {

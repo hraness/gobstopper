@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-const SCHEMA: i64 = 1;
+const SCHEMA: i64 = 2;
 const APPLICATION_ID: i64 = 0x47424354;
 const MAX_SCOPES: i64 = 4096;
 const MAX_TOKENS: u64 = 8_000_000;
@@ -38,6 +38,10 @@ enum ContextCmd {
         /// Allow bounded rescue after repeated reads of unchanged evicted evidence.
         #[arg(long)]
         adaptive: bool,
+        /// A standing input threshold for every request in this scope, in place
+        /// of the proxy's --threshold and --threshold-1m. Capacity still caps it.
+        #[arg(long)]
+        threshold: Option<u64>,
         #[arg(long, default_value_t = crate::proxy::DEFAULT_PORT)]
         port: u16,
         #[arg(long)]
@@ -69,7 +73,7 @@ enum ContextCmd {
         #[arg(long)]
         json: bool,
     },
-    /// End the reservation and return to the proxy's ordinary threshold.
+    /// End the reservation and return to the scope or proxy's standing threshold.
     Release {
         #[arg(long)]
         scope: Option<String>,
@@ -94,6 +98,7 @@ pub struct Decision {
     pub configured_client_window: Option<u64>,
     pub output_reserve_tokens: u64,
     pub base_threshold_tokens: u64,
+    pub scope_threshold_tokens: Option<u64>,
 }
 impl Decision {
     pub fn policy_identity(&self) -> String {
@@ -125,6 +130,7 @@ struct Scope {
     rescues: u32,
     cooldown: u64,
     base: u64,
+    threshold: Option<u64>,
 }
 
 pub struct Control {
@@ -223,27 +229,35 @@ impl Control {
             tx.commit()?;
             initialize
         };
-        if initialize {
+        if initialize.is_some() {
             // Drop the read transaction before acquiring the writer lock, then
             // recheck: another first opener may have initialized in between.
             let tx = db
                 .transaction_with_behavior(TransactionBehavior::Immediate)
                 .context("initializing context schema")?;
-            if schema_needs_initialization(&tx)? {
-                tx.execute_batch("CREATE TABLE IF NOT EXISTS scopes (
+            match schema_needs_initialization(&tx)? {
+                // Schema 1 stores lack the standing threshold; existing scopes
+                // keep following the proxy's configured thresholds.
+                Some(1) => tx.execute_batch(
+                    "ALTER TABLE scopes ADD COLUMN threshold INTEGER; PRAGMA user_version=2;",
+                )?,
+                Some(_) => {
+                    tx.execute_batch("CREATE TABLE IF NOT EXISTS scopes (
                 id TEXT PRIMARY KEY, provider_window INTEGER, client_window INTEGER,
                 output_reserve INTEGER NOT NULL, requested INTEGER, remaining INTEGER NOT NULL DEFAULT 0,
                 created INTEGER NOT NULL, expires INTEGER, generation INTEGER NOT NULL DEFAULT 0,
                 adaptive INTEGER NOT NULL, rereads INTEGER NOT NULL DEFAULT 0, reread_since INTEGER NOT NULL DEFAULT 0,
                 rescues INTEGER NOT NULL DEFAULT 0, cooldown INTEGER NOT NULL DEFAULT 0,
-                base INTEGER NOT NULL DEFAULT 128000);
+                base INTEGER NOT NULL DEFAULT 128000, threshold INTEGER);
                 CREATE TABLE IF NOT EXISTS evidence (
                 scope TEXT NOT NULL, source TEXT NOT NULL, digest TEXT NOT NULL,
                 evicted INTEGER NOT NULL, seen INTEGER NOT NULL,
                 PRIMARY KEY(scope,source));
                 CREATE INDEX IF NOT EXISTS evidence_digest ON evidence(scope,digest,evicted);
-                PRAGMA user_version=1;")?;
-                tx.pragma_update(None, "application_id", APPLICATION_ID)?;
+                PRAGMA user_version=2;")?;
+                    tx.pragma_update(None, "application_id", APPLICATION_ID)?;
+                }
+                None => {}
             }
             tx.commit().context("committing context schema")?;
         }
@@ -267,9 +281,13 @@ impl Control {
         client_window: Option<u64>,
         output: u64,
         adaptive: bool,
+        threshold: Option<u64>,
     ) -> Result<String> {
         checked_window(window)?;
         checked_window(client_window)?;
+        if threshold.is_some_and(|n| !(1..=MAX_TOKENS).contains(&n)) {
+            bail!("scope threshold must be 1..={MAX_TOKENS} tokens");
+        }
         if output > MAX_TOKENS
             || window.is_some_and(|n| output >= n)
             || client_window.is_some_and(|n| output >= n)
@@ -287,9 +305,9 @@ impl Control {
             bail!("context scope limit reached; reuse an existing scope");
         }
         tx.execute(
-            "INSERT INTO scopes(id,provider_window,client_window,output_reserve,created,adaptive)
-            VALUES(?,?,?,?,?,?)",
-            params![key, window, client_window, output, now_ms(), adaptive],
+            "INSERT INTO scopes(id,provider_window,client_window,output_reserve,created,adaptive,threshold)
+            VALUES(?,?,?,?,?,?,?)",
+            params![key, window, client_window, output, now_ms(), adaptive, threshold],
         )?;
         tx.commit().context("committing context scope creation")?;
         Ok(capability)
@@ -488,7 +506,9 @@ fn transient_contention(error: &anyhow::Error) -> bool {
 }
 
 /// Caller holds a transaction so schema identity and table inventory agree.
-fn schema_needs_initialization(db: &Connection) -> Result<bool> {
+/// `None` when the store is current; otherwise the version it must be
+/// brought forward from (0 for an empty database).
+fn schema_needs_initialization(db: &Connection) -> Result<Option<i64>> {
     let version: i64 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
     if version < 0 {
         bail!("context state has an invalid schema ({version})");
@@ -506,15 +526,16 @@ fn schema_needs_initialization(db: &Connection) -> Result<bool> {
             bail!("context state is not an empty database");
         }
     }
-    Ok(version == 0)
+    Ok((version < SCHEMA).then_some(version))
 }
 
 fn read_scope(db: &Connection, key: &str) -> Result<Scope> {
     db.query_row("SELECT provider_window,client_window,output_reserve,requested,remaining,created,
-        expires,generation,adaptive,rereads,rescues,cooldown,base,reread_since FROM scopes WHERE id=?", [key], |r| {
+        expires,generation,adaptive,rereads,rescues,cooldown,base,reread_since,threshold FROM scopes WHERE id=?", [key], |r| {
         Ok(Scope { window:r.get(0)?,client_window:r.get(1)?,output:r.get(2)?,requested:r.get(3)?,
             remaining:r.get(4)?,created:r.get(5)?,expires:r.get(6)?,generation:r.get(7)?,adaptive:r.get(8)?,
-            rereads:r.get(9)?,rescues:r.get(10)?,cooldown:r.get(11)?,base:r.get(12)?,reread_since:r.get(13)? })
+            rereads:r.get(9)?,rescues:r.get(10)?,cooldown:r.get(11)?,base:r.get(12)?,reread_since:r.get(13)?,
+            threshold:r.get(14)? })
     }).optional()?.context("unknown context scope")
 }
 fn decide(
@@ -534,10 +555,12 @@ fn decide(
     let active =
         row.remaining > 0 && now >= row.created && row.expires.is_some_and(|until| now < until);
     let requested = if active { row.requested } else { None };
-    // Unknown capacity permits the existing configured trigger, but cannot
-    // grant a larger reservation without an explicit capacity declaration.
-    let effective = requested.unwrap_or(base).min(capacity.unwrap_or(base));
-    let reason = if requested.is_some_and(|n| n > effective) {
+    // A live reservation wins, then the scope's standing threshold, then the
+    // proxy's configured trigger. Unknown capacity permits the configured
+    // trigger, but cannot grant more without an explicit capacity declaration.
+    let wanted = requested.or(row.threshold).unwrap_or(base);
+    let effective = wanted.min(capacity.unwrap_or(base));
+    let reason = if wanted > effective {
         if capacity.is_some() {
             "capacity_or_output_headroom"
         } else {
@@ -545,6 +568,8 @@ fn decide(
         }
     } else if active {
         "reserved"
+    } else if row.threshold.is_some() {
+        "scope_threshold"
     } else if row.requested.is_some() {
         "reservation_expired_or_exhausted"
     } else {
@@ -565,6 +590,7 @@ fn decide(
         configured_client_window: row.client_window,
         output_reserve_tokens: output,
         base_threshold_tokens: base,
+        scope_threshold_tokens: row.threshold,
     }
 }
 fn capability(scope: &Option<String>) -> Result<String> {
@@ -585,6 +611,7 @@ pub fn run(args: &ContextArgs) -> Result<()> {
             client_context_window,
             output_reserve,
             adaptive,
+            threshold,
             port,
             ..
         } => {
@@ -593,6 +620,7 @@ pub fn run(args: &ContextArgs) -> Result<()> {
                 *client_context_window,
                 *output_reserve,
                 *adaptive,
+                *threshold,
             )?;
             serde_json::json!({"scope":scope,"base_url":format!("http://127.0.0.1:{port}/__gobstopper/s/{scope}"),
                 "scope_boundary":"wrapper and any descendants sharing the capability",
@@ -634,7 +662,7 @@ mod tests {
     fn reservation_consumes_once_and_reopens_without_restoring_allowance() {
         let (control, path) = control();
         let scope = control
-            .create(Some(1_000_000), Some(700_000), 32_000, false)
+            .create(Some(1_000_000), Some(700_000), 32_000, false, None)
             .unwrap();
         assert_eq!(
             control
@@ -667,6 +695,117 @@ mod tests {
     }
 
     #[test]
+    fn standing_threshold_replaces_the_proxy_trigger_until_a_reservation_wins() {
+        let (control, path) = control();
+        let scope = control
+            .create(Some(1_000_000), None, 32_000, false, Some(512_000))
+            .unwrap();
+        // Both the base and the 1M proxy triggers give way to the scope's own.
+        for base in [128_000, 256_000] {
+            let decision = control.consume(&scope, base, None, 32_000).unwrap();
+            assert_eq!(decision.effective_input_tokens, 512_000);
+            assert_eq!(decision.limiting_reason, "scope_threshold");
+            assert_eq!(decision.scope_threshold_tokens, Some(512_000));
+            assert_eq!(decision.base_threshold_tokens, base);
+        }
+        // A reservation still takes priority, and release returns to the
+        // standing threshold rather than the proxy's.
+        control.reserve(&scope, 800_000, 1, 60).unwrap();
+        let reserved = control.consume(&scope, 128_000, None, 32_000).unwrap();
+        assert_eq!(reserved.effective_input_tokens, 800_000);
+        assert_eq!(reserved.limiting_reason, "reserved");
+        let exhausted = control.consume(&scope, 128_000, None, 32_000).unwrap();
+        assert_eq!(exhausted.effective_input_tokens, 512_000);
+        assert_eq!(exhausted.limiting_reason, "scope_threshold");
+        let released = control.release(&scope).unwrap();
+        assert_eq!(released.effective_input_tokens, 512_000);
+        drop(control);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn standing_threshold_cannot_exceed_capacity_or_unknown_capacity() {
+        let (control, path) = control();
+        let capped = control
+            .create(Some(600_000), None, 32_000, false, Some(900_000))
+            .unwrap();
+        let decision = control.status(&capped).unwrap();
+        assert_eq!(decision.effective_input_tokens, 568_000);
+        assert_eq!(decision.limiting_reason, "capacity_or_output_headroom");
+        let unknown = control
+            .create(None, None, 32_000, false, Some(512_000))
+            .unwrap();
+        let decision = control.consume(&unknown, 128_000, None, 32_000).unwrap();
+        assert_eq!(decision.effective_input_tokens, 128_000);
+        assert_eq!(decision.limiting_reason, "capacity_unknown");
+        // A tighter standing threshold needs no capacity declaration.
+        let tighter = control
+            .create(None, None, 32_000, false, Some(64_000))
+            .unwrap();
+        let decision = control.consume(&tighter, 128_000, None, 32_000).unwrap();
+        assert_eq!(decision.effective_input_tokens, 64_000);
+        assert_eq!(decision.limiting_reason, "scope_threshold");
+        assert!(control.create(None, None, 32_000, false, Some(0)).is_err());
+        drop(control);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn schema_one_stores_gain_the_threshold_column_and_keep_their_scopes() {
+        // Build a current store for its private directory and file, then
+        // rewrite it as a 0.8.4 (schema 1) store holding one scope.
+        let (control, path) = control();
+        drop(control);
+        let capability = random_id().unwrap();
+        {
+            let db = Connection::open(&path).unwrap();
+            db.execute_batch(
+                "DROP INDEX evidence_digest; DROP TABLE evidence; DROP TABLE scopes;
+                CREATE TABLE scopes (
+                id TEXT PRIMARY KEY, provider_window INTEGER, client_window INTEGER,
+                output_reserve INTEGER NOT NULL, requested INTEGER, remaining INTEGER NOT NULL DEFAULT 0,
+                created INTEGER NOT NULL, expires INTEGER, generation INTEGER NOT NULL DEFAULT 0,
+                adaptive INTEGER NOT NULL, rereads INTEGER NOT NULL DEFAULT 0, reread_since INTEGER NOT NULL DEFAULT 0,
+                rescues INTEGER NOT NULL DEFAULT 0, cooldown INTEGER NOT NULL DEFAULT 0,
+                base INTEGER NOT NULL DEFAULT 128000);
+                CREATE TABLE evidence (
+                scope TEXT NOT NULL, source TEXT NOT NULL, digest TEXT NOT NULL,
+                evicted INTEGER NOT NULL, seen INTEGER NOT NULL,
+                PRIMARY KEY(scope,source));
+                CREATE INDEX evidence_digest ON evidence(scope,digest,evicted);
+                PRAGMA user_version=1;",
+            )
+            .unwrap();
+            db.execute(
+                "INSERT INTO scopes(id,provider_window,output_reserve,created,adaptive) VALUES(?,?,?,?,0)",
+                params![scope_key(&capability).unwrap(), 1_000_000u64, 32_000u64, now_ms()],
+            )
+            .unwrap();
+        }
+        let control = Control::open(&path).unwrap();
+        let existing = control.consume(&capability, 128_000, None, 32_000).unwrap();
+        assert_eq!(existing.effective_input_tokens, 128_000);
+        assert_eq!(existing.limiting_reason, "configured_threshold");
+        assert_eq!(existing.scope_threshold_tokens, None);
+        let fresh = control
+            .create(Some(1_000_000), None, 32_000, false, Some(512_000))
+            .unwrap();
+        assert_eq!(
+            control.status(&fresh).unwrap().effective_input_tokens,
+            512_000
+        );
+        drop(control);
+        let db = Connection::open(&path).unwrap();
+        assert_eq!(
+            db.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA
+        );
+        drop(db);
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
+    }
+
+    #[test]
     fn concurrent_first_openers_preserve_every_scope_and_reservation() {
         use std::sync::{Arc, Barrier};
         let path = std::env::temp_dir()
@@ -682,7 +821,7 @@ mod tests {
                     let control = Control::open(&path)
                         .with_context(|| format!("worker {worker} opening context state"))?;
                     let scope = control
-                        .create(Some(1_000_000), None, 32_000, false)
+                        .create(Some(1_000_000), None, 32_000, false, None)
                         .with_context(|| format!("worker {worker} creating context scope"))?;
                     control
                         .reserve(&scope, 500_000, 3, 60)
@@ -708,7 +847,7 @@ mod tests {
     fn reopening_wal_state_does_not_wait_for_an_active_writer() {
         let (control, path) = control();
         let scope = control
-            .create(Some(1_000_000), None, 32_000, false)
+            .create(Some(1_000_000), None, 32_000, false, None)
             .unwrap();
         control.reserve(&scope, 500_000, 3, 60).unwrap();
         let mut db = control.db.lock().unwrap();
@@ -732,7 +871,7 @@ mod tests {
     fn scope_mutations_wait_for_transient_writers_without_replaying() {
         let (control, path) = control();
         let scope = control
-            .create(Some(1_000_000), None, 32_000, false)
+            .create(Some(1_000_000), None, 32_000, false, None)
             .unwrap();
         let mut blocker = Connection::open(&path).unwrap();
         for reserve in [true, false] {
@@ -770,7 +909,7 @@ mod tests {
     fn opening_contention_has_a_deadline_and_preserves_the_store() {
         let (control, path) = control();
         let scope = control
-            .create(Some(1_000_000), None, 32_000, false)
+            .create(Some(1_000_000), None, 32_000, false, None)
             .unwrap();
         drop(control);
         let mut blocker = Connection::open(&path).unwrap();
@@ -845,9 +984,9 @@ mod tests {
     #[test]
     fn unknown_capacity_never_promises_a_larger_budget_and_scope_isolation() {
         let (control, path) = control();
-        let a = control.create(None, None, 32_000, false).unwrap();
+        let a = control.create(None, None, 32_000, false, None).unwrap();
         let b = control
-            .create(Some(1_000_000), None, 32_000, false)
+            .create(Some(1_000_000), None, 32_000, false, None)
             .unwrap();
         let result = control.reserve(&a, 500_000, 20, 60).unwrap();
         assert_eq!(result.effective_input_tokens, 128_000);
@@ -874,6 +1013,7 @@ mod tests {
             rescues: 0,
             cooldown: 0,
             base: 100,
+            threshold: None,
         };
         assert_eq!(
             decide("a", &row, 100, None, 0, 99).requested_input_tokens,
@@ -896,7 +1036,7 @@ mod tests {
     fn concurrent_consumers_cannot_overdraw() {
         let (control, path) = control();
         let scope = control
-            .create(Some(1_000_000), None, 32_000, false)
+            .create(Some(1_000_000), None, 32_000, false, None)
             .unwrap();
         control.reserve(&scope, 500_000, 3, 60).unwrap();
         drop(control);
@@ -930,7 +1070,9 @@ mod tests {
     #[test]
     fn stale_adaptive_decision_cannot_replace_a_new_reservation() {
         let (control, path) = control();
-        let scope = control.create(Some(1_000_000), None, 32_000, true).unwrap();
+        let scope = control
+            .create(Some(1_000_000), None, 32_000, true, None)
+            .unwrap();
         let old = control.consume(&scope, 128_000, None, 0).unwrap();
         let observation = |id: &str| EvidenceObservation {
             source_id: id.into(),
