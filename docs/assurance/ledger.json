@@ -529,8 +529,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-30-083-sqlite-open-stress.json",
-        "sha256": "ba5ecaa83489b43f014920b90f81022361343f886dc580d989b7bc7e39adcb06"
+        "path": "docs/assurance/receipts/2026-10-01-083-watch-fixture-stress.json",
+        "sha256": "06ff9a57d1c4257d5d991419f261ff696e3813967ec5f8960daf8b9fcbe9ca7c"
       }
     },
     {

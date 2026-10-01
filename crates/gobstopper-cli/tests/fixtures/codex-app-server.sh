@@ -107,10 +107,17 @@ while time.monotonic() < until and not (root / "escaped-stop").exists():
             hold)
               printf 'ready\n' > "$CODEX_HOME/provider-dispatched"
               count=0
-              while [ ! -f "$CODEX_HOME/provider-release" ] && [ "$count" -lt 400 ]; do
+              # Keep the operation pending until the test explicitly releases
+              # it. Debug artifact hashing under CI contention can exceed 4s.
+              # Expiration must not invent a successful provider completion.
+              while [ ! -f "$CODEX_HOME/provider-release" ] && [ "$count" -lt 6000 ]; do
                 sleep 0.01
                 count=$((count+1))
               done
+              if [ ! -f "$CODEX_HOME/provider-release" ]; then
+                printf 'timed out\n' > "$CODEX_HOME/provider-finished"
+                exit 75
+              fi
               printf 'finished\n' > "$CODEX_HOME/provider-finished" ;;
             compact)
               printf '{"type":"compacted","payload":{"replacement_history":[]}}\n' >> "$CODEX_HOME/sessions/rollout-fixture.jsonl" ;;
