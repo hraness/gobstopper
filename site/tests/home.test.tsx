@@ -167,7 +167,7 @@ test("inline answer markup renders code and site links, and strips both for stru
 
 test("the related block lists only products with a registered relation", () => {
   const html = renderToStaticMarkup(<Home />);
-  expect(html).toContain("Works with Gobstopper.");
+  expect(html).toContain("Other tools from our studio");
   expect(html).toContain('href="https://xcb.sh"');
   expect(html).not.toContain("More from Hraness.");
 });

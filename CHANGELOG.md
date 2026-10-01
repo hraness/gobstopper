@@ -2,6 +2,12 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## v0.8.3 - 2026-09-30
+
+Gobstopper retries temporary database locking failures when several commands start at once.
+
+- Concurrent session database startup retries temporary SQLite lock failures, including the lock-protocol race observed on Windows, while preserving stored observations and session identities.
+
 ## v0.8.2 - 2026-09-30
 
 Gobstopper's macOS and Linux release installations update automatically before a command when a newer verified release is available.

@@ -8,7 +8,7 @@ import {
   ProductHero,
   ProviderMarkChip,
 } from "@hraness/design-kit/react/server";
-import { product } from "@hraness/design-kit/portfolio";
+import { portfolioRelatedGroups } from "@hraness/design-kit/portfolio";
 import { PlatformBadges, PlatformInstall } from "@hraness/design-kit/react";
 
 import { Terminal } from "./_components/code-block";
@@ -21,13 +21,12 @@ import { F } from "./_lib/gobbench-format";
 import { plainInline, renderInline } from "./_lib/inline";
 import { publishedRelease } from "./publication";
 
-import { productMessaging, relatedProduct } from "./messaging";
+import { productMessaging } from "./messaging";
 
 const releaseVersion = publishedRelease?.version;
 const repository = "https://github.com/hraness/gobstopper";
 const heading = productMessaging.hero.heading;
 const summary = productMessaging.hero.summary;
-const facts = "Free and open source · Runs on your machine · No account";
 const agents = ["claudecode", "codex", "opencode", "crush", "aider", "goose"] as const;
 
 const installSh = "curl -fsSL https://gobstopper.sh/install.sh | sh";
@@ -63,7 +62,6 @@ const questions = [
   },
 ] as const;
 
-const relatedProducts = ["xcb" as const].map((id) => ({ ...relatedProduct(id), mark: product(id).mark }));
 const structuredData = {
   "@context": "https://schema.org",
   "@type": "FAQPage",
@@ -85,13 +83,11 @@ export default function Home() {
             backdrop={false}
             align="start"
             actions={[
-              { href: "#install", label: productMessaging.hero.primaryAction },
               { href: "#how", label: productMessaging.hero.secondaryAction, emphasis: "secondary" },
             ]}
-            boundary={facts}
-            eyebrow={productMessaging.category}
             heading={heading}
             headingId="hero-title"
+            install={<PlatformInstall platforms={installPlatforms} />}
             name=""
             summary={summary}
           />
@@ -172,7 +168,6 @@ export default function Home() {
             note={<p>Each installer downloads the latest release for your platform, checks its SHA-256, and installs it for your user only. The proxy needs curl 8.3 or newer.</p>}
           >
             <PlatformBadges platforms={["macos", "linux", { id: "windows", note: "partial" }]} />
-            <PlatformInstall platforms={installPlatforms} />
             <p className="install-note">
               Then run one Claude Code session through the proxy: <code>gobstopper proxy run -- claude</code>.
             </p>
@@ -196,11 +191,9 @@ export default function Home() {
             questions={questions.map(({ answer, question }) => ({ answer: <p>{renderInline(answer)}</p>, question }))}
           />
           <MarketingRelated
-            heading={productMessaging.headings["home-related"]}
+            groups={portfolioRelatedGroups(["xcb"])}
+            heading="Other tools from our studio"
             headingId="related-title"
-            items={relatedProducts}
-            label="Related"
-            summary="Other Hraness tools that use it."
           />
         </MarketingPage>
       </main>

@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
+import "../comparison.css";
 import { socialImageAlt } from "@hraness/web-discovery/social-image";
-import { SyntaxCode } from "@hraness/design-kit/react/server";
+import { MarketingComparison, SyntaxCode } from "@hraness/design-kit/react/server";
 import { Terminal } from "../../_components/code-block";
 
 import { SiteDocument } from "../../_components/site-document";
@@ -72,16 +73,45 @@ export default function CompareCliffCompaction() {
           heading={title}
           meta="Checked against the CliffCompaction paper and repository and Gobstopper's source on September 28, 2026; Gobstopper behavior updated from source on September 30, 2026"
           toc={[
+            { href: "#side-by-side", label: "Side-by-side comparison" },
             { href: "#cliffcompaction-rule", label: "CliffCompaction summarizes older turns mechanically" },
             { href: "#gobstopper-port", label: "Gobstopper ports the rule and adds archived copies" },
             { href: "#departures", label: "What Gobstopper adds to the request engine" },
-            { href: "#side-by-side", label: "Side-by-side comparison" },
             { href: "#cliff-strategy", label: "The cliff strategy applies the rule to saved sessions" },
             { href: "#when-to-use-each", label: "When to use each" },
             { href: "#questions", label: "Questions" },
             { href: "#sources", label: "Sources" },
           ]}
         >
+          <h2 id="side-by-side">Side-by-side comparison</h2>
+          <MarketingComparison
+            caption="CliffCompaction and Gobstopper at a glance"
+            options={[{ name: "CliffCompaction" }, { name: "Gobstopper" }]}
+            highlight={1}
+            rows={[
+              { label: "Runs locally", values: [true, true] },
+              { label: "Live requests", values: [true, true] },
+              { label: "Saved session copies", values: [false, true] },
+              { label: "Summary", values: ["Mechanical rules", "Same rule, with documented changes"] },
+              { label: "AI required", values: [false, false] },
+              { label: "Originals", values: ["Agent transcript", "Transcript and local copy archive"] },
+              { label: "Published task benchmarks", values: ["Three benchmark suites", "One Terminal-Bench trial"] },
+            ]}
+            note={<>CliffCompaction checked September 28, 2026; Gobstopper source checked September 30, 2026. Gobstopper’s file previews apply to saved copies; proxy mode handles live requests. See the source notes for limits and evidence.</>}
+          />
+          <details className="gob-comparison-sources">
+            <summary>Read the source notes</summary>
+            <dl>
+              {comparisonRows.map((row) => (
+                <div key={row.aspect}>
+                  <dt>{row.aspect}</dt>
+                  <dd><strong>CliffCompaction:</strong> {withCode(row.cliff)}</dd>
+                  <dd><strong>Gobstopper:</strong> {withCode(row.gobstopper)}</dd>
+                </div>
+              ))}
+            </dl>
+          </details>
+
           <p>
             Pick CliffCompaction for the Python proxy the paper measured.
             Pick <code>gobstopper proxy</code> for a single Rust binary that
@@ -191,29 +221,6 @@ gobstopper proxy replay <session>    # what the proxy would have sent; calls no 
                     <th scope="row">{withCode(row.departure)}</th>
                     <td data-label="Default">{withCode(row.byDefault)}</td>
                     <td data-label="Restore">{withCode(row.restore)}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </figure>
-
-          <h2 id="side-by-side">Side-by-side comparison</h2>
-          <figure>
-            <table>
-              <caption>CliffCompaction checked September 28, 2026; Gobstopper source checked September 30, 2026</caption>
-              <thead>
-                <tr>
-                  <th scope="col">Aspect</th>
-                  <th scope="col">CliffCompaction</th>
-                  <th scope="col">Gobstopper</th>
-                </tr>
-              </thead>
-              <tbody>
-                {comparisonRows.map((row) => (
-                  <tr key={row.aspect}>
-                    <th scope="row">{row.aspect}</th>
-                    <td>{withCode(row.cliff)}</td>
-                    <td>{withCode(row.gobstopper)}</td>
                   </tr>
                 ))}
               </tbody>

@@ -5,7 +5,7 @@
   "portfolio": {
     "contract": "hraness.portfolio-public/v1",
     "url": "https://hraness.com/portfolio.json",
-    "digest": "sha256:3e82dac495694ca14dbdea88c58d6781f23725a4005231eb0b5eb4e68d4e4907"
+    "digest": "sha256:ba365e481a8b15c4a19503b1628e1b7ae9399e47055dde02bae124183a3e1447"
   },
   "messaging": {
     "formatVersion": 1,
@@ -22,7 +22,7 @@
     "long": "Long coding-agent sessions collect tool output that mattered once: test logs from runs that have since passed, file listings from before a refactor, stack traces for bugs already fixed. Every turn sends all of it to the model again. Gobstopper is a free, open-source command-line tool that finds your Claude Code and Codex sessions, shows what each compaction strategy would cut, and writes a smaller copy. Before it writes, it stores the original bytes in a content-addressed vault on your machine, so you can search for the exact record a compaction left out or restore the whole session.",
     "hero": {
       "heading": "Context compaction you can undo.",
-      "summary": "Gobstopper keeps long coding sessions smaller. Run your agent through a local proxy, or make a smaller copy of a saved session while keeping the original for recovery.",
+      "summary": "Keep long coding sessions smaller, with the original available to restore.",
       "primaryAction": "Install Gobstopper",
       "secondaryAction": "How it works"
     },
@@ -33,7 +33,7 @@
       "home-film": "Watch it in 75 seconds.",
       "home-install": "Start with one session.",
       "home-questions": "Before you install.",
-      "home-related": "Works with Gobstopper.",
+      "home-related": "Other tools from our studio",
       "home-search-title": "Gobstopper: context compaction proxy for Claude Code and Codex",
       "home-primitive-preview": "Preview the cut",
       "home-primitive-original": "Keep the original",

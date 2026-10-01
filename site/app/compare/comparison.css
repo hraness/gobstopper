@@ -1,0 +1,5 @@
+.gob-comparison-sources { margin-block: 1.5rem 2.5rem; }
+.gob-comparison-sources > summary { cursor: pointer; padding-block: .75rem; font-weight: 600; }
+.gob-comparison-sources dl { display: grid; gap: 1.5rem; margin-block: 1rem; }
+.gob-comparison-sources dt { font-weight: 600; }
+.gob-comparison-sources dd { margin: .5rem 0 0; max-inline-size: 70ch; line-height: 1.6; }

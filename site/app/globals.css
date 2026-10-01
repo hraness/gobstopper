@@ -62,6 +62,16 @@ body {
   justify-content: center;
 }
 
+@media (width < 42rem) {
+  .hraness-marketing-header__nav {
+    flex-wrap: nowrap;
+    max-inline-size: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .hraness-marketing-header__nav a { flex-shrink: 0; }
+}
+
 .hraness-marketing-action[data-emphasis="primary"] {
   background: var(--primary);
   border: 1px solid var(--primary);
@@ -87,7 +97,7 @@ a:focus-visible {
 .hraness-marketing-maker__links a,
 .hraness-marketing-question__answer a {
   color: var(--foreground);
-  text-decoration: underline;
+  text-decoration-line: underline;
   text-decoration-color: color-mix(in srgb, var(--foreground) 35%, transparent);
   text-underline-offset: 0.18em;
 }
@@ -798,3 +808,12 @@ main:has(> .plain-publication--embedded) {
 /* Before hydration measures it, a fitted mockup lays out at its natural width;
    keep that from widening the page (full-page captures and print included). */
 .plain-publication__figure-body .hkm-showcase-stage { max-inline-size: 100%; overflow-x: clip; overflow-clip-margin: 0.5rem; }
+
+/* Shared studio convention for text links; controls retain their own decoration line. */
+a[href] {
+  text-decoration-style: dotted;
+  text-decoration-color: color-mix(in srgb, currentColor 40%, transparent);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 0.2em;
+}
+a[href]:where(:hover, :focus-visible) { text-decoration-color: currentColor; }

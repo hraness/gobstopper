@@ -2,7 +2,9 @@
 """Negative stress-admission fixtures; these do not launch test processes."""
 import json
 from pathlib import Path
+import threading
 import unittest
+from unittest.mock import patch
 
 import check
 
@@ -85,6 +87,109 @@ class AdmissionTests(unittest.TestCase):
         for constant in ("const STEPS: usize = 64;", "const MAX_BYTES: u64 = 16 * 1024 * 1024;",
                          "const MAX_FILES: u64 = 1200;", "Duration::from_secs(90)"):
             self.assertIn(constant,source)
+
+
+class SchedulingTests(unittest.TestCase):
+    def test_sequence_finishes_before_any_other_suite_and_inventory_runs_once(self):
+        suites = check.admitted_inventory(document())
+        other_started = threading.Event()
+        sequence_finished = threading.Event()
+        calls = []
+        lock = threading.Lock()
+
+        def run(suite):
+            name = suite["name"]
+            with lock:
+                calls.append(name)
+            if name == "sequence":
+                # Give an incorrectly concurrent scheduler a chance to enter
+                # another callback while the sequence is explicitly held.
+                self.assertFalse(other_started.wait(0.05))
+                sequence_finished.set()
+            else:
+                other_started.set()
+                self.assertTrue(sequence_finished.is_set())
+            return {"case": name, "passed": True}
+
+        results, errors = check.run_suites(suites, run, threading.Event())
+        self.assertEqual(errors, [])
+        self.assertEqual(calls[0], "sequence")
+        self.assertCountEqual(calls, [suite["name"] for suite in suites])
+        self.assertEqual([row["case"] for row in results], [suite["name"] for suite in suites])
+
+    def test_pool_preserves_cli_serialization_and_three_worker_limit(self):
+        suites = check.admitted_inventory(document())
+        # Hold each worker's first task until all three have actually entered;
+        # this proves useful parallelism as well as the upper bound.
+        first_wave = threading.Barrier(3, timeout=2)
+        lock = threading.Lock()
+        calls = []
+        cli_calls = []
+        active = cli_active = peak = cli_peak = 0
+
+        def run(suite):
+            nonlocal active, cli_active, peak, cli_peak
+            name = suite["name"]
+            if name == "sequence":
+                return {"case": name, "passed": True}
+            is_cli = check.SUITES[name][0] == check.CLI_LANE_PACKAGE
+            with lock:
+                calls.append(name)
+                first = len(calls) <= 3
+                active += 1
+                cli_active += is_cli
+                peak = max(peak, active)
+                cli_peak = max(cli_peak, cli_active)
+                if is_cli:
+                    cli_calls.append(name)
+            try:
+                if first:
+                    first_wave.wait()
+                return {"case": name, "passed": True}
+            finally:
+                with lock:
+                    active -= 1
+                    cli_active -= is_cli
+
+        results, errors = check.run_suites(suites, run, threading.Event())
+        self.assertEqual(errors, [])
+        self.assertEqual(len(results), len(suites))
+        self.assertEqual(peak, 3)
+        self.assertEqual(cli_peak, 1)
+        self.assertEqual(cli_calls, [suite["name"] for suite in suites
+                                    if check.SUITES[suite["name"]][0] == check.CLI_LANE_PACKAGE])
+        self.assertCountEqual(calls, [suite["name"] for suite in suites if suite["name"] != "sequence"])
+
+    def test_failed_or_missing_sequence_never_starts_pool(self):
+        suites = check.admitted_inventory(document())
+        for result in ({"case": "sequence", "passed": False}, None):
+            with self.subTest(result=result):
+                failed = threading.Event()
+                calls = []
+
+                def run(suite):
+                    calls.append(suite["name"])
+                    return result
+
+                with patch.object(check, "ThreadPoolExecutor", side_effect=AssertionError("pool started")):
+                    results, errors = check.run_suites(suites, run, failed)
+                self.assertTrue(failed.is_set())
+                self.assertEqual(calls, ["sequence"])
+                self.assertEqual(results, [] if result is None else [result])
+                self.assertEqual(errors, [])
+
+    def test_sequence_error_propagates_without_starting_pool(self):
+        suites = check.admitted_inventory(document())
+        calls = []
+
+        def run(suite):
+            calls.append(suite["name"])
+            raise TimeoutError("aggregate deadline exceeded")
+
+        with patch.object(check, "ThreadPoolExecutor", side_effect=AssertionError("pool started")):
+            with self.assertRaisesRegex(TimeoutError, "aggregate deadline exceeded"):
+                check.run_suites(suites, run, threading.Event())
+        self.assertEqual(calls, ["sequence"])
 
 
 if __name__ == "__main__":

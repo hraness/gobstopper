@@ -445,8 +445,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-30-082-updater-core.json",
-        "sha256": "fde09bdf80cc00be68dafd93a6fb54804d09e667fcd071822ad918e28e4c2948"
+        "path": "docs/assurance/receipts/2026-09-30-083-sqlite-open-core.json",
+        "sha256": "fddbfe130dc395ceec752e16cca7387b1ffe74b618a71d8de5188a082eaf841a"
       }
     },
     {
@@ -508,8 +508,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-30-082-updater-transcript.json",
-        "sha256": "9c8f8954e0b281e27e1db7b5efc76f5244e0e92a896367e1bdd944f0704042c2"
+        "path": "docs/assurance/receipts/2026-09-30-083-sqlite-open-transcript.json",
+        "sha256": "362feede04d00b293557d1518783cbff44c6a7d99738babc2bad8acf386af6e0"
       }
     },
     {
@@ -529,8 +529,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-01-082-watch-fixture-stress.json",
-        "sha256": "095b202364bc1c47dc8bcd7f628fa4668fbba58037191746d2867ac4e549e805"
+        "path": "docs/assurance/receipts/2026-10-01-083-watch-fixture-stress.json",
+        "sha256": "06ff9a57d1c4257d5d991419f261ff696e3813967ec5f8960daf8b9fcbe9ca7c"
       }
     },
     {
