@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { inspectMockupLayout } from './check-mockup-layout.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { mkdir, writeFile } from 'node:fs/promises';
@@ -86,10 +87,10 @@ try {
   }
   browser = await owner.start();
   browserIdentity = await verifyOwnedChromium(browser, executablePath, definition.expectedVersion);
-  // Six (width, theme) contexts share one browser; a small pool keeps the
+  // Eight (width, theme) contexts share one browser; a small pool keeps the
   // run short without starving the one CI runner. Each context has its own
   // page, records and failure screenshot; results are merged in fixed order.
-  const combos = [360, 390, 1440].flatMap(width => ['light', 'dark'].map(theme => ({ width, theme })));
+  const combos = [320, 360, 390, 1440].flatMap(width => ['light', 'dark'].map(theme => ({ width, theme })));
   const comboRecords = combos.map(() => []);
   const failures = [];
   async function checkCombo({ width, theme }, comboRecords, index) {
@@ -139,7 +140,8 @@ try {
       const moved = await page.evaluate(() => ({ scroll: scrollY, header: document.querySelector('.hraness-marketing-header').getBoundingClientRect().top, footer: document.querySelector('#hraness-site-footer').getBoundingClientRect().top }));
       assert.ok(Math.abs(moved.header) <= 1, `${label}: sticky chrome`);
       assert.ok(Math.abs(moved.footer + moved.scroll - metrics.footer.top) <= 2, `${label}: footer scrolls with document`);
-      comboRecords.push({ route: path, width, theme, status: response.status(), metrics });
+      const mockups = ['/', '/blog/introducing-gobstopper'].includes(path) ? await inspectMockupLayout(page, width === 320 || width === 390) : undefined;
+      comboRecords.push({ route: path, width, theme, status: response.status(), metrics, mockups });
       const figures = await page.evaluate(() => [...document.querySelectorAll('.gob-figure')].map(figure => {
         const box = figure.getBoundingClientRect();
         const small = [...figure.querySelectorAll('*')].filter(element => element.childNodes.length > 0 && [...element.childNodes].some(node => node.nodeType === 3 && node.textContent.trim() !== '') && element.checkVisibility() && parseFloat(getComputedStyle(element).fontSize) < 11.5).map(element => element.textContent.trim().slice(0, 40));

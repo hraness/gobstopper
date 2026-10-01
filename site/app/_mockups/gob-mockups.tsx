@@ -69,6 +69,7 @@ export function GobMeterShowcase({ initialMode = "on" }: Readonly<{ initialMode?
   return (
     <ModeShowcase<"session", MeterMode, string>
       caption="One recorded Claude Code session replayed at the 128,000-token default. Sizes estimate four characters per token."
+      fit="fill"
       height={300}
       initial={{ mode: initialMode, option: METER_POINTS[1]!.id }}
       label={() => "Illustration: request size in one coding session"}
@@ -121,6 +122,7 @@ function ElideSession({ mode }: Readonly<{ mode: ElideMode }>) {
   return (
     <AgentSession
       agent="generic-cli"
+      fade={false}
       describe={mode === "copy"
         ? `Illustration of the compacted copy of a made-up coding session: ${elide.elided} of ${elide.total} old tool outputs are replaced by a one-line stub that gives their size; recent outputs and every message stay word for word.`
         : `Illustration of the original made-up coding session: ${elide.total} tool outputs, each with its full text.`}
@@ -134,6 +136,7 @@ function ElideSession({ mode }: Readonly<{ mode: ElideMode }>) {
 export function GobElideShowcase() {
   return (
     <ModeShowcase<"session", ElideMode>
+      fit="fill"
       height={420}
       initial={{ mode: "copy" }}
       label={() => "Illustration: a saved session before and after elide"}
@@ -162,7 +165,7 @@ function run(command: string, output: readonly string[], highlight?: (line: stri
 }
 
 function VaultTerminal({ describe, lines }: Readonly<{ describe: string; lines: readonly TerminalLine[] }>) {
-  return <TerminalFrame describe={describe} fade={false} height={300} lines={lines} title="~/code/lanternshop" />;
+  return <TerminalFrame density="presentation" describe={describe} fade={false} height={300} lines={lines} title="~/code/lanternshop" />;
 }
 
 const vaultSteps: readonly ThroughStep[] = [
@@ -203,7 +206,7 @@ export function GobVaultSteps({ initial }: Readonly<{ initial?: ThroughStep["id"
     <StepThrough
       initial={initial}
       label="Saved-session steps"
-      minWidth={560}
+      fit="fill"
       steps={vaultSteps}
     />
   );
@@ -216,6 +219,7 @@ export function GobVaultSteps({ initial }: Readonly<{ initial?: ThroughStep["id"
 export function GobProxyStart() {
   return (
     <TerminalFrame
+      density="presentation"
       describe="Illustration: gobstopper proxy run starts a local proxy with a 128,000-token threshold and three recent turns kept, then launches the agent pointed at it."
       lines={[
         ...run(commands.proxyRun, cli.proxyRun.slice(0, 2)),
@@ -233,6 +237,7 @@ export function GobProxyStart() {
 export function GobInstall() {
   return (
     <TerminalFrame
+      density="presentation"
       describe="Illustration: the one-line install script for macOS and Linux, then gobstopper --version printing the current release."
       fade={false}
       lines={[
