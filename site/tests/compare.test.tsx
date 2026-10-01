@@ -34,7 +34,7 @@ test("the comparison page renders one heading, the shared rows, and primary sour
   expect(html).toContain(SUPPORT_URL);
   expect(html).toContain("--strategy cliff");
   for (const row of comparisonRows) {
-    expect(html).toContain(`<th scope="row">${row.aspect}</th>`);
+    expect(html).toContain(`<dt>${row.aspect}</dt>`);
   }
   for (const { question } of comparisonQuestions) {
     expect(html).toContain(question);
@@ -81,7 +81,7 @@ test("the /compact comparison page renders one heading, the shared rows, and pri
   expect(html).toContain(SUPPORT_URL);
   expect(html).toContain("gobstopper undo");
   for (const row of compactRows) {
-    expect(html).toContain(`<th scope="row">${row.aspect}</th>`);
+    expect(html).toContain(`<dt>${row.aspect}</dt>`);
   }
   for (const { question } of compactQuestions) {
     expect(html).toContain(question);

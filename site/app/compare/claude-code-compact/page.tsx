@@ -1,4 +1,6 @@
 import type { Metadata } from "next";
+import { MarketingComparison } from "@hraness/design-kit/react/server";
+import "../comparison.css";
 import { Terminal } from "../../_components/code-block";
 
 import { SiteDocument } from "../../_components/site-document";
@@ -69,14 +71,43 @@ export default function CompareClaudeCodeCompact() {
           heading={title}
           meta="Checked against Anthropic's Claude Code documentation and Gobstopper's README and source on September 26, 2026"
           toc={[
+            { href: "#side-by-side", label: "Side-by-side comparison" },
             { href: "#compact-summary", label: "/compact replaces history with a model-written summary" },
             { href: "#gobstopper-copy", label: "Gobstopper previews the cut and archives the original" },
-            { href: "#side-by-side", label: "Side-by-side comparison" },
             { href: "#when-to-use-each", label: "When to use each" },
             { href: "#questions", label: "Questions" },
             { href: "#sources", label: "Sources" },
           ]}
         >
+          <h2 id="side-by-side">Side-by-side comparison</h2>
+          <MarketingComparison
+            caption="Claude Code /compact and Gobstopper at a glance"
+            options={[{ name: "Claude Code /compact" }, { name: "Gobstopper" }]}
+            highlight={1}
+            rows={[
+              { label: "Works on", values: ["Live context", "Live requests and saved copies"] },
+              { label: "Summary", values: ["Written by the model", "Local rules by default"] },
+              { label: "Preview before saving", values: [false, { status: "yes", label: "For copies" }] },
+              { label: "Keep the original", values: [true, true] },
+              { label: "Undo", values: ["Rewind to a checkpoint", "Restore as a new copy"] },
+              { label: "Coding agents", values: ["Claude Code", "Claude Code, Codex and more"] },
+              { label: "Added AI usage", values: ["Summary uses model tokens", "None by default"] },
+            ]}
+            note={<>Checked September 26, 2026. Gobstopper’s file previews apply to saved copies; proxy mode handles live requests. See the source notes for limits and evidence.</>}
+          />
+          <details className="gob-comparison-sources">
+            <summary>Read the source notes</summary>
+            <dl>
+              {comparisonRows.map((row) => (
+                <div key={row.aspect}>
+                  <dt>{row.aspect}</dt>
+                  <dd><strong>Claude Code /compact:</strong> {withCode(row.compact)}</dd>
+                  <dd><strong>Gobstopper:</strong> {withCode(row.gobstopper)}</dd>
+                </div>
+              ))}
+            </dl>
+          </details>
+
           <p>
             Claude Code&apos;s <code>/compact</code> command and Gobstopper both
             make a long session&apos;s context smaller. They differ in what
@@ -150,29 +181,6 @@ export default function CompareClaudeCodeCompact() {
 gobstopper plan <session>         # preview the cut under each strategy
 gobstopper apply <session>        # write the compacted copy as a new fork
 gobstopper undo <session>         # restore a vaulted snapshot into a new fork`} />
-
-          <h2 id="side-by-side">Side-by-side comparison</h2>
-          <figure>
-            <table>
-            <caption>Checked against Anthropic&apos;s Claude Code documentation and blog and Gobstopper&apos;s README and source on September 26, 2026</caption>
-            <thead>
-              <tr>
-                <th scope="col">Aspect</th>
-                <th scope="col">Claude Code /compact</th>
-                <th scope="col">Gobstopper</th>
-              </tr>
-            </thead>
-            <tbody>
-              {comparisonRows.map((row) => (
-                <tr key={row.aspect}>
-                  <th scope="row">{row.aspect}</th>
-                  <td>{withCode(row.compact)}</td>
-                  <td>{withCode(row.gobstopper)}</td>
-                </tr>
-              ))}
-            </tbody>
-            </table>
-          </figure>
 
           <h2 id="when-to-use-each">When to use each</h2>
           <p>
