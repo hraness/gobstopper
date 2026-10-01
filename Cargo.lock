@@ -302,7 +302,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "apple-foundation",
@@ -313,6 +313,7 @@ dependencies = [
  "gobstopper-core",
  "hmac",
  "hraness-cli-kit",
+ "hraness-cli-update",
  "keyring",
  "libc",
  "rusqlite",
@@ -325,7 +326,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper-adapters"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "anyhow",
  "fs2",
@@ -340,7 +341,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper-core"
-version = "0.8.1"
+version = "0.8.2"
 dependencies = [
  "libc",
  "serde",
@@ -417,6 +418,19 @@ version = "1.1.2"
 source = "git+https://github.com/hraness/desktop-foundation?tag=v1.1.2#c6003c05a86ab9a188b8bc20dd4de5fe459affab"
 dependencies = [
  "clap",
+]
+
+[[package]]
+name = "hraness-cli-update"
+version = "0.1.0"
+source = "git+https://github.com/hraness/cli-update?tag=v0.1.0#e1e44d49b2ed21ca7a59cc0cb4f4a91209edd8ee"
+dependencies = [
+ "fs2",
+ "libc",
+ "semver",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -687,6 +701,16 @@ checksum = "6ce2691df843ecc5d231c0b14ece2acc3efb62c0a398c7e1d875f3983ce020e3"
 dependencies = [
  "core-foundation-sys",
  "libc",
+]
+
+[[package]]
+name = "semver"
+version = "1.0.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
+dependencies = [
+ "serde",
+ "serde_core",
 ]
 
 [[package]]

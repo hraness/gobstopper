@@ -154,6 +154,18 @@
       "meaning": "Process-owned idle-system-sleep assertion or EOF-bound inhibition helper",
       "owner": "CLI power",
       "boundary": "Only active validated inference holds the assertion. Last request releases it; disabled or unavailable backends do not prevent forwarding. No display-wake or lid-close override."
+    },
+    {
+      "id": "native_installation",
+      "meaning": "Verified native executable and private staged/rollback copies",
+      "owner": "Native installer and shared updater lease owner",
+      "boundary": "Exact immutable release archive and executable hash, fixed user-owned location, same-process atomic replacement with rollback."
+    },
+    {
+      "id": "native_update_state",
+      "meaning": "Native ownership receipt, activity lock and separate saved preferences",
+      "owner": "Native installer and shared updater",
+      "boundary": "Preferences cannot create ownership. Active product commands hold a lease; updater replaces files only under the corresponding exclusive lock."
     }
   ],
   "assumptions": [
@@ -358,7 +370,7 @@
       "id": "E-PLAN",
       "kind": "specification",
       "revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
-      "scope": "Acceptance obligations C1–C15; an assigned gate is not completed evidence.",
+      "scope": "Acceptance obligations C1\u2013C15; an assigned gate is not completed evidence.",
       "bounds": "No production proof inferred from the roadmap.",
       "references": [
         {
@@ -396,7 +408,7 @@
       "id": "E-FOUNDATION-SOURCE",
       "kind": "source_review",
       "revision": "current-source; delivery revision recorded by PR 90",
-      "scope": "C2–C14 implementation and independent phase reviews recorded in the plan; public effect classifications track current source.",
+      "scope": "C2\u2013C14 implementation and independent phase reviews recorded in the plan; public effect classifications track current source.",
       "bounds": "Source review and test definitions do not replace a fresh exact-candidate aggregate gate or provider qualification.",
       "references": [
         {
@@ -433,8 +445,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-30-081-drain-core.json",
-        "sha256": "029fff6a84c519dbbe3047b44de2d05bd4da0c4959768968002ddd1013e3c615"
+        "path": "docs/assurance/receipts/2026-09-30-082-updater-core.json",
+        "sha256": "fde09bdf80cc00be68dafd93a6fb54804d09e667fcd071822ad918e28e4c2948"
       }
     },
     {
@@ -496,8 +508,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-30-081-drain-transcript.json",
-        "sha256": "a2255dd14c5fd1e62669c5dc95c3e849b34b50a1a1bb081d2201f3b0df9ddb8e"
+        "path": "docs/assurance/receipts/2026-09-30-082-updater-transcript.json",
+        "sha256": "9c8f8954e0b281e27e1db7b5efc76f5244e0e92a896367e1bdd944f0704042c2"
       }
     },
     {
@@ -517,8 +529,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-30-081-drain-stress.json",
-        "sha256": "e6d1eaee184c5f5b2c3120608fcbb9ca917971382a895bc3abcb267ea2e319c4"
+        "path": "docs/assurance/receipts/2026-09-30-082-updater-stress.json",
+        "sha256": "f5ea814785dfa053cc3c44f8b3d8b2ab6c2d0e6cdf28ff87b5875848b5f56bba"
       }
     },
     {

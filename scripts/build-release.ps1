@@ -40,10 +40,17 @@ if ($env:GOBSTOPPER_BINARY) {
   $binary = $env:GOBSTOPPER_BINARY
 } else {
   Push-Location $root
+  $previousReleaseTag = $env:GOBSTOPPER_BUILD_RELEASE_TAG
   try {
+    $env:GOBSTOPPER_BUILD_RELEASE_TAG = "v$version"
     & $cargo build --release --locked -p gobstopper
     if ($LASTEXITCODE -ne 0) { Fail 'cargo build failed' }
   } finally {
+    if ($null -eq $previousReleaseTag) {
+      Remove-Item Env:GOBSTOPPER_BUILD_RELEASE_TAG -ErrorAction SilentlyContinue
+    } else {
+      $env:GOBSTOPPER_BUILD_RELEASE_TAG = $previousReleaseTag
+    }
     Pop-Location
   }
   $targetRoot = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' }

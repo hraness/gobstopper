@@ -58,6 +58,18 @@ Both installers download the latest release for your platform, check its
 SHA-256, and install it for your user only. To build from source instead, run
 `cargo install --git https://github.com/hraness/gobstopper gobstopper --locked`.
 
+From 0.8.2, supported macOS and Linux release installs update automatically
+before a command, at most once a day, when no other Gobstopper command is
+running. Run `gobstopper update` to update now, `gobstopper update check` to
+check without installing, or `gobstopper update disable` to turn automatic
+updates off. `gobstopper update enable` restores them. CI, offline replays,
+and versions selected with `GOBSTOPPER_VERSION` stay fixed. Use
+`--no-update` or `HRANESS_NO_UPDATE=1` to skip a check for one invocation.
+Cargo and source builds use their original install command; Windows uses
+the PowerShell installer. Update-enabled installs also need the
+[GitHub CLI](https://cli.github.com/) (`gh`) authenticated with github.com; run
+`gh auth login` before installing. See [update behavior](docs/release.md#updates).
+
 When the session ends, `proxy run` prints how many requests it compacted. For
 a proxy that stays up, with `gobstopper proxy status` counters, see [Compact
 live coding-agent requests](#compact-live-coding-agent-requests). For Codex,

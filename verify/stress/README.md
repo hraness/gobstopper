@@ -42,7 +42,7 @@ trusted inputs; this is not a hermetic build attestation.
 | Monitor | 42 | Source-bound observations, malformed/conflicting history refusal, measurement admission, bounded private logs, timeouts, child collection and inherited environment isolation |
 
 The aggregate has a 900-second deadline, individual suites have reviewed limits
-of 60–240 seconds including compilation, and logs are capped at 8 MiB per
+of 60–360 seconds including compilation, and logs are capped at 8 MiB per
 command. The shared `watch.run_owned` reactor retains process-group identity
 through cleanup, observes exit without reaping, and avoids blocking pipe reads.
 If a deadline, output cap or cleanup operation fails, admission fails.
