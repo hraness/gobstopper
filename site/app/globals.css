@@ -325,7 +325,7 @@ main:has(> .plain-publication--embedded) {
   color: var(--gob-ink);
   font-weight: 500;
   cursor: pointer;
-  text-decoration: underline;
+  text-decoration: underline dotted;
   text-decoration-color: color-mix(in oklab, currentColor 40%, transparent);
   text-underline-offset: 0.2em;
   transition: text-decoration-color 150ms ease;
