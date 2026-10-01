@@ -803,6 +803,7 @@ fn the_stats_ledger_records_each_request_and_survives_a_restart() {
     let first_out = status["est_tokens_out"].as_u64().unwrap();
     assert!(first_in > first_out && first_out > 0);
     assert_eq!(status["all_time_est_tokens_in"], first_in);
+    wait_for_stats_records(&stats, 1);
     drop(proxy);
 
     let lines: Vec<Value> = std::fs::read_to_string(&stats)
@@ -819,10 +820,54 @@ fn the_stats_ledger_records_each_request_and_survives_a_restart() {
 
     // A restarted proxy keeps the all-time totals from the ledger.
     let second = start_proxy_env(&fake.url(), &[], &[("GOBSTOPPER_STATS_FILE", stats_str)]);
-    let status = request(second.port, "GET", "/gobstopper/status", &[], b"").json();
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    let status = loop {
+        let status = request(second.port, "GET", "/gobstopper/status", &[], b"").json();
+        if status["stats_persistence"]["loading_history"] == false {
+            break status;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "stats history did not finish loading: {status}"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    };
     assert_eq!(status["all_time_est_tokens_in"], first_in);
     assert_eq!(status["all_time_est_tokens_out"], first_out);
+    drop(second);
     std::fs::remove_dir_all(&dir).unwrap();
+}
+
+/// Request completion intentionally does not wait for optional disk writes.
+/// Observe complete records before forcibly stopping the owned test process.
+fn wait_for_stats_records(path: &std::path::Path, expected: usize) {
+    wait_for_file_lines(path, expected, "");
+}
+
+fn wait_for_file_lines(path: &std::path::Path, expected: usize, tag: &str) {
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    loop {
+        match std::fs::read_to_string(path) {
+            Ok(contents) if contents.ends_with('\n') => {
+                let count = contents.lines().filter(|line| line.contains(tag)).count();
+                if count >= expected {
+                    assert_eq!(
+                        count, expected,
+                        "unexpected number of complete {tag:?} lines"
+                    );
+                    return;
+                }
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("cannot read diagnostic output: {error}"),
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "writer did not append {expected} complete {tag:?} lines"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
 }
 
 /// The binary with no inherited `GOBSTOPPER_` settings, reading config from
@@ -987,6 +1032,7 @@ fn a_1m_request_is_compacted_at_the_1m_threshold_without_a_raise() {
     let status = request(proxy.port, "GET", "/gobstopper/status", &[], b"").json();
     assert_eq!(status["requests_1m"], 2);
     assert_eq!(status["compacted"], 1);
+    wait_for_file_lines(&log, 1, "compacted ~");
     drop(proxy);
     let lines = std::fs::read_to_string(&log).unwrap();
     let compacted: Vec<&str> = lines
@@ -1025,6 +1071,8 @@ fn a_request_under_a_raised_threshold_is_logged_and_recorded() {
     let response = request(proxy.port, "POST", "/v1/messages", ANTHROPIC, &sent);
     assert_eq!(response.status, 200);
     assert_eq!(fake.seen()[0].body, sent);
+    wait_for_stats_records(&stats, 1);
+    wait_for_file_lines(&log, 1, "sent unchanged at ~");
     drop(proxy);
 
     let lines = std::fs::read_to_string(&log).unwrap();
@@ -1081,6 +1129,7 @@ fn a_request_with_nothing_to_compact_is_logged_as_such() {
     let response = request(proxy.port, "POST", "/v1/messages", ANTHROPIC, &sent);
     assert_eq!(response.status, 200);
     assert_eq!(fake.seen()[0].body, sent);
+    wait_for_file_lines(&log, 1, "sent unchanged at ~");
     drop(proxy);
 
     let lines = std::fs::read_to_string(&log).unwrap();
@@ -1187,6 +1236,8 @@ fn log_lines_and_ledger_records_carry_sizes_and_the_window_but_no_content() {
         ),
         (&json!(2), &json!(1), &json!(1))
     );
+    wait_for_stats_records(&stats, 3);
+    wait_for_file_lines(&log, 3, "window=");
     drop(proxy);
 
     let lines = std::fs::read_to_string(&log).unwrap();
@@ -1487,6 +1538,8 @@ fn a_carry_is_sent_upstream_and_only_its_size_is_logged() {
             text.contains(&format!(", keep_tail_percent 0, carry_max_chars {carry}\n")),
             "{text}"
         );
+        wait_for_stats_records(&stats, 2);
+        wait_for_file_lines(&log, 2, "window=");
         drop(proxy);
 
         // The provider gets the carried words; the log and the ledger get

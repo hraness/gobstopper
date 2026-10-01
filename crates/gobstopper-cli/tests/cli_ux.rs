@@ -42,6 +42,12 @@ impl Sandbox {
             .env("CLAUDE_CONFIG_DIR", self.0.join("claude"))
             .args(args)
             .stdin(Stdio::null());
+        // Winsock loads its provider using %SystemRoot%, even for loopback.
+        #[cfg(windows)]
+        command.env(
+            "SystemRoot",
+            std::env::var_os("SystemRoot").expect("Windows requires SystemRoot for socket tests"),
+        );
         for (key, value) in env {
             command.env(key, value);
         }
@@ -380,7 +386,9 @@ fn proxy_status_uses_the_managed_port_and_explicit_port_overrides_damaged_manife
             vec!["proxy", "status", "--json"]
         };
         let result = sandbox.run(&args, &[]);
-        server.join().unwrap();
+        server
+            .join()
+            .unwrap_or_else(|_| panic!("status fixture failed; CLI output: {result:?}"));
         assert!(result.status.success(), "{}", text(&result.stdout));
         let value: serde_json::Value = serde_json::from_slice(&result.stdout).unwrap();
         assert_eq!(value["port"], port);

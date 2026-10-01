@@ -529,8 +529,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-01-083-watch-fixture-stress.json",
-        "sha256": "06ff9a57d1c4257d5d991419f261ff696e3813967ec5f8960daf8b9fcbe9ca7c"
+        "path": "docs/assurance/receipts/2026-10-01-084-resilience-stress.json",
+        "sha256": "fd9523dcb8c87326d59eba04c8c6a85dec630dc4ac80aafb7d16b2e2c967dba2"
       }
     },
     {

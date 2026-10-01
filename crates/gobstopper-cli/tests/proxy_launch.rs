@@ -38,6 +38,13 @@ impl Sandbox {
             .env("HRANESS_NO_UPDATE", "1")
             .env("PATH", self.0.join("bin"))
             .args(args);
+        // Winsock expands %SystemRoot% to load its provider DLL. Keep this OS
+        // dependency while isolating all client settings and credentials.
+        #[cfg(windows)]
+        command.env(
+            "SystemRoot",
+            std::env::var_os("SystemRoot").expect("Windows requires SystemRoot for socket tests"),
+        );
         command
     }
     fn run(&self, args: &[&str]) -> Output {
@@ -176,7 +183,9 @@ fn proxy_launch_checks_managed_identity_and_respects_context_constraints() {
         let (port, server) = ready_server(ready, service, constrained);
         sandbox.manifest(port, json!([]));
         let output = sandbox.run(&["proxy", "launch", "--client", "claude", "--print"]);
-        server.join().unwrap();
+        server
+            .join()
+            .unwrap_or_else(|_| panic!("readiness fixture failed; launcher output: {output:?}"));
         assert_eq!(
             output.status.success(),
             success,
@@ -243,8 +252,12 @@ fn proxy_launch_blackhole_probe_has_one_end_to_end_deadline() {
     let _ = release_tx.send(());
     // Exclude process startup and OS code-signature checks from the network
     // deadline, while requiring completion before the peer closes its socket.
-    let elapsed =
-        finished.duration_since(accepted_rx.recv_timeout(Duration::from_secs(1)).unwrap());
+    let accepted = accepted_rx
+        .recv_timeout(Duration::from_secs(1))
+        .unwrap_or_else(|error| {
+            panic!("launcher did not connect: {error}; launcher output: {output:?}")
+        });
+    let elapsed = finished.duration_since(accepted);
     server.join().unwrap();
     assert!(
         output.status.success(),
@@ -331,7 +344,9 @@ fn proxy_launch_preserves_scoped_headers_only_on_a_healthy_proxy() {
                 );
             }
             let output = command.output().unwrap();
-            server.join().unwrap();
+            server.join().unwrap_or_else(|_| {
+                panic!("{case}: readiness fixture failed; launcher output: {output:?}")
+            });
             assert_eq!(
                 output.status.success(),
                 ready,
