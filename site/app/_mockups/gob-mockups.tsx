@@ -75,18 +75,11 @@ export function GobMeterShowcase({ initialMode = "on" }: Readonly<{ initialMode?
       label={() => "Illustration: request size in one coding session"}
       modeLabel="Session"
       modes={[
-        { id: "off", label: "Without Gobstopper", hint: "Every request resends the whole session." },
-        { id: "on", label: "With Gobstopper", hint: "Past the threshold, the old middle becomes a summary." },
+        { id: "off", label: "Without Gobstopper" },
+        { id: "on", label: "With Gobstopper" },
       ]}
       optionLabel="Point in the session"
-      options={METER_POINTS.map((point) => ({ id: point.id, label: point.label, hint: `Request ${point.request}` }))}
-      status={({ mode, option }) => {
-        const point = METER_POINTS.find((entry) => entry.id === option) ?? METER_POINTS[1]!;
-        const row = meterSeries[point.request - 1]!;
-        return mode === "on"
-          ? `Request ${point.request}: about ${n(row.with)} estimated tokens instead of ${n(row.without)}.`
-          : `Request ${point.request}: about ${n(row.without)} estimated tokens, all of it resent.`;
-      }}
+      options={METER_POINTS.map((point) => ({ id: point.id, label: point.label }))}
       surfaces={[{
         id: "session",
         label: "Coding session",
@@ -142,12 +135,9 @@ export function GobElideShowcase() {
       label={() => "Illustration: a saved session before and after elide"}
       modeLabel="Show"
       modes={[
-        { id: "original", label: "Original", hint: "The saved session as the agent wrote it." },
-        { id: "copy", label: "Compacted copy", hint: "Old tool outputs become one-line stubs." },
+        { id: "original", label: "Original" },
+        { id: "copy", label: "Compacted copy" },
       ]}
-      status={({ mode }) => mode === "copy"
-        ? `${elide.elided} old tool outputs replaced with a stub. Messages and the newest outputs are unchanged.`
-        : `${elide.total} tool outputs, each resent in full on every request.`}
       surfaces={[{ id: "session", label: "Saved session", render: ({ mode }) => <ElideSession mode={mode} /> }]}
     />
   );
@@ -172,31 +162,26 @@ const vaultSteps: readonly ThroughStep[] = [
   {
     id: "find",
     label: "Find",
-    hint: "List saved Claude Code and Codex sessions with their size.",
     render: () => <VaultTerminal describe="Illustration: gobstopper detect lists one made-up Claude Code session at 130,060 context tokens." lines={run(commands.detect, cli.detect)} />,
   },
   {
     id: "preview",
     label: "Preview",
-    hint: "See what a strategy would remove. Nothing is written.",
     render: () => <VaultTerminal describe="Illustration: gobstopper plan previews an elide that would take the session from 130,060 to about 39,818 tokens." lines={run(commands.plan, cli.plan, (line) => (line.includes("->") ? "ok" : undefined))} />,
   },
   {
     id: "copy",
     label: "Copy",
-    hint: "Write a smaller copy. The original bytes go to the vault first.",
     render: () => <VaultTerminal describe="Illustration: gobstopper apply writes a new compacted session, records a recovery snapshot, and prints the resume command." lines={run(commands.apply, cli.apply, (line) => (line.startsWith("recovery snapshot") || line.startsWith("resume") ? "ok" : undefined))} />,
   },
   {
     id: "search",
     label: "Search",
-    hint: "Search the saved original for a detail the copy left out.",
     render: () => <VaultTerminal describe="Illustration: gobstopper search-snapshot finds 40 records in the saved original that mention a failing test." lines={run(commands.search, cli.search, (line) => (line.includes("matched_records") ? "ok" : undefined))} />,
   },
   {
     id: "undo",
     label: "Undo",
-    hint: "Restore the original as a new session you can resume.",
     render: () => <VaultTerminal describe="Illustration: gobstopper undo restores the original bytes as a new session and prints its resume command." lines={run(commands.undo, cli.undo, (line) => (line.startsWith("claude --resume") ? "ok" : undefined))} />,
   },
 ];
