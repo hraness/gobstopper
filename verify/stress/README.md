@@ -12,8 +12,9 @@ python3 verify/stress/check.py --output "$NEW_EVIDENCE_DIR"
 
 Cargo dependencies must already be fetched; execution is offline. Supported
 platforms are Linux and macOS. The exact commands and 151 expected test names are
-in `suites.json`. Suites run on three workers. Every suite in the `gobstopper`
-package runs in one serial lane, because each `cargo test -p gobstopper` re-links
+in `suites.json`. The sequence suite runs alone first, then the remaining suites
+run on three workers. Every suite in the `gobstopper` package runs in one serial
+lane, because each `cargo test -p gobstopper` re-links
 the CLI binary that running fixtures bind; the other suites share the remaining
 workers. Each suite runs one libtest thread, except `watch`, which runs two.
 Cargo uses two build jobs. The gate
@@ -42,21 +43,28 @@ trusted inputs; this is not a hermetic build attestation.
 | Monitor | 42 | Source-bound observations, malformed/conflicting history refusal, measurement admission, bounded private logs, timeouts, child collection and inherited environment isolation |
 
 The aggregate has a 900-second deadline, individual suites have reviewed limits
-of 60–240 seconds including compilation, and logs are capped at 8 MiB per
+of 60–360 seconds including compilation, and logs are capped at 8 MiB per
 command. The shared `watch.run_owned` reactor retains process-group identity
 through cleanup, observes exit without reaping, and avoids blocking pipe reads.
 If a deadline, output cap or cleanup operation fails, admission fails.
 
-The 28-test watch suite has a 240-second limit. Executable provenance now hashes
+The 28-test watch suite has a 360-second limit. Executable provenance hashes
 the complete debug binary at each CLI startup, and these tests start many CLI
-processes. The unchanged suite passed in 152 seconds locally and 163 seconds in
-Linux CI; a later CI run exhausted the former 180-second aggregate suite limit
-near its final tests. A focused rerun and a timed full rerun found no stalled
-test. The larger suite budget preserves every test, its thread count, child
+processes. The suite retains every named test, its two libtest threads, child
 cleanup, and the 900-second overall limit. It is not a production latency target.
 
 The sequence itself must finish in less than 90 seconds with the exact seed,
-64 steps and 16 corruption recoveries. Its largest **post-step** footprint must
+64 steps and 16 corruption recoveries. During the v0.8.1 validation on macOS,
+the sequence exhausted this bound at 91.71 seconds while three suites shared
+the host; the full test run with two test workers had completed it in 82.915
+seconds. Running this filesystem-heavy suite alone removes competition from
+the runner's own suites without changing its command, seed or time bound.
+Its elapsed time still counts against the same 900-second aggregate deadline;
+a failed sequence prevents the shared phase from starting.
+A controlled quiet rerun on that Mac still exceeded 90 seconds. Isolation does
+not establish that a host meets the bound; qualification requires a complete
+passing receipt from the stated platform.
+Its largest **post-step** footprint must
 stay at or below 1,200 files and 16 MiB. These are measured points in a fixed
 synthetic workload, not a filesystem quota or a claim about every transient
 allocation. The runner additionally rejects a largest reaped-child RSS

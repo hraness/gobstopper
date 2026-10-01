@@ -15,6 +15,40 @@ pub const MAX_QUERY_EVENTS: usize = 100_000;
 pub const MAX_IMPORT_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DATABASE_BYTES: u64 = 1024 * 1024 * 1024;
 
+fn retry_open_lock_contention<T>(
+    busy_timeout: std::time::Duration,
+    mut open: impl FnMut() -> Result<T>,
+) -> Result<T> {
+    // Concurrent WAL startup can return BUSY without waiting on the busy
+    // handler, or exhaust SQLite's internal lock-protocol retries. Discard
+    // that connection and re-read schema state on a fresh one.
+    // Initialization/migration is transactional and
+    // rechecks the version under its writer lock, so replay is safe here only;
+    // normal reads and writes must not acquire this automatic replay behavior.
+    // This bounds attempts, not wall time inside SQLite's own lock handling.
+    for attempt in 0..3 {
+        match open() {
+            Err(error)
+                if attempt < 2
+                    && !busy_timeout.is_zero()
+                    && error.downcast_ref::<rusqlite::Error>().is_some_and(|e| {
+                        matches!(
+                            e.sqlite_error_code(),
+                            Some(
+                                rusqlite::ErrorCode::FileLockingProtocolFailed
+                                    | rusqlite::ErrorCode::DatabaseBusy
+                            )
+                        )
+                    }) =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(10 << attempt));
+            }
+            result => return result,
+        }
+    }
+    unreachable!("the final open attempt always returns")
+}
+
 pub fn default_dir() -> Result<PathBuf> {
     if let Some(path) = std::env::var_os("GOBSTOPPER_DATA_DIR") {
         if path.is_empty() {
@@ -205,6 +239,11 @@ impl Store {
             .ok_or_else(|| anyhow::anyhow!("data_filename_required"))?;
         let path = fs::canonicalize(parent)?.join(name);
         create_private_file(&path)?;
+        retry_open_lock_contention(busy_timeout, || Self::open_once(&path, busy_timeout))
+    }
+
+    fn open_once(path: &Path, busy_timeout: std::time::Duration) -> Result<Self> {
+        check_private(path, false)?;
         for suffix in ["-wal", "-shm", "-journal"] {
             let sidecar = PathBuf::from(format!("{}{suffix}", path.display()));
             if fs::symlink_metadata(&sidecar).is_ok() {
@@ -212,7 +251,7 @@ impl Store {
             }
         }
         let mut connection = Connection::open_with_flags(
-            &path,
+            path,
             OpenFlags::SQLITE_OPEN_READ_WRITE
                 | OpenFlags::SQLITE_OPEN_NO_MUTEX
                 | OpenFlags::SQLITE_OPEN_NOFOLLOW,
@@ -224,23 +263,31 @@ impl Store {
             MAX_EVENT_BYTES as i32 * 2,
         )?;
         connection.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0)?;
-        connection.execute_batch("PRAGMA trusted_schema=OFF; PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY; PRAGMA synchronous=FULL; PRAGMA fullfsync=ON;")?;
+        connection.execute_batch("PRAGMA trusted_schema=OFF; PRAGMA foreign_keys=ON; PRAGMA temp_store=MEMORY; PRAGMA synchronous=FULL; PRAGMA fullfsync=ON;").context("data_configure_failed")?;
         // Read a coherent schema identity without taking the writer lock. Most
         // opens are metrics queries against an already initialized database.
-        let snapshot = connection.transaction()?;
-        let version: u32 = snapshot.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        let application: i32 = snapshot.pragma_query_value(None, "application_id", |r| r.get(0))?;
+        let snapshot = connection
+            .transaction()
+            .context("data_schema_read_failed")?;
+        let version: u32 = snapshot
+            .pragma_query_value(None, "user_version", |r| r.get(0))
+            .context("data_schema_read_failed")?;
+        let application: i32 = snapshot
+            .pragma_query_value(None, "application_id", |r| r.get(0))
+            .context("data_schema_read_failed")?;
         if version > SCHEMA_VERSION {
             bail!("data_schema_newer_than_binary");
         }
         if version != 0 && application != APPLICATION_ID {
             bail!("data_wrong_application");
         }
-        snapshot.commit()?;
+        snapshot.commit().context("data_schema_read_failed")?;
         if version < SCHEMA_VERSION {
             // Recheck under the initialization lock: another opener may have
             // initialized or migrated the database after our read snapshot.
-            let tx = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let tx = connection
+                .transaction_with_behavior(TransactionBehavior::Immediate)
+                .context("data_initialize_failed")?;
             let version: u32 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
             let application: i32 = tx.pragma_query_value(None, "application_id", |r| r.get(0))?;
             if version > SCHEMA_VERSION {
@@ -267,11 +314,11 @@ impl Store {
                 bail!("data_wrong_application");
             }
             tx.commit()?;
-            migrate(&mut connection)?;
+            migrate(&mut connection).context("data_migration_failed")?;
         }
         connection.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=256; PRAGMA max_page_count=262144;",
-        )?;
+        ).context("data_journal_failed")?;
         let namespace: Vec<u8> = connection
             .query_row(
                 "SELECT namespace FROM metadata WHERE singleton=1",
@@ -284,7 +331,7 @@ impl Store {
             .map_err(|_| anyhow::anyhow!("data_invalid_namespace"))?;
         Ok(Self {
             connection,
-            path,
+            path: path.to_path_buf(),
             namespace,
         })
     }
@@ -621,6 +668,148 @@ pub(super) fn read_line(input: &mut impl BufRead, budget: &mut u64) -> Result<Op
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sqlite_error(code: i32) -> anyhow::Error {
+        rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None).into()
+    }
+
+    #[test]
+    fn open_lock_retry_uses_fresh_connection_and_preserves_migrated_data() {
+        let directory = std::env::temp_dir().join(format!(
+            "gobstopper-open-retry-test-{}",
+            OpaqueId::random().unwrap().0
+        ));
+        let path = directory.join("sessions.sqlite3");
+        let mut store = Store::open(&path).unwrap();
+        let path = fs::canonicalize(path).unwrap();
+        let event = Envelope::new(
+            Source {
+                kind: SourceKind::LegacyStats,
+                id: OpaqueId::random().unwrap(),
+                profile: "gobstopper-stats-v0".into(),
+            },
+            Identity::default(),
+            Event::LegacyContext {
+                estimated_before_tokens: 1,
+                estimated_after_tokens: 1,
+                compacted: false,
+            },
+        )
+        .unwrap();
+        store.append_batch(std::slice::from_ref(&event)).unwrap();
+        let namespace = store.opaque("session", "same-native-id");
+        store.connection.execute_batch("DROP INDEX events_time; DROP INDEX events_session; DROP INDEX events_attempt; PRAGMA user_version=1;").unwrap();
+        drop(store);
+
+        let busy_timeout = std::time::Duration::from_millis(100);
+        let mut attempts = 0;
+        let recovered = retry_open_lock_contention(busy_timeout, || {
+            attempts += 1;
+            let store = Store::open_once(&path, busy_timeout)?;
+            assert_eq!(store.status()?.schema_version, SCHEMA_VERSION);
+            assert_eq!(store.status()?.revision, 1);
+            assert_eq!(store.events(&Query::default())?, vec![event.clone()]);
+            assert_eq!(store.opaque("session", "same-native-id"), namespace);
+            assert_eq!(
+                store.connection.query_row(
+                    "SELECT count(*) FROM sqlite_temp_master WHERE name='failed_open'",
+                    [],
+                    |row| row.get::<_, u64>(0)
+                )?,
+                0,
+                "a failed connection's temporary state must not survive"
+            );
+            if attempts < 3 {
+                // Inject the observed SQLite failure after migration has
+                // committed and another transaction has begun. Dropping the
+                // failed opener must roll back only uncommitted work; the next
+                // connection must discover the already migrated schema.
+                store.connection.execute_batch("CREATE TEMP TABLE failed_open(value); BEGIN IMMEDIATE; UPDATE metadata SET revision=999;")?;
+                let code = if attempts == 1 {
+                    rusqlite::ffi::SQLITE_PROTOCOL
+                } else {
+                    rusqlite::ffi::SQLITE_BUSY
+                };
+                return Err(sqlite_error(code).context("data_invalid_metadata"));
+            }
+            Ok(store)
+        })
+        .unwrap();
+        assert_eq!(attempts, 3);
+        assert!(recovered.check().unwrap().ok);
+        assert_eq!(
+            recovered
+                .connection
+                .pragma_query_value::<u64, _>(None, "busy_timeout", |row| row.get(0))
+                .unwrap(),
+            100,
+            "the recovered connection keeps the caller's timeout"
+        );
+        drop(recovered);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn open_lock_retry_is_bounded_and_returns_the_last_failure() {
+        let mut attempts = 0;
+        let result: Result<()> =
+            retry_open_lock_contention(std::time::Duration::from_millis(100), || {
+                attempts += 1;
+                Err(sqlite_error(rusqlite::ffi::SQLITE_PROTOCOL)
+                    .context(format!("attempt_{attempts}")))
+            });
+        let error = result.unwrap_err();
+        assert_eq!(attempts, 3);
+        assert_eq!(error.to_string(), "attempt_3");
+        assert_eq!(
+            error
+                .downcast_ref::<rusqlite::Error>()
+                .unwrap()
+                .sqlite_error_code(),
+            Some(rusqlite::ErrorCode::FileLockingProtocolFailed)
+        );
+    }
+
+    #[test]
+    fn open_lock_retry_preserves_immediate_and_other_failure_semantics() {
+        for (timeout, code) in [
+            (std::time::Duration::ZERO, rusqlite::ffi::SQLITE_PROTOCOL),
+            (std::time::Duration::ZERO, rusqlite::ffi::SQLITE_BUSY),
+            (
+                std::time::Duration::from_secs(2),
+                rusqlite::ffi::SQLITE_LOCKED,
+            ),
+            (
+                std::time::Duration::from_secs(2),
+                rusqlite::ffi::SQLITE_CORRUPT,
+            ),
+            (
+                std::time::Duration::from_secs(2),
+                rusqlite::ffi::SQLITE_READONLY,
+            ),
+            (
+                std::time::Duration::from_secs(2),
+                rusqlite::ffi::SQLITE_IOERR,
+            ),
+        ] {
+            let mut attempts = 0;
+            let result: Result<()> = retry_open_lock_contention(timeout, || {
+                attempts += 1;
+                Err(sqlite_error(code).context("original_error"))
+            });
+            assert_eq!(attempts, 1);
+            assert_eq!(result.unwrap_err().to_string(), "original_error");
+        }
+        let mut attempts = 0;
+        let result: Result<()> =
+            retry_open_lock_contention(std::time::Duration::from_secs(2), || {
+                attempts += 1;
+                bail!("data_wrong_application");
+            });
+        assert_eq!(attempts, 1);
+        assert_eq!(result.unwrap_err().to_string(), "data_wrong_application");
+    }
+
     #[test]
     fn database_full_rolls_back_batch_and_recovers_without_reset() {
         let directory = std::env::temp_dir().join(format!(

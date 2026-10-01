@@ -29,7 +29,8 @@ TOTAL_SECONDS = 900
 MAX_LOG_BYTES = 8 * 1024 * 1024
 MAX_CHILD_RSS_BYTES = 2 * 1024 * 1024 * 1024
 SEED = 0x6a09e667f3bcc909
-# Suites run on SUITE_WORKERS threads. Every `gobstopper` package suite runs
+# The bounded sequence runs alone before the remaining suites share
+# SUITE_WORKERS threads. Every `gobstopper` package suite runs
 # in one serial CLI lane: each `cargo test -p gobstopper` invocation re-links
 # target/debug/gobstopper, which changes the ctime that running CLI fixtures
 # bind as their artifact identity. The other suites share the remaining
@@ -142,6 +143,40 @@ def source_paths() -> list[Path]:
     return sorted(set(paths))
 
 
+def run_suites(suites: list[dict], run_suite, failed: threading.Event) -> tuple[list[dict], list[str]]:
+    # The sequence has its own 90-second measured bound. Do not spend that
+    # budget contending with our other filesystem-heavy fixtures. The caller's
+    # aggregate deadline still covers this first phase and the shared phase.
+    sequence = next(suite for suite in suites if suite["name"] == "sequence")
+    first = run_suite(sequence)
+    if first is None or not first["passed"]:
+        failed.set()
+        return ([] if first is None else [first]), []
+    finished = {sequence["name"]: first}
+
+    def run_lane(lane: list[dict]) -> list[dict | None]:
+        return [run_suite(suite) for suite in lane]
+
+    remaining = [suite for suite in suites if suite is not sequence]
+    cli_lane = [suite for suite in remaining if SUITES[suite["name"]][0] == CLI_LANE_PACKAGE]
+    shared = sorted((suite for suite in remaining if suite not in cli_lane), key=lambda suite: -suite["seconds"])
+    errors = []
+    with ThreadPoolExecutor(max_workers=SUITE_WORKERS) as pool:
+        # Keep all CLI relinks serial, including while other suites finish.
+        futures = [pool.submit(run_lane, cli_lane)]
+        futures += [pool.submit(run_lane, [suite]) for suite in shared]
+        for future in futures:
+            try:
+                for result in future.result():
+                    if result is not None:
+                        finished[result["case"]] = result
+            except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError) as error:
+                errors.append(str(error))
+                failed.set()
+    # Receipt rows retain inventory order regardless of finish order.
+    return [finished[suite["name"]] for suite in suites if suite["name"] in finished], errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True, help="new private evidence directory")
@@ -238,28 +273,8 @@ def main() -> int:
                 failed.set()
             return result
 
-        def run_lane(lane: list[dict]) -> list[dict | None]:
-            return [run_suite(suite) for suite in lane]
-
-        cli_lane = [suite for suite in suites if SUITES[suite["name"]][0] == CLI_LANE_PACKAGE]
-        # The CLI lane holds one worker for its whole run; the rest start
-        # longest reviewed budget first on the other workers.
-        shared = sorted((suite for suite in suites if suite not in cli_lane), key=lambda suite: -suite["seconds"])
-        finished = {}
-        errors = []
-        with ThreadPoolExecutor(max_workers=SUITE_WORKERS) as pool:
-            futures = [pool.submit(run_lane, cli_lane)]
-            futures += [pool.submit(run_lane, [suite]) for suite in shared]
-            for future in futures:
-                try:
-                    for result in future.result():
-                        if result is not None:
-                            finished[result["case"]] = result
-                except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError) as error:
-                    errors.append(str(error))
-                    failed.set()
-        # Receipt rows keep inventory order whatever the finish order.
-        results.extend(finished[suite["name"]] for suite in suites if suite["name"] in finished)
+        completed, errors = run_suites(suites, run_suite, failed)
+        results.extend(completed)
         failures = [result["case"] for result in results if not result["passed"]]
         if errors or failures or len(results) != len(suites):
             raise ValueError("stress admission failed: " + ", ".join(failures + errors or ["incomplete suites"]))

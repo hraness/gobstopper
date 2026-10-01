@@ -10,6 +10,7 @@ Managed service changes can wait for inference to finish while new requests rece
 - The proxy keeps existing inference, provider retries and response forwarding active while waiting for them to finish. A timeout cancels the wait instead of stopping busy inference.
 - Interrupted service changes record their progress. An uncertain service-manager result keeps requests paused until recovery can safely reconcile it.
 - New service definitions prevent automatic restarts from accepting requests while an earlier stop remains unresolved. Older definitions retain idle-only upgrades until replaced.
+- Concurrent session database startup retries temporary SQLite lock failures, including the lock-protocol race observed on Windows, while preserving stored observations and session identities.
 
 ## v0.8.0 - 2026-09-30
 
