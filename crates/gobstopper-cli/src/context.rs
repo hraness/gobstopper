@@ -73,7 +73,7 @@ enum ContextCmd {
         #[arg(long)]
         json: bool,
     },
-    /// End the reservation and return to the proxy's ordinary threshold.
+    /// End the reservation and return to the scope or proxy's standing threshold.
     Release {
         #[arg(long)]
         scope: Option<String>,
