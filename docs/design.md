@@ -68,7 +68,8 @@ path. Claude Code accepts `ANTHROPIC_BASE_URL`, Codex accepts a
 `model_providers` entry, and opencode, Crush, Aider, and Goose each accept a
 custom provider address, so a loopback proxy sees every request before the
 provider does. Once the proxy compacts, the provider reports the compacted
-size and the client's auto-compaction does not reach its trigger.
+size, which can delay the client's auto-compaction. The client still controls
+its own trigger and context limits.
 
 - `gobstopper_adapters::request` is the pure engine: dialect digests that
   ignore volatile fields (`cache_control`, thinking signatures, Responses
@@ -83,7 +84,7 @@ size and the client's auto-compaction does not reach its trigger.
   Each dialect owns its message digest, summary shape, and turn grouping, so
   a kept tail is always a whole number of model steps: an assistant
   `tool_calls` turn and the `tool` messages answering it are never split.
-- Six behaviors differ from the reference. The kept tail grows past the
+- Several behaviors differ from the reference. The kept tail grows past the
   newest `keep_recent` turns, one older whole turn at a time, while the
   summary and the tail fit a share of the room between the verbatim floor
   and the applied threshold (`--keep-tail-percent`, 0 by default since v0.7.3 and 40 before; 0 keeps
@@ -97,11 +98,13 @@ size and the client's auto-compaction does not reach its trigger.
   between them would leave the tool results after the second message without
   their calls. Anthropic requests that declare a 1M window in
   `anthropic-beta` use a second threshold (`--threshold-1m`, 256,000 by default), and the prefix
-  store substitutes only entries computed at the request's threshold. A
-  rewritten request the provider rejects for a reason other than length is
-  resent in its original form. When the verbatim floor (fixed request fields
+  store substitutes only entries computed with the same threshold, context
+  policy and calibration. A rewritten request the provider rejects with HTTP
+  400 for a reason other than length can be resent in its original form when
+  it fits the configured hard input capacity. When the verbatim floor (fixed request fields
   plus the head) approaches the threshold, the applied threshold becomes the
-  floor plus half the request's threshold. Replays of Codex sessions that
+  floor plus half the request's threshold, within configured capacity.
+  Replays of Codex sessions that
   Codex had already compacted itself showed why: their heads were near 160k
   estimated tokens, and without the adjustment nearly every request
   compacted again and no prefix was reused. The reference discards the
@@ -128,6 +131,15 @@ size and the client's auto-compaction does not reach its trigger.
   Code or Codex session and runs it through the engine, with a pairing check
   that separates breakage already in the recording (interrupted or rewound
   turns) from breakage the proxy would introduce.
+
+[Temporary context budgets](context-budgets.md) let a scoped session reserve
+more input context within configured provider and client limits. Optional
+adaptive rescue can raise that budget after repeated reads of unchanged evicted
+evidence. [Evidence retention](context-retention.md) preserves selected original
+tool results and images across compactions. These mechanisms can reduce evidence
+loss; they do not establish that a task will progress. [Service recovery](service.md)
+describes request deadlines, background metrics, managed draining and launch-time
+fallback, including the limits for already-running clients.
 
 ### Why a 40% tail share and a 256,000-token 1M threshold
 

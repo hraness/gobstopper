@@ -57,6 +57,18 @@ const questions = [
     answer: "The proxy changes outgoing requests and leaves session files unchanged. File commands prepare separate copies. Gobstopper does not trigger Claude Code's or Codex's own compaction and does not edit session files in place. Automatic provider compaction stays disabled.",
   },
   {
+    question: "What if an agent keeps rereading the same files?",
+    answer: "You or the agent can reserve a larger context for a difficult phase, within the model and client's supported window. The budget expires by time or request count. Optional adaptive rescue temporarily raises the threshold after repeated reads of unchanged evidence the proxy removed. Gobstopper also keeps selected original tool results and images through repeated compactions. These controls reduce evidence loss; they cannot guarantee task progress. See [context budgets and retention](/docs#temporary-context-budgets).",
+  },
+  {
+    question: "What happens if the proxy stops responding?",
+    answer: "Request and compaction deadlines limit stalls, while logging and metrics run in background workers. `gobstopper proxy launch --client claude` checks readiness before opening Claude Code and can start directly with its official provider when the configuration permits. Codex launch requires a healthy proxy. Existing sessions using a fixed proxy URL still depend on that listener. See [recovery and fallback requirements](/docs#startup-recovery-and-direct-fallback).",
+  },
+  {
+    question: "Can it start automatically and keep my laptop awake?",
+    answer: "Run `gobstopper proxy install` to start a user service at login and restart it after a process exit. Managed service changes wait for active inference to finish. During inference, Gobstopper requests idle-sleep prevention; closing a lid or forcing sleep can override it. Local session metrics are available through `gobstopper data metrics`. See [startup and local visibility](/docs#longer-work-local-visibility-and-startup-recovery).",
+  },
+  {
     question: "When should I use built-in compaction instead?",
     answer: "Use your agent's built-in `/compact` when you want a model-written summary without another tool. Gobstopper adds previews and archived originals for saved sessions, plus a proxy that applies local rules without a model call. See [the Claude Code comparison](/compare/claude-code-compact) or [the CliffCompaction comparison](/compare/cliffcompaction).",
   },

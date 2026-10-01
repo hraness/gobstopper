@@ -36,14 +36,14 @@ The proxy requires system `curl` 8.3 or later. Check it with `curl --version`.
   history the client resends, so detail is lost once, not again at every
   compaction.
 - **A stable prompt cache.** Between compactions, every request carries the
-  same compacted prefix byte for byte, so the provider's prompt cache keeps
-  matching until the next compaction.
+  same compacted prefix byte for byte while the context policy and calibration
+  stay the same, so the provider's prompt cache can keep matching.
 - **Fewer native compaction triggers.** The provider reports the compacted
   size, which can keep the client below its trigger. Client limits still
   apply, and its transcript keeps the full history.
-- **Failures send the original.** An unparseable body, an internal error, or
-  a provider rejection for any reason other than length sends the client's
-  original bytes when they fit an explicitly configured hard context capacity.
+- **Optional compaction can be skipped.** If a rewrite fails or times out,
+  the proxy can send the client's original bytes. Explicit context limits,
+  strict sizing and scoped policy still apply; see [Limits](#limits).
 
 CliffCompaction's authors report up to 50% lower cost at a bounded context,
 with Terminal-Bench 2.0 scores held or improved, on the Kimi K2.6 and GLM 5.1
@@ -113,7 +113,11 @@ export ANTHROPIC_BASE_URL=http://127.0.0.1:8260
 Claude Code sends your claude.ai sign-in or API key through the proxy
 unchanged. If `ANTHROPIC_API_KEY` is set in your environment, Claude Code
 uses that key instead of your claude.ai sign-in, with or without the proxy.
-To run one session without the proxy, use `env -u ANTHROPIC_BASE_URL claude`.
+For this shell-only setup, `env -u ANTHROPIC_BASE_URL claude` runs one session
+without the proxy. A URL saved in Claude settings can reenable the proxy.
+Use `gobstopper proxy launch --client claude` to check readiness before
+starting a session and choose direct fallback when the configuration permits
+it; see [launch requirements](service.md#launch-with-a-direct-fallback).
 
 ## Codex
 
@@ -240,29 +244,42 @@ declares a 1M-token window, pass `--threshold 256000`.
 
 ## Settings
 
+These settings apply to `proxy serve`, `proxy run`, and `proxy install`,
+except where noted.
+
 | Flag | Default | Meaning |
 |---|---|---|
 | `--threshold` | 128000 | Compact when the estimated outgoing request exceeds this many tokens. Applies to every OpenAI-dialect request and to Anthropic requests that do not declare a 1M-token window; those that do use `--threshold-1m`. Keep it below the client's own auto-compaction point. |
-| `--threshold-1m` | 256000, or `--threshold` if higher | `serve` and `run` only. The threshold for Anthropic Messages requests whose `anthropic-beta` header lists a token starting with `context-1m`. It can't be lower than `--threshold`; an equal value applies one threshold to every request. Keep it below the client's own auto-compaction point, including any `claude --autocompact` value. |
+| `--threshold-1m` | 256000, or `--threshold` if higher | The threshold for Anthropic Messages requests whose `anthropic-beta` header lists a token starting with `context-1m`. It can't be lower than `--threshold`; an equal value applies one threshold to every request. Keep it below the client's own auto-compaction point, including any `claude --autocompact` value. |
+| `--context-window` | unset | Declare the context capacity supported by the upstream route. Output headroom reduces the input capacity; original-body fallbacks and retries must also fit. This does not increase the provider's supported window. |
+| `--client-context-window` | unset | `run` scope only. Declare the client's capacity when it is lower than the provider's. See [context budgets](context-budgets.md). |
+| `--output-reserve` | 32000 | Tokens reserved for output when creating a `run` scope. A request asking for more output reserves more room. |
+| `--adaptive-context` | off | `run` scope only. Allow a temporary context increase after repeated reads of unchanged evidence the proxy removed, within configured capacity. |
+| `--transform-timeout-ms` | 5000 | Deadline for optional compaction work, from 1 to 60000 milliseconds. A timeout sends the original request only when the context and strict-sizing policies permit it. |
 | `--keep-recent` | 3 | Newest assistant steps kept verbatim. A request still over the threshold after one pass keeps one. |
 | `--keep-tail-percent` | 0 | Share of the room under the threshold, after the fixed request fields and the head, that the summary and the kept steps may fill. Older whole steps are kept while they fit. From 0 to 60; `0` keeps exactly `--keep-recent` steps, as CliffCompaction does. Use a positive value to keep additional older turns. |
 | `--result-max-chars` | 500 | Older tool results longer than this are dropped from the summary; shorter ones stay verbatim. |
 | `--carry-max-chars` | 24000 | Characters of the human's words and the assistant's visible replies that each summary carries forward from the turns earlier compactions summarized. The oldest text drops out first, and the carried text takes at most a quarter of the room under the threshold after the fixed request fields and the head. `0` turns carrying off. |
+| `--evidence-max-bytes` | 262144 | Serialized UTF-8 bytes of selected original tool evidence kept across summaries. `0` disables evidence retention. Also a `replay` flag. |
+| `--evidence-max-chars` | 32000 | Billable characters of retained evidence, including image cost, also subject to byte and context limits. Also a `replay` flag. See [evidence retention](context-retention.md). |
 | `--drop-thinking` | off | Leave thinking and reasoning text out of summaries. |
 | `--no-calibrate` | off | Compare the plain four-characters-per-token estimate with the threshold. By default the threshold is divided by the ratio of provider-reported to estimated input, learned per upstream and model (see [Estimate calibration](#estimate-calibration)). Also a `replay` flag. |
-| `--shadow` | off | Log what would change and forward every request unchanged. |
-| `--strict` | off | Refuse (HTTP 400) a request still over the threshold after every step, instead of sending it. |
+| `--shadow` | off | Log what would change and forward requests unchanged. Explicit capacity and scoped policy still apply. |
+| `--strict` | off | Refuse (HTTP 400) a request still over the threshold after every step, instead of sending it. Outside shadow mode, sizing must succeed before forwarding. |
+| `--no-keep-awake` | off | Disable idle-sleep prevention during inference. Display sleep is always allowed; see [sleep behavior](service.md#sleep-during-inference). |
+| `--no-session-data` | off | Disable the local session observation journal. This is separate from the legacy JSONL statistics ledger. |
 | `--anthropic-upstream` | `https://api.anthropic.com` | Where Anthropic requests go. |
 | `--openai-upstream` | `https://api.openai.com` | Where OpenAI API requests (`/v1/...`, `.../chat/completions`) go. Point it at any OpenAI-compatible provider. |
 | `--chatgpt-upstream` | `https://chatgpt.com` | Where ChatGPT-signed-in Codex requests (`/backend-api/...`) go. |
 
 ## How it works
 
-![Diagram: Claude Code sends to gobstopper proxy on 127.0.0.1 port 8260, which sends to the model provider. Small requests pass unchanged, large ones are rewritten, and on any error the original request is sent.](assets/gob-route.png)
+Claude Code → local Gobstopper proxy → model provider.
 
-*It sits between your agent and the provider. If a rewrite fails or the
-provider rejects it for any reason other than length, Gobstopper sends the
-original bytes. A length rejection gets one more trim and a retry.*
+*The proxy changes outgoing history. Optional rewrite failures can send the
+original bytes when policy permits. A provider HTTP 400 rejection can trigger
+another trim for a length error, or an original-body retry for another error
+when the original fits the configured capacity.*
 
 ![Diagram: a full-width bar labelled original request, and below it a shorter bar of six parts: head, summary, carry, and the last three turns.](assets/gob-anatomy.png)
 
@@ -361,9 +378,10 @@ lines are illustrative.*
   (`window=1m` or `window=base`).
 - **Prefix reuse.** Clients resend their original history on every request. The proxy keys each
   compaction by a hash of the original prefix and substitutes it into later
-  requests, so the compacted prefix stays byte-stable until the next
-  compaction and the provider's prompt cache can match it. The cache lives in
-  memory; after a restart, the proxy replays the threshold crossings over the
+  requests with the same context policy and calibration, so the compacted prefix
+  stays byte-stable until the next compaction and the provider's prompt cache can
+  match it. A policy or calibration change rebuilds the prefix from the original
+  history. The cache lives in memory; after a restart, the proxy replays the threshold crossings over the
   full history and reaches the same result. The carried text is the
   exception in two cases, until newer words fill it again: after the proxy
   shortened a summary to fit, which starts the carry over, and when the
@@ -380,10 +398,11 @@ lines are illustrative.*
   4. after a length rejection, or with `--strict`, the summary shortened to
      its newest parts.
 
-  Without `--strict`, a request still over the threshold is then sent
-  anyway; with it, the proxy refuses it (HTTP 400). If the provider rejects
-  the rewritten request for any other reason, the proxy resends the
-  client's original bytes.
+  Without `--strict`, a request still over the threshold is then sent if it
+  fits any configured hard input capacity; with strict mode, the proxy refuses
+  it (HTTP 400). If the provider rejects the rewritten request with HTTP 400
+  for a reason other than length, the proxy resends the client's original
+  bytes only when they fit the configured capacity.
 - The threshold is calibrated to the provider's count; see
   [Estimate calibration](#estimate-calibration).
 - If the verbatim head alone approaches the threshold, as it can after the
@@ -394,6 +413,8 @@ lines are illustrative.*
   under the threshold raised to ~Nk by a large verbatim head`). A request
   over the threshold with nothing to compact, such as one with too few
   turns, is also sent unchanged and logged (`... with nothing to compact`).
+  An explicit hard context capacity limits this allowance. If the preserved
+  head and fixed fields already exceed it, the proxy refuses the request.
 
 ### Where it departs from CliffCompaction
 
@@ -405,8 +426,8 @@ length rejection. The options below control its departures from that rule.
 | 1 | Keep older whole turns beyond the last three within a tail budget | off (tail 0) | `--keep-tail-percent 0`, the default |
 | 2 | Count a run of assistant messages as one turn in every dialect | on | none; keeps tool calls paired with their results |
 | 3 | Separate threshold for Anthropic requests that declare a 1M-token window | on | `--threshold-1m` equal to `--threshold` |
-| 4 | Resend the original after a rejection for a reason other than length | on | none |
-| 5 | Raise the threshold when the verbatim head alone approaches it | on | none |
+| 4 | Resend the original after an HTTP 400 rejection for a reason other than length, when it fits configured capacity | on | none |
+| 5 | Raise the threshold when the verbatim head alone approaches it, within configured capacity | on | none |
 | 6 | Carry human words and assistant replies from summarized turns, up to 24,000 characters | on | `--carry-max-chars 0` |
 | 7 | Calibrate the threshold from provider-reported input, 1.0 to 2.0 | on | `--no-calibrate` |
 
@@ -455,8 +476,8 @@ usage to adjust later compaction thresholds when the byte estimate runs low.
   bounded to 1.0 to 2.0: at a ratio of 1.25, a 128,000-token threshold
   compacts at 102,400 estimated tokens. The bound means calibration can only
   compact earlier, never later, and never below half the threshold. Stored
-  compactions stay keyed by the configured threshold, so a changing ratio
-  keeps reusing them.
+  compactions include the applied ratio and context policy in their identity.
+  A changed ratio or policy rebuilds the prefix from the original history.
 - `gobstopper proxy status` shows the ratio applied and measured, and the
   sample count, for each upstream and model (`calibrate`, `calibrations`).
   Compaction log lines name a ratio other than 1.0 after the window
@@ -489,18 +510,27 @@ tokens (`reported_over_threshold`), and each compaction's
   response text. The status page names each calibrated upstream and model. Carried text stays in the proxy's memory and in the
   requests it forwards; log lines and the ledger below record only its
   size.
-- Every compactable request also appends one JSONL record (timestamp,
+- Prepared requests queue JSONL statistics records (timestamp,
   dialect, path, estimated tokens in and out, the estimated head, summary,
   and tail sizes, the carried characters, the window, the threshold applied
   to that request, the calibration ratio, and flags) to
-  `~/.local/share/gobstopper/proxy-stats.jsonl`, so `gobstopper proxy status`
-  reports estimated-token totals for this run and all time across restarts.
+  `~/.local/share/gobstopper/proxy-stats.jsonl`. A background worker appends them,
+  and `gobstopper proxy status` reports estimated-token totals for this run
+  and loaded history. Queue overflow, write failures, or incomplete history can
+  leave totals partial; inspect `stats_persistence` and see [files and logs](service.md#files-and-logs).
   `GOBSTOPPER_STATS_FILE` overrides the path; set it to `off` to disable the
   ledger.
-- Unparseable or compressed request bodies are forwarded unchanged.
+- Unparseable or compressed request bodies can pass unchanged when no explicit
+  capacity or strict-sizing requirement needs to verify them.
 
 ## Limits
 
+- Explicit context capacity and strict sizing can prevent original-body
+  fallback. If required sizing times out or its workers are occupied, the
+  proxy returns HTTP 503 with `Retry-After`; a payload it cannot size returns
+  HTTP 400. Unavailable scoped context storage also returns a retryable 503
+  before inference is sent; an invalid scope returns 400. See [recovery and
+  fallback](service.md) for launch-time choices and existing-session limits.
 - Sizes are estimates at four characters per token, with images priced by
   their dimensions; the provider's count can differ. Calibration corrects
   the threshold only after five responses, so the first requests of each

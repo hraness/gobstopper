@@ -3,15 +3,15 @@ import { GobFigure } from "./gob-figure";
 const BRANCHES = [
   { kind: "pass", text: "under the threshold: sent unchanged" },
   { kind: "rewrite", text: "over the threshold: rewritten" },
-  { kind: "fallback", text: "anything goes wrong: your original request is sent" },
+  { kind: "fallback", text: "rewrite fails: original request sent if configured limits allow" },
 ] as const;
 
 /** D-route: where the proxy sits and what it does with each request. */
 export function GobRoute() {
   return (
     <GobFigure
-      alt="Diagram: Claude Code sends to gobstopper proxy on 127.0.0.1 port 8260, which sends to the model provider. Small requests pass unchanged, large ones are rewritten, and on any error the original request is sent."
-      caption="If a rewrite fails or the provider rejects it for any reason other than length, Gobstopper sends the original bytes. A length rejection gets one more trim and a retry."
+      alt="Diagram: Claude Code sends requests through the local Gobstopper proxy to the model provider. Small requests pass unchanged; large ones are rewritten. Fallback remains subject to configured limits."
+      caption="Optional rewrite failures can send the original bytes when policy permits. A provider HTTP 400 rejection can trigger another trim for a length error, or an original-body retry for another error when the original fits configured capacity."
       id="route"
       kind="diagram"
       title="It sits between your agent and the provider"

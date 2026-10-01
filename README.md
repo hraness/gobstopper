@@ -104,18 +104,19 @@ a model call:
   original history the client resends and discards the previous summary;
   the human's words and the assistant's replies carry forward, up to 24,000
   characters.
-- **The prompt cache keeps matching.** Between compactions, every request
-  reuses the same compacted prefix byte for byte, so the provider's prompt
-  cache stays valid until the next compaction.
+- **Reusable compacted prefixes.** Between compactions, requests with the same
+  context policy and calibration reuse the compacted prefix byte for byte,
+  so the provider's prompt cache can keep matching. A changed policy or
+  calibration rebuilds the prefix from the original history.
 - **Fewer native compaction triggers.** The provider reports the
   compacted size, which can keep Claude Code or Codex below its own trigger.
   Client limits and native compaction can still apply; your transcript keeps
   the full history.
-- **A failure can send the original request.** If the body cannot be parsed,
-  the engine fails, or the provider rejects the rewritten request for a
-  reason other than length, the proxy forwards the client's original bytes
-  when they fit any explicitly configured hard context capacity.
-  A length rejection gets a further compaction and a retry.
+- **Optional compaction can be skipped.** If a rewrite fails or times out,
+  the proxy can send the client's original bytes. Explicit context limits,
+  strict sizing, and scoped policy still apply. A provider HTTP 400 rejection
+  can trigger further compaction for a length error, or an original-body retry
+  for another error when the original fits configured capacity.
 
 ![Line chart of estimated tokens per request over 383 requests of one session. Without the proxy, request size climbs steadily to about 491,000. With Gobstopper at a 45,000-token threshold, it stays under 40,000 in a sawtooth, and total input falls from 116.7 million to 12.9 million estimated tokens.](docs/assets/gob-sawtooth.png)
 
@@ -293,11 +294,12 @@ See [docs/proxy.md](docs/proxy.md) for per-agent setup (Claude Code, Codex,
 opencode, Crush, Aider, Goose), `proxy install` and `proxy uninstall`,
 choosing a threshold, and every setting.
 
-![Diagram: Claude Code sends to gobstopper proxy on 127.0.0.1 port 8260, which sends to the model provider. Small requests pass unchanged, large ones are rewritten, and on any error the original request is sent.](docs/assets/gob-route.png)
+Claude Code → local Gobstopper proxy → model provider.
 
-*It sits between your agent and the provider. If a rewrite fails or the
-provider rejects it for any reason other than length, Gobstopper sends the
-original bytes when they fit any explicit hard context capacity. A length rejection gets one more trim and a retry.*
+*Optional rewrite failures can send the original bytes when policy permits.
+A provider HTTP 400 rejection can trigger another trim for a length error,
+or an original-body retry for another error when the original fits configured
+capacity.*
 
 Flags: `--threshold` (keep it below the client's auto-compaction point),
 `--threshold-1m`, `--keep-recent`, `--keep-tail-percent`,
@@ -311,11 +313,11 @@ unchanged), and `--strict`.
   request headers, which carry your API key or sign-in token, to curl through
   its environment instead of its command line. Logs contain sizes and counts,
   never request or response text.
-- Unless an explicit hard context capacity prevents forwarding, failures
-  send the client's original bytes: an unparseable or
-  compressed body, an internal error, or a provider that rejects the
-  rewritten request for a reason other than length. When the provider rejects
-  a request for length, the proxy compacts further and retries.
+- Unparseable bodies and failed optional rewrites can send the original bytes.
+  Explicit capacity, strict sizing, and scoped policy can require rejection
+  instead. Reactive retries apply to provider HTTP 400 responses: a length
+  error can trigger further compaction, and other errors can retry the original
+  when it fits configured capacity.
 - Transcript files are not changed. The client keeps its full history, so
   resume works as before, and Claude Code and Codex histories still feed the
   file commands below.
@@ -340,9 +342,13 @@ histories, not billed tokens or task results.
 
 ## Longer work, local visibility, and startup recovery
 
-For a difficult analysis phase, reserve more input context within a scope bound
-to your client and its descendants. Declare capacities supported by your route;
-Gobstopper returns the effective budget after output headroom and client limits.
+### Temporary context budgets
+
+Compacting while an agent is gathering evidence can make it reread material that
+was removed. For a difficult analysis phase, you or the agent can reserve more
+input context within a scope bound to your client and its descendants. Declare
+capacities supported by your route; Gobstopper returns the effective budget
+after output headroom and client limits.
 
 ```sh
 gobstopper proxy run --context-window 1000000 --client-context-window 1000000 --adaptive-context -- claude
@@ -352,9 +358,53 @@ gobstopper context status
 gobstopper context release
 ```
 
-The larger budget expires by request count or time. Optional adaptive rescue
-responds to repeated reads of unchanged evidence after eviction. It needs a
-scope and configured capacity. See [context budgets](docs/context-budgets.md).
+The larger budget expires by request count or time. Adaptive rescue is off by
+default; `--adaptive-context` enables a temporary increase after repeated reads
+of unchanged evidence that the proxy previously removed. It needs a scope and
+configured capacity. See [context budgets](docs/context-budgets.md).
+
+The proxy also keeps a limited collection of original tool results and supported
+images across repeated compactions. After a restart, it rebuilds that collection
+from the history the client sends. Older evidence can still be evicted, and the
+proxy cannot recover material removed by the client's own compaction. These
+controls address evidence loss; they do not guarantee that an agent stops looping
+or completes its task. See [evidence retention](docs/context-retention.md).
+
+### Startup, recovery, and direct fallback
+
+`gobstopper proxy install` starts a user service at login and restarts it after a
+process exit. Managed service changes pause new inference with a retry response
+and wait for existing requests to finish. If the controller disappears while
+waiting, its lease expires and requests reopen. Once a stop has been committed,
+recovery checks the outcome before reopening. Service changes use no firewall
+rules.
+
+Request parsing, compaction, and status checks have time and resource limits.
+Logging, metrics, and sleep prevention run in background workers so slow optional
+work does not hold up request forwarding. Configured context limits still apply,
+and unavailable scoped context storage returns a retry response.
+
+```sh
+gobstopper proxy launch --client claude --print  # inspect readiness and route
+gobstopper proxy launch --client claude
+gobstopper proxy launch --client codex --codex-auth chatgpt
+```
+
+The launcher checks the proxy before starting a client. Claude Code can use its
+official provider directly when the proxy is unavailable and its configuration
+permits that route. Custom upstreams, uncertain authentication, scoped context
+reservations, and configured capacity constraints prevent direct fallback.
+Codex requires a healthy proxy and an existing explicit custom provider pointing
+to it; `--codex-auth` selects the existing authentication route to check.
+The launcher does not replay inference or reroute running sessions. Clients
+already configured with a fixed proxy URL still depend on that listener.
+See [startup and recovery](docs/service.md) for setup and fallback requirements.
+
+During active inference, Gobstopper requests idle-sleep prevention and releases
+it when inference ends. Closing a lid and forced sleep remain operating-system
+decisions. `--no-keep-awake` disables the feature.
+
+### Local session data
 
 The proxy records local metadata and provider usage. Inspect requests, attempts,
 compaction decisions and tool activity, or export the versioned journal:
@@ -368,9 +418,7 @@ gobstopper proxy doctor
 ```
 
 [Session data](docs/session-data.md) explains the schema, privacy boundaries,
-imports, backups and metric denominators. [Startup and recovery](docs/service.md)
-covers login services, automatic process restart, repair and inference-aware
-sleep prevention. Closing a lid and forced sleep remain operating-system decisions.
+imports, backups and metric denominators.
 These controls have functional regression tests; the September 28 benchmark
 predates them and does not measure their effect on task accuracy.
 
@@ -1129,7 +1177,7 @@ content-addressed local vault:
 | What it changes | The running session's in-context history, replaced by a summary the model writes | A separate copy of a saved Claude Code or Codex session file; the source is never changed. `gobstopper proxy` compacts each outgoing request and leaves session files alone |
 | Who writes the summary | The model, in a request carrying the same system prompt, tools, and history plus a summarization instruction; `/compact` focus text steers it | No model by default: built-in strategies drop or stub stale tool results by local rules, and `structured` and `compacted` add a metadata state card |
 | Seeing the cut first | No preview; the summary is written and applied in one step, and you read what it kept afterward | `gobstopper plan`, `eval`, and `diff` show each strategy's cut on the same frozen bytes before `apply` writes anything |
-| When it runs | On demand, or automatically as the context nears the model's limit; `/autocompact` sets how full the window gets first | On demand over saved sessions; `gobstopper proxy` compacts each request over a threshold you choose, so Claude Code's own auto-compaction does not reach its trigger |
+| When it runs | On demand, or automatically as the context nears the model's limit; `/autocompact` sets how full the window gets first | On demand over saved sessions; `gobstopper proxy` compacts outgoing requests over a threshold you choose, which can delay Claude Code's own auto-compaction |
 | Undo | `/rewind` returns the conversation to an earlier checkpoint; file snapshots cover the 100 most recent checkpoints and are swept about 30 days after the session last saved one | `gobstopper undo` restores a vaulted snapshot into a new fork; the source file is never rewritten |
 | What holds the originals | The session's own transcript file; Claude Code documents that summarizing leaves the original messages in the transcript | A content-addressed local vault stores the exact source and candidate bytes before a copy publishes; `search-snapshot` and `read-snapshot` return archived records |
 | Providers covered | Claude Code | Claude Code and Codex session files; the proxy covers any client that speaks Anthropic Messages, OpenAI Responses, or OpenAI Chat Completions with a custom provider address |
@@ -1139,9 +1187,9 @@ The two work at different layers. `/compact` shrinks the live session's
 context in place. `gobstopper apply` writes the compacted copy as a new fork
 and never touches the source, and resuming a copy with a live provider
 requires separate compatibility testing. For a running session, `gobstopper
-proxy` compacts each request over the threshold so Claude Code's
-auto-compaction does not reach its trigger; `/compact` stays available either
-way. The comparison page at
+proxy` compacts requests over the threshold, which can delay Claude Code's
+auto-compaction. The client still controls its own trigger, and `/compact`
+stays available. The comparison page at
 [gobstopper.sh/compare/claude-code-compact](https://gobstopper.sh/compare/claude-code-compact)
 carries the same table.
 
