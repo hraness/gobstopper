@@ -50,6 +50,9 @@ using it has stopped, then close it.
 gobstopper context create --context-window 1000000 --client-context-window 1000000 --adaptive --json
 ```
 
+This command defaults to port 8260. Add `--port <port>` when your existing proxy
+uses a different port; it does not infer the port from the installed service.
+
 Use the returned `base_url` in your client's provider configuration, preserving
 that client's usual endpoint suffix. Alternatively attach `X-Gobstopper-Scope`
 with the returned capability. Set `GOBSTOPPER_SCOPE` in that client's environment

@@ -174,7 +174,8 @@ export default function CompareClaudeCodeCompact() {
             (128,000 estimated tokens by default) it sends the head, one
             mechanical summary, and the newest turns verbatim, so the provider
             reports a smaller context and the client&apos;s own auto-compaction
-            does not reach its trigger. The session files stay unchanged.
+            can be delayed. The client still controls its own trigger, and the
+            session files stay unchanged.
           </p>
           <Terminal code={`gobstopper detect                 # sessions, context sizes
 gobstopper plan <session>         # preview the cut under each strategy

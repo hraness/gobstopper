@@ -38,7 +38,7 @@ export const comparisonRows: readonly ComparisonRow[] = [
     compact:
       "On demand, or automatically as the context nears the model's limit; `/autocompact` sets how full the window gets first",
     gobstopper:
-      "On demand over saved sessions; `gobstopper proxy` compacts each request over a threshold you choose, so Claude Code's own auto-compaction does not reach its trigger",
+      "On demand over saved sessions; `gobstopper proxy` compacts outgoing requests over a threshold you choose, which can delay Claude Code's own auto-compaction",
   },
   {
     aspect: "Undo",
@@ -72,7 +72,7 @@ export const comparisonQuestions = [
   {
     question: "Does Gobstopper replace /compact?",
     answer:
-      "They work at different layers. `/compact` shrinks the live session's context in place. Gobstopper's file commands prepare a separate compacted copy of a saved Claude Code or Codex session, and `gobstopper proxy` keeps each live request under a threshold you choose, so Claude Code's auto-compaction does not reach its trigger. `/compact` stays available either way.",
+      "They work at different layers. `/compact` shrinks the live session's context in place. Gobstopper's file commands prepare a separate compacted copy of a saved Claude Code or Codex session. Its proxy compacts outgoing requests over a threshold you choose, which can delay Claude Code's auto-compaction. The client still controls its own trigger, and `/compact` stays available.",
   },
   {
     question: "Can I see what /compact will keep before it runs?",
