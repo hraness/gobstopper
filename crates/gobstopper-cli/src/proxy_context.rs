@@ -225,7 +225,7 @@ mod tests {
         let scope = access
             .get()
             .unwrap()
-            .create(Some(500_000), None, 32_000, true)
+            .create(Some(500_000), None, 32_000, true, None)
             .unwrap();
         (root, access, scope)
     }

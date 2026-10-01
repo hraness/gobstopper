@@ -2,6 +2,12 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## Unreleased
+
+A context scope can carry its own standing input threshold, so a long-lived agent runs wider than the proxy default without re-arming a reservation.
+
+- `gobstopper context create --threshold <tokens>` sets a standing threshold for the scope. Scoped requests compact at it instead of `--threshold` or `--threshold-1m`, clipped to the declared input capacity; a live reservation still takes priority, and release returns to the scope's threshold. `context status` reports it as `scope_threshold_tokens` and the limiting reason as `scope_threshold`. Existing context stores gain the column on first open.
+
 ## v0.8.4 - 2026-10-01
 
 Gobstopper keeps slow clients, optional storage and compaction work from holding up proxy controls. A new launcher checks the proxy before starting Claude Code or Codex. Claude can use its direct provider when the proxy is unavailable; Codex keeps its existing configuration and requires a healthy proxy.
