@@ -41,9 +41,11 @@ export default async function BlogPost({ params }: Readonly<{ params: Params }>)
           type="application/ld+json"
         />
         <MarketingArticle
+          showDates={false}
           after={(
             <>
               <ArticleSources
+                showDates={false}
                 sources={post.admission.sources.map((source) => ({
                   title: source.title,
                   href: source.url,
@@ -59,6 +61,7 @@ export default async function BlogPost({ params }: Readonly<{ params: Params }>)
           heading={post.title}
           provenance={postProvenance(post)}
           published={post.published}
+          {...(post.updated ? { updated: post.updated } : {})}
           toc={postToc(post)}
         >
           {post.body === "beats" ? <IntroducingBody /> : <div dangerouslySetInnerHTML={{ __html: postHtml(post) }} />}

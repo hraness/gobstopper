@@ -2,14 +2,14 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<title>Keeping more old turns meant more rewrites and more tokens</title>
+<title>A larger recent tail leaves less room before the next rewrite</title>
 </head>
 <body>
 <script>
 // D-tail: both arms just after a rewrite, under one threshold.
 Gob.scene({ palette: "paper" }, (s) => {
   const { TAIL, SLAB, stackHeight } = Gob.geometry;
-  const frame = s.still({ title: "Keeping more old turns meant more rewrites and more tokens" });
+  const frame = s.still({ title: "A larger recent tail leaves less room before the next rewrite" });
   const p = frame.plot;
   const labelH = 44;
   const bottomBand = 24 + labelH;
@@ -64,7 +64,7 @@ Gob.scene({ palette: "paper" }, (s) => {
   s.text("small", "less room left, so the next rewrite comes sooner", { x: ax + 34, y: lidY + 18, w: p.x + p.w - ax - 34 }, { color: "var(--tail40)", weight: 500 });
 
   // Each caption breaks after the arm name so the parenthetical sits whole on line two.
-  for (const [x, name, note] of [[leftX, "Gobstopper, tail 0", "(the new default)"], [rightX, "Gobstopper, tail 40", "(old default)"]]) {
+  for (const [x, name, note] of [[leftX, "Gobstopper, tail 0", "(default)"], [rightX, "Gobstopper, tail 40", "(larger tail)"]]) {
     const node = s.text("label", `${name}\n${note}`, { x: x - 40, y: base + 24, w: stackW + 80 }, { align: "center", weight: 600 });
     node.style.whiteSpace = "pre-line";
   }

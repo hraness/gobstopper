@@ -71,7 +71,6 @@ export default function CompareCliffCompaction() {
           dek="CliffCompaction and Gobstopper build mechanical summaries and keep the newest turns untouched. Gobstopper adds selected evidence retention and temporary context budgets."
           eyebrow="Comparison"
           heading={title}
-          meta="Checked against the CliffCompaction paper and repository and Gobstopper's source on September 28, 2026; Gobstopper behavior updated from source on September 30, 2026"
           toc={[
             { href: "#side-by-side", label: "Side-by-side comparison" },
             { href: "#cliffcompaction-rule", label: "CliffCompaction summarizes older turns mechanically" },
@@ -97,7 +96,7 @@ export default function CompareCliffCompaction() {
               { label: "Originals", values: ["Agent transcript", "Transcript and local copy archive"] },
               { label: "Published task benchmarks", values: ["Three benchmark suites", "One Terminal-Bench trial"] },
             ]}
-            note={<>CliffCompaction checked September 28, 2026; Gobstopper source checked September 30, 2026. Gobstopper’s file previews apply to saved copies; proxy mode handles live requests. See the source notes for limits and evidence.</>}
+            note={<>File previews apply to saved copies; proxy mode handles live requests.</>}
           />
           <details className="gob-comparison-sources">
             <summary>Read the source notes</summary>
@@ -127,11 +126,7 @@ export default function CompareCliffCompaction() {
             Codex, opencode, Crush, Aider, Goose, and other agents with a
             configurable provider address. Gobstopper also has file commands
             that prepare compacted copies of saved sessions for you to inspect
-            and then resume. The proxy has shipped since v0.3.1 and the Chat
-            Completions dialect since v0.4.0. Carrying the conversation&apos;s
-            words across compactions, described in the table below, shipped
-            in v0.6.0, and v0.7.3 made the reference tail of three turns the
-            default.
+            and then resume.
           </p>
 
           <h2 id="cliffcompaction-rule">CliffCompaction summarizes older turns mechanically</h2>

@@ -36,7 +36,7 @@ export default function Methodology() {
       <SiteHeader path="/methodology" />
       <main id="main" tabIndex={-1}>
         <SiteDocument
-          dek="Gobstopper compares how compaction changes context size and which details survive; you choose a threshold and strategy, then inspect the result. The source build prepares separate Codex and Claude Code copies, and automatic provider compaction is disabled."
+          dek="Gobstopper compares how compaction changes context size and which details survive; you choose a threshold and strategy, then inspect the result. Saved-session edits produce separate copies so you can compare the result with the original."
           eyebrow="Method"
           heading={title}
           toc={[
@@ -62,9 +62,9 @@ export default function Methodology() {
           <h2 id="strategies">Strategies</h2>
           <ul>
             <li><strong>auto</strong>, the default, recommends the provider&apos;s own controls for a live session and compares eligible file strategies for an idle one.</li>
-            <li><strong>sawtooth</strong> proposes provider compaction. The source build does not execute that proposal.</li>
+            <li><strong>sawtooth</strong> proposes provider compaction. Automatic provider compaction is disabled.</li>
             <li><strong>elide</strong> replaces eligible stale tool output with short stubs, oldest first, until the estimated context reaches the floor or no eligible output remains.</li>
-            <li><strong>cliff</strong> keeps the head, the newest three assistant steps, and the newest eight tool results byte-for-byte and drops older eligible tool results over 500 bytes. It has no floor and adds no state card; the <a href="/compare/cliffcompaction">comparison with CliffCompaction</a> explains where the rule comes from. For running sessions in Claude Code, Codex, and OpenAI-compatible agents, <code>gobstopper proxy</code> applies CliffCompaction&apos;s summary rule to each outgoing request instead of a copy, with a larger recent tail by default.</li>
+            <li><strong>cliff</strong> keeps the head, the newest three assistant steps, and the newest eight tool results byte-for-byte and drops older eligible tool results over 500 bytes. It has no floor and adds no state card; the <a href="/compare/cliffcompaction">comparison with CliffCompaction</a> explains where the rule comes from. For running sessions in Claude Code, Codex, and OpenAI-compatible agents, <code>gobstopper proxy</code> applies CliffCompaction&apos;s summary rule to each outgoing request instead of a copy, keeping the latest three turns by default.</li>
             <li><strong>compacted</strong> does the same and adds a state card summarizing the hidden work. Codex-native <code>compacted</code> records are experimental and need <code>--experimental-compacted</code>.</li>
             <li><strong>structured</strong> writes a conservative state card from transcript metadata. It does not summarize meaning.</li>
             <li><strong>agentic</strong> accepts edits proposed by a command or plugin you trust, and Gobstopper still validates each one.</li>
@@ -92,9 +92,9 @@ export default function Methodology() {
 
           <h2 id="what-the-numbers-mean">What the numbers mean</h2>
           <p>
-            We report file-byte changes and observed provider usage where we have
-            them, and we don&apos;t claim dollar or quota savings without a
-            completed benchmark. <code>gobstopper bench</code> runs the built-in
+            File-byte changes show what a saved copy removed; provider usage shows
+            what a live request consumed. Billing also depends on cache prices
+            and the provider&apos;s plan. <code>gobstopper bench</code> runs the built-in
             strategies over your discovered sessions and writes a CSV of projected
             savings, verify errors, and probe recall. The{" "}
             <a href="/benchmarks">published studies</a> report their cohorts,

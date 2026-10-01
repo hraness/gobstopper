@@ -41,6 +41,7 @@ export default function Blog() {
           type="application/ld+json"
         />
         <ArticleIndex
+          showDates={false}
           heading="Blog"
           headingId="blog-title"
           headingLevel={1}
@@ -49,6 +50,7 @@ export default function Blog() {
             title: post.title,
             dek: post.dek,
             published: post.published,
+            ...(post.updated ? { updated: post.updated } : {}),
             eyebrow: post.eyebrow,
           }))}
           summary={BLOG_DESCRIPTION}
