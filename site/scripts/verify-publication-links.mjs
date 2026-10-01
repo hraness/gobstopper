@@ -55,7 +55,9 @@ export async function verifyPublicationLinks(page, groups = publicationLinkGroup
             return forced ? css.textDecorationColor === systemInk
               : state === "rest" ? !mutedRest || css.textDecorationColor !== css.color
               : css.textDecorationColor === css.color;
-          }, { selector: group.selector, forced, state, systemInk, mutedRest: group.mutedRest !== false }, { timeout: 5000 });
+          }, { selector: group.selector, forced, state, systemInk, mutedRest: group.mutedRest !== false }, { timeout: 5000 }).catch(async error => {
+            throw new Error(`${group.name}/${forced ? "forced" : "ordinary"}/${state}: link ink did not settle ${JSON.stringify({ systemInk, observed: await ink(link) })}`, { cause: error });
+          });
           const observed = await ink(link);
           const label = `${group.name}/${forced ? "forced" : "ordinary"}/${state}: ${JSON.stringify(observed)}`;
           assert.ok(observed.decoration.includes("underline"), label);
