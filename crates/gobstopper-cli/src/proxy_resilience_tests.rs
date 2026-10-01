@@ -55,6 +55,65 @@ fn exchange(proxy: &Arc<Proxy>, method: &str, path: &str, body: &[u8]) -> (u16, 
 }
 
 #[test]
+fn resilience_early_rejection_delivers_response_with_unread_request_bytes() {
+    let (mut client, mut server) = pair();
+    // These bytes are queued before rejection, and intentionally never parsed.
+    // An immediate close after writing the error resets this connection.
+    client.write_all(b"an unread request body").unwrap();
+    let mut pending = [0u8; 1];
+    assert_eq!(server.peek(&mut pending).unwrap(), 1);
+    let worker = std::thread::spawn(move || {
+        reject_unread(&mut server, |stream| {
+            write_error(stream, 503, "overloaded_error", "retry shortly")
+        })
+        .unwrap();
+    });
+    let (code, body) = response(client);
+    assert_eq!(code, 503);
+    assert_eq!(body["error"]["type"], "overloaded_error");
+    assert_eq!(body["error"]["message"], "retry shortly");
+    worker.join().unwrap();
+}
+
+#[test]
+fn resilience_early_rejection_cleanup_bounds_stalled_and_trickling_peers() {
+    for trickle in [false, true] {
+        let (mut client, mut server) = pair();
+        let (done_tx, done_rx) = mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            reject_unread(&mut server, |stream| {
+                write_error(stream, 503, "overloaded_error", "retry shortly")
+            })
+            .unwrap();
+            done_tx.send(()).unwrap();
+        });
+        // Read the complete response and FIN without closing our write side.
+        // A client can therefore act on the rejection before cleanup finishes.
+        let mut bytes = Vec::new();
+        client.read_to_end(&mut bytes).unwrap();
+        assert!(bytes.starts_with(b"HTTP/1.1 503 "));
+        let mut sender = client.try_clone().unwrap();
+        let finished = Arc::new(AtomicBool::new(false));
+        let stop = Arc::clone(&finished);
+        let writer = std::thread::spawn(move || {
+            while trickle && !stop.load(Ordering::Acquire) {
+                if sender.write_all(b"x").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+        });
+        // Keep client open until the worker finishes. Progress by a trickling
+        // sender must not reset the absolute cleanup deadline.
+        done_rx.recv_timeout(Duration::from_secs(1)).unwrap();
+        finished.store(true, Ordering::Release);
+        writer.join().unwrap();
+        worker.join().unwrap();
+        drop(client);
+    }
+}
+
+#[test]
 fn resilience_saturated_inference_preserves_health_and_drain_without_replay() {
     let upstream = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
     let mut proxy = test_proxy(128_000, 256_000);

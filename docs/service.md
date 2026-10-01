@@ -56,6 +56,8 @@ work, not provider credentials or upstream availability.
 Normal forwarding has its own concurrency limit. Extra capacity remains for
 health and service-control requests. Request headers and bodies have total
 read deadlines, including clients that keep sending small amounts of data.
+Early rejections send their response before draining unread input for at most
+300 milliseconds and 64 KiB; stalled uploads cannot hold that worker indefinitely.
 At the absolute socket limit, new sockets close immediately so the accept
 thread continues handling connections. Existing inference is not restarted
 or replayed to recover capacity.

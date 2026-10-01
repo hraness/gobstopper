@@ -529,8 +529,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-01-084-resilience-stress.json",
-        "sha256": "fd9523dcb8c87326d59eba04c8c6a85dec630dc4ac80aafb7d16b2e2c967dba2"
+        "path": "docs/assurance/receipts/2026-10-01-084-resilience-platform-stress.json",
+        "sha256": "c96e7245de56f4b26ed583355868934c944492187b1c88e66604912090afbfb4"
       }
     },
     {

@@ -25,7 +25,7 @@ use serde_json::{json, Value};
 use std::borrow::Cow;
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{Ipv4Addr, TcpListener, TcpStream};
+use std::net::{Ipv4Addr, Shutdown, TcpListener, TcpStream};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
@@ -46,6 +46,8 @@ const CONTROL_RESERVE: usize = 16;
 const REQUEST_HEAD_TIMEOUT: Duration = Duration::from_secs(5);
 const REQUEST_BODY_TIMEOUT: Duration = Duration::from_secs(120);
 const CONTROL_WRITE_TIMEOUT: Duration = Duration::from_millis(300);
+const REJECT_DRAIN_TIMEOUT: Duration = Duration::from_millis(300);
+const REJECT_DRAIN_BYTES: usize = 64 * 1024;
 #[path = "proxy_work.rs"]
 mod work;
 /// Most (upstream, model) pairs the proxy keeps a calibration for; later
@@ -1306,29 +1308,30 @@ impl Proxy {
         let mut request = match read_request_head(&mut wire) {
             Ok(request) => request,
             Err(error) => {
-                return write_error(
-                    wire.stream,
-                    400,
-                    "invalid_request_error",
-                    &format!("gobstopper proxy: {error}"),
-                );
+                return reject_unread(wire.stream, |client| {
+                    write_error(
+                        client,
+                        400,
+                        "invalid_request_error",
+                        &format!("gobstopper proxy: {error}"),
+                    )
+                });
             }
         };
         if !host_is_loopback(request.header("host")) {
-            return write_error(
-                wire.stream,
-                403,
-                "permission_error",
-                "gobstopper proxy: only loopback hosts are served",
-            );
+            return reject_unread(wire.stream, |client| {
+                write_error(
+                    client,
+                    403,
+                    "permission_error",
+                    "gobstopper proxy: only loopback hosts are served",
+                )
+            });
         }
         if let Err(error) = request.bind_scope() {
-            return write_error(
-                wire.stream,
-                400,
-                "gobstopper_invalid_scope",
-                &error.to_string(),
-            );
+            return reject_unread(wire.stream, |client| {
+                write_error(client, 400, "gobstopper_invalid_scope", &error.to_string())
+            });
         }
         let control = matches!(request.path(), STATUS_PATH | READY_PATH)
             || request.path().starts_with("/gobstopper/service/");
@@ -1339,12 +1342,14 @@ impl Proxy {
         } else if let Some(slot) = CountGuard::try_acquire(&self.forwarding, limit) {
             Some(slot)
         } else {
-            return write_error(
-                wire.stream,
-                503,
-                "overloaded_error",
-                "gobstopper proxy: too many requests; retry shortly",
-            );
+            return reject_unread(wire.stream, |client| {
+                write_error(
+                    client,
+                    503,
+                    "overloaded_error",
+                    "gobstopper proxy: too many requests; retry shortly",
+                )
+            });
         };
         wire.deadline = Instant::now()
             + if control {
@@ -1360,16 +1365,20 @@ impl Proxy {
             (!control).then_some(&mut body_memory),
         ) {
             if error.is::<work::MemoryExhausted>() {
-                return write_buffered(wire.stream, 503, "Service Unavailable", &[
+                return reject_unread(wire.stream, |client| {
+                    write_buffered(client, 503, "Service Unavailable", &[
                     ("content-type".into(), "application/json".into()), ("retry-after".into(), "1".into()),
-                ], br#"{"error":{"type":"proxy_overloaded","message":"request memory is temporarily full; retry shortly"}}"#);
+                ], br#"{"error":{"type":"proxy_overloaded","message":"request memory is temporarily full; retry shortly"}}"#)
+                });
             }
-            return write_error(
-                wire.stream,
-                400,
-                "invalid_request_error",
-                &format!("gobstopper proxy: {error}"),
-            );
+            return reject_unread(wire.stream, |client| {
+                write_error(
+                    client,
+                    400,
+                    "invalid_request_error",
+                    &format!("gobstopper proxy: {error}"),
+                )
+            });
         }
         drop(wire);
         if request.path() == READY_PATH {
@@ -2469,6 +2478,37 @@ fn write_buffered(
     )?;
     client.write_all(body)?;
     client.flush()?;
+    Ok(())
+}
+
+/// Send an early final response before discarding any unread request bytes.
+/// Closing immediately can reset TCP and hide the response from the client.
+/// Half-close first, then give a cooperative peer a bounded chance to finish;
+/// a stalled or flooding sender cannot retain a worker indefinitely.
+fn reject_unread(
+    client: &mut TcpStream,
+    respond: impl FnOnce(&mut TcpStream) -> Result<()>,
+) -> Result<()> {
+    respond(client)?;
+    client.shutdown(Shutdown::Write)?;
+    let deadline = Instant::now() + REJECT_DRAIN_TIMEOUT;
+    let mut remaining = REJECT_DRAIN_BYTES;
+    let mut buffer = [0u8; 4096];
+    while remaining > 0 {
+        let Some(left) = deadline.checked_duration_since(Instant::now()) else {
+            break;
+        };
+        if left.is_zero() || client.set_read_timeout(Some(left)).is_err() {
+            break;
+        }
+        let count = remaining.min(buffer.len());
+        match client.read(&mut buffer[..count]) {
+            Ok(0) => break,
+            Ok(read) => remaining -= read,
+            Err(error) if error.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => break,
+        }
+    }
     Ok(())
 }
 
