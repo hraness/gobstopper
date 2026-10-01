@@ -14,7 +14,7 @@ use super::{
     EvidenceEntry, PrefixStore, CARRY_LABEL, MAX_KEEP_TAIL_PERCENT, PART_SEPARATOR, SUMMARY_HEADER,
 };
 use serde_json::{Map, Value};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, TryLockError};
 
 /// One request's view: the original history, the list actually sent, and
 /// what happened to it. Sizes are billable characters per message plus two
@@ -99,6 +99,9 @@ pub struct RequestCtx {
     /// Compacted original results not fully retained (includes excerpts).
     /// These are content hashes, never result bodies or provider call IDs.
     pub evicted_evidence_digests: Vec<String>,
+    /// Speculative request work keeps writes private until its caller accepts
+    /// the result. A timed-out/discarded request cannot change future prefixes.
+    deferred_store: Option<Vec<(String, Entry)>>,
 }
 
 impl RequestCtx {
@@ -306,6 +309,17 @@ impl Engine {
         (store.len(), store.bytes())
     }
 
+    /// Cache sizes without waiting for request work holding the store.
+    /// `None` means the sizes are temporarily unavailable, not an empty cache.
+    pub fn try_store_stats(&self) -> Option<(usize, usize)> {
+        let store = match self.store.try_lock() {
+            Ok(store) => store,
+            Err(TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        Some((store.len(), store.bytes()))
+    }
+
     /// Prepare one request. `None` when the body has no non-empty history
     /// of message objects under the dialect's key: pass it through verbatim.
     pub fn prepare(&self, body: Map<String, Value>, dialect: Dialect) -> Option<RequestCtx> {
@@ -347,12 +361,80 @@ impl Engine {
     /// capacity nor a provider window is guessed when `None` is supplied.
     pub fn prepare_with_policy(
         &self,
+        body: Map<String, Value>,
+        dialect: Dialect,
+        threshold_tokens: u64,
+        ratio_permille: u32,
+        policy_identity: &str,
+        hard_input_capacity: Option<u64>,
+    ) -> Option<RequestCtx> {
+        self.prepare_policy(
+            body,
+            dialect,
+            threshold_tokens,
+            ratio_permille,
+            policy_identity,
+            hard_input_capacity,
+            false,
+        )
+    }
+
+    /// Prepare without publishing cache writes. Only the caller that accepts
+    /// this result may call `publish_prepared`; dropping it cannot publish a
+    /// prefix. Reactive steps on the returned context remain speculative.
+    pub fn prepare_deferred(
+        &self,
+        body: Map<String, Value>,
+        dialect: Dialect,
+        threshold_tokens: u64,
+        ratio_permille: u32,
+        policy_identity: &str,
+        hard_input_capacity: Option<u64>,
+    ) -> Option<RequestCtx> {
+        self.prepare_policy(
+            body,
+            dialect,
+            threshold_tokens,
+            ratio_permille,
+            policy_identity,
+            hard_input_capacity,
+            true,
+        )
+    }
+
+    /// Cache publication is optional and never waits for a busy store. Keep
+    /// deferred mode for later reactive steps; discard skipped cache writes.
+    pub fn publish_prepared(&self, ctx: &mut RequestCtx) {
+        let Some(pending) = &mut ctx.deferred_store else {
+            return;
+        };
+        let entries = std::mem::take(pending);
+        let Ok(mut store) = self.store.try_lock() else {
+            return;
+        };
+        for (key, entry) in entries {
+            store.put(key, entry);
+        }
+    }
+
+    fn remember(&self, ctx: &mut RequestCtx, key: String, entry: Entry) {
+        if let Some(pending) = &mut ctx.deferred_store {
+            pending.push((key, entry));
+        } else {
+            self.store().put(key, entry);
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_policy(
+        &self,
         mut body: Map<String, Value>,
         dialect: Dialect,
         threshold_tokens: u64,
         ratio_permille: u32,
         policy_identity: &str,
         hard_input_capacity: Option<u64>,
+        deferred: bool,
     ) -> Option<RequestCtx> {
         let ratio_permille = ratio_permille.clamp(MIN_RATIO_PERMILLE, MAX_RATIO_PERMILLE);
         let calibrated = calibrated_threshold(threshold_tokens, ratio_permille);
@@ -417,6 +499,7 @@ impl Engine {
             retained_evidence_digests: Vec::new(),
             excerpted_evidence_digests: Vec::new(),
             evicted_evidence_digests: Vec::new(),
+            deferred_store: deferred.then(Vec::new),
         };
         ctx.est_tokens_in = ctx.tokens_of(&ctx.msg_chars);
         // The head (everything before the first model turn) is always sent
@@ -652,18 +735,16 @@ impl Engine {
         ctx.compacted = true;
         ctx.refresh_estimate();
         ctx.refresh_evidence();
-        self.store().put(
-            key,
-            Entry {
-                head_len: ctx.base_head,
-                summary,
-                cut: ctx.base_cut,
-                base_threshold_tokens: ctx.base_threshold_tokens,
-                carry: ctx.carry.clone(),
-                evidence: ctx.evidence.clone(),
-                policy_identity: ctx.policy_identity.clone(),
-            },
-        );
+        let entry = Entry {
+            head_len: ctx.base_head,
+            summary,
+            cut: ctx.base_cut,
+            base_threshold_tokens: ctx.base_threshold_tokens,
+            carry: ctx.carry.clone(),
+            evidence: ctx.evidence.clone(),
+            policy_identity: ctx.policy_identity.clone(),
+        };
+        self.remember(ctx, key, entry);
         true
     }
 
@@ -755,18 +836,16 @@ impl Engine {
         ctx.refresh_estimate();
         ctx.refresh_evidence();
         let key = ctx.chain[ctx.base_cut - 1].clone();
-        self.store().put(
-            key,
-            Entry {
-                head_len: ctx.base_head,
-                summary,
-                cut: ctx.base_cut,
-                base_threshold_tokens: ctx.base_threshold_tokens,
-                carry: ctx.carry.clone(),
-                evidence: ctx.evidence.clone(),
-                policy_identity: ctx.policy_identity.clone(),
-            },
-        );
+        let entry = Entry {
+            head_len: ctx.base_head,
+            summary,
+            cut: ctx.base_cut,
+            base_threshold_tokens: ctx.base_threshold_tokens,
+            carry: ctx.carry.clone(),
+            evidence: ctx.evidence.clone(),
+            policy_identity: ctx.policy_identity.clone(),
+        };
+        self.remember(ctx, key, entry);
         true
     }
 }
@@ -815,6 +894,118 @@ mod tests {
     use super::super::replay;
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn cache_status_does_not_wait_for_a_stalled_request() {
+        use std::sync::{mpsc, Arc};
+        use std::time::Duration;
+
+        let engine = Arc::new(Engine::new(CliffConfig::default()));
+        let worker_engine = Arc::clone(&engine);
+        let (held, ready) = mpsc::channel();
+        let (release, wait) = mpsc::channel();
+        let owner = std::thread::spawn(move || {
+            let _store = worker_engine.store();
+            held.send(()).unwrap();
+            let _ = wait.recv_timeout(Duration::from_secs(30));
+        });
+        ready.recv_timeout(Duration::from_secs(5)).unwrap();
+        let busy = engine.try_store_stats();
+        let _ = release.send(());
+        owner.join().unwrap();
+        assert_eq!(busy, None);
+        assert_eq!(engine.try_store_stats(), Some((0, 0)));
+    }
+
+    #[test]
+    fn deferred_preparation_never_publishes_discarded_or_reactive_results() {
+        let engine = Engine::new(CliffConfig {
+            threshold_tokens: 2000,
+            keep_recent: 1,
+            ..CliffConfig::default()
+        });
+        let body = a_body(a_session(15, 3000));
+        let discarded = engine
+            .prepare_deferred(
+                body.clone(),
+                Dialect::Anthropic,
+                2000,
+                1000,
+                "scope-v1",
+                Some(6000),
+            )
+            .unwrap();
+        assert!(discarded.compacted);
+        assert_eq!(engine.store_stats().0, 0);
+        drop(discarded);
+        let mut accepted = engine
+            .prepare_deferred(
+                body.clone(),
+                Dialect::Anthropic,
+                2000,
+                1000,
+                "scope-v1",
+                Some(6000),
+            )
+            .unwrap();
+        assert!(!accepted.matched);
+        engine.publish_prepared(&mut accepted);
+        assert!(engine.store_stats().0 > 0);
+        let cached = engine
+            .prepare_deferred(
+                body.clone(),
+                Dialect::Anthropic,
+                2000,
+                1000,
+                "scope-v1",
+                Some(6000),
+            )
+            .unwrap();
+        assert!(cached.matched);
+        assert_eq!(cached.outgoing_body(), accepted.outgoing_body());
+        let before = engine
+            .store()
+            .get(&accepted.chain[accepted.base_cut - 1])
+            .unwrap();
+        engine.reactive(&mut accepted);
+        assert_eq!(
+            engine
+                .store()
+                .get(&cached.chain[cached.base_cut - 1])
+                .unwrap(),
+            before
+        );
+        drop(accepted);
+        let changed = engine
+            .prepare_deferred(body, Dialect::Anthropic, 2000, 1000, "scope-v2", Some(6000))
+            .unwrap();
+        assert!(!changed.matched);
+    }
+
+    #[test]
+    fn deferred_publication_is_nonblocking_when_cache_is_busy() {
+        let engine = Engine::new(CliffConfig {
+            threshold_tokens: 2000,
+            keep_recent: 1,
+            ..CliffConfig::default()
+        });
+        let mut prepared = engine
+            .prepare_deferred(
+                a_body(a_session(15, 3000)),
+                Dialect::Anthropic,
+                2000,
+                1000,
+                "",
+                None,
+            )
+            .unwrap();
+        let store = engine.store();
+        engine.publish_prepared(&mut prepared);
+        assert_eq!(store.len(), 0);
+        drop(store);
+        engine.publish_prepared(&mut prepared);
+        assert_eq!(engine.store_stats().0, 0);
+    }
 
     #[test]
     fn evidence_survives_multiple_compactions_and_fresh_reconstruction() {
