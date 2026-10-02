@@ -472,7 +472,22 @@ pub(super) fn upgrade_target(executable: &Path, version: Option<&str>) -> Result
     })
 }
 
-pub(super) fn prepare_upgrade(selected: &UpgradeTarget, explicit: bool) -> Result<PathBuf> {
+pub(super) fn planned_upgrade_stage(executable: &Path) -> Result<PathBuf> {
+    let bin = Directory::open(
+        executable
+            .parent()
+            .context("Install target has no parent")?,
+        false,
+        false,
+    )?;
+    Ok(Stage::planned(&bin))
+}
+
+pub(super) fn prepare_upgrade(
+    selected: &UpgradeTarget,
+    explicit: bool,
+    stage_path: &Path,
+) -> Result<PathBuf> {
     let profile = product();
     let bin = Directory::open(
         selected
@@ -482,7 +497,7 @@ pub(super) fn prepare_upgrade(selected: &UpgradeTarget, explicit: bool) -> Resul
         false,
         false,
     )?;
-    let mut stage = Stage::new(&bin)?;
+    let mut stage = Stage::create(&bin, stage_path)?;
     let published = Published::fetch(&profile, &selected.target)?;
     published.download(&profile, &stage)?;
     let binary_sha = unpack(&stage)?;
@@ -625,9 +640,8 @@ pub(super) fn discard_upgrade(executable: &Path, stage_path: &Path) -> Result<()
         false,
         false,
     )?;
-    let mut stage = Stage::existing(&bin, stage_path)?;
-    stage.preserve = false;
-    Ok(())
+    let stage = Stage::existing(&bin, stage_path)?;
+    stage.remove_checked()
 }
 
 struct Previous {
@@ -972,6 +986,25 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
         }
+    }
+
+    #[test]
+    fn planned_upgrade_stage_precedes_creation_and_can_be_removed() {
+        let fixture = Fixture::new();
+        let bin = fixture.bin();
+        let executable = bin.path.join("gobstopper");
+        let path = planned_upgrade_stage(&executable).unwrap();
+        assert!(!path.exists());
+        let mut stage = Stage::create(&bin, &path).unwrap();
+        stage
+            .directory
+            .write_new("archive", b"partial", false)
+            .unwrap();
+        stage.preserve = true;
+        assert!(path.exists());
+        drop(stage);
+        discard_upgrade(&executable, &path).unwrap();
+        assert!(!path.exists());
     }
 
     fn metadata() -> serde_json::Value {

@@ -323,6 +323,47 @@ pub(super) struct Stage<'a> {
 }
 
 impl<'a> Stage<'a> {
+    pub fn planned(parent: &Directory) -> PathBuf {
+        parent.path.join(format!(
+            ".gobstopper-update-{}-{}",
+            std::process::id(),
+            SERIAL.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    pub fn create(parent: &'a Directory, path: &Path) -> Result<Self> {
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .context("Invalid upgrade stage name")?;
+        ensure!(
+            name.starts_with(".gobstopper-update-") && path.parent() == Some(parent.path.as_path()),
+            "Upgrade stage is outside the installation directory"
+        );
+        ensure!(parent.mkdir(name)?, "Upgrade stage already exists");
+        Ok(Self {
+            directory: Directory::open(path, false, true)?,
+            parent,
+            name: name.to_owned(),
+            preserve: false,
+        })
+    }
+
+    pub fn remove_checked(&self) -> Result<()> {
+        self.directory.validate()?;
+        for filename in [
+            "archive",
+            "checksum",
+            "gobstopper",
+            "previous",
+            "old-receipt",
+            "new-receipt",
+        ] {
+            self.directory.remove(filename, false)?;
+        }
+        self.parent.remove(&self.name, true)
+    }
+
     pub fn existing(parent: &'a Directory, path: &Path) -> Result<Self> {
         let name = path
             .file_name()

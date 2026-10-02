@@ -9,6 +9,7 @@ The managed proxy can upgrade without tying the stop controller to an agent sess
 - `gobstopper proxy upgrade` stages a verified release, then drains, replaces, and restarts the managed service from a detached one-shot controller. Doctor reports its journal and rollback outcome.
 - Stop-capable service commands refuse a caller whose environment depends on the proxy, with an explicit override for a separate terminal.
 - Upgrade reservations refuse a concurrent upgrade, repair reconciles an exited controller, and rollback can stop the unresponsive process started by the controller when its identity is proven.
+- Upgrade recovery tracks process birth times, records stage paths before creation, and bounds the force-stop sequence after a failed health check.
 
 ## v0.8.5 - 2026-10-01
 

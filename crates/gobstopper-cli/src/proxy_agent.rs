@@ -501,6 +501,23 @@ fn run_bounded(program: &Path, args: &[String]) -> Result<Vec<u8>> {
     run_bounded_input(program, args, None)
 }
 fn run_bounded_input(program: &Path, args: &[String], input: Option<&[u8]>) -> Result<Vec<u8>> {
+    run_bounded_until(
+        program,
+        args,
+        input,
+        Instant::now() + Duration::from_secs(15),
+    )
+}
+fn run_bounded_until(
+    program: &Path,
+    args: &[String],
+    input: Option<&[u8]>,
+    deadline: Instant,
+) -> Result<Vec<u8>> {
+    anyhow::ensure!(
+        Instant::now() < deadline,
+        "service manager deadline expired"
+    );
     if input.is_some_and(|bytes| bytes.len() as u64 > MAX_FILE) {
         bail!("service manager input exceeded the limit");
     }
@@ -527,7 +544,6 @@ fn run_bounded_input(program: &Path, args: &[String], input: Option<&[u8]>) -> R
         let bytes = bytes.to_vec();
         std::thread::spawn(move || stdin.write_all(&bytes))
     });
-    let deadline = Instant::now() + Duration::from_secs(15);
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
@@ -811,8 +827,10 @@ fn activate_expected(
         }
         Platform::Macos => {}
     }
-    run_manager(m.platform, &manager_args(m, p, "start"))?;
-    on_started();
+    dispatch_start(
+        || run_manager(m.platform, &manager_args(m, p, "start")),
+        on_started,
+    )?;
     if let Some(version) = version {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -830,6 +848,12 @@ fn activate_expected(
         }
     }
     wait_ready(m)
+}
+
+fn dispatch_start(start: impl FnOnce() -> Result<Vec<u8>>, observe: impl FnOnce()) -> Result<()> {
+    let result = start();
+    observe();
+    result.map(|_| ())
 }
 const DRAIN_WAIT_SECS: u64 = 600;
 
@@ -965,7 +989,9 @@ fn lease_control(m: &Manifest, op: &DrainOperation, action: &str) -> Result<Valu
     Ok(reply)
 }
 fn stopped_port(port: u16) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    stopped_port_until(port, Instant::now() + Duration::from_secs(5))
+}
+fn stopped_port_until(port: u16, deadline: Instant) -> Result<()> {
     loop {
         // A failed status request alone is never evidence of a stopped process.
         if ensure_free(port).is_ok() {
@@ -2447,9 +2473,17 @@ pub(crate) fn upgrade_cleanup(job: &UpgradeJob) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn upgrade_unlink_on_start(job: &UpgradeJob) -> Result<()> {
-    if Platform::current()? == Platform::Macos && job.definition.exists() {
-        fs::remove_file(&job.definition)?;
+pub(crate) fn upgrade_unlink_on_entry() -> Result<()> {
+    if Platform::current()? == Platform::Macos {
+        let definition = home()?.join("Library/LaunchAgents/sh.gobstopper.upgrade.plist");
+        unlink_upgrade_definition(&definition)?;
+    }
+    Ok(())
+}
+
+fn unlink_upgrade_definition(definition: &Path) -> Result<()> {
+    if definition.exists() {
+        fs::remove_file(definition)?;
     }
     Ok(())
 }
@@ -2486,18 +2520,18 @@ pub(crate) struct UpgradeControl {
     manifest: Manifest,
     paths: Paths,
     _lock: ServiceLock,
-    started: Option<StartedProcess>,
+    started: Option<ProcessIdentity>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-struct StartedProcess {
-    pid: u32,
-    started_at_unix_ms: u128,
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct ProcessIdentity {
+    pub(crate) pid: u32,
+    pub(crate) birth: u64,
 }
 
 fn may_stop_unresponsive_started_process(
-    started: Option<StartedProcess>,
-    observed: Option<StartedProcess>,
+    started: Option<ProcessIdentity>,
+    observed: Option<ProcessIdentity>,
     answered_status: bool,
 ) -> bool {
     started.is_some() && started == observed && !answered_status
@@ -2518,7 +2552,11 @@ fn manager_pid(platform: Platform) -> Result<Option<u32>> {
         )?
     };
     let text = String::from_utf8(output)?;
-    let pid = text.lines().find_map(|line| {
+    Ok(parse_manager_pid(platform, &text))
+}
+
+fn parse_manager_pid(platform: Platform, text: &str) -> Option<u32> {
+    text.lines().find_map(|line| {
         line.trim()
             .strip_prefix(if platform == Platform::Macos {
                 "pid = "
@@ -2527,60 +2565,46 @@ fn manager_pid(platform: Platform) -> Result<Option<u32>> {
             })
             .and_then(|value| value.parse::<u32>().ok())
             .filter(|pid| *pid > 0)
-    });
-    Ok(pid)
+    })
 }
 
-fn elapsed_seconds(text: &str) -> Option<u64> {
-    let text = text.trim();
-    let (days, time) = if let Some((days, time)) = text.split_once('-') {
-        (days.parse::<u64>().ok()?, time)
-    } else {
-        (0, text)
-    };
-    let parts = time
-        .split(':')
-        .map(str::parse::<u64>)
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .ok()?;
-    let seconds = match parts.as_slice() {
-        [minutes, seconds] => minutes.checked_mul(60)?.checked_add(*seconds)?,
-        [hours, minutes, seconds] => hours
-            .checked_mul(3600)?
-            .checked_add(minutes.checked_mul(60)?)?
-            .checked_add(*seconds)?,
-        _ => return None,
-    };
-    days.checked_mul(86400)?.checked_add(seconds)
+#[cfg(target_os = "linux")]
+fn process_birth(pid: u32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let fields = stat.rsplit_once(") ")?.1;
+    fields.split_whitespace().nth(19)?.parse().ok()
 }
 
-fn started_after_stage(now_unix_ms: u128, elapsed: u64, starting_at_unix_ms: u128) -> bool {
-    now_unix_ms.saturating_sub(u128::from(elapsed) * 1000) + 1000 >= starting_at_unix_ms
-}
-
-fn started_process(
-    platform: Platform,
-    starting_at_unix_ms: u128,
-) -> Result<Option<StartedProcess>> {
-    let Some(pid) = manager_pid(platform)? else {
-        return Ok(None);
-    };
+#[cfg(target_os = "macos")]
+fn process_birth(pid: u32) -> Option<u64> {
+    use std::ffi::CString;
     let output = run_bounded(
         Path::new("/bin/ps"),
-        &["-o".into(), "etime=".into(), "-p".into(), pid.to_string()],
-    )?;
-    let elapsed = elapsed_seconds(&String::from_utf8(output)?)
-        .context("service process start time unavailable")?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)?
-        .as_millis();
-    if !started_after_stage(now, elapsed, starting_at_unix_ms) {
-        return Ok(None);
+        &["-p".into(), pid.to_string(), "-o".into(), "lstart=".into()],
+    )
+    .ok()?;
+    let stamp = CString::new(String::from_utf8(output).ok()?.trim()).ok()?;
+    let format = CString::new("%a %b %e %T %Y").ok()?;
+    let mut parsed: libc::tm = unsafe { std::mem::zeroed() };
+    parsed.tm_isdst = -1;
+    let end = unsafe { libc::strptime(stamp.as_ptr(), format.as_ptr(), &mut parsed) };
+    if end.is_null() || unsafe { *end } != 0 {
+        return None;
     }
-    Ok(Some(StartedProcess {
-        pid,
-        started_at_unix_ms: starting_at_unix_ms,
-    }))
+    let birth = unsafe { libc::mktime(&mut parsed) };
+    u64::try_from(birth).ok()
+}
+
+pub(crate) fn process_identity(pid: u32) -> Option<ProcessIdentity> {
+    process_birth(pid).map(|birth| ProcessIdentity { pid, birth })
+}
+
+pub(crate) fn same_process(identity: ProcessIdentity) -> bool {
+    process_identity(identity.pid) == Some(identity)
+}
+
+fn manager_identity(platform: Platform) -> Result<Option<ProcessIdentity>> {
+    Ok(manager_pid(platform)?.and_then(process_identity))
 }
 
 impl UpgradeControl {
@@ -2616,39 +2640,66 @@ impl UpgradeControl {
         }
     }
 
-    pub(crate) fn start(&mut self, version: &str, starting_at_unix_ms: u128) -> Result<()> {
+    pub(crate) fn start(&mut self, version: &str) -> Result<()> {
         let platform = self.manifest.platform;
         let mut observed = None;
         let result = activate_expected(&mut self.manifest, &self.paths, Some(version), || {
-            observed = started_process(platform, starting_at_unix_ms)
-                .ok()
-                .flatten();
+            observed = manager_identity(platform).ok().flatten();
         });
         self.started = observed;
         result
     }
 
-    pub(crate) fn stop_started_unresponsive(&self) -> Result<()> {
+    pub(crate) fn started_identity(&self) -> Option<ProcessIdentity> {
+        self.started
+    }
+
+    pub(crate) fn stop_started_unresponsive(
+        &self,
+        version: &str,
+        deadline: Instant,
+    ) -> Result<bool> {
         let started = self
             .started
             .context("new service PID was not established; stop outcome is unknown")?;
+        anyhow::ensure!(Instant::now() < deadline, "rollback stop deadline expired");
         anyhow::ensure!(
             load_drain(&self.manifest, &self.paths)?.is_none(),
             "drain outcome is unresolved"
         );
         verify_job(&self.manifest, &self.paths)?;
+        let healthy = || {
+            status(self.manifest.port).is_ok_and(|live| {
+                matches_identity(&self.manifest, &live)
+                    && live["draining"] == false
+                    && live["version"] == version
+            })
+        };
+        if healthy() {
+            return Ok(true);
+        }
         let answered_status = status(self.manifest.port).is_ok();
-        let observed = started_process(self.manifest.platform, started.started_at_unix_ms)?;
+        let observed = manager_identity(self.manifest.platform)?;
         anyhow::ensure!(
             may_stop_unresponsive_started_process(self.started, observed, answered_status),
             "new service answered status or its PID or start time changed; force-stop refused"
         );
-        run_manager(
-            self.manifest.platform,
+        anyhow::ensure!(
+            same_process(started),
+            "service process identity changed; force-stop refused"
+        );
+        if healthy() {
+            return Ok(true);
+        }
+        anyhow::ensure!(Instant::now() < deadline, "rollback stop deadline expired");
+        run_bounded_until(
+            &manager(self.manifest.platform),
             &manager_args(&self.manifest, &self.paths, "stop"),
+            None,
+            deadline,
         )?;
-        stopped_port(self.manifest.port)?;
-        Ok(())
+        stopped_port_until(self.manifest.port, deadline)?;
+        Ok(false)
     }
 
     pub(crate) fn restart_previous(&mut self) -> Result<()> {
@@ -2727,20 +2778,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn upgrade_process_age_requires_a_new_pid() {
-        assert_eq!(elapsed_seconds("00:04"), Some(4));
-        assert_eq!(elapsed_seconds("01:02:03"), Some(3723));
-        assert_eq!(elapsed_seconds("2-01:02:03"), Some(176523));
-        assert_eq!(elapsed_seconds("not-a-process"), None);
-        assert!(started_after_stage(10_000, 1, 9_000));
-        assert!(!started_after_stage(10_000, 5, 9_000));
+    fn process_identity_tracks_birth_and_rejects_reuse() {
+        let mut child = Command::new("/bin/sleep").arg("5").spawn().unwrap();
+        let observed = process_identity(child.id()).unwrap();
+        assert!(same_process(observed));
+        assert!(!same_process(ProcessIdentity {
+            pid: observed.pid,
+            birth: observed.birth + 1
+        }));
+        assert!(!same_process(ProcessIdentity {
+            pid: u32::MAX,
+            birth: observed.birth
+        }));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(!same_process(observed));
+    }
+
+    #[test]
+    fn timed_out_manager_start_still_observes_service_pid() {
+        let mut child = Command::new("/bin/sleep").arg("5").spawn().unwrap();
+        let mut observed = None;
+        let response = format!("pid = {}\n", child.id());
+        let result = dispatch_start(
+            || bail!("manager timed out"),
+            || observed = parse_manager_pid(Platform::Macos, &response).and_then(process_identity),
+        );
+        assert!(result.is_err());
+        assert!(observed.is_some_and(same_process));
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn expired_rollback_deadline_refuses_manager_command() {
+        let error = run_bounded_until(
+            Path::new("/bin/false"),
+            &[],
+            None,
+            Instant::now() - Duration::from_millis(1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("deadline expired"));
     }
 
     #[test]
     fn unresponsive_upgrade_process_must_keep_its_started_identity() {
-        let started = StartedProcess {
+        let started = ProcessIdentity {
             pid: 123,
-            started_at_unix_ms: 9_000,
+            birth: 9_000,
         };
         assert!(may_stop_unresponsive_started_process(
             Some(started),
@@ -2778,6 +2864,18 @@ mod tests {
         assert!(!job.text.contains("KeepAlive"));
         assert!(job.text.contains("<string>__upgrade-controller</string>"));
         assert!(job.text.contains("<string>/tmp/bin/stage</string>"));
+    }
+
+    #[test]
+    fn upgrade_definition_unlink_is_idempotent() {
+        let root = std::env::temp_dir().join(format!("gobstopper-unlink-{}", unique_id()));
+        fs::create_dir(&root).unwrap();
+        let definition = root.join("sh.gobstopper.upgrade.plist");
+        fs::write(&definition, b"one-shot").unwrap();
+        unlink_upgrade_definition(&definition).unwrap();
+        unlink_upgrade_definition(&definition).unwrap();
+        assert!(!definition.exists());
+        fs::remove_dir(root).unwrap();
     }
     fn manifest(platform: Platform) -> Manifest {
         Manifest {

@@ -77,11 +77,15 @@ mod platform {
         to_version: String,
         reason: Option<String>,
         #[serde(default)]
-        owner_pid: Option<u32>,
+        owner_identity: Option<crate::proxy_agent::ProcessIdentity>,
         #[serde(default)]
-        controller_pid: Option<u32>,
+        controller_identity: Option<crate::proxy_agent::ProcessIdentity>,
+        #[serde(default)]
+        started_identity: Option<crate::proxy_agent::ProcessIdentity>,
         #[serde(default)]
         starting_at_unix_ms: Option<u128>,
+        #[serde(default)]
+        rollback_deadline_unix_ms: Option<u128>,
     }
 
     fn read_journal() -> Result<Option<Journal>> {
@@ -101,14 +105,18 @@ mod platform {
 
     fn advance(journal: &mut Journal, stage: &str) -> Result<()> {
         if stage == "starting" {
-            journal.starting_at_unix_ms = Some(
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)?
-                    .as_millis(),
-            );
+            let now = now_unix_ms()?;
+            journal.starting_at_unix_ms = Some(now);
+            journal.rollback_deadline_unix_ms = Some(now + 25_000);
         }
         journal.stage = stage.to_owned();
         save(journal)
+    }
+
+    fn now_unix_ms() -> Result<u128> {
+        Ok(std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis())
     }
 
     fn repair_outcome(
@@ -128,9 +136,17 @@ mod platform {
         }
     }
 
-    fn pid_alive(pid: u32) -> bool {
-        (unsafe { libc::kill(pid as libc::pid_t, 0) == 0 })
-            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+    fn cleanup_abandoned_stage(journal: &mut Journal) {
+        if matches!(journal.stage.as_str(), "staging" | "started") && journal.stage_dir.exists() {
+            match crate::self_update::discard_upgrade(&journal.executable, &journal.stage_dir) {
+                Ok(()) => journal.reason = Some("controller_exited; staged files removed".into()),
+                Err(error) => {
+                    journal.reason = Some(format!(
+                        "controller_exited; staged cleanup failed: {error:#}"
+                    ))
+                }
+            }
+        }
     }
 
     pub(crate) fn reconcile() -> Result<()> {
@@ -141,22 +157,24 @@ mod platform {
             return Ok(());
         }
         let doctor = crate::proxy_agent::inspect()?;
-        let owner = journal.controller_pid.or(journal.owner_pid);
-        match repair_outcome(&journal, &doctor, owner.is_some_and(pid_alive)) {
+        let owner = journal.controller_identity.or(journal.owner_identity);
+        match repair_outcome(
+            &journal,
+            &doctor,
+            owner.is_some_and(crate::proxy_agent::same_process),
+        ) {
             Some("healthy") => {
                 advance(&mut journal, "healthy")?;
                 println!("Upgrade recovery found the target service healthy.");
             }
             Some("failed") => {
                 journal.reason = Some("controller_exited".into());
+                cleanup_abandoned_stage(&mut journal);
                 advance(&mut journal, "failed")?;
                 eprintln!(
-                    "Upgrade controller exited; staged files and any backup remain at {}",
-                    if journal.stage_dir.as_os_str().is_empty() {
-                        "(stage was not created)".to_owned()
-                    } else {
-                        journal.stage_dir.display().to_string()
-                    }
+                    "Upgrade controller exited: {}; stage path: {}",
+                    journal.reason.as_deref().unwrap_or("unknown outcome"),
+                    journal.stage_dir.display()
                 );
             }
             _ => bail!(PendingUpgrade),
@@ -190,9 +208,14 @@ mod platform {
                 from_version: live_version.clone(),
                 to_version: String::new(),
                 reason: None,
-                owner_pid: Some(std::process::id()),
-                controller_pid: None,
+                owner_identity: Some(
+                    crate::proxy_agent::process_identity(std::process::id())
+                        .context("Cannot identify upgrade owner")?,
+                ),
+                controller_identity: None,
+                started_identity: None,
                 starting_at_unix_ms: None,
+                rollback_deadline_unix_ms: None,
             })?;
             Ok((executable, live_version))
         })?;
@@ -201,6 +224,7 @@ mod platform {
             if let Some(mut journal) = read_journal()? {
                 if journal.stage == "staging" {
                     journal.reason = Some(format!("{error:#}"));
+                    cleanup_abandoned_stage(&mut journal);
                     advance(&mut journal, "failed")?;
                 }
             }
@@ -245,21 +269,15 @@ mod platform {
             );
             return Ok(());
         }
-        let stage = crate::self_update::prepare_upgrade(&selected, version.is_some())?;
-        let job = crate::proxy_agent::upgrade_job(&executable, &stage)?;
-        let mut journal = Journal {
-            schema: 1,
-            stage: "started".into(),
-            stage_dir: stage.clone(),
-            executable: executable.clone(),
-            from_version: selected.current,
-            to_version: selected.target,
-            reason: None,
-            owner_pid: Some(std::process::id()),
-            controller_pid: None,
-            starting_at_unix_ms: None,
-        };
+        let mut journal = read_journal()?.context("Missing upgrade reservation")?;
+        let stage = crate::self_update::planned_upgrade_stage(&executable)?;
+        journal.stage_dir = stage.clone();
+        journal.from_version = selected.current.clone();
+        journal.to_version = selected.target.clone();
         save(&journal)?;
+        crate::self_update::prepare_upgrade(&selected, version.is_some(), &stage)?;
+        let job = crate::proxy_agent::upgrade_job(&executable, &stage)?;
+        advance(&mut journal, "started")?;
         if let Err(error) = crate::proxy_agent::upgrade_launch(&job, &executable, &stage) {
             journal.reason = Some(format!("{error:#}"));
             advance(&mut journal, "failed")?;
@@ -292,18 +310,23 @@ mod platform {
     }
 
     pub(crate) fn controller(args: &ControllerArgs) -> Result<()> {
+        let unlink_error = crate::proxy_agent::upgrade_unlink_on_entry().err();
         let config = args
             .state_dir
             .parent()
             .and_then(Path::parent)
             .context("Invalid service state directory")?;
         std::env::set_var("XDG_CONFIG_HOME", config);
+        if let Some(error) = unlink_error {
+            let mut journal = read_journal()?.context("No staged upgrade journal")?;
+            journal.reason = Some(format!("upgrade job unlink failed: {error:#}"));
+            save(&journal)?;
+        }
         ensure!(
             crate::proxy_agent::upgrade_journal_path()?.parent() == Some(args.state_dir.as_path()),
             "Controller service state differs from its job definition"
         );
         let job = crate::proxy_agent::upgrade_job(&std::env::current_exe()?, &args.stage)?;
-        crate::proxy_agent::upgrade_unlink_on_start(&job)?;
         let result = controller_inner(args);
         let cleanup = crate::proxy_agent::upgrade_cleanup(&job);
         result?;
@@ -316,11 +339,19 @@ mod platform {
             journal.schema == 1 && journal.stage == "started" && journal.stage_dir == args.stage,
             "Upgrade journal does not match this controller"
         );
-        journal.controller_pid = Some(std::process::id());
+        let controller_identity = crate::proxy_agent::process_identity(std::process::id())
+            .context("Cannot identify upgrade controller")?;
+        journal.controller_identity = Some(controller_identity);
         save(&journal)?;
+        ensure!(
+            crate::proxy_agent::same_process(controller_identity),
+            "Upgrade controller identity changed before stop"
+        );
         let result = execute(&mut journal);
         if let Err(error) = &result {
-            if !matches!(journal.stage.as_str(), "failed" | "rolled_back") {
+            if !matches!(journal.stage.as_str(), "failed" | "rolled_back")
+                && journal.reason.as_deref() != Some("start_unacknowledged")
+            {
                 journal.reason = Some(format!("{error:#}"));
                 let _ = advance(&mut journal, "failed");
             }
@@ -338,24 +369,35 @@ mod platform {
         }
         if let Err(error) = advance(journal, "stopped").and_then(|()| advance(journal, "replacing"))
         {
-            return rollback(journal, &mut control, error, false);
+            return rollback(journal, &mut control, error, false, false);
         }
         if let Err(error) =
             crate::self_update::replace_upgrade(&journal.executable, &journal.stage_dir)
         {
-            return rollback(journal, &mut control, error, false);
+            return rollback(journal, &mut control, error, false, false);
         }
         if let Err(error) = advance(journal, "replaced").and_then(|()| advance(journal, "starting"))
         {
-            return rollback(journal, &mut control, error, true);
+            return rollback(journal, &mut control, error, true, false);
         }
-        if let Err(error) = control.start(
-            journal.to_version.trim_start_matches('v'),
-            journal
-                .starting_at_unix_ms
-                .context("Missing upgrade start time")?,
-        ) {
-            return rollback(journal, &mut control, error, true);
+        let started = control.start(journal.to_version.trim_start_matches('v'));
+        journal.started_identity = control.started_identity();
+        if let Err(error) = save(journal) {
+            return rollback(
+                journal,
+                &mut control,
+                error,
+                true,
+                journal.started_identity.is_some(),
+            );
+        }
+        if let Err(error) = started {
+            if control.started_identity().is_none() {
+                journal.reason = Some("start_unacknowledged".into());
+                save(journal)?;
+                return Err(error);
+            }
+            return rollback(journal, &mut control, error, true, true);
         }
         advance(journal, "healthy")?;
         if let Err(error) =
@@ -371,11 +413,29 @@ mod platform {
         control: &mut crate::proxy_agent::UpgradeControl,
         error: anyhow::Error,
         replaced: bool,
+        attempted_start: bool,
     ) -> Result<()> {
         let restored: Result<()> = (|| {
             if replaced {
-                if control.stop().is_err() {
-                    control.stop_started_unresponsive()?;
+                if attempted_start {
+                    let remaining = journal
+                        .rollback_deadline_unix_ms
+                        .context("Missing rollback deadline")?
+                        .saturating_sub(now_unix_ms()?);
+                    ensure!(remaining > 0, "rollback stop deadline expired");
+                    let deadline =
+                        Instant::now() + Duration::from_millis(u64::try_from(remaining)?);
+                    if control.stop_started_unresponsive(
+                        journal.to_version.trim_start_matches('v'),
+                        deadline,
+                    )? {
+                        advance(journal, "healthy")?;
+                        crate::self_update::discard_upgrade(
+                            &journal.executable,
+                            &journal.stage_dir,
+                        )?;
+                        return Ok(());
+                    }
                     journal.reason = Some("new_version_unresponsive".into());
                 }
                 crate::self_update::restore_upgrade(&journal.executable, &journal.stage_dir)?;
@@ -388,6 +448,9 @@ mod platform {
             control.restart_previous()?;
             Ok(())
         })();
+        if journal.stage == "healthy" {
+            return Ok(());
+        }
         if journal.reason.is_none() {
             journal.reason = Some(format!("{error:#}"));
         }
@@ -415,6 +478,48 @@ mod platform {
         use super::*;
 
         #[test]
+        fn dead_reserved_owner_cleans_journaled_stage() {
+            use std::os::unix::fs::PermissionsExt;
+            let root = std::env::temp_dir().canonicalize().unwrap().join(format!(
+                "gobstopper-abandoned-stage-{}-{}",
+                std::process::id(),
+                now_unix_ms().unwrap()
+            ));
+            let bin = root.join("bin");
+            std::fs::create_dir_all(&bin).unwrap();
+            let stage = bin.join(".gobstopper-update-test");
+            std::fs::create_dir(&stage).unwrap();
+            std::fs::set_permissions(&stage, std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::write(stage.join("archive"), b"partial").unwrap();
+            let mut journal = Journal {
+                schema: 1,
+                stage: "staging".into(),
+                stage_dir: stage.clone(),
+                executable: bin.join("gobstopper"),
+                from_version: "v1".into(),
+                to_version: "v2".into(),
+                reason: None,
+                owner_identity: None,
+                controller_identity: None,
+                started_identity: None,
+                starting_at_unix_ms: None,
+                rollback_deadline_unix_ms: None,
+            };
+            assert_eq!(
+                repair_outcome(&journal, &serde_json::json!({"healthy": false}), false),
+                Some("failed")
+            );
+            cleanup_abandoned_stage(&mut journal);
+            assert!(!stage.exists());
+            assert!(journal
+                .reason
+                .as_deref()
+                .unwrap()
+                .contains("staged files removed"));
+            std::fs::remove_dir_all(root).unwrap();
+        }
+
+        #[test]
         fn journal_stages_and_doctor_fields_serialize() {
             let mut journal = Journal {
                 schema: 1,
@@ -424,9 +529,11 @@ mod platform {
                 from_version: "v1.0.0".into(),
                 to_version: "v1.0.1".into(),
                 reason: None,
-                owner_pid: None,
-                controller_pid: None,
+                owner_identity: None,
+                controller_identity: None,
+                started_identity: None,
                 starting_at_unix_ms: None,
+                rollback_deadline_unix_ms: None,
             };
             for stage in [
                 "draining",
@@ -458,9 +565,11 @@ mod platform {
                 from_version: String::new(),
                 to_version: String::new(),
                 reason: None,
-                owner_pid: None,
-                controller_pid: None,
+                owner_identity: None,
+                controller_identity: None,
+                started_identity: None,
                 starting_at_unix_ms: None,
+                rollback_deadline_unix_ms: None,
             };
             for stage in ["staging", "started", "draining", "starting"] {
                 journal.stage = stage.into();
@@ -485,9 +594,14 @@ mod platform {
                 from_version: "v1.0.0".into(),
                 to_version: "v1.0.1".into(),
                 reason: None,
-                owner_pid: None,
-                controller_pid: Some(42),
+                owner_identity: None,
+                controller_identity: Some(crate::proxy_agent::ProcessIdentity {
+                    pid: 42,
+                    birth: 1,
+                }),
+                started_identity: None,
                 starting_at_unix_ms: None,
+                rollback_deadline_unix_ms: None,
             };
             assert_eq!(
                 repair_outcome(

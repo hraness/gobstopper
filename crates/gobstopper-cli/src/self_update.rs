@@ -22,8 +22,17 @@ pub(crate) fn upgrade_target(executable: &Path, version: Option<&str>) -> Result
 }
 
 #[cfg(unix)]
-pub(crate) fn prepare_upgrade(selected: &UpgradeTarget, explicit: bool) -> Result<PathBuf> {
-    native::prepare_upgrade(selected, explicit)
+pub(crate) fn planned_upgrade_stage(executable: &Path) -> Result<PathBuf> {
+    native::planned_upgrade_stage(executable)
+}
+
+#[cfg(unix)]
+pub(crate) fn prepare_upgrade(
+    selected: &UpgradeTarget,
+    explicit: bool,
+    stage: &Path,
+) -> Result<PathBuf> {
+    native::prepare_upgrade(selected, explicit, stage)
 }
 
 #[cfg(unix)]
