@@ -902,7 +902,7 @@ fn enroll_verified(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn macos_requirement_is_compilable_inline_source() {
@@ -985,6 +985,52 @@ mod tests {
     impl Drop for Fixture {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    /// An install whose v1.0.0 executable and receipt were replaced from a
+    /// preserved stage, as the controller leaves them before starting.
+    pub(crate) struct ReplacedInstall {
+        _fixture: Fixture,
+        pub(crate) executable: PathBuf,
+        pub(crate) stage: PathBuf,
+    }
+
+    pub(crate) fn replaced_install() -> ReplacedInstall {
+        let fixture = Fixture::new();
+        let bin = fixture.bin();
+        bin.write_new("gobstopper", b"old release", true).unwrap();
+        let executable = bin.path.join("gobstopper");
+        fixture.state();
+        let mut profile = product();
+        profile.running_identity = RunningIdentity::Release {
+            release_tag: "v1.0.0",
+            build_sha: None,
+        };
+        published()
+            .receipt(&executable, digest(b"old release"), false)
+            .write_verified(&profile, &paths(&executable).unwrap().receipt)
+            .unwrap();
+        let mut stage = Stage::new(&bin).unwrap();
+        stage
+            .directory
+            .write_new("gobstopper", b"new release", true)
+            .unwrap();
+        let next = published().receipt(&executable, digest(b"new release"), true);
+        stage
+            .directory
+            .write_new("new-receipt", &serde_json::to_vec(&next).unwrap(), false)
+            .unwrap();
+        stage.preserve = true;
+        replace_upgrade(&executable, &stage.directory.path).unwrap();
+        assert_eq!(
+            bin.read("gobstopper", BINARY_LIMIT).unwrap().unwrap(),
+            b"new release"
+        );
+        ReplacedInstall {
+            stage: stage.directory.path.clone(),
+            executable,
+            _fixture: fixture,
         }
     }
 

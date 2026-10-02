@@ -423,6 +423,25 @@ mod platform {
         Ok(())
     }
 
+    fn recover_started_upgrade<Control>(
+        journal: &mut Journal,
+        control: &mut Control,
+        stop: impl FnOnce(&mut Control) -> Result<bool>,
+        restore: impl FnOnce() -> Result<()>,
+        restart: impl FnOnce(&mut Control) -> Result<()>,
+        record: impl FnOnce(&mut Journal, &str) -> Result<()>,
+    ) -> Result<bool> {
+        if stop(control)? {
+            record(journal, "healthy")?;
+            return Ok(true);
+        }
+        journal.reason = Some("new_version_unresponsive".into());
+        restore()?;
+        restart(control)?;
+        record(journal, "rolled_back")?;
+        Ok(false)
+    }
+
     fn rollback(
         journal: &mut Journal,
         control: &mut crate::proxy_agent::UpgradeControl,
@@ -447,19 +466,24 @@ mod platform {
                         .saturating_sub(now_unix_ms()?);
                     let readiness_deadline =
                         Instant::now() + Duration::from_millis(u64::try_from(readiness_remaining)?);
-                    if control.stop_after_failed_start(
-                        journal.to_version.trim_start_matches('v'),
-                        readiness_deadline,
-                        rollback_deadline,
-                    )? {
-                        advance(journal, "healthy")?;
-                        crate::self_update::discard_upgrade(
-                            &journal.executable,
-                            &journal.stage_dir,
-                        )?;
-                        return Ok(());
-                    }
-                    journal.reason = Some("new_version_unresponsive".into());
+                    let version = journal.to_version.trim_start_matches('v').to_owned();
+                    let executable = journal.executable.clone();
+                    let stage_dir = journal.stage_dir.clone();
+                    recover_started_upgrade(
+                        journal,
+                        control,
+                        |control| {
+                            control.stop_after_failed_start(
+                                &version,
+                                readiness_deadline,
+                                rollback_deadline,
+                            )
+                        },
+                        || crate::self_update::restore_upgrade(&executable, &stage_dir),
+                        |control| control.restart_previous(),
+                        advance,
+                    )?;
+                    return Ok(());
                 }
                 crate::self_update::restore_upgrade(&journal.executable, &journal.stage_dir)?;
             } else {
@@ -472,6 +496,11 @@ mod platform {
             Ok(())
         })();
         if journal.stage == "healthy" {
+            if let Err(cleanup_error) =
+                crate::self_update::discard_upgrade(&journal.executable, &journal.stage_dir)
+            {
+                eprintln!("Upgrade succeeded; staged backup cleanup failed: {cleanup_error:#}");
+            }
             return Ok(());
         }
         if journal.reason.is_none() {
@@ -647,6 +676,89 @@ mod platform {
                 repair_outcome(&journal, &serde_json::json!({"healthy": false}), true),
                 None
             );
+        }
+
+        #[test]
+        fn wrong_version_target_is_drained_restored_and_rolled_back() {
+            struct FakeControl {
+                service: crate::proxy_agent::tests::FakeService,
+                drained: bool,
+                restarted: bool,
+            }
+            let install = crate::self_update::replaced_install();
+            let mut journal = Journal {
+                schema: 1,
+                stage: "starting".into(),
+                stage_dir: install.stage.clone(),
+                executable: install.executable.clone(),
+                from_version: "v1.0.0".into(),
+                to_version: "v1.0.1".into(),
+                reason: None,
+                owner_identity: None,
+                controller_identity: None,
+                started_identity: None,
+                starting_at_unix_ms: None,
+                rollback_deadline_unix_ms: None,
+            };
+            let mut control = FakeControl {
+                service: crate::proxy_agent::tests::FakeService::start(|| "1.0.0"),
+                drained: false,
+                restarted: false,
+            };
+            let kept = recover_started_upgrade(
+                &mut journal,
+                &mut control,
+                |control| {
+                    crate::proxy_agent::stop_after_failed_start_on(
+                        control.service.port,
+                        "1.0.1",
+                        |_| true,
+                        Instant::now() + Duration::from_millis(300),
+                        Instant::now() + Duration::from_secs(5),
+                        || {
+                            control.service.stop();
+                            control.drained = true;
+                            Ok(())
+                        },
+                        |_| panic!("an answering service must not be force-stopped"),
+                    )
+                },
+                || crate::self_update::restore_upgrade(&install.executable, &install.stage),
+                |control| {
+                    assert!(control.drained, "restart precedes the drained stop");
+                    control.restarted = true;
+                    Ok(())
+                },
+                |journal, stage| {
+                    journal.stage = stage.into();
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert!(!kept);
+            assert!(control.drained && control.restarted);
+            crate::self_update::verify_previous_upgrade(&install.executable, "v1.0.0").unwrap();
+            assert_eq!(std::fs::read(&install.executable).unwrap(), b"old release");
+            assert_eq!(journal.stage, "rolled_back");
+            assert_eq!(journal.reason.as_deref(), Some("new_version_unresponsive"));
+
+            journal.stage = "starting".into();
+            journal.reason = None;
+            let kept = recover_started_upgrade(
+                &mut journal,
+                &mut control,
+                |_| Ok(true),
+                || panic!("a healthy target must not be restored"),
+                |_| panic!("a healthy target must not be restarted"),
+                |journal, stage| {
+                    journal.stage = stage.into();
+                    Ok(())
+                },
+            )
+            .unwrap();
+            assert!(kept);
+            assert_eq!(journal.stage, "healthy");
+            assert_eq!(journal.reason, None);
         }
 
         #[test]

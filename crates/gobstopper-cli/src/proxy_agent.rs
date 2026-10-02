@@ -2563,6 +2563,56 @@ fn stop_answering_service(
     Ok(true)
 }
 
+/// Keeps a target that becomes healthy by the readiness deadline, drains one
+/// that answers status, and leaves only a silent one to `force_stop`.
+pub(crate) fn stop_after_failed_start_on(
+    port: u16,
+    version: &str,
+    owned: impl Fn(&Value) -> bool,
+    readiness_deadline: Instant,
+    rollback_deadline: Instant,
+    graceful_stop: impl FnOnce() -> Result<()>,
+    force_stop: impl FnOnce(&dyn Fn() -> bool) -> Result<bool>,
+) -> Result<bool> {
+    let ready =
+        |live: &Value| owned(live) && live["draining"] == false && live["version"] == version;
+    let healthy = || status(port).is_ok_and(|live| ready(&live));
+    if poll_healthy_until(readiness_deadline.min(rollback_deadline), healthy) {
+        return Ok(true);
+    }
+    anyhow::ensure!(
+        Instant::now() < rollback_deadline,
+        "rollback_deadline_expired"
+    );
+    if let Ok(live) = status(port) {
+        if ready(&live) {
+            return Ok(true);
+        }
+        stop_answering_service(true, graceful_stop)?;
+        return Ok(false);
+    }
+    force_stop(&healthy)
+}
+
+/// Returns the started process only when the manager and the kernel still
+/// report it; the error names why a force stop is unsafe.
+fn force_stop_identity(
+    started_pid: Option<u32>,
+    started: Option<ProcessIdentity>,
+    observed: Option<ProcessIdentity>,
+    alive: impl Fn(ProcessIdentity) -> bool,
+) -> Result<ProcessIdentity> {
+    let started_pid = started_pid.context("start_unacknowledged")?;
+    let started = started.context("kernel_identity_unavailable")?;
+    anyhow::ensure!(
+        may_stop_unresponsive_started_process(Some(started), observed, false)
+            && started.pid == started_pid
+            && alive(started),
+        "identity_changed"
+    );
+    Ok(started)
+}
+
 fn bounded_stop_result<T>(result: Result<T>, deadline: Instant) -> Result<T> {
     result.map_err(|error| {
         if Instant::now() >= deadline {
@@ -2707,65 +2757,45 @@ impl UpgradeControl {
         readiness_deadline: Instant,
         rollback_deadline: Instant,
     ) -> Result<bool> {
-        let healthy = || {
-            status(self.manifest.port).is_ok_and(|live| {
-                matches_identity(&self.manifest, &live)
-                    && live["draining"] == false
-                    && live["version"] == version
-            })
-        };
-        if poll_healthy_until(readiness_deadline.min(rollback_deadline), healthy) {
-            return Ok(true);
-        }
-        anyhow::ensure!(
-            Instant::now() < rollback_deadline,
-            "rollback_deadline_expired"
-        );
-        if let Ok(live) = status(self.manifest.port) {
-            if matches_identity(&self.manifest, &live)
-                && live["draining"] == false
-                && live["version"] == version
-            {
-                return Ok(true);
-            }
-            stop_answering_service(true, || self.stop())?;
-            return Ok(false);
-        }
-        let started_pid = self.started_pid.context("start_unacknowledged")?;
-        let started = self.started.context("kernel_identity_unavailable")?;
-        anyhow::ensure!(
-            load_drain(&self.manifest, &self.paths)?.is_none(),
-            "stop_refused_unresolved_drain"
-        );
-        verify_job(&self.manifest, &self.paths).context("stop_refused_unresponsive")?;
-        let observed = manager_identity(self.manifest.platform).context("identity_changed")?;
-        anyhow::ensure!(
-            may_stop_unresponsive_started_process(self.started, observed, false)
-                && started.pid == started_pid,
-            "identity_changed"
-        );
-        anyhow::ensure!(same_process(started), "identity_changed");
-        if healthy() {
-            return Ok(true);
-        }
-        anyhow::ensure!(
-            Instant::now() < rollback_deadline,
-            "rollback_deadline_expired"
-        );
-        bounded_stop_result(
-            run_bounded_until(
-                &manager(self.manifest.platform),
-                &manager_args(&self.manifest, &self.paths, "stop"),
-                None,
-                rollback_deadline,
-            ),
+        stop_after_failed_start_on(
+            self.manifest.port,
+            version,
+            |live| matches_identity(&self.manifest, live),
+            readiness_deadline,
             rollback_deadline,
-        )?;
-        bounded_stop_result(
-            stopped_port_until(self.manifest.port, rollback_deadline),
-            rollback_deadline,
-        )?;
-        Ok(false)
+            || self.stop(),
+            |healthy| {
+                anyhow::ensure!(
+                    load_drain(&self.manifest, &self.paths)?.is_none(),
+                    "stop_refused_unresolved_drain"
+                );
+                verify_job(&self.manifest, &self.paths).context("stop_refused_unresponsive")?;
+                let observed =
+                    manager_identity(self.manifest.platform).context("identity_changed")?;
+                force_stop_identity(self.started_pid, self.started, observed, same_process)?;
+                if healthy() {
+                    return Ok(true);
+                }
+                anyhow::ensure!(
+                    Instant::now() < rollback_deadline,
+                    "rollback_deadline_expired"
+                );
+                bounded_stop_result(
+                    run_bounded_until(
+                        &manager(self.manifest.platform),
+                        &manager_args(&self.manifest, &self.paths, "stop"),
+                        None,
+                        rollback_deadline,
+                    ),
+                    rollback_deadline,
+                )?;
+                bounded_stop_result(
+                    stopped_port_until(self.manifest.port, rollback_deadline),
+                    rollback_deadline,
+                )?;
+                Ok(false)
+            },
+        )
     }
 
     pub(crate) fn restart_previous(&mut self) -> Result<()> {
@@ -2840,7 +2870,7 @@ pub fn restart_command() -> String {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -2967,36 +2997,78 @@ mod tests {
         assert_eq!(observations, 3);
     }
 
+    /// A loopback status endpoint whose reported version is chosen per
+    /// request; `stop` makes it stop answering, as a drained service would.
+    pub(crate) struct FakeService {
+        pub(crate) port: u16,
+        stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl FakeService {
+        pub(crate) fn start(version: impl Fn() -> &'static str + Send + 'static) -> Self {
+            use std::sync::atomic::Ordering;
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let serving = stopped.clone();
+            let thread = std::thread::spawn(move || {
+                for socket in listener.incoming() {
+                    if serving.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    let mut socket = socket.unwrap();
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        socket.read_exact(&mut byte).unwrap();
+                        request.push(byte[0]);
+                        assert!(request.len() < 512);
+                    }
+                    assert!(request.starts_with(b"GET "));
+                    let body = serde_json::json!({
+                        "name": "gobstopper-proxy",
+                        "port": port,
+                        "version": version(),
+                        "draining": false
+                    })
+                    .to_string();
+                    write!(
+                        socket,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .unwrap();
+                }
+            });
+            Self {
+                port,
+                stopped,
+                thread: Some(thread),
+            }
+        }
+
+        pub(crate) fn stop(&mut self) {
+            if let Some(thread) = self.thread.take() {
+                self.stopped
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let _ = TcpStream::connect((Ipv4Addr::LOCALHOST, self.port));
+                thread.join().unwrap();
+            }
+        }
+    }
+
+    impl Drop for FakeService {
+        fn drop(&mut self) {
+            self.stop();
+        }
+    }
+
     #[test]
     fn answered_wrong_version_uses_graceful_stop() {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let port = listener.local_addr().unwrap().port();
-        let service = std::thread::spawn(move || {
-            let (mut socket, _) = listener.accept().unwrap();
-            let mut request = Vec::new();
-            while !request.ends_with(b"\r\n\r\n") {
-                let mut byte = [0];
-                socket.read_exact(&mut byte).unwrap();
-                request.push(byte[0]);
-                assert!(request.len() < 512);
-            }
-            assert!(request.starts_with(b"GET "));
-            let body = serde_json::json!({
-                "name": "gobstopper-proxy",
-                "port": port,
-                "version": "old",
-                "draining": false
-            })
-            .to_string();
-            write!(
-                socket,
-                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
-                body.len()
-            )
-            .unwrap();
-        });
-        let status = status(port).unwrap();
-        service.join().unwrap();
+        let mut service = FakeService::start(|| "old");
+        let status = status(service.port).unwrap();
+        service.stop();
         let mut stopped = false;
         assert_ne!(status["version"], "new");
         assert!(stop_answering_service(true, || {
@@ -3008,6 +3080,102 @@ mod tests {
         let error = stop_answering_service(true, || bail!("drain refused")).unwrap_err();
         assert_eq!(error.to_string(), "stop_refused_answered_status");
         assert!(!stop_answering_service(false, || panic!("unexpected stop")).unwrap());
+    }
+
+    #[test]
+    fn target_healthy_after_a_second_is_kept_within_readiness_deadline() {
+        let healthy_at = Instant::now() + Duration::from_secs(1);
+        let service = FakeService::start(move || {
+            if Instant::now() < healthy_at {
+                "old"
+            } else {
+                "new"
+            }
+        });
+        let kept = stop_after_failed_start_on(
+            service.port,
+            "new",
+            |_| true,
+            Instant::now() + Duration::from_secs(3),
+            Instant::now() + Duration::from_secs(25),
+            || panic!("a target that became healthy must not be drained"),
+            |_| panic!("a target that became healthy must not be force-stopped"),
+        )
+        .unwrap();
+        assert!(kept);
+        assert!(Instant::now() >= healthy_at);
+    }
+
+    #[test]
+    fn refused_rollback_stops_name_their_reason() {
+        let service = FakeService::start(|| "old");
+        let error = stop_after_failed_start_on(
+            service.port,
+            "new",
+            |_| true,
+            Instant::now(),
+            Instant::now() + Duration::from_secs(5),
+            || bail!("drain refused"),
+            |_| panic!("an answering service must not be force-stopped"),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "stop_refused_answered_status");
+        drop(service);
+
+        let error = stop_after_failed_start_on(
+            closed_port(),
+            "new",
+            |_| true,
+            Instant::now(),
+            Instant::now(),
+            || panic!("a silent service cannot be drained"),
+            |_| panic!("an expired deadline must not force-stop"),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "rollback_deadline_expired");
+
+        let started = ProcessIdentity {
+            pid: 123,
+            birth: 9_000,
+            birth_microseconds: 7,
+        };
+        let reason = |started_pid, identity, observed, alive: bool| {
+            force_stop_identity(started_pid, identity, observed, |_| alive)
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            reason(None, None, Some(started), true),
+            "start_unacknowledged"
+        );
+        assert_eq!(
+            reason(Some(123), None, Some(started), true),
+            "kernel_identity_unavailable"
+        );
+        assert_eq!(
+            reason(Some(123), Some(started), None, true),
+            "identity_changed"
+        );
+        assert_eq!(
+            reason(Some(123), Some(started), Some(started), false),
+            "identity_changed"
+        );
+        assert_eq!(
+            reason(Some(124), Some(started), Some(started), true),
+            "identity_changed"
+        );
+        assert_eq!(
+            force_stop_identity(Some(123), Some(started), Some(started), |_| true).unwrap(),
+            started
+        );
+    }
+
+    fn closed_port() -> u16 {
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
     }
 
     #[test]

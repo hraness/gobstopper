@@ -50,6 +50,9 @@ pub(crate) fn verify_previous_upgrade(executable: &Path, version: &str) -> Resul
     native::verify_previous_upgrade(executable, version)
 }
 
+#[cfg(all(unix, test))]
+pub(crate) use native::tests::replaced_install;
+
 #[cfg(unix)]
 pub(crate) fn discard_upgrade(executable: &Path, stage: &Path) -> Result<()> {
     native::discard_upgrade(executable, stage)
