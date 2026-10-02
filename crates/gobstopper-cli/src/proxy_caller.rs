@@ -12,11 +12,13 @@ impl std::fmt::Display for DependentCaller {
 impl std::error::Error for DependentCaller {}
 
 fn loopback_service_url(value: &str, port: u16) -> bool {
-    let Some(authority) = value
-        .strip_prefix("http://")
-        .or_else(|| value.strip_prefix("https://"))
-        .and_then(|rest| rest.split('/').next())
-    else {
+    let Some((scheme, rest)) = value.split_once("://") else {
+        return false;
+    };
+    if !scheme.eq_ignore_ascii_case("http") && !scheme.eq_ignore_ascii_case("https") {
+        return false;
+    }
+    let Some(authority) = rest.split(['/', '?', '#']).next() else {
         return false;
     };
     let expected_port = port.to_string();
@@ -25,7 +27,7 @@ fn loopback_service_url(value: &str, port: u16) -> bool {
     };
     matches!(
         host.to_ascii_lowercase().as_str(),
-        "localhost" | "127.0.0.1" | "[::1]"
+        "localhost" | "localhost." | "127.0.0.1" | "[::1]"
     )
 }
 
@@ -117,5 +119,18 @@ mod tests {
         assert_eq!(refusal_signal(8260, true, false, &env), None);
         assert_eq!(refusal_signal(8260, false, true, &env), None);
         assert_eq!(refusal_signal(8260, false, false, &env), Some("CLAUDECODE"));
+    }
+
+    #[test]
+    fn loopback_url_spelling_and_authority_delimiters() {
+        for url in [
+            "HTTP://LOCALHOST:8260?query=1",
+            "HtTpS://localhost.:8260#fragment",
+            "http://[::1]:8260?query=1",
+            "https://127.0.0.1:8260/#fragment",
+        ] {
+            assert!(loopback_service_url(url, 8260), "{url}");
+            assert!(!loopback_service_url(url, 8261), "{url}");
+        }
     }
 }
