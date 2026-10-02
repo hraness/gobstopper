@@ -767,10 +767,15 @@ fn verify_definition(m: &Manifest, p: &Paths, allow_missing: bool) -> Result<()>
 }
 
 fn activate(m: &mut Manifest, p: &Paths) -> Result<()> {
-    activate_expected(m, p, None)
+    activate_expected(m, p, None, || {})
 }
 
-fn activate_expected(m: &mut Manifest, p: &Paths, version: Option<&str>) -> Result<()> {
+fn activate_expected(
+    m: &mut Manifest,
+    p: &Paths,
+    version: Option<&str>,
+    on_started: impl FnOnce(),
+) -> Result<()> {
     require_clear_drain(p)?;
     match m.platform {
         Platform::Linux => {
@@ -807,6 +812,7 @@ fn activate_expected(m: &mut Manifest, p: &Paths, version: Option<&str>) -> Resu
         Platform::Macos => {}
     }
     run_manager(m.platform, &manager_args(m, p, "start"))?;
+    on_started();
     if let Some(version) = version {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -2252,6 +2258,8 @@ pub fn repair(print: bool) -> Result<()> {
     }
     let p = paths(Platform::current()?)?;
     let _lock = ServiceLock::acquire(&p)?;
+    #[cfg(unix)]
+    crate::proxy_upgrade::reconcile()?;
     if recover_pending(&p)? {
         return Ok(());
     }
@@ -2311,6 +2319,12 @@ pub(crate) fn upgrade_journal_path() -> Result<PathBuf> {
 pub(crate) fn upgrade_write_journal(bytes: &[u8]) -> Result<()> {
     let p = paths(Platform::current()?)?;
     write_atomic(&p.root.join("upgrade.json"), bytes)
+}
+
+pub(crate) fn upgrade_claim<T>(claim: impl FnOnce() -> Result<T>) -> Result<T> {
+    let paths = paths(Platform::current()?)?;
+    let _lock = ServiceLock::acquire(&paths)?;
+    claim()
 }
 
 pub(crate) struct UpgradeJob {
@@ -2393,6 +2407,7 @@ pub(crate) fn upgrade_launch(job: &UpgradeJob, executable: &Path, stage: &Path) 
         )?;
     } else if platform == Platform::Linux {
         let state = paths(platform)?.root;
+        // A transient systemd-run unit has no Restart property, so it cannot relaunch the controller.
         run_bounded(
             Path::new("/usr/bin/systemd-run"),
             &[
@@ -2432,6 +2447,13 @@ pub(crate) fn upgrade_cleanup(job: &UpgradeJob) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn upgrade_unlink_on_start(job: &UpgradeJob) -> Result<()> {
+    if Platform::current()? == Platform::Macos && job.definition.exists() {
+        fs::remove_file(&job.definition)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn upgrade_probe(read_only: bool) -> Result<(PathBuf, String)> {
     let p = paths(Platform::current()?)?;
     let _lock = if read_only {
@@ -2464,6 +2486,101 @@ pub(crate) struct UpgradeControl {
     manifest: Manifest,
     paths: Paths,
     _lock: ServiceLock,
+    started: Option<StartedProcess>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct StartedProcess {
+    pid: u32,
+    started_at_unix_ms: u128,
+}
+
+fn may_stop_unresponsive_started_process(
+    started: Option<StartedProcess>,
+    observed: Option<StartedProcess>,
+    answered_status: bool,
+) -> bool {
+    started.is_some() && started == observed && !answered_status
+}
+
+fn manager_pid(platform: Platform) -> Result<Option<u32>> {
+    let output = if platform == Platform::Macos {
+        run_manager(platform, &["print".into(), format!("{}/{LABEL}", domain())])?
+    } else {
+        run_manager(
+            platform,
+            &strings(&[
+                "--user",
+                "show",
+                "gobstopper-proxy.service",
+                "--property=MainPID",
+            ]),
+        )?
+    };
+    let text = String::from_utf8(output)?;
+    let pid = text.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix(if platform == Platform::Macos {
+                "pid = "
+            } else {
+                "MainPID="
+            })
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|pid| *pid > 0)
+    });
+    Ok(pid)
+}
+
+fn elapsed_seconds(text: &str) -> Option<u64> {
+    let text = text.trim();
+    let (days, time) = if let Some((days, time)) = text.split_once('-') {
+        (days.parse::<u64>().ok()?, time)
+    } else {
+        (0, text)
+    };
+    let parts = time
+        .split(':')
+        .map(str::parse::<u64>)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .ok()?;
+    let seconds = match parts.as_slice() {
+        [minutes, seconds] => minutes.checked_mul(60)?.checked_add(*seconds)?,
+        [hours, minutes, seconds] => hours
+            .checked_mul(3600)?
+            .checked_add(minutes.checked_mul(60)?)?
+            .checked_add(*seconds)?,
+        _ => return None,
+    };
+    days.checked_mul(86400)?.checked_add(seconds)
+}
+
+fn started_after_stage(now_unix_ms: u128, elapsed: u64, starting_at_unix_ms: u128) -> bool {
+    now_unix_ms.saturating_sub(u128::from(elapsed) * 1000) + 1000 >= starting_at_unix_ms
+}
+
+fn started_process(
+    platform: Platform,
+    starting_at_unix_ms: u128,
+) -> Result<Option<StartedProcess>> {
+    let Some(pid) = manager_pid(platform)? else {
+        return Ok(None);
+    };
+    let output = run_bounded(
+        Path::new("/bin/ps"),
+        &["-o".into(), "etime=".into(), "-p".into(), pid.to_string()],
+    )?;
+    let elapsed = elapsed_seconds(&String::from_utf8(output)?)
+        .context("service process start time unavailable")?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_millis();
+    if !started_after_stage(now, elapsed, starting_at_unix_ms) {
+        return Ok(None);
+    }
+    Ok(Some(StartedProcess {
+        pid,
+        started_at_unix_ms: starting_at_unix_ms,
+    }))
 }
 
 impl UpgradeControl {
@@ -2479,6 +2596,7 @@ impl UpgradeControl {
             manifest,
             paths,
             _lock: lock,
+            started: None,
         })
     }
 
@@ -2498,8 +2616,39 @@ impl UpgradeControl {
         }
     }
 
-    pub(crate) fn start(&mut self, version: &str) -> Result<()> {
-        activate_expected(&mut self.manifest, &self.paths, Some(version))
+    pub(crate) fn start(&mut self, version: &str, starting_at_unix_ms: u128) -> Result<()> {
+        let platform = self.manifest.platform;
+        let mut observed = None;
+        let result = activate_expected(&mut self.manifest, &self.paths, Some(version), || {
+            observed = started_process(platform, starting_at_unix_ms)
+                .ok()
+                .flatten();
+        });
+        self.started = observed;
+        result
+    }
+
+    pub(crate) fn stop_started_unresponsive(&self) -> Result<()> {
+        let started = self
+            .started
+            .context("new service PID was not established; stop outcome is unknown")?;
+        anyhow::ensure!(
+            load_drain(&self.manifest, &self.paths)?.is_none(),
+            "drain outcome is unresolved"
+        );
+        verify_job(&self.manifest, &self.paths)?;
+        let answered_status = status(self.manifest.port).is_ok();
+        let observed = started_process(self.manifest.platform, started.started_at_unix_ms)?;
+        anyhow::ensure!(
+            may_stop_unresponsive_started_process(self.started, observed, answered_status),
+            "new service answered status or its PID or start time changed; force-stop refused"
+        );
+        run_manager(
+            self.manifest.platform,
+            &manager_args(&self.manifest, &self.paths, "stop"),
+        )?;
+        stopped_port(self.manifest.port)?;
+        Ok(())
     }
 
     pub(crate) fn restart_previous(&mut self) -> Result<()> {
@@ -2576,6 +2725,44 @@ pub fn restart_command() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upgrade_process_age_requires_a_new_pid() {
+        assert_eq!(elapsed_seconds("00:04"), Some(4));
+        assert_eq!(elapsed_seconds("01:02:03"), Some(3723));
+        assert_eq!(elapsed_seconds("2-01:02:03"), Some(176523));
+        assert_eq!(elapsed_seconds("not-a-process"), None);
+        assert!(started_after_stage(10_000, 1, 9_000));
+        assert!(!started_after_stage(10_000, 5, 9_000));
+    }
+
+    #[test]
+    fn unresponsive_upgrade_process_must_keep_its_started_identity() {
+        let started = StartedProcess {
+            pid: 123,
+            started_at_unix_ms: 9_000,
+        };
+        assert!(may_stop_unresponsive_started_process(
+            Some(started),
+            Some(started),
+            false
+        ));
+        assert!(!may_stop_unresponsive_started_process(
+            Some(started),
+            Some(started),
+            true
+        ));
+        assert!(!may_stop_unresponsive_started_process(
+            Some(started),
+            None,
+            false
+        ));
+        assert!(!may_stop_unresponsive_started_process(
+            None,
+            Some(started),
+            false
+        ));
+    }
 
     #[test]
     fn upgrade_job_is_one_shot() {

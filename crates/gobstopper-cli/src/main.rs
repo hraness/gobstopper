@@ -5474,6 +5474,9 @@ fn main() -> std::process::ExitCode {
             if error
                 .downcast_ref::<proxy_caller::DependentCaller>()
                 .is_some()
+                || error
+                    .downcast_ref::<proxy_upgrade::PendingUpgrade>()
+                    .is_some()
             {
                 std::process::ExitCode::from(2)
             } else {
