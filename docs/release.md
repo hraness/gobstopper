@@ -122,7 +122,7 @@ without it, `codesign` interprets the requirement as a filename.
 ## Cut a release
 
 1. In the version bump pull request, set `version` under `[workspace.package]` in `Cargo.toml` and the exact `gobstopper-core` and `gobstopper-adapters` versions under `[workspace.dependencies]` together. Turn the `## Unreleased` section of `CHANGELOG.md` into `## vX.Y.Z - YYYY-MM-DD`. The section needs a summary paragraph and at least one bullet. Start a new empty `## Unreleased` section only when there is something to put in it.
-2. After it merges, tag the merge commit and push the tag: `git tag -a vX.Y.Z -m vX.Y.Z <commit> && git push origin vX.Y.Z`.
+2. After it merges and CI passes on `main`, the [tag workflow](../.github/workflows/auto-tag.yml) creates the annotated `vX.Y.Z` tag on the merge commit through the `hraness-release-tagger` GitHub App. It does nothing when the version is unchanged or the tag already exists. A manual tag still works: `git tag -a vX.Y.Z -m vX.Y.Z <commit> && git push origin vX.Y.Z`.
 3. The release workflow checks the tag against `Cargo.toml` and `CHANGELOG.md`, builds and packages each platform with [`scripts/build-release.sh`](../scripts/build-release.sh) or [`scripts/build-release.ps1`](../scripts/build-release.ps1), installs each archive with the hosted installer from a loopback server, attests the archives, writes `SHA256SUMS`, renders the page with `scripts/release_notes.py`, publishes the release, checks the published page against the release record, and, once it is set up, publishes the crates to crates.io. Nothing needs a person after the tag push.
 4. Check the assets from any machine:
 
