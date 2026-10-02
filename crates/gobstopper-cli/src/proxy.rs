@@ -92,6 +92,15 @@ const STRIP_RESPONSE: &[&str] = &[
 
 #[derive(Subcommand)]
 pub enum ProxyCmd {
+    /// Upgrade a managed proxy through a detached service controller.
+    Upgrade {
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        wait: bool,
+        #[arg(long)]
+        print: bool,
+    },
     /// Serve on a loopback port until stopped.
     Serve {
         #[command(flatten)]
@@ -172,10 +181,16 @@ pub enum ProxyCmd {
         /// Print the platform service definition and change nothing.
         #[arg(long)]
         print: bool,
+        /// Allow a caller whose requests depend on this proxy to stop it.
+        #[arg(long)]
+        allow_dependent_caller: bool,
     },
     /// Stop the owned user service and remove it, so the proxy no longer
     /// starts at login.
-    Uninstall,
+    Uninstall {
+        #[arg(long)]
+        allow_dependent_caller: bool,
+    },
     /// Check the installed user service, its identity, and its configuration.
     Doctor {
         #[arg(long)]
@@ -185,11 +200,15 @@ pub enum ProxyCmd {
     MigrateService {
         #[arg(long)]
         print: bool,
+        #[arg(long)]
+        allow_dependent_caller: bool,
     },
     /// Repair a managed service without replacing modified or unrelated files.
     Repair {
         #[arg(long)]
         print: bool,
+        #[arg(long)]
+        allow_dependent_caller: bool,
     },
     /// Show a running proxy's settings and counters.
     Status {
@@ -351,6 +370,11 @@ pub type Resolve<'a> = dyn Fn(&str) -> Result<(gobstopper_core::Provider, std::p
 
 pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
     match command {
+        ProxyCmd::Upgrade {
+            version,
+            wait,
+            print,
+        } => crate::proxy_upgrade::run(version.as_deref(), *wait, *print),
         ProxyCmd::Replay {
             session,
             threshold,
@@ -512,13 +536,44 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             port,
             replace,
             print,
+            allow_dependent_caller,
         } => {
             threshold_1m(opts.threshold, opts.threshold_1m)?;
+            if *replace && !print && crate::proxy_agent::installed() {
+                crate::proxy_caller::refuse(
+                    crate::proxy_agent::status_port(None)?,
+                    *allow_dependent_caller,
+                )?;
+            }
             crate::proxy_agent::install(&install_serve_args(), *port, *replace, *print)
         }
-        ProxyCmd::Uninstall => crate::proxy_agent::uninstall(),
-        ProxyCmd::MigrateService { print } => crate::proxy_agent::migrate(*print),
-        ProxyCmd::Repair { print } => crate::proxy_agent::repair(*print),
+        ProxyCmd::Uninstall {
+            allow_dependent_caller,
+        } => {
+            if crate::proxy_agent::installed() {
+                crate::proxy_caller::refuse(
+                    crate::proxy_agent::status_port(None)?,
+                    *allow_dependent_caller,
+                )?;
+            }
+            crate::proxy_agent::uninstall()
+        }
+        ProxyCmd::MigrateService {
+            print,
+            allow_dependent_caller,
+        } => crate::proxy_agent::migrate(*print, *allow_dependent_caller),
+        ProxyCmd::Repair {
+            print,
+            allow_dependent_caller,
+        } => {
+            if !print && crate::proxy_agent::repair_may_restart()? {
+                crate::proxy_caller::refuse(
+                    crate::proxy_agent::status_port(None)?,
+                    *allow_dependent_caller,
+                )?;
+            }
+            crate::proxy_agent::repair(*print)
+        }
         ProxyCmd::Doctor { .. } => {
             println!(
                 "{}",
@@ -2764,7 +2819,10 @@ fn serve_args_after_install(args: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = args[at + 2..].iter();
     while let Some(arg) = rest.next() {
-        if matches!(arg.as_str(), "--replace" | "--print") {
+        if matches!(
+            arg.as_str(),
+            "--replace" | "--print" | "--allow-dependent-caller"
+        ) {
             continue;
         }
         if GLOBAL.contains(&arg.as_str()) {

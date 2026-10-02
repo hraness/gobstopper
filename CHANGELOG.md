@@ -2,6 +2,16 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## Unreleased
+
+The managed proxy can upgrade without tying the stop controller to an agent session.
+
+- `gobstopper proxy upgrade` stages a verified release, then drains, replaces, and restarts the managed service from a detached one-shot controller. Doctor reports its journal and rollback outcome.
+- Stop-capable service commands refuse a caller whose environment depends on the proxy, with an explicit override for a separate terminal.
+- Upgrade reservations refuse a concurrent upgrade, repair reconciles an exited controller, and rollback can stop the unresponsive process started by the controller when its identity is proven.
+- Upgrade recovery tracks process birth times, records stage paths before creation, and bounds the force-stop sequence after a failed health check.
+- Upgrade rollback drains a responding service before stopping it, polls for late health, and records the reason when stopping is unsafe; macOS process identity uses the kernel's birth timestamp.
+
 ## v0.8.5 - 2026-10-01
 
 A context scope can carry its own standing input threshold, so a long-lived agent runs wider than the proxy default without re-arming a reservation.
