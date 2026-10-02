@@ -5447,8 +5447,13 @@ fn main() -> std::process::ExitCode {
             Some(Cmd::InstallRelease(args)) => return self_update::initial_install(args),
             Some(Cmd::UpgradeController(args)) => return proxy_upgrade::controller(args),
             Some(Cmd::Proxy {
-                command: proxy::ProxyCmd::Upgrade { .. },
-            }) => return run(cli),
+                command:
+                    proxy::ProxyCmd::Upgrade {
+                        version,
+                        wait,
+                        print,
+                    },
+            }) => return proxy_upgrade::run(version.as_deref(), *wait, *print),
             Some(Cmd::BuildIdentity) => {
                 self_update::build_identity();
                 return Ok(());
