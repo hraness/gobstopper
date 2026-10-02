@@ -2521,12 +2521,15 @@ pub(crate) struct UpgradeControl {
     paths: Paths,
     _lock: ServiceLock,
     started: Option<ProcessIdentity>,
+    started_pid: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
 pub(crate) struct ProcessIdentity {
     pub(crate) pid: u32,
     pub(crate) birth: u64,
+    #[serde(default)]
+    pub(crate) birth_microseconds: u64,
 }
 
 fn may_stop_unresponsive_started_process(
@@ -2535,6 +2538,39 @@ fn may_stop_unresponsive_started_process(
     answered_status: bool,
 ) -> bool {
     started.is_some() && started == observed && !answered_status
+}
+
+fn poll_healthy_until(deadline: Instant, mut healthy: impl FnMut() -> bool) -> bool {
+    loop {
+        if healthy() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn stop_answering_service(
+    answered_status: bool,
+    stop: impl FnOnce() -> Result<()>,
+) -> Result<bool> {
+    if !answered_status {
+        return Ok(false);
+    }
+    stop().context("stop_refused_answered_status")?;
+    Ok(true)
+}
+
+fn bounded_stop_result<T>(result: Result<T>, deadline: Instant) -> Result<T> {
+    result.map_err(|error| {
+        if Instant::now() >= deadline {
+            anyhow::anyhow!("rollback_deadline_expired: {error:#}")
+        } else {
+            anyhow::anyhow!("stop_refused_unresponsive: {error:#}")
+        }
+    })
 }
 
 fn manager_pid(platform: Platform) -> Result<Option<u32>> {
@@ -2569,34 +2605,37 @@ fn parse_manager_pid(platform: Platform, text: &str) -> Option<u32> {
 }
 
 #[cfg(target_os = "linux")]
-fn process_birth(pid: u32) -> Option<u64> {
+fn process_birth(pid: u32) -> Option<(u64, u64)> {
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     let fields = stat.rsplit_once(") ")?.1;
-    fields.split_whitespace().nth(19)?.parse().ok()
+    Some((fields.split_whitespace().nth(19)?.parse().ok()?, 0))
 }
 
 #[cfg(target_os = "macos")]
-fn process_birth(pid: u32) -> Option<u64> {
-    use std::ffi::CString;
-    let output = run_bounded(
-        Path::new("/bin/ps"),
-        &["-p".into(), pid.to_string(), "-o".into(), "lstart=".into()],
-    )
-    .ok()?;
-    let stamp = CString::new(String::from_utf8(output).ok()?.trim()).ok()?;
-    let format = CString::new("%a %b %e %T %Y").ok()?;
-    let mut parsed: libc::tm = unsafe { std::mem::zeroed() };
-    parsed.tm_isdst = -1;
-    let end = unsafe { libc::strptime(stamp.as_ptr(), format.as_ptr(), &mut parsed) };
-    if end.is_null() || unsafe { *end } != 0 {
+fn process_birth(pid: u32) -> Option<(u64, u64)> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>();
+    let returned = unsafe {
+        libc::proc_pidinfo(
+            i32::try_from(pid).ok()?,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            i32::try_from(size).ok()?,
+        )
+    };
+    if returned != i32::try_from(size).ok()? || info.pbi_pid != pid {
         return None;
     }
-    let birth = unsafe { libc::mktime(&mut parsed) };
-    u64::try_from(birth).ok()
+    Some((info.pbi_start_tvsec, info.pbi_start_tvusec))
 }
 
 pub(crate) fn process_identity(pid: u32) -> Option<ProcessIdentity> {
-    process_birth(pid).map(|birth| ProcessIdentity { pid, birth })
+    process_birth(pid).map(|(birth, birth_microseconds)| ProcessIdentity {
+        pid,
+        birth,
+        birth_microseconds,
+    })
 }
 
 pub(crate) fn same_process(identity: ProcessIdentity) -> bool {
@@ -2621,6 +2660,7 @@ impl UpgradeControl {
             paths,
             _lock: lock,
             started: None,
+            started_pid: None,
         })
     }
 
@@ -2643,10 +2683,13 @@ impl UpgradeControl {
     pub(crate) fn start(&mut self, version: &str) -> Result<()> {
         let platform = self.manifest.platform;
         let mut observed = None;
+        let mut started_pid = None;
         let result = activate_expected(&mut self.manifest, &self.paths, Some(version), || {
-            observed = manager_identity(platform).ok().flatten();
+            started_pid = manager_pid(platform).ok().flatten();
+            observed = started_pid.and_then(process_identity);
         });
         self.started = observed;
+        self.started_pid = started_pid;
         result
     }
 
@@ -2654,20 +2697,16 @@ impl UpgradeControl {
         self.started
     }
 
-    pub(crate) fn stop_started_unresponsive(
+    pub(crate) fn started_pid(&self) -> Option<u32> {
+        self.started_pid
+    }
+
+    pub(crate) fn stop_after_failed_start(
         &self,
         version: &str,
-        deadline: Instant,
+        readiness_deadline: Instant,
+        rollback_deadline: Instant,
     ) -> Result<bool> {
-        let started = self
-            .started
-            .context("new service PID was not established; stop outcome is unknown")?;
-        anyhow::ensure!(Instant::now() < deadline, "rollback stop deadline expired");
-        anyhow::ensure!(
-            load_drain(&self.manifest, &self.paths)?.is_none(),
-            "drain outcome is unresolved"
-        );
-        verify_job(&self.manifest, &self.paths)?;
         let healthy = || {
             status(self.manifest.port).is_ok_and(|live| {
                 matches_identity(&self.manifest, &live)
@@ -2675,30 +2714,57 @@ impl UpgradeControl {
                     && live["version"] == version
             })
         };
+        if poll_healthy_until(readiness_deadline.min(rollback_deadline), healthy) {
+            return Ok(true);
+        }
+        anyhow::ensure!(
+            Instant::now() < rollback_deadline,
+            "rollback_deadline_expired"
+        );
+        if let Ok(live) = status(self.manifest.port) {
+            if matches_identity(&self.manifest, &live)
+                && live["draining"] == false
+                && live["version"] == version
+            {
+                return Ok(true);
+            }
+            stop_answering_service(true, || self.stop())?;
+            return Ok(false);
+        }
+        let started_pid = self.started_pid.context("start_unacknowledged")?;
+        let started = self.started.context("kernel_identity_unavailable")?;
+        anyhow::ensure!(
+            load_drain(&self.manifest, &self.paths)?.is_none(),
+            "stop_refused_unresolved_drain"
+        );
+        verify_job(&self.manifest, &self.paths).context("stop_refused_unresponsive")?;
+        let observed = manager_identity(self.manifest.platform).context("identity_changed")?;
+        anyhow::ensure!(
+            may_stop_unresponsive_started_process(self.started, observed, false)
+                && started.pid == started_pid,
+            "identity_changed"
+        );
+        anyhow::ensure!(same_process(started), "identity_changed");
         if healthy() {
             return Ok(true);
         }
-        let answered_status = status(self.manifest.port).is_ok();
-        let observed = manager_identity(self.manifest.platform)?;
         anyhow::ensure!(
-            may_stop_unresponsive_started_process(self.started, observed, answered_status),
-            "new service answered status or its PID or start time changed; force-stop refused"
+            Instant::now() < rollback_deadline,
+            "rollback_deadline_expired"
         );
-        anyhow::ensure!(
-            same_process(started),
-            "service process identity changed; force-stop refused"
-        );
-        if healthy() {
-            return Ok(true);
-        }
-        anyhow::ensure!(Instant::now() < deadline, "rollback stop deadline expired");
-        run_bounded_until(
-            &manager(self.manifest.platform),
-            &manager_args(&self.manifest, &self.paths, "stop"),
-            None,
-            deadline,
+        bounded_stop_result(
+            run_bounded_until(
+                &manager(self.manifest.platform),
+                &manager_args(&self.manifest, &self.paths, "stop"),
+                None,
+                rollback_deadline,
+            ),
+            rollback_deadline,
         )?;
-        stopped_port_until(self.manifest.port, deadline)?;
+        bounded_stop_result(
+            stopped_port_until(self.manifest.port, rollback_deadline),
+            rollback_deadline,
+        )?;
         Ok(false)
     }
 
@@ -2779,20 +2845,53 @@ mod tests {
 
     #[test]
     fn process_identity_tracks_birth_and_rejects_reuse() {
+        if std::env::var_os("GOBSTOPPER_LOCALE_IDENTITY_CHILD").is_none() {
+            for (key, value) in [
+                ("LANG", "en_GB.UTF-8"),
+                ("LC_ALL", "de_DE.UTF-8"),
+                ("TZ", "America/New_York"),
+            ] {
+                let result = Command::new(std::env::current_exe().unwrap())
+                    .arg("--exact")
+                    .arg("proxy_agent::tests::process_identity_tracks_birth_and_rejects_reuse")
+                    .env("GOBSTOPPER_LOCALE_IDENTITY_CHILD", "1")
+                    .env(key, value)
+                    .output()
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "{key}: {}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            }
+        }
         let mut child = Command::new("/bin/sleep").arg("5").spawn().unwrap();
         let observed = process_identity(child.id()).unwrap();
         assert!(same_process(observed));
         assert!(!same_process(ProcessIdentity {
             pid: observed.pid,
-            birth: observed.birth + 1
+            birth: observed.birth + 1,
+            birth_microseconds: observed.birth_microseconds,
+        }));
+        assert!(!same_process(ProcessIdentity {
+            pid: observed.pid,
+            birth: observed.birth,
+            birth_microseconds: observed.birth_microseconds + 1,
         }));
         assert!(!same_process(ProcessIdentity {
             pid: u32::MAX,
-            birth: observed.birth
+            birth: observed.birth,
+            birth_microseconds: observed.birth_microseconds,
         }));
         child.kill().unwrap();
         child.wait().unwrap();
         assert!(!same_process(observed));
+        let old: ProcessIdentity = serde_json::from_str(&format!(
+            "{{\"pid\":{},\"birth\":{}}}",
+            observed.pid, observed.birth
+        ))
+        .unwrap();
+        assert_eq!(old.birth_microseconds, 0);
     }
 
     #[test]
@@ -2820,6 +2919,12 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("deadline expired"));
+        let error = bounded_stop_result::<()>(
+            Err(anyhow::anyhow!("manager timed out")),
+            Instant::now() - Duration::from_millis(1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().starts_with("rollback_deadline_expired"));
     }
 
     #[test]
@@ -2827,6 +2932,7 @@ mod tests {
         let started = ProcessIdentity {
             pid: 123,
             birth: 9_000,
+            birth_microseconds: 0,
         };
         assert!(may_stop_unresponsive_started_process(
             Some(started),
@@ -2848,6 +2954,60 @@ mod tests {
             Some(started),
             false
         ));
+    }
+
+    #[test]
+    fn delayed_upgrade_health_is_kept_before_stop() {
+        let mut observations = 0;
+        let healthy = poll_healthy_until(Instant::now() + Duration::from_secs(1), || {
+            observations += 1;
+            observations == 3
+        });
+        assert!(healthy);
+        assert_eq!(observations, 3);
+    }
+
+    #[test]
+    fn answered_wrong_version_uses_graceful_stop() {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let service = std::thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            while !request.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                socket.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() < 512);
+            }
+            assert!(request.starts_with(b"GET "));
+            let body = serde_json::json!({
+                "name": "gobstopper-proxy",
+                "port": port,
+                "version": "old",
+                "draining": false
+            })
+            .to_string();
+            write!(
+                socket,
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        });
+        let status = status(port).unwrap();
+        service.join().unwrap();
+        let mut stopped = false;
+        assert_ne!(status["version"], "new");
+        assert!(stop_answering_service(true, || {
+            stopped = true;
+            Ok(())
+        })
+        .unwrap());
+        assert!(stopped);
+        let error = stop_answering_service(true, || bail!("drain refused")).unwrap_err();
+        assert_eq!(error.to_string(), "stop_refused_answered_status");
+        assert!(!stop_answering_service(false, || panic!("unexpected stop")).unwrap());
     }
 
     #[test]

@@ -113,6 +113,21 @@ mod platform {
         save(journal)
     }
 
+    fn rollback_stop_reason(error: &anyhow::Error) -> Option<&'static str> {
+        let failure = error.to_string();
+        [
+            "stop_refused_answered_status",
+            "identity_changed",
+            "rollback_deadline_expired",
+            "start_unacknowledged",
+            "kernel_identity_unavailable",
+            "stop_refused_unresolved_drain",
+            "stop_refused_unresponsive",
+        ]
+        .into_iter()
+        .find(|reason| failure.starts_with(reason))
+    }
+
     fn now_unix_ms() -> Result<u128> {
         Ok(std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -392,7 +407,7 @@ mod platform {
             );
         }
         if let Err(error) = started {
-            if control.started_identity().is_none() {
+            if control.started_pid().is_none() {
                 journal.reason = Some("start_unacknowledged".into());
                 save(journal)?;
                 return Err(error);
@@ -422,12 +437,20 @@ mod platform {
                         .rollback_deadline_unix_ms
                         .context("Missing rollback deadline")?
                         .saturating_sub(now_unix_ms()?);
-                    ensure!(remaining > 0, "rollback stop deadline expired");
-                    let deadline =
+                    ensure!(remaining > 0, "rollback_deadline_expired");
+                    let rollback_deadline =
                         Instant::now() + Duration::from_millis(u64::try_from(remaining)?);
-                    if control.stop_started_unresponsive(
+                    let readiness_remaining = journal
+                        .starting_at_unix_ms
+                        .context("Missing startup time")?
+                        .saturating_add(5_000)
+                        .saturating_sub(now_unix_ms()?);
+                    let readiness_deadline =
+                        Instant::now() + Duration::from_millis(u64::try_from(readiness_remaining)?);
+                    if control.stop_after_failed_start(
                         journal.to_version.trim_start_matches('v'),
-                        deadline,
+                        readiness_deadline,
+                        rollback_deadline,
                     )? {
                         advance(journal, "healthy")?;
                         crate::self_update::discard_upgrade(
@@ -467,6 +490,10 @@ mod platform {
                 bail!("upgrade failed and previous proxy was restored: {error:#}")
             }
             Err(rollback_error) => {
+                if let Some(reason) = rollback_stop_reason(&rollback_error) {
+                    journal.reason = Some(reason.to_owned());
+                    eprintln!("Upgrade rollback refused: {reason}: {rollback_error:#}");
+                }
                 advance(journal, "failed")?;
                 bail!("upgrade failed: {error:#}; restoration cannot be proven: {rollback_error:#}; inspect proxy doctor and repair")
             }
@@ -598,6 +625,7 @@ mod platform {
                 controller_identity: Some(crate::proxy_agent::ProcessIdentity {
                     pid: 42,
                     birth: 1,
+                    birth_microseconds: 0,
                 }),
                 started_identity: None,
                 starting_at_unix_ms: None,
@@ -619,6 +647,23 @@ mod platform {
                 repair_outcome(&journal, &serde_json::json!({"healthy": false}), true),
                 None
             );
+        }
+
+        #[test]
+        fn rollback_stop_reasons_are_stable() {
+            for reason in [
+                "stop_refused_answered_status",
+                "identity_changed",
+                "rollback_deadline_expired",
+                "start_unacknowledged",
+                "kernel_identity_unavailable",
+                "stop_refused_unresolved_drain",
+                "stop_refused_unresponsive",
+            ] {
+                let error = anyhow::anyhow!("{reason}: details");
+                assert_eq!(rollback_stop_reason(&error), Some(reason));
+            }
+            assert_eq!(rollback_stop_reason(&anyhow::anyhow!("unrelated")), None);
         }
     }
 }
