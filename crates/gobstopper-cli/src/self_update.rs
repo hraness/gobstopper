@@ -13,6 +13,39 @@ use std::path::{Path, PathBuf};
 #[path = "self_update/unix.rs"]
 mod native;
 
+#[cfg(unix)]
+pub(crate) use native::UpgradeTarget;
+
+#[cfg(unix)]
+pub(crate) fn upgrade_target(executable: &Path, version: Option<&str>) -> Result<UpgradeTarget> {
+    native::upgrade_target(executable, version)
+}
+
+#[cfg(unix)]
+pub(crate) fn prepare_upgrade(selected: &UpgradeTarget, explicit: bool) -> Result<PathBuf> {
+    native::prepare_upgrade(selected, explicit)
+}
+
+#[cfg(unix)]
+pub(crate) fn replace_upgrade(executable: &Path, stage: &Path) -> Result<String> {
+    native::replace_upgrade(executable, stage)
+}
+
+#[cfg(unix)]
+pub(crate) fn restore_upgrade(executable: &Path, stage: &Path) -> Result<()> {
+    native::restore_upgrade(executable, stage)
+}
+
+#[cfg(unix)]
+pub(crate) fn verify_previous_upgrade(executable: &Path, version: &str) -> Result<()> {
+    native::verify_previous_upgrade(executable, version)
+}
+
+#[cfg(unix)]
+pub(crate) fn discard_upgrade(executable: &Path, stage: &Path) -> Result<()> {
+    native::discard_upgrade(executable, stage)
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(crate) enum Action {
     Install,

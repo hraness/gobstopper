@@ -323,6 +323,23 @@ pub(super) struct Stage<'a> {
 }
 
 impl<'a> Stage<'a> {
+    pub fn existing(parent: &'a Directory, path: &Path) -> Result<Self> {
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .context("Invalid upgrade stage name")?;
+        ensure!(
+            name.starts_with(".gobstopper-update-") && path.parent() == Some(parent.path.as_path()),
+            "Upgrade stage is outside the installation directory"
+        );
+        Ok(Self {
+            directory: Directory::open(path, false, true)?,
+            parent,
+            name: name.to_owned(),
+            preserve: true,
+        })
+    }
+
     pub fn new(parent: &'a Directory) -> Result<Self> {
         for _ in 0..100 {
             let name = format!(

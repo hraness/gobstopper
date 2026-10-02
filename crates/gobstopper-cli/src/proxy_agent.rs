@@ -767,6 +767,10 @@ fn verify_definition(m: &Manifest, p: &Paths, allow_missing: bool) -> Result<()>
 }
 
 fn activate(m: &mut Manifest, p: &Paths) -> Result<()> {
+    activate_expected(m, p, None)
+}
+
+fn activate_expected(m: &mut Manifest, p: &Paths, version: Option<&str>) -> Result<()> {
     require_clear_drain(p)?;
     match m.platform {
         Platform::Linux => {
@@ -803,6 +807,22 @@ fn activate(m: &mut Manifest, p: &Paths) -> Result<()> {
         Platform::Macos => {}
     }
     run_manager(m.platform, &manager_args(m, p, "start"))?;
+    if let Some(version) = version {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if status(m.port).is_ok_and(|live| {
+                matches_identity(m, &live)
+                    && live["draining"] == false
+                    && live["version"] == version
+            }) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                bail!("upgraded proxy did not become healthy at version {version}");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
     wait_ready(m)
 }
 const DRAIN_WAIT_SECS: u64 = 600;
@@ -2008,12 +2028,15 @@ fn legacy_effective_args(args: &[String], live: &Value) -> Result<Vec<String>> {
 /// Explicitly adopt a pre-manifest macOS LaunchAgent. Its exact executable,
 /// argv, supported environment, and loaded job identity must all agree.
 /// Provider settings and source/session data are never changed.
-pub fn migrate(print: bool) -> Result<()> {
+pub fn migrate(print: bool, allow_dependent_caller: bool) -> Result<()> {
     if Platform::current()? != Platform::Macos {
         bail!("legacy LaunchAgent migration is available on macOS only");
     }
     let p = paths(Platform::Macos)?;
     if pending_path(&p).exists() || load(&p)?.is_some() {
+        if !print {
+            crate::proxy_caller::refuse(status_port(None)?, allow_dependent_caller)?;
+        }
         return repair(print);
     }
     let files = legacy_files()?;
@@ -2165,6 +2188,7 @@ pub fn migrate(print: bool) -> Result<()> {
         );
         return Ok(());
     }
+    crate::proxy_caller::refuse(port, allow_dependent_caller)?;
     let observed = legacy_job_identity(&snapshot, job.as_bytes())?;
     legacy_restart_guard(&m, &observed, &live)?;
     let pending = Pending {
@@ -2238,6 +2262,9 @@ pub fn repair(print: bool) -> Result<()> {
 pub fn inspect() -> Result<Value> {
     let platform = Platform::current()?;
     let p = paths(platform)?;
+    let upgrade = read_file(&p.root.join("upgrade.json"))?
+        .map(|bytes| serde_json::from_slice::<Value>(&bytes))
+        .transpose()?;
     let m = load(&p)?;
     let legacy = if platform == Platform::Macos {
         legacy_files()?
@@ -2246,7 +2273,7 @@ pub fn inspect() -> Result<Value> {
     };
     let Some(m) = m else {
         return Ok(
-            json!({"schema": SCHEMA, "platform": platform, "installed": false, "pending_operation":pending_path(&p).exists(), "legacy_definitions": legacy, "next": "gobstopper proxy install"}),
+            json!({"schema": SCHEMA, "platform": platform, "installed": false, "pending_operation":pending_path(&p).exists(), "legacy_definitions": legacy, "upgrade": upgrade, "next": "gobstopper proxy install"}),
         );
     };
     let ownership = verify_owned(&m, &p, true).err().map(|e| e.to_string());
@@ -2263,6 +2290,7 @@ pub fn inspect() -> Result<Value> {
     let manager_error = manager.err().map(|error| error.to_string());
     Ok(json!({
         "schema":SCHEMA, "platform":platform, "installed":true,
+        "upgrade":upgrade,
         "pending_operation":pending_path(&p).exists(),
         "drain_operation_stage":drain_stage,"drain_operation_error":drain_error,
         "drain_control":live.as_ref().and_then(|v|v.get("drain_control")),
@@ -2274,6 +2302,209 @@ pub fn inspect() -> Result<Value> {
         "keep_awake":live.as_ref().and_then(|v|v.get("keep_awake")), "next":"gobstopper proxy repair"
         ,"draining":live.as_ref().and_then(|v|v.get("draining"))
     }))
+}
+
+pub(crate) fn upgrade_journal_path() -> Result<PathBuf> {
+    Ok(paths(Platform::current()?)?.root.join("upgrade.json"))
+}
+
+pub(crate) fn upgrade_write_journal(bytes: &[u8]) -> Result<()> {
+    let p = paths(Platform::current()?)?;
+    write_atomic(&p.root.join("upgrade.json"), bytes)
+}
+
+pub(crate) struct UpgradeJob {
+    pub(crate) definition: PathBuf,
+    pub(crate) log: PathBuf,
+    pub(crate) text: String,
+}
+
+pub(crate) fn upgrade_job(executable: &Path, stage: &Path) -> Result<UpgradeJob> {
+    let platform = Platform::current()?;
+    let p = paths(platform)?;
+    Ok(upgrade_job_for(
+        platform,
+        &home()?,
+        &p.root,
+        executable,
+        stage,
+    ))
+}
+
+fn upgrade_job_for(
+    platform: Platform,
+    home: &Path,
+    root: &Path,
+    executable: &Path,
+    stage: &Path,
+) -> UpgradeJob {
+    let log = if platform == Platform::Macos {
+        home.join("Library/Logs/gobstopper-upgrade.log")
+    } else {
+        root.join("upgrade.log")
+    };
+    let definition = if platform == Platform::Macos {
+        home.join("Library/LaunchAgents/sh.gobstopper.upgrade.plist")
+    } else {
+        root.join("gobstopper-upgrade.transient")
+    };
+    let args = [
+        executable.display().to_string(),
+        "__upgrade-controller".into(),
+        "--stage".into(),
+        stage.display().to_string(),
+        "--state-dir".into(),
+        root.display().to_string(),
+    ];
+    let text = if platform == Platform::Macos {
+        format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>sh.gobstopper.upgrade</string><key>ProgramArguments</key><array>{}</array><key>RunAtLoad</key><true/><key>StandardOutPath</key><string>{}</string><key>StandardErrorPath</key><string>{}</string></dict></plist>\n", args.iter().map(|arg| format!("<string>{}</string>", xml(arg))).collect::<String>(), xml(&log.display().to_string()), xml(&log.display().to_string()))
+    } else {
+        format!(
+            "systemd-run --user --unit gobstopper-upgrade --collect {}\n",
+            args.iter()
+                .map(|arg| unix_quote(arg))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    };
+    UpgradeJob {
+        definition,
+        log,
+        text,
+    }
+}
+
+pub(crate) fn upgrade_launch(job: &UpgradeJob, executable: &Path, stage: &Path) -> Result<()> {
+    let platform = Platform::current()?;
+    fs::create_dir_all(job.log.parent().context("upgrade log directory")?)?;
+    if platform == Platform::Macos {
+        if job.definition.exists() {
+            bail!("an upgrade job definition already exists; inspect proxy doctor");
+        }
+        fs::create_dir_all(job.definition.parent().context("LaunchAgent directory")?)?;
+        write_atomic(&job.definition, job.text.as_bytes())?;
+        run_manager(
+            platform,
+            &[
+                "bootstrap".into(),
+                domain(),
+                job.definition.display().to_string(),
+            ],
+        )?;
+    } else if platform == Platform::Linux {
+        let state = paths(platform)?.root;
+        run_bounded(
+            Path::new("/usr/bin/systemd-run"),
+            &[
+                "--user".into(),
+                "--unit".into(),
+                "gobstopper-upgrade".into(),
+                "--collect".into(),
+                format!("--property=StandardOutput=append:{}", job.log.display()),
+                format!("--property=StandardError=append:{}", job.log.display()),
+                executable.display().to_string(),
+                "__upgrade-controller".into(),
+                "--stage".into(),
+                stage.display().to_string(),
+                "--state-dir".into(),
+                state.display().to_string(),
+            ],
+        )?;
+    } else {
+        bail!("detached upgrade is unsupported on this platform");
+    }
+    Ok(())
+}
+
+pub(crate) fn upgrade_cleanup(job: &UpgradeJob) -> Result<()> {
+    if Platform::current()? == Platform::Macos {
+        if job.definition.exists() {
+            fs::remove_file(&job.definition)?;
+        }
+        run_manager(
+            Platform::Macos,
+            &[
+                "bootout".into(),
+                format!("{}/sh.gobstopper.upgrade", domain()),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn upgrade_probe(read_only: bool) -> Result<(PathBuf, String)> {
+    let p = paths(Platform::current()?)?;
+    let _lock = if read_only {
+        None
+    } else {
+        Some(ServiceLock::acquire(&p)?)
+    };
+    if pending_path(&p).exists() || drain_path(&p).exists() {
+        bail!("a service operation is pending; inspect proxy doctor and run proxy repair");
+    }
+    let m = load(&p)?.context("no managed proxy service is installed")?;
+    verify_owned(&m, &p, true)?;
+    if registered(&m, &p)?.is_none() {
+        bail!("managed proxy service is not registered");
+    }
+    let live = status(m.port)?;
+    if !matches_identity(&m, &live) || live["draining"] != false {
+        bail!("managed proxy service is not healthy");
+    }
+    Ok((
+        m.executable,
+        live["version"]
+            .as_str()
+            .context("proxy version is missing")?
+            .to_owned(),
+    ))
+}
+
+pub(crate) struct UpgradeControl {
+    manifest: Manifest,
+    paths: Paths,
+    _lock: ServiceLock,
+}
+
+impl UpgradeControl {
+    pub(crate) fn open(executable: &Path) -> Result<Self> {
+        let paths = paths(Platform::current()?)?;
+        let lock = ServiceLock::acquire(&paths)?;
+        let manifest = load(&paths)?.context("managed service disappeared")?;
+        if manifest.executable != executable || pending_path(&paths).exists() {
+            bail!("managed service changed while upgrade was staged");
+        }
+        verify_owned(&manifest, &paths, true)?;
+        Ok(Self {
+            manifest,
+            paths,
+            _lock: lock,
+        })
+    }
+
+    pub(crate) fn stop(&self) -> Result<()> {
+        match stop(&self.manifest, &self.paths) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                if load_drain(&self.manifest, &self.paths)?
+                    .as_ref()
+                    .is_some_and(|operation| operation.stage == "stop_acknowledged")
+                {
+                    stop(&self.manifest, &self.paths)
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    pub(crate) fn start(&mut self, version: &str) -> Result<()> {
+        activate_expected(&mut self.manifest, &self.paths, Some(version))
+    }
+
+    pub(crate) fn restart_previous(&mut self) -> Result<()> {
+        activate(&mut self.manifest, &self.paths)
+    }
 }
 
 pub fn uninstall() -> Result<()> {
@@ -2323,6 +2554,21 @@ pub fn installed() -> bool {
         .flatten()
         .is_some()
 }
+
+pub(crate) fn repair_may_restart() -> Result<bool> {
+    let p = paths(Platform::current()?)?;
+    if pending_path(&p).exists() || drain_path(&p).exists() {
+        return Ok(true);
+    }
+    let Some(manifest) = load(&p)? else {
+        return Ok(false);
+    };
+    let Ok(live) = status(manifest.port) else {
+        return Ok(true);
+    };
+    Ok(live["draining"] != false
+        || needs_version_restart(&manifest, &live, &std::env::current_exe()?.canonicalize()?))
+}
 pub fn restart_command() -> String {
     "gobstopper proxy repair".into()
 }
@@ -2330,6 +2576,22 @@ pub fn restart_command() -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn upgrade_job_is_one_shot() {
+        let job = upgrade_job_for(
+            Platform::Macos,
+            Path::new("/tmp/home"),
+            Path::new("/tmp/service"),
+            Path::new("/tmp/bin/gobstopper"),
+            Path::new("/tmp/bin/stage"),
+        );
+        assert!(job.text.contains("<string>sh.gobstopper.upgrade</string>"));
+        assert!(job.text.contains("<key>RunAtLoad</key><true/>"));
+        assert!(!job.text.contains("KeepAlive"));
+        assert!(job.text.contains("<string>__upgrade-controller</string>"));
+        assert!(job.text.contains("<string>/tmp/bin/stage</string>"));
+    }
     fn manifest(platform: Platform) -> Manifest {
         Manifest {
             schema: 1,

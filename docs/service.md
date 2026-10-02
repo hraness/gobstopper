@@ -68,11 +68,28 @@ A damaged manifest, a missing executable, unavailable service manager, or change
 
 Uninstall uses the same drain procedure, then removes the owned startup definition. It retains observation data, logs, and backups. Older proxies require idle inference; unresolved operations require recovery first.
 
-### Interrupted upgrades
+## Upgrade the service
+
+```sh
+gobstopper proxy upgrade --print
+gobstopper proxy upgrade
+gobstopper proxy upgrade --version 0.8.6 --wait
+gobstopper proxy doctor --json
+```
+
+The foreground command requires a healthy installed managed service. It resolves the latest supported release, or the requested `--version`; a pinned installation requires an explicit version. It downloads and verifies the archive, checksum, executable identity, and macOS signature before starting a detached controller. If that version is already installed, it exits without starting a job. `--print` shows the versions, planned staging directory, and one-shot job definition without writing. The command returns the job label and log path; `--wait` follows the doctor's upgrade result and exits unsuccessfully when the controller fails or rolls back.
+
+The controller runs outside the caller's tool shell. On macOS it uses a one-shot `sh.gobstopper.upgrade` LaunchAgent with `RunAtLoad` and no `KeepAlive`; on Linux it uses a transient `gobstopper-upgrade` systemd user unit. It drains and stops the owned proxy, replaces the installed executable and receipt under the update lock, and starts the same service definition. Health must report the new version. If replacement or startup fails after a confirmed stop, it restores the previous executable and receipt and restarts the old service when the stop can be proven. The controller removes its one-shot job definition on exit.
+
+`proxy doctor` includes an `upgrade` object with the last outcome. Its stages are `started`, `draining`, `stopped`, `replacing`, `replaced`, `starting`, `healthy`, `failed`, and `rolled_back`; failures include a reason. A failed restoration retains the journal and backup for investigation. The existing drain journal remains authoritative when an external stop has no durable acknowledgement.
+
+`proxy install --replace`, `proxy uninstall`, `proxy repair` when it might restart, and `proxy migrate-service` refuse callers whose environment indicates they depend on this proxy: a matching loopback `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL`, `GOBSTOPPER_SCOPE`, an `X-Gobstopper-Scope` custom header, or `CLAUDECODE`. Run `gobstopper proxy upgrade` for a binary upgrade, run the service command from a terminal outside an agent tool shell, or pass `--allow-dependent-caller`. Preview commands with `--print` do not refuse.
+
+### Interrupted service operations
 
 Generated service definitions record their private state directory. At startup, the proxy checks its recorded identity and that directory's journal before accepting inference. It refuses startup for commit intent, committed or submitted stops, and damaged journals. This prevents an automatic replacement process from accepting work that a delayed stop could interrupt. Public status reports `drain_control.startup_guard`.
 
-Service definitions without the recorded directory use idle-only replacement. Run `proxy install --replace` with the intended proxy settings while idle to generate a guarded definition. Older running binaries cannot gain the startup check until that first upgrade.
+Service definitions without the recorded directory use idle-only configuration replacement. Run `proxy install --replace` with the intended proxy settings while idle to generate a guarded definition. Older running binaries cannot gain the startup check until that first configuration replacement.
 
 Once active inference reaches zero, the controller commits the drain before asking the operating system to stop the service. A committed drain does not expire: reopening it after an uncertain stop could admit work that a delayed operating-system command then interrupts. Other controllers and the legacy resume endpoint cannot release it.
 

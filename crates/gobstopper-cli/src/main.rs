@@ -14,8 +14,10 @@ mod native_operations;
 mod power;
 mod proxy;
 mod proxy_agent;
+mod proxy_caller;
 mod proxy_drain;
 mod proxy_observations;
+mod proxy_upgrade;
 mod report;
 mod secrets;
 mod self_update;
@@ -67,6 +69,8 @@ enum Cmd {
     Update(self_update::UpdateArgs),
     #[command(name = "__install-release", hide = true)]
     InstallRelease(self_update::InitialInstall),
+    #[command(name = "__upgrade-controller", hide = true)]
+    UpgradeController(proxy_upgrade::ControllerArgs),
     #[command(name = "__build-identity", hide = true)]
     BuildIdentity,
     /// List detected sessions with context occupancy, newest first.
@@ -5441,6 +5445,10 @@ fn main() -> std::process::ExitCode {
         match &cli.command {
             Some(Cmd::Update(args)) => return self_update::explicit(args),
             Some(Cmd::InstallRelease(args)) => return self_update::initial_install(args),
+            Some(Cmd::UpgradeController(args)) => return proxy_upgrade::controller(args),
+            Some(Cmd::Proxy {
+                command: proxy::ProxyCmd::Upgrade { .. },
+            }) => return run(cli),
             Some(Cmd::BuildIdentity) => {
                 self_update::build_identity();
                 return Ok(());
@@ -5458,7 +5466,14 @@ fn main() -> std::process::ExitCode {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             ux::report_error(&error, json, protocol);
-            std::process::ExitCode::FAILURE
+            if error
+                .downcast_ref::<proxy_caller::DependentCaller>()
+                .is_some()
+            {
+                std::process::ExitCode::from(2)
+            } else {
+                std::process::ExitCode::FAILURE
+            }
         }
     }
 }
@@ -5499,8 +5514,8 @@ fn offline_command(command: Option<&Cmd>) -> bool {
                         | proxy::ProxyCmd::Doctor { .. }
                         | proxy::ProxyCmd::Status { .. }
                         | proxy::ProxyCmd::Install { print: true, .. }
-                        | proxy::ProxyCmd::MigrateService { print: true }
-                        | proxy::ProxyCmd::Repair { print: true }
+                        | proxy::ProxyCmd::MigrateService { print: true, .. }
+                        | proxy::ProxyCmd::Repair { print: true, .. }
                 }
         )
     )
@@ -5513,7 +5528,10 @@ fn run(cli: Cli) -> Result<()> {
     };
     let cfg = config::load()?;
     match command {
-        Cmd::Update(_) | Cmd::InstallRelease(_) | Cmd::BuildIdentity => {
+        Cmd::Update(_)
+        | Cmd::InstallRelease(_)
+        | Cmd::UpgradeController(_)
+        | Cmd::BuildIdentity => {
             unreachable!("handled before product configuration")
         }
         Cmd::Context(args) => context::run(args),

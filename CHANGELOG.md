@@ -2,6 +2,13 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## Unreleased
+
+The managed proxy can upgrade without tying the stop controller to an agent session.
+
+- `gobstopper proxy upgrade` stages a verified release, then drains, replaces, and restarts the managed service from a detached one-shot controller. Doctor reports its journal and rollback outcome.
+- Stop-capable service commands refuse a caller whose environment depends on the proxy, with an explicit override for a separate terminal.
+
 ## v0.8.5 - 2026-10-01
 
 A context scope can carry its own standing input threshold, so a long-lived agent runs wider than the proxy default without re-arming a reservation.
