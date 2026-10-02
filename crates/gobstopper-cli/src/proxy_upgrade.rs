@@ -24,20 +24,21 @@ impl std::fmt::Display for PendingUpgrade {
 impl std::error::Error for PendingUpgrade {}
 
 #[cfg(not(unix))]
-pub(crate) fn run(_version: Option<&str>, _wait: bool, _print: bool) -> anyhow::Result<()> {
-    anyhow::bail!("detached upgrade is unsupported on this platform")
-}
+pub(crate) use unsupported::{controller, run};
 
-#[cfg(not(unix))]
-pub(crate) fn controller(_args: &ControllerArgs) -> anyhow::Result<()> {
-    anyhow::bail!("detached upgrade is unsupported on this platform")
-}
-
-#[cfg(not(unix))]
-#[cfg(test)]
-mod unsupported_tests {
+#[cfg(any(not(unix), test))]
+mod unsupported {
     use super::*;
 
+    pub(super) fn run(_version: Option<&str>, _wait: bool, _print: bool) -> anyhow::Result<()> {
+        anyhow::bail!("detached upgrade is unsupported on this platform")
+    }
+
+    pub(super) fn controller(_args: &ControllerArgs) -> anyhow::Result<()> {
+        anyhow::bail!("detached upgrade is unsupported on this platform")
+    }
+
+    #[cfg(test)]
     #[test]
     fn upgrade_and_controller_report_unsupported_platform() {
         assert!(run(None, false, false)
