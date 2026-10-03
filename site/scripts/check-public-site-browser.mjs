@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { publicationLinkGroups, verifyPublicationLinks } from './verify-publication-links.mjs';
+import { verifySettledConsentFlow } from './verify-settled-consent.mjs';
 import { inspectMockupLayout } from './check-mockup-layout.mjs';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -111,6 +113,13 @@ try {
       assert.equal(await page.locator('#hraness-site-footer').count(), 1, label);
       assert.equal(await page.locator('iframe').count(), 0, 'Retired embedded preview stays absent');
       await until(() => page.evaluate(() => document.documentElement.dataset.theme).then(value => value === theme), `${label}: resolved theme`);
+      const settledConsent = path === '/' ? await verifySettledConsentFlow(page) : undefined;
+      const publicationLinks = path === '/blog/introducing-gobstopper'
+        ? await verifyPublicationLinks(page, [
+            ...publicationLinkGroups.map(group => ({ ...group, required: group.name !== 'footer' })),
+            { name: 'byline', selector: '.plain-publication__byline a[href]', required: true },
+          ])
+        : undefined;
       const screenshot = await page.screenshot({ path: resolve(artifacts, `${label}.png`), fullPage: true, animations: 'disabled' });
       assert.equal(screenshot.readUInt32BE(16), width, `${label}: full-page screenshot width`);
       const metrics = await page.evaluate(() => {
@@ -141,7 +150,7 @@ try {
       assert.ok(Math.abs(moved.header) <= 1, `${label}: sticky chrome`);
       assert.ok(Math.abs(moved.footer + moved.scroll - metrics.footer.top) <= 2, `${label}: footer scrolls with document`);
       const mockups = ['/', '/blog/introducing-gobstopper'].includes(path) ? await inspectMockupLayout(page, width === 320 || width === 390) : undefined;
-      comboRecords.push({ route: path, width, theme, status: response.status(), metrics, mockups });
+      comboRecords.push({ route: path, width, theme, status: response.status(), metrics, mockups, publicationLinks, settledConsent });
       const figures = await page.evaluate(() => [...document.querySelectorAll('.gob-figure')].map(figure => {
         const box = figure.getBoundingClientRect();
         const small = [...figure.querySelectorAll('*')].filter(element => element.childNodes.length > 0 && [...element.childNodes].some(node => node.nodeType === 3 && node.textContent.trim() !== '') && element.checkVisibility() && parseFloat(getComputedStyle(element).fontSize) < 11.5).map(element => element.textContent.trim().slice(0, 40));
