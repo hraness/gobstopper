@@ -445,8 +445,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-01-085-standing-threshold-core.json",
-        "sha256": "e91da06600e6cc14664061238a3ad3c7ce32cd037e5733597249f97eb27ff98a"
+        "path": "docs/assurance/receipts/2026-10-04-086-aicharts-usage-core.json",
+        "sha256": "832f7e60c4d8540243fecad4abe3ecee5c941fcd55302b9795afb6971ba9f60c"
       }
     },
     {
@@ -529,8 +529,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-01-085-standing-threshold-stress.json",
-        "sha256": "beb2594e96e6a47757b923d42069d362401242cdb2122ff19b6389b10d915f48"
+        "path": "docs/assurance/receipts/2026-10-04-086-aicharts-usage-stress.json",
+        "sha256": "1f00407e85f6fd6a15d3c17397d88b5c62c01b5da20f3d9228bfb8128ed688f8"
       }
     },
     {
