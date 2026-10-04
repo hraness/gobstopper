@@ -501,6 +501,23 @@ fn run_bounded(program: &Path, args: &[String]) -> Result<Vec<u8>> {
     run_bounded_input(program, args, None)
 }
 fn run_bounded_input(program: &Path, args: &[String], input: Option<&[u8]>) -> Result<Vec<u8>> {
+    run_bounded_until(
+        program,
+        args,
+        input,
+        Instant::now() + Duration::from_secs(15),
+    )
+}
+fn run_bounded_until(
+    program: &Path,
+    args: &[String],
+    input: Option<&[u8]>,
+    deadline: Instant,
+) -> Result<Vec<u8>> {
+    anyhow::ensure!(
+        Instant::now() < deadline,
+        "service manager deadline expired"
+    );
     if input.is_some_and(|bytes| bytes.len() as u64 > MAX_FILE) {
         bail!("service manager input exceeded the limit");
     }
@@ -527,7 +544,6 @@ fn run_bounded_input(program: &Path, args: &[String], input: Option<&[u8]>) -> R
         let bytes = bytes.to_vec();
         std::thread::spawn(move || stdin.write_all(&bytes))
     });
-    let deadline = Instant::now() + Duration::from_secs(15);
     let status = loop {
         if let Some(status) = child.try_wait()? {
             break status;
@@ -767,6 +783,15 @@ fn verify_definition(m: &Manifest, p: &Paths, allow_missing: bool) -> Result<()>
 }
 
 fn activate(m: &mut Manifest, p: &Paths) -> Result<()> {
+    activate_expected(m, p, None, || {})
+}
+
+fn activate_expected(
+    m: &mut Manifest,
+    p: &Paths,
+    version: Option<&str>,
+    on_started: impl FnOnce(),
+) -> Result<()> {
     require_clear_drain(p)?;
     match m.platform {
         Platform::Linux => {
@@ -802,8 +827,33 @@ fn activate(m: &mut Manifest, p: &Paths) -> Result<()> {
         }
         Platform::Macos => {}
     }
-    run_manager(m.platform, &manager_args(m, p, "start"))?;
+    dispatch_start(
+        || run_manager(m.platform, &manager_args(m, p, "start")),
+        on_started,
+    )?;
+    if let Some(version) = version {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if status(m.port).is_ok_and(|live| {
+                matches_identity(m, &live)
+                    && live["draining"] == false
+                    && live["version"] == version
+            }) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                bail!("upgraded proxy did not become healthy at version {version}");
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    }
     wait_ready(m)
+}
+
+fn dispatch_start(start: impl FnOnce() -> Result<Vec<u8>>, observe: impl FnOnce()) -> Result<()> {
+    let result = start();
+    observe();
+    result.map(|_| ())
 }
 const DRAIN_WAIT_SECS: u64 = 600;
 
@@ -939,7 +989,9 @@ fn lease_control(m: &Manifest, op: &DrainOperation, action: &str) -> Result<Valu
     Ok(reply)
 }
 fn stopped_port(port: u16) -> Result<()> {
-    let deadline = Instant::now() + Duration::from_secs(5);
+    stopped_port_until(port, Instant::now() + Duration::from_secs(5))
+}
+fn stopped_port_until(port: u16, deadline: Instant) -> Result<()> {
     loop {
         // A failed status request alone is never evidence of a stopped process.
         if ensure_free(port).is_ok() {
@@ -2008,12 +2060,15 @@ fn legacy_effective_args(args: &[String], live: &Value) -> Result<Vec<String>> {
 /// Explicitly adopt a pre-manifest macOS LaunchAgent. Its exact executable,
 /// argv, supported environment, and loaded job identity must all agree.
 /// Provider settings and source/session data are never changed.
-pub fn migrate(print: bool) -> Result<()> {
+pub fn migrate(print: bool, allow_dependent_caller: bool) -> Result<()> {
     if Platform::current()? != Platform::Macos {
         bail!("legacy LaunchAgent migration is available on macOS only");
     }
     let p = paths(Platform::Macos)?;
     if pending_path(&p).exists() || load(&p)?.is_some() {
+        if !print {
+            crate::proxy_caller::refuse(status_port(None)?, allow_dependent_caller)?;
+        }
         return repair(print);
     }
     let files = legacy_files()?;
@@ -2165,6 +2220,7 @@ pub fn migrate(print: bool) -> Result<()> {
         );
         return Ok(());
     }
+    crate::proxy_caller::refuse(port, allow_dependent_caller)?;
     let observed = legacy_job_identity(&snapshot, job.as_bytes())?;
     legacy_restart_guard(&m, &observed, &live)?;
     let pending = Pending {
@@ -2228,6 +2284,8 @@ pub fn repair(print: bool) -> Result<()> {
     }
     let p = paths(Platform::current()?)?;
     let _lock = ServiceLock::acquire(&p)?;
+    #[cfg(unix)]
+    crate::proxy_upgrade::reconcile()?;
     if recover_pending(&p)? {
         return Ok(());
     }
@@ -2238,6 +2296,9 @@ pub fn repair(print: bool) -> Result<()> {
 pub fn inspect() -> Result<Value> {
     let platform = Platform::current()?;
     let p = paths(platform)?;
+    let upgrade = read_file(&p.root.join("upgrade.json"))?
+        .map(|bytes| serde_json::from_slice::<Value>(&bytes))
+        .transpose()?;
     let m = load(&p)?;
     let legacy = if platform == Platform::Macos {
         legacy_files()?
@@ -2246,7 +2307,7 @@ pub fn inspect() -> Result<Value> {
     };
     let Some(m) = m else {
         return Ok(
-            json!({"schema": SCHEMA, "platform": platform, "installed": false, "pending_operation":pending_path(&p).exists(), "legacy_definitions": legacy, "next": "gobstopper proxy install"}),
+            json!({"schema": SCHEMA, "platform": platform, "installed": false, "pending_operation":pending_path(&p).exists(), "legacy_definitions": legacy, "upgrade": upgrade, "next": "gobstopper proxy install"}),
         );
     };
     let ownership = verify_owned(&m, &p, true).err().map(|e| e.to_string());
@@ -2263,6 +2324,7 @@ pub fn inspect() -> Result<Value> {
     let manager_error = manager.err().map(|error| error.to_string());
     Ok(json!({
         "schema":SCHEMA, "platform":platform, "installed":true,
+        "upgrade":upgrade,
         "pending_operation":pending_path(&p).exists(),
         "drain_operation_stage":drain_stage,"drain_operation_error":drain_error,
         "drain_control":live.as_ref().and_then(|v|v.get("drain_control")),
@@ -2274,6 +2336,471 @@ pub fn inspect() -> Result<Value> {
         "keep_awake":live.as_ref().and_then(|v|v.get("keep_awake")), "next":"gobstopper proxy repair"
         ,"draining":live.as_ref().and_then(|v|v.get("draining"))
     }))
+}
+
+pub(crate) fn upgrade_journal_path() -> Result<PathBuf> {
+    Ok(paths(Platform::current()?)?.root.join("upgrade.json"))
+}
+
+pub(crate) fn upgrade_write_journal(bytes: &[u8]) -> Result<()> {
+    let p = paths(Platform::current()?)?;
+    write_atomic(&p.root.join("upgrade.json"), bytes)
+}
+
+pub(crate) fn upgrade_claim<T>(claim: impl FnOnce() -> Result<T>) -> Result<T> {
+    let paths = paths(Platform::current()?)?;
+    let _lock = ServiceLock::acquire(&paths)?;
+    claim()
+}
+
+pub(crate) struct UpgradeJob {
+    pub(crate) definition: PathBuf,
+    pub(crate) log: PathBuf,
+    pub(crate) text: String,
+}
+
+pub(crate) fn upgrade_job(executable: &Path, stage: &Path) -> Result<UpgradeJob> {
+    let platform = Platform::current()?;
+    let p = paths(platform)?;
+    Ok(upgrade_job_for(
+        platform,
+        &home()?,
+        &p.root,
+        executable,
+        stage,
+    ))
+}
+
+fn upgrade_job_for(
+    platform: Platform,
+    home: &Path,
+    root: &Path,
+    executable: &Path,
+    stage: &Path,
+) -> UpgradeJob {
+    let log = if platform == Platform::Macos {
+        home.join("Library/Logs/gobstopper-upgrade.log")
+    } else {
+        root.join("upgrade.log")
+    };
+    let definition = if platform == Platform::Macos {
+        home.join("Library/LaunchAgents/sh.gobstopper.upgrade.plist")
+    } else {
+        root.join("gobstopper-upgrade.transient")
+    };
+    let args = [
+        executable.display().to_string(),
+        "__upgrade-controller".into(),
+        "--stage".into(),
+        stage.display().to_string(),
+        "--state-dir".into(),
+        root.display().to_string(),
+    ];
+    let text = if platform == Platform::Macos {
+        format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict><key>Label</key><string>sh.gobstopper.upgrade</string><key>ProgramArguments</key><array>{}</array><key>RunAtLoad</key><true/><key>StandardOutPath</key><string>{}</string><key>StandardErrorPath</key><string>{}</string></dict></plist>\n", args.iter().map(|arg| format!("<string>{}</string>", xml(arg))).collect::<String>(), xml(&log.display().to_string()), xml(&log.display().to_string()))
+    } else {
+        format!(
+            "systemd-run --user --unit gobstopper-upgrade --collect {}\n",
+            args.iter()
+                .map(|arg| unix_quote(arg))
+                .collect::<Vec<_>>()
+                .join(" ")
+        )
+    };
+    UpgradeJob {
+        definition,
+        log,
+        text,
+    }
+}
+
+pub(crate) fn upgrade_launch(job: &UpgradeJob, executable: &Path, stage: &Path) -> Result<()> {
+    let platform = Platform::current()?;
+    fs::create_dir_all(job.log.parent().context("upgrade log directory")?)?;
+    if platform == Platform::Macos {
+        if job.definition.exists() {
+            bail!("an upgrade job definition already exists; inspect proxy doctor");
+        }
+        fs::create_dir_all(job.definition.parent().context("LaunchAgent directory")?)?;
+        write_atomic(&job.definition, job.text.as_bytes())?;
+        run_manager(
+            platform,
+            &[
+                "bootstrap".into(),
+                domain(),
+                job.definition.display().to_string(),
+            ],
+        )?;
+    } else if platform == Platform::Linux {
+        let state = paths(platform)?.root;
+        // A transient systemd-run unit has no Restart property, so it cannot relaunch the controller.
+        run_bounded(
+            Path::new("/usr/bin/systemd-run"),
+            &[
+                "--user".into(),
+                "--unit".into(),
+                "gobstopper-upgrade".into(),
+                "--collect".into(),
+                format!("--property=StandardOutput=append:{}", job.log.display()),
+                format!("--property=StandardError=append:{}", job.log.display()),
+                executable.display().to_string(),
+                "__upgrade-controller".into(),
+                "--stage".into(),
+                stage.display().to_string(),
+                "--state-dir".into(),
+                state.display().to_string(),
+            ],
+        )?;
+    } else {
+        bail!("detached upgrade is unsupported on this platform");
+    }
+    Ok(())
+}
+
+pub(crate) fn upgrade_cleanup(job: &UpgradeJob) -> Result<()> {
+    if Platform::current()? == Platform::Macos {
+        if job.definition.exists() {
+            fs::remove_file(&job.definition)?;
+        }
+        run_manager(
+            Platform::Macos,
+            &[
+                "bootout".into(),
+                format!("{}/sh.gobstopper.upgrade", domain()),
+            ],
+        )?;
+    }
+    Ok(())
+}
+
+pub(crate) fn upgrade_unlink_on_entry() -> Result<()> {
+    if Platform::current()? == Platform::Macos {
+        let definition = home()?.join("Library/LaunchAgents/sh.gobstopper.upgrade.plist");
+        unlink_upgrade_definition(&definition)?;
+    }
+    Ok(())
+}
+
+fn unlink_upgrade_definition(definition: &Path) -> Result<()> {
+    if definition.exists() {
+        fs::remove_file(definition)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn upgrade_probe(read_only: bool) -> Result<(PathBuf, String)> {
+    let p = paths(Platform::current()?)?;
+    let _lock = if read_only {
+        None
+    } else {
+        Some(ServiceLock::acquire(&p)?)
+    };
+    if pending_path(&p).exists() || drain_path(&p).exists() {
+        bail!("a service operation is pending; inspect proxy doctor and run proxy repair");
+    }
+    let m = load(&p)?.context("no managed proxy service is installed")?;
+    verify_owned(&m, &p, true)?;
+    if registered(&m, &p)?.is_none() {
+        bail!("managed proxy service is not registered");
+    }
+    let live = status(m.port)?;
+    if !matches_identity(&m, &live) || live["draining"] != false {
+        bail!("managed proxy service is not healthy");
+    }
+    Ok((
+        m.executable,
+        live["version"]
+            .as_str()
+            .context("proxy version is missing")?
+            .to_owned(),
+    ))
+}
+
+pub(crate) struct UpgradeControl {
+    manifest: Manifest,
+    paths: Paths,
+    _lock: ServiceLock,
+    started: Option<ProcessIdentity>,
+    started_pid: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct ProcessIdentity {
+    pub(crate) pid: u32,
+    pub(crate) birth: u64,
+    #[serde(default)]
+    pub(crate) birth_microseconds: u64,
+}
+
+fn may_stop_unresponsive_started_process(
+    started: Option<ProcessIdentity>,
+    observed: Option<ProcessIdentity>,
+    answered_status: bool,
+) -> bool {
+    started.is_some() && started == observed && !answered_status
+}
+
+fn poll_healthy_until(deadline: Instant, mut healthy: impl FnMut() -> bool) -> bool {
+    loop {
+        if healthy() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+fn stop_answering_service(
+    answered_status: bool,
+    stop: impl FnOnce() -> Result<()>,
+) -> Result<bool> {
+    if !answered_status {
+        return Ok(false);
+    }
+    stop().context("stop_refused_answered_status")?;
+    Ok(true)
+}
+
+/// Keeps a target that becomes healthy by the readiness deadline, drains one
+/// that answers status, and leaves only a silent one to `force_stop`.
+pub(crate) fn stop_after_failed_start_on(
+    port: u16,
+    version: &str,
+    owned: impl Fn(&Value) -> bool,
+    readiness_deadline: Instant,
+    rollback_deadline: Instant,
+    graceful_stop: impl FnOnce() -> Result<()>,
+    force_stop: impl FnOnce(&dyn Fn() -> bool) -> Result<bool>,
+) -> Result<bool> {
+    let ready =
+        |live: &Value| owned(live) && live["draining"] == false && live["version"] == version;
+    let healthy = || status(port).is_ok_and(|live| ready(&live));
+    if poll_healthy_until(readiness_deadline.min(rollback_deadline), healthy) {
+        return Ok(true);
+    }
+    anyhow::ensure!(
+        Instant::now() < rollback_deadline,
+        "rollback_deadline_expired"
+    );
+    if let Ok(live) = status(port) {
+        if ready(&live) {
+            return Ok(true);
+        }
+        stop_answering_service(true, graceful_stop)?;
+        return Ok(false);
+    }
+    force_stop(&healthy)
+}
+
+/// Returns the started process only when the manager and the kernel still
+/// report it; the error names why a force stop is unsafe.
+fn force_stop_identity(
+    started_pid: Option<u32>,
+    started: Option<ProcessIdentity>,
+    observed: Option<ProcessIdentity>,
+    alive: impl Fn(ProcessIdentity) -> bool,
+) -> Result<ProcessIdentity> {
+    let started_pid = started_pid.context("start_unacknowledged")?;
+    let started = started.context("kernel_identity_unavailable")?;
+    anyhow::ensure!(
+        may_stop_unresponsive_started_process(Some(started), observed, false)
+            && started.pid == started_pid
+            && alive(started),
+        "identity_changed"
+    );
+    Ok(started)
+}
+
+fn bounded_stop_result<T>(result: Result<T>, deadline: Instant) -> Result<T> {
+    result.map_err(|error| {
+        if Instant::now() >= deadline {
+            anyhow::anyhow!("rollback_deadline_expired: {error:#}")
+        } else {
+            anyhow::anyhow!("stop_refused_unresponsive: {error:#}")
+        }
+    })
+}
+
+fn manager_pid(platform: Platform) -> Result<Option<u32>> {
+    let output = if platform == Platform::Macos {
+        run_manager(platform, &["print".into(), format!("{}/{LABEL}", domain())])?
+    } else {
+        run_manager(
+            platform,
+            &strings(&[
+                "--user",
+                "show",
+                "gobstopper-proxy.service",
+                "--property=MainPID",
+            ]),
+        )?
+    };
+    let text = String::from_utf8(output)?;
+    Ok(parse_manager_pid(platform, &text))
+}
+
+fn parse_manager_pid(platform: Platform, text: &str) -> Option<u32> {
+    text.lines().find_map(|line| {
+        line.trim()
+            .strip_prefix(if platform == Platform::Macos {
+                "pid = "
+            } else {
+                "MainPID="
+            })
+            .and_then(|value| value.parse::<u32>().ok())
+            .filter(|pid| *pid > 0)
+    })
+}
+
+#[cfg(target_os = "linux")]
+fn process_birth(pid: u32) -> Option<(u64, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let fields = stat.rsplit_once(") ")?.1;
+    Some((fields.split_whitespace().nth(19)?.parse().ok()?, 0))
+}
+
+#[cfg(target_os = "macos")]
+fn process_birth(pid: u32) -> Option<(u64, u64)> {
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>();
+    let returned = unsafe {
+        libc::proc_pidinfo(
+            i32::try_from(pid).ok()?,
+            libc::PROC_PIDTBSDINFO,
+            0,
+            (&mut info as *mut libc::proc_bsdinfo).cast(),
+            i32::try_from(size).ok()?,
+        )
+    };
+    if returned != i32::try_from(size).ok()? || info.pbi_pid != pid {
+        return None;
+    }
+    Some((info.pbi_start_tvsec, info.pbi_start_tvusec))
+}
+
+pub(crate) fn process_identity(pid: u32) -> Option<ProcessIdentity> {
+    process_birth(pid).map(|(birth, birth_microseconds)| ProcessIdentity {
+        pid,
+        birth,
+        birth_microseconds,
+    })
+}
+
+pub(crate) fn same_process(identity: ProcessIdentity) -> bool {
+    process_identity(identity.pid) == Some(identity)
+}
+
+fn manager_identity(platform: Platform) -> Result<Option<ProcessIdentity>> {
+    Ok(manager_pid(platform)?.and_then(process_identity))
+}
+
+impl UpgradeControl {
+    pub(crate) fn open(executable: &Path) -> Result<Self> {
+        let paths = paths(Platform::current()?)?;
+        let lock = ServiceLock::acquire(&paths)?;
+        let manifest = load(&paths)?.context("managed service disappeared")?;
+        if manifest.executable != executable || pending_path(&paths).exists() {
+            bail!("managed service changed while upgrade was staged");
+        }
+        verify_owned(&manifest, &paths, true)?;
+        Ok(Self {
+            manifest,
+            paths,
+            _lock: lock,
+            started: None,
+            started_pid: None,
+        })
+    }
+
+    pub(crate) fn stop(&self) -> Result<()> {
+        match stop(&self.manifest, &self.paths) {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                if load_drain(&self.manifest, &self.paths)?
+                    .as_ref()
+                    .is_some_and(|operation| operation.stage == "stop_acknowledged")
+                {
+                    stop(&self.manifest, &self.paths)
+                } else {
+                    Err(error)
+                }
+            }
+        }
+    }
+
+    pub(crate) fn start(&mut self, version: &str) -> Result<()> {
+        let platform = self.manifest.platform;
+        let mut observed = None;
+        let mut started_pid = None;
+        let result = activate_expected(&mut self.manifest, &self.paths, Some(version), || {
+            started_pid = manager_pid(platform).ok().flatten();
+            observed = started_pid.and_then(process_identity);
+        });
+        self.started = observed;
+        self.started_pid = started_pid;
+        result
+    }
+
+    pub(crate) fn started_identity(&self) -> Option<ProcessIdentity> {
+        self.started
+    }
+
+    pub(crate) fn started_pid(&self) -> Option<u32> {
+        self.started_pid
+    }
+
+    pub(crate) fn stop_after_failed_start(
+        &self,
+        version: &str,
+        readiness_deadline: Instant,
+        rollback_deadline: Instant,
+    ) -> Result<bool> {
+        stop_after_failed_start_on(
+            self.manifest.port,
+            version,
+            |live| matches_identity(&self.manifest, live),
+            readiness_deadline,
+            rollback_deadline,
+            || self.stop(),
+            |healthy| {
+                anyhow::ensure!(
+                    load_drain(&self.manifest, &self.paths)?.is_none(),
+                    "stop_refused_unresolved_drain"
+                );
+                verify_job(&self.manifest, &self.paths).context("stop_refused_unresponsive")?;
+                let observed =
+                    manager_identity(self.manifest.platform).context("identity_changed")?;
+                force_stop_identity(self.started_pid, self.started, observed, same_process)?;
+                if healthy() {
+                    return Ok(true);
+                }
+                anyhow::ensure!(
+                    Instant::now() < rollback_deadline,
+                    "rollback_deadline_expired"
+                );
+                bounded_stop_result(
+                    run_bounded_until(
+                        &manager(self.manifest.platform),
+                        &manager_args(&self.manifest, &self.paths, "stop"),
+                        None,
+                        rollback_deadline,
+                    ),
+                    rollback_deadline,
+                )?;
+                bounded_stop_result(
+                    stopped_port_until(self.manifest.port, rollback_deadline),
+                    rollback_deadline,
+                )?;
+                Ok(false)
+            },
+        )
+    }
+
+    pub(crate) fn restart_previous(&mut self) -> Result<()> {
+        activate(&mut self.manifest, &self.paths)
+    }
 }
 
 pub fn uninstall() -> Result<()> {
@@ -2323,13 +2850,361 @@ pub fn installed() -> bool {
         .flatten()
         .is_some()
 }
+
+pub(crate) fn repair_may_restart() -> Result<bool> {
+    let p = paths(Platform::current()?)?;
+    if pending_path(&p).exists() || drain_path(&p).exists() {
+        return Ok(true);
+    }
+    let Some(manifest) = load(&p)? else {
+        return Ok(false);
+    };
+    let Ok(live) = status(manifest.port) else {
+        return Ok(true);
+    };
+    Ok(live["draining"] != false
+        || needs_version_restart(&manifest, &live, &std::env::current_exe()?.canonicalize()?))
+}
 pub fn restart_command() -> String {
     "gobstopper proxy repair".into()
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    fn process_identity_tracks_birth_and_rejects_reuse() {
+        if std::env::var_os("GOBSTOPPER_LOCALE_IDENTITY_CHILD").is_none() {
+            for (key, value) in [
+                ("LANG", "en_GB.UTF-8"),
+                ("LC_ALL", "de_DE.UTF-8"),
+                ("TZ", "America/New_York"),
+            ] {
+                let result = Command::new(std::env::current_exe().unwrap())
+                    .arg("--exact")
+                    .arg("proxy_agent::tests::process_identity_tracks_birth_and_rejects_reuse")
+                    .env("GOBSTOPPER_LOCALE_IDENTITY_CHILD", "1")
+                    .env(key, value)
+                    .output()
+                    .unwrap();
+                assert!(
+                    result.status.success(),
+                    "{key}: {}",
+                    String::from_utf8_lossy(&result.stderr)
+                );
+            }
+        }
+        let mut child = Command::new("/bin/sleep").arg("5").spawn().unwrap();
+        let observed = process_identity(child.id()).unwrap();
+        assert!(same_process(observed));
+        assert!(!same_process(ProcessIdentity {
+            pid: observed.pid,
+            birth: observed.birth + 1,
+            birth_microseconds: observed.birth_microseconds,
+        }));
+        assert!(!same_process(ProcessIdentity {
+            pid: observed.pid,
+            birth: observed.birth,
+            birth_microseconds: observed.birth_microseconds + 1,
+        }));
+        assert!(!same_process(ProcessIdentity {
+            pid: u32::MAX,
+            birth: observed.birth,
+            birth_microseconds: observed.birth_microseconds,
+        }));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(!same_process(observed));
+        let old: ProcessIdentity = serde_json::from_str(&format!(
+            "{{\"pid\":{},\"birth\":{}}}",
+            observed.pid, observed.birth
+        ))
+        .unwrap();
+        assert_eq!(old.birth_microseconds, 0);
+    }
+
+    #[test]
+    fn timed_out_manager_start_still_observes_service_pid() {
+        let mut child = Command::new("/bin/sleep").arg("5").spawn().unwrap();
+        let mut observed = None;
+        let response = format!("pid = {}\n", child.id());
+        let result = dispatch_start(
+            || bail!("manager timed out"),
+            || observed = parse_manager_pid(Platform::Macos, &response).and_then(process_identity),
+        );
+        assert!(result.is_err());
+        assert!(observed.is_some_and(same_process));
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+
+    #[test]
+    fn expired_rollback_deadline_refuses_manager_command() {
+        let error = run_bounded_until(
+            Path::new("/bin/false"),
+            &[],
+            None,
+            Instant::now() - Duration::from_millis(1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("deadline expired"));
+        let error = bounded_stop_result::<()>(
+            Err(anyhow::anyhow!("manager timed out")),
+            Instant::now() - Duration::from_millis(1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().starts_with("rollback_deadline_expired"));
+    }
+
+    #[test]
+    fn unresponsive_upgrade_process_must_keep_its_started_identity() {
+        let started = ProcessIdentity {
+            pid: 123,
+            birth: 9_000,
+            birth_microseconds: 0,
+        };
+        assert!(may_stop_unresponsive_started_process(
+            Some(started),
+            Some(started),
+            false
+        ));
+        assert!(!may_stop_unresponsive_started_process(
+            Some(started),
+            Some(started),
+            true
+        ));
+        assert!(!may_stop_unresponsive_started_process(
+            Some(started),
+            None,
+            false
+        ));
+        assert!(!may_stop_unresponsive_started_process(
+            None,
+            Some(started),
+            false
+        ));
+    }
+
+    #[test]
+    fn delayed_upgrade_health_is_kept_before_stop() {
+        let mut observations = 0;
+        let healthy = poll_healthy_until(Instant::now() + Duration::from_secs(1), || {
+            observations += 1;
+            observations == 3
+        });
+        assert!(healthy);
+        assert_eq!(observations, 3);
+    }
+
+    /// A loopback status endpoint whose reported version is chosen per
+    /// request; `stop` makes it stop answering, as a drained service would.
+    pub(crate) struct FakeService {
+        pub(crate) port: u16,
+        stopped: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        thread: Option<std::thread::JoinHandle<()>>,
+    }
+
+    impl FakeService {
+        pub(crate) fn start(version: impl Fn() -> &'static str + Send + 'static) -> Self {
+            use std::sync::atomic::Ordering;
+            let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+            let port = listener.local_addr().unwrap().port();
+            let stopped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let serving = stopped.clone();
+            let thread = std::thread::spawn(move || {
+                for socket in listener.incoming() {
+                    if serving.load(Ordering::SeqCst) {
+                        return;
+                    }
+                    let mut socket = socket.unwrap();
+                    let mut request = Vec::new();
+                    while !request.ends_with(b"\r\n\r\n") {
+                        let mut byte = [0];
+                        socket.read_exact(&mut byte).unwrap();
+                        request.push(byte[0]);
+                        assert!(request.len() < 512);
+                    }
+                    assert!(request.starts_with(b"GET "));
+                    let body = serde_json::json!({
+                        "name": "gobstopper-proxy",
+                        "port": port,
+                        "version": version(),
+                        "draining": false
+                    })
+                    .to_string();
+                    write!(
+                        socket,
+                        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\n\r\n{body}",
+                        body.len()
+                    )
+                    .unwrap();
+                }
+            });
+            Self {
+                port,
+                stopped,
+                thread: Some(thread),
+            }
+        }
+
+        pub(crate) fn stop(&mut self) {
+            if let Some(thread) = self.thread.take() {
+                self.stopped
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+                let _ = TcpStream::connect((Ipv4Addr::LOCALHOST, self.port));
+                thread.join().unwrap();
+            }
+        }
+    }
+
+    impl Drop for FakeService {
+        fn drop(&mut self) {
+            self.stop();
+        }
+    }
+
+    #[test]
+    fn answered_wrong_version_uses_graceful_stop() {
+        let mut service = FakeService::start(|| "old");
+        let status = status(service.port).unwrap();
+        service.stop();
+        let mut stopped = false;
+        assert_ne!(status["version"], "new");
+        assert!(stop_answering_service(true, || {
+            stopped = true;
+            Ok(())
+        })
+        .unwrap());
+        assert!(stopped);
+        let error = stop_answering_service(true, || bail!("drain refused")).unwrap_err();
+        assert_eq!(error.to_string(), "stop_refused_answered_status");
+        assert!(!stop_answering_service(false, || panic!("unexpected stop")).unwrap());
+    }
+
+    #[test]
+    fn target_healthy_after_a_second_is_kept_within_readiness_deadline() {
+        let healthy_at = Instant::now() + Duration::from_secs(1);
+        let service = FakeService::start(move || {
+            if Instant::now() < healthy_at {
+                "old"
+            } else {
+                "new"
+            }
+        });
+        let kept = stop_after_failed_start_on(
+            service.port,
+            "new",
+            |_| true,
+            Instant::now() + Duration::from_secs(3),
+            Instant::now() + Duration::from_secs(25),
+            || panic!("a target that became healthy must not be drained"),
+            |_| panic!("a target that became healthy must not be force-stopped"),
+        )
+        .unwrap();
+        assert!(kept);
+        assert!(Instant::now() >= healthy_at);
+    }
+
+    #[test]
+    fn refused_rollback_stops_name_their_reason() {
+        let service = FakeService::start(|| "old");
+        let error = stop_after_failed_start_on(
+            service.port,
+            "new",
+            |_| true,
+            Instant::now(),
+            Instant::now() + Duration::from_secs(5),
+            || bail!("drain refused"),
+            |_| panic!("an answering service must not be force-stopped"),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "stop_refused_answered_status");
+        drop(service);
+
+        let error = stop_after_failed_start_on(
+            closed_port(),
+            "new",
+            |_| true,
+            Instant::now(),
+            Instant::now(),
+            || panic!("a silent service cannot be drained"),
+            |_| panic!("an expired deadline must not force-stop"),
+        )
+        .unwrap_err();
+        assert_eq!(error.to_string(), "rollback_deadline_expired");
+
+        let started = ProcessIdentity {
+            pid: 123,
+            birth: 9_000,
+            birth_microseconds: 7,
+        };
+        let reason = |started_pid, identity, observed, alive: bool| {
+            force_stop_identity(started_pid, identity, observed, |_| alive)
+                .unwrap_err()
+                .to_string()
+        };
+        assert_eq!(
+            reason(None, None, Some(started), true),
+            "start_unacknowledged"
+        );
+        assert_eq!(
+            reason(Some(123), None, Some(started), true),
+            "kernel_identity_unavailable"
+        );
+        assert_eq!(
+            reason(Some(123), Some(started), None, true),
+            "identity_changed"
+        );
+        assert_eq!(
+            reason(Some(123), Some(started), Some(started), false),
+            "identity_changed"
+        );
+        assert_eq!(
+            reason(Some(124), Some(started), Some(started), true),
+            "identity_changed"
+        );
+        assert_eq!(
+            force_stop_identity(Some(123), Some(started), Some(started), |_| true).unwrap(),
+            started
+        );
+    }
+
+    fn closed_port() -> u16 {
+        TcpListener::bind((Ipv4Addr::LOCALHOST, 0))
+            .unwrap()
+            .local_addr()
+            .unwrap()
+            .port()
+    }
+
+    #[test]
+    fn upgrade_job_is_one_shot() {
+        let job = upgrade_job_for(
+            Platform::Macos,
+            Path::new("/tmp/home"),
+            Path::new("/tmp/service"),
+            Path::new("/tmp/bin/gobstopper"),
+            Path::new("/tmp/bin/stage"),
+        );
+        assert!(job.text.contains("<string>sh.gobstopper.upgrade</string>"));
+        assert!(job.text.contains("<key>RunAtLoad</key><true/>"));
+        assert!(!job.text.contains("KeepAlive"));
+        assert!(job.text.contains("<string>__upgrade-controller</string>"));
+        assert!(job.text.contains("<string>/tmp/bin/stage</string>"));
+    }
+
+    #[test]
+    fn upgrade_definition_unlink_is_idempotent() {
+        let root = std::env::temp_dir().join(format!("gobstopper-unlink-{}", unique_id()));
+        fs::create_dir(&root).unwrap();
+        let definition = root.join("sh.gobstopper.upgrade.plist");
+        fs::write(&definition, b"one-shot").unwrap();
+        unlink_upgrade_definition(&definition).unwrap();
+        unlink_upgrade_definition(&definition).unwrap();
+        assert!(!definition.exists());
+        fs::remove_dir(root).unwrap();
+    }
     fn manifest(platform: Platform) -> Manifest {
         Manifest {
             schema: 1,

@@ -68,7 +68,9 @@ gobstopper update enable         # restore automatic updates
 
 Commands started from an update-enabled installation prevent replacement until
 they exit, including a proxy, MCP server, or watch command. Updating does not
-restart a service. Help, version,
+restart a service. Use `gobstopper proxy upgrade` for a running managed proxy:
+the proxy holds the activity lock, so `gobstopper update` cannot replace its
+binary until a detached controller drains and stops it. Help, version,
 CI, MCP, offline replay and read-only inspection commands do not check for
 updates. `--no-update` or
 `HRANESS_NO_UPDATE=1` skips automatic checks for one invocation. The saved policy
