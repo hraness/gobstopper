@@ -17,15 +17,16 @@ const MAX_BYTES = 600 * 1024;
 const jobs = (await loadStills()).filter((job) => !job.outputs.includes("social"));
 const sha = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 const pngSize = (bytes: Buffer): [number, number] => [bytes.readUInt32BE(16), bytes.readUInt32BE(20)];
-const committed = (dir: string) => readdirSync(dir).filter((name) => /^gob-.*\.png$/.test(name)).sort();
+// gob-film-card.png is a frame of the story film (media/story/publish.ts), not a still job.
+const committed = (dir: string) => readdirSync(dir).filter((name) => /^gob-.*\.png$/.test(name) && name !== "gob-film-card.png").sort();
 const expected = (output: "docs" | "blog") => jobs.filter((job) => job.outputs.includes(output)).map((job) => `gob-${job.id}.png`).sort();
 
 describe("still outputs", () => {
   test("the committed file sets are exactly the jobs' outputs", () => {
     expect(committed(DOCS)).toEqual(expected("docs"));
     expect(committed(BLOG)).toEqual(expected("blog"));
-    expect(expected("docs")).toHaveLength(10);
-    expect(expected("blog")).toHaveLength(11);
+    expect(expected("docs")).toHaveLength(9);
+    expect(expected("blog")).toHaveLength(10);
   });
 
   for (const job of jobs) {
@@ -68,14 +69,8 @@ describe("still sources", () => {
     expect(PROV).toEqual({ tb: P_TB, tbFull: P_TB_FULL, saw: P_SAW, grid: P_GRID });
   });
 
-  test("the film card's length agrees with the film", () => {
-    const card = readFileSync(join(MEDIA, "scenes/stills/film-card.html"), "utf8");
-    expect(card).toContain("${s.params.data.film.seconds}-second film");
-    const shots = join(MEDIA, "shots.json");
-    if (existsSync(shots)) {
-      const list = JSON.parse(readFileSync(shots, "utf8"));
-      expect(list.shots.at(-1).end).toBe(FILM_SECONDS);
-    }
-    if (gobFilm !== null) expect(gobFilm.durationSeconds).toBe(FILM_SECONDS);
+  test("the README's film card states the published film's length", () => {
+    // The card is a frame of the story film (media/story/publish.ts), not a still job.
+    if (gobFilm !== null) expect(readFileSync(join(REPO, "README.md"), "utf8")).toContain(`Play the ${gobFilm.durationSeconds}-second Gobstopper film`);
   });
 });

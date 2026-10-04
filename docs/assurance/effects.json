@@ -3224,6 +3224,53 @@
         "E-EVERLASTING-SOURCE"
       ],
       "next_gate": "C15"
+    },
+    {
+      "id": "aicharts-delegation",
+      "owner": "CLI usage",
+      "reads": [
+        "config"
+      ],
+      "writes": [
+        {
+          "state": "process_state",
+          "mode": "spawn",
+          "condition": "One located aicharts executable (GOBSTOPPER_AICHARTS, PATH or ~/.local/bin) runs `history` with report, status, enable, disable or collect and the caller's remaining arguments, inheriting the terminal; every other aicharts command is refused before spawning."
+        }
+      ],
+      "outbound": [
+        "The aicharts executable runs with user authority: report and status read its local record, collect reads local agent session files, and enable/disable manage its own owner-scoped launch agent or systemd user timer. Gobstopper sends it no enrollment or publishing command."
+      ],
+      "authority": "Explicit `gobstopper usage` invocation; the user-installed aicharts executable remains trusted, like a plugin.",
+      "invariants": [
+        "READ-1",
+        "PRIV-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-AUTH",
+        "A-EXT"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/usage.rs",
+          "anchor": "pub(crate) fn run"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/usage.rs",
+          "anchor": "pub(crate) fn plan"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Fixed five-command allowlist and HRANESS_SUPPORT_AUDIENCE=off; no deadline or output cap beyond the child's own, because the child inherits the terminal.",
+      "exclusions": [
+        "No sandbox for the aicharts executable",
+        "aicharts' own effects and bounds are owned by aicharts"
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "next_gate": "C15"
     }
   ],
   "cli": [
@@ -3795,6 +3842,18 @@
         "native-update-storage"
       ],
       "contract": "Local versioned session/request/tool/metric/status/check output; read commands use an existing query-only database without migration, while a missing database may be initialized and explicit write commands may migrate it. Streaming full-window metrics and bounded event pages retain explicit revision, timeout and incomplete-history semantics; query deadlines use owned timer threads and SQLite may use temporary/shared-memory files. Explicit content-free native/legacy import, checksummed portable import/export, fresh segmented archives with completion verification and verified fresh backup. No cloud publication or retention deletion. Automatic release checks are suppressed; the native installation lease remains held.",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "anchor": "enum Cmd"
+      }
+    },
+    {
+      "name": "Usage",
+      "effects": [
+        "aicharts-delegation",
+        "output"
+      ],
+      "contract": "Delegates to the user's aicharts executable for its local usage record: report (default), status, enable, disable or collect only. Never enrolls or publishes. Dispatched before product configuration and the update check.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -8383,6 +8442,28 @@
       "symbol": "validate_contents",
       "effects": [
         "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/usage.rs",
+      "symbol": "plan",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/usage.rs",
+      "symbol": "locate",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/usage.rs",
+      "symbol": "run",
+      "effects": [
+        "aicharts-delegation",
+        "output"
       ]
     }
   ],

@@ -445,8 +445,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-reliability-steel-thread-core.json",
-        "sha256": "e26adb505bfa3ff9625db4e441467e3f18db3b75b103a0e303837d215960f93f"
+        "path": "docs/assurance/receipts/2026-10-04-release-086-reliability-core.json",
+        "sha256": "4b634adcd048069ad3a5a74187ca9edbb466150d1270a5958f7adff14a5444f3"
       }
     },
     {
@@ -466,8 +466,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-reliability-steel-thread-watch.json",
-        "sha256": "428e92812d5b592e53620dbe8b58944d63abb3655bea9b79c0d0ff1ddc04e9f1"
+        "path": "docs/assurance/receipts/2026-10-04-release-086-reliability-watch.json",
+        "sha256": "0d2bc97816a58c990f85422bfa89e5e6fe530fe1c466545b176a191a0a58893a"
       }
     },
     {
@@ -487,8 +487,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-reliability-steel-thread-vault.json",
-        "sha256": "1444c64d7b47b95cf3ce34a020c08954525dd6638482bed3a6e5c696f6d69fc6"
+        "path": "docs/assurance/receipts/2026-10-04-release-086-reliability-vault.json",
+        "sha256": "ebe97a67b4e115c47eb240974f3670aaa5e8964bc72b0a1987f27cecff07efae"
       }
     },
     {
@@ -508,8 +508,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-reliability-steel-thread-transcript.json",
-        "sha256": "13a0f265ec1468db36749c6a1822b8162e767232d37cac4c8894475b4ffe2d10"
+        "path": "docs/assurance/receipts/2026-10-04-release-086-reliability-transcript.json",
+        "sha256": "9e6c3bbe270ae93b5d73443cd07ad32eb465ae0f1fa59d3d6c194fd5a87cfb85"
       }
     },
     {
@@ -529,8 +529,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-reliability-steel-thread-final-stress.json",
-        "sha256": "4ca42e636c6a17c5c974ab32079509285ab71bb57446664cdfa832ab8d7b9e97"
+        "path": "docs/assurance/receipts/2026-10-04-release-086-reliability-stress.json",
+        "sha256": "0a8252ef2541327bd033a327a9aa39669c24e2636b57d6f6058a85d23b06006f"
       }
     },
     {

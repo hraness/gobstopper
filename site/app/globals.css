@@ -817,3 +817,42 @@ a[href] {
   text-underline-offset: 0.2em;
 }
 a[href]:where(:hover, :focus-visible) { text-decoration-color: currentColor; }
+
+/* Product landscape: the generated, product-themed world behind the homepage.
+ * A grayscale luminance mask carries the drawing, so its ink is the page's own
+ * text mixed into the paper: a deeper shade of the background hue in light
+ * themes and a lifted one in dark themes, never an accent colour. */
+.product-landscape {
+  isolation: isolate;
+  position: relative;
+}
+
+@supports (mask-mode: luminance) {
+  .product-landscape::before {
+    background: color-mix(in oklch, var(--foreground, CanvasText) 30%, var(--background, Canvas));
+    content: "";
+    inset: 0;
+    mask-image: image-set(url("/landscape/landscape-bf9a44e6b0f6423b16aec9d2f55a9aa7dc63b2d8088579396261204b41a2a41d.webp") 1x, url("/landscape/landscape-8fd512732088ba456f11044561670091b23080951aa4e29fe35c4c270759938f.webp") 2x);
+    mask-mode: luminance;
+    mask-position: top center;
+    mask-repeat: no-repeat;
+    mask-size: 100% auto;
+    opacity: .5;
+    pointer-events: none;
+    position: absolute;
+    z-index: -1;
+  }
+}
+
+@media (max-width: 48rem) {
+  .product-landscape::before {
+    mask-image: url("/landscape/landscape-e107b97467536e1fabe1e9cb7519cd29d3812707620d02a805431a550a921381.webp");
+    opacity: .36;
+  }
+}
+
+@media (forced-colors: active), print {
+  .product-landscape::before {
+    display: none;
+  }
+}

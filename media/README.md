@@ -1,6 +1,6 @@
 # Gobstopper media
 
-This directory renders the launch images and the 75-second film for the September 28, 2026 Terminal-Bench 2.1 results. Every frame is an HTML scene rendered by Slopcamera. The numbers come from the three public data files in `site/public/benchmarks/2026-09-28/`, formatted by the same code the website uses, so an image cannot print a number the site does not.
+The published launch film comes from `story/` (the story-film engine from Jungle's improve-launch-content skill; content in `story/story.config.ts`): run `bash render-all.sh gobstopper-film`, then `bun publish.ts`, from `media/story`. The rest of this directory renders the launch images, and the retired 75-second shot-list film, for the September 28, 2026 Terminal-Bench 2.1 results. Every frame is an HTML scene rendered by Slopcamera. The numbers come from the three public data files in `site/public/benchmarks/2026-09-28/`, formatted by the same code the website uses, so an image cannot print a number the site does not.
 
 ## Directory map
 

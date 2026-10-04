@@ -24,6 +24,7 @@ mod secrets;
 mod self_update;
 mod session_data;
 mod telemetry;
+mod usage;
 mod ux;
 
 use anyhow::{bail, Context, Result};
@@ -259,7 +260,7 @@ enum Cmd {
         event: String,
     },
     /// Print a JSON report of sessions and compaction savings in the
-    /// session-observations-v1 format AI Charts reads.
+    /// session-observations-v1 format aicharts reads.
     Report {
         /// Strip the `gobstopper` extension key so the output parses
         /// strictly against aicharts' session-observations-v1 schema.
@@ -446,6 +447,15 @@ enum Cmd {
     Context(context::ContextArgs),
     /// Inspect, export, and import local session observations and metrics.
     Data(session_data::DataArgs),
+    /// Your token use by day, agent and model, from aicharts' record on this
+    /// computer. Nothing is uploaded. `gobstopper usage --help` lists the
+    /// commands.
+    #[command(disable_help_flag = true)]
+    Usage {
+        /// report (default), status, enable, disable or collect, then options.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
+        args: Vec<String>,
+    },
     /// Show recorded native compaction operations and any whose outcome is
     /// unknown. Changes nothing and calls no provider.
     NativeOperations,
@@ -5470,6 +5480,9 @@ fn main() -> std::process::ExitCode {
                 self_update::build_identity();
                 return Ok(());
             }
+            // aicharts owns the usage record; this needs no Gobstopper
+            // configuration or update check.
+            Some(Cmd::Usage { args }) => std::process::exit(usage::run(args, json)),
             None => return run(cli),
             _ => {}
         }
@@ -5566,7 +5579,8 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Update(_)
         | Cmd::InstallRelease(_)
         | Cmd::UpgradeController(_)
-        | Cmd::BuildIdentity => {
+        | Cmd::BuildIdentity
+        | Cmd::Usage { .. } => {
             unreachable!("handled before product configuration")
         }
         Cmd::Context(args) => context::run(args),

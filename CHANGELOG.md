@@ -2,10 +2,11 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
-## Unreleased
+## v0.8.6 - 2026-10-04
 
 Gobstopper can inspect long histories without loading them all into memory, explain interrupted requests, and preserve observations in verified archives. Managed upgrades run independently of the agent session that requested them.
 
+- `gobstopper usage` reads aicharts' local usage record. Proxy observations remain separate, so reports can be read side by side without adding overlapping requests.
 - `gobstopper proxy upgrade` stages a verified release, then drains, replaces, and restarts the managed service from a detached one-shot controller. Doctor reports its journal and rollback outcome.
 - Stop-capable service commands refuse a caller whose environment depends on the proxy, with an explicit override for a separate terminal.
 - Upgrade reservations refuse a concurrent upgrade, repair reconciles an exited controller, and rollback can stop the unresponsive process started by the controller when its identity is proven.

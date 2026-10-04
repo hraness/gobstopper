@@ -226,6 +226,7 @@ Start here
   proxy             Compact live requests and manage startup
   context           Reserve more context for a difficult phase
   data              Inspect local sessions, tool calls, and usage
+  usage             Token use across all your agents, by day (from aicharts)
   apply             Write a smaller copy of a session; keeps the original
 
 Sessions and snapshots
@@ -281,7 +282,7 @@ Snapshot content
   read-snapshot     Read a page of archived text from one snapshot
 
 Integrations
-  report            JSON report of sessions and savings for AI Charts
+  report            JSON report of sessions and savings for aicharts
   policy-check      Return the compaction action for numbers you supply
   plugin            Check or inspect a strategy plugin manifest
   native-operations Show recorded native compaction operations
