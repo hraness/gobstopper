@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 
-import { articleProvenanceSentence } from "@hraness/design-kit";
+import { articleProvenanceSentence, isArticleIndexable } from "@hraness/design-kit";
 import { blogPosts, postProvenance } from "../app/blog/articles";
 
 import { publishedRelease } from "../app/publication";
@@ -174,7 +174,9 @@ describe("built Gobstopper site", () => {
         expect(html).toContain(articleProvenanceSentence(postProvenance(post)));
         expect(html).not.toContain("<time");
         expect(html).toMatch(/<meta\s+property="og:type"\s+content="article"/u);
-        expect(html).not.toMatch(/<meta\s+name="robots"\s+content="noindex/u);
+        // A quarantined post is readable at its address but asks not to be indexed.
+        if (isArticleIndexable(post.admission)) expect(html).not.toMatch(/<meta\s+name="robots"\s+content="noindex/u);
+        else expect(html).toMatch(/<meta\s+name="robots"\s+content="noindex/u);
         const card = await fetch(`${server.origin}/blog/${slug}/opengraph-image`, { redirect: "manual" });
         expect(card.status).toBe(200);
         expect(card.headers.get("content-type")).toContain("image/png");
@@ -189,7 +191,8 @@ describe("built Gobstopper site", () => {
       expect(sitemap).toContain("<loc>https://gobstopper.sh/blog/introducing-gobstopper</loc>");
       for (const post of blogPosts) {
         const entry = sitemap.split("<url>").find(item => item.includes(`<loc>https://gobstopper.sh/blog/${post.slug}</loc>`));
-        expect(entry).toContain(`<lastmod>${post.updated ?? post.published}T00:00:00.000Z</lastmod>`);
+        if (isArticleIndexable(post.admission)) expect(entry).toContain(`<lastmod>${post.updated ?? post.published}T00:00:00.000Z</lastmod>`);
+        else expect(entry).toBeUndefined();
       }
     } finally {
       await stopBuiltSite(server);
