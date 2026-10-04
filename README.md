@@ -422,6 +422,24 @@ imports, backups and metric denominators.
 These controls have functional regression tests; the September 28 benchmark
 predates them and does not measure their effect on task accuracy.
 
+### Token use across your agents
+
+`gobstopper usage` shows your token use across coding agents by day, agent,
+provider and model, including agents that never pass through the proxy. The
+numbers come from [aicharts](https://aicharts.io), which keeps a daily record
+on your computer and uploads nothing, so it needs the `aicharts` command
+installed ([get it](https://aicharts.io/usage)).
+
+```sh
+gobstopper usage                        # the last 30 days, per agent
+gobstopper usage report --days 7 --csv  # one row per day, agent and model
+gobstopper usage enable                 # collect four times a day
+```
+
+Agents can read the same record through `aicharts mcp`. `gobstopper data`
+counts what the proxy saw, so some requests appear in both; read them side by
+side rather than adding them together.
+
 ## Recoverable history
 
 Before publishing a Claude Code or Codex copy, Gobstopper stores the exact
