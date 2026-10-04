@@ -6,10 +6,10 @@ Posts go out from the @hraness account. The status is Latest release: v0.8.5. Ea
 
 ## X thread
 
-Post 1 of 9, 208 characters
+Post 1 of 9, 196 characters
 
 ```text
-Gobstopper is a free, open-source tool that makes long Claude Code and Codex sessions smaller. It swaps the stale middle of a session for a short summary, and keeps the original so you can get any of it back.
+Long Claude Code and Codex sessions keep resending old test logs and file listings. Gobstopper is a free, open-source tool that trims them, and it keeps the original so you can get any of it back.
 ```
 
 Post 2 of 9, 208 characters
@@ -64,10 +64,10 @@ https://gobstopper.sh/blog/introducing-gobstopper
 
 ## Bluesky thread
 
-Post 1 of 9, 208 characters
+Post 1 of 9, 196 characters
 
 ```text
-Gobstopper is a free, open-source tool that makes long Claude Code and Codex sessions smaller. It swaps the stale middle of a session for a short summary, and keeps the original so you can get any of it back.
+Long Claude Code and Codex sessions keep resending old test logs and file listings. Gobstopper is a free, open-source tool that trims them, and it keeps the original so you can get any of it back.
 ```
 
 Post 2 of 9, 208 characters
@@ -122,10 +122,10 @@ https://gobstopper.sh/blog/introducing-gobstopper
 
 ## Threads thread
 
-Post 1 of 9, 208 characters
+Post 1 of 9, 196 characters
 
 ```text
-Gobstopper is a free, open-source tool that makes long Claude Code and Codex sessions smaller. It swaps the stale middle of a session for a short summary, and keeps the original so you can get any of it back.
+Long Claude Code and Codex sessions keep resending old test logs and file listings. Gobstopper is a free, open-source tool that trims them, and it keeps the original so you can get any of it back.
 ```
 
 Post 2 of 9, 208 characters
@@ -181,7 +181,7 @@ https://gobstopper.sh/blog/introducing-gobstopper
 ## LinkedIn post
 
 ```text
-Gobstopper is a free, open-source tool that makes long Claude Code and Codex sessions smaller. It swaps the stale middle of a session for a short summary, and keeps the original so you can get any of it back.
+Long Claude Code and Codex sessions keep resending old test logs and file listings. Gobstopper is a free, open-source tool that trims them, and it keeps the original so you can get any of it back.
 
 A coding agent carries earlier context into later model requests: test logs, file listings, and stack traces for bugs you already fixed. Without trimming, that repeated context grows as the session continues.
 
@@ -217,7 +217,7 @@ Topics: Developer Tools, Open Source, Artificial Intelligence
 ## Show HN and first comment fact sheet
 
 - Context compaction you can undo.
-- Gobstopper is a free, open-source tool that makes long Claude Code and Codex sessions smaller. It swaps the stale middle of a session for a short summary, and keeps the original so you can get any of it back.
+- Long Claude Code and Codex sessions keep resending old test logs and file listings. Gobstopper is a free, open-source tool that trims them, and it keeps the original so you can get any of it back.
 - A coding agent carries earlier context into later model requests: test logs, file listings, and stack traces for bugs you already fixed. Without trimming, that repeated context grows as the session continues.
 - Run your agent through gobstopper proxy. Past 128,000 tokens, it keeps your task and the last three turns word for word and summarizes the older turns. Session files stay unchanged.
 - Got a saved Claude Code or Codex session that grew too big? Preview what would go, then write a smaller copy. Old tool output becomes a one-line note that says how big it was. Your messages stay word for word in the smaller copy.

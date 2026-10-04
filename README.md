@@ -15,7 +15,7 @@ fewer input tokens. That is one trial per arm with GLM 5.3 Flash on
 September 27 and 28, 2026, so the solved counts are within single-trial
 noise; see [Benchmark results](#benchmark-results).
 
-[![Play the 75-second Gobstopper film on gobstopper.sh](docs/assets/gob-film-card.png)](https://gobstopper.sh/#film)
+[![Play the 34-second Gobstopper film on gobstopper.sh](docs/assets/gob-film-card.png)](https://gobstopper.sh/#film)
 
 The summary rule comes from CliffCompaction, an open-source proxy described
 in a paper by Trang Nguyen, Eulrang Cho, Bingqing Chen, and

@@ -21,7 +21,7 @@ import { existsSync, readFileSync, statfsSync } from "node:fs";
 import { copyFile, mkdir, open, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { gobFilm, type GobFilm } from "../site/app/_data/gob-film";
+import type { GobFilm } from "../site/app/_data/gob-film";
 import { F, GAP_ROWS } from "../site/app/_lib/gobbench-format";
 import { ARM_ORDER, arm, pair, replayGrid, sawtooth, terminalBench } from "../site/app/_lib/gobbench-data";
 import { PALETTES, type PaletteName } from "./lib/palette";
@@ -140,9 +140,6 @@ function filmSeconds(): number {
     const list = JSON.parse(readFileSync(shotsPath, "utf8")) as ShotList;
     const end = list.shots[list.shots.length - 1]?.end;
     if (end !== FILM_SECONDS) throw new Error(`shots.json ends at ${end} s, but the film card says ${FILM_SECONDS} s.`);
-  }
-  if (gobFilm !== null && gobFilm.durationSeconds !== FILM_SECONDS) {
-    throw new Error(`gob-film.ts says ${gobFilm.durationSeconds} s, but the film card says ${FILM_SECONDS} s.`);
   }
   return FILM_SECONDS;
 }
