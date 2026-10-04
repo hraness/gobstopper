@@ -48,6 +48,12 @@ Website: [gobstopper.sh](https://gobstopper.sh) · Compared with [Claude Code /c
 
 ## Quick start
 
+For the Claude Code example, install and sign in to Claude Code first, and
+make sure `claude` and `curl` are on your `PATH`. Gobstopper forwards your
+client's authentication; it does not sign you in to the model provider.
+The temporary proxy applies to the child command only, so you do not need
+to edit your shell's base URL settings.
+
 ```sh
 curl -fsSL https://gobstopper.sh/install.sh | sh   # macOS (Apple silicon) and Linux
 gobstopper proxy run -- claude   # one Claude Code session through a temporary proxy
@@ -70,7 +76,12 @@ the PowerShell installer. Update-enabled installs also need the
 [GitHub CLI](https://cli.github.com/) (`gh`) authenticated with github.com; run
 `gh auth login` before installing. See [update behavior](docs/release.md#updates).
 
-When the session ends, `proxy run` prints how many requests it compacted. For
+When the session ends, `proxy run` prints request and compaction counts.
+A short session can report zero compacted requests: compaction starts only
+when a supported request crosses the threshold. If Claude Code cannot start,
+check that `claude` runs directly in the same terminal. For proxy connection
+problems, follow [diagnosis and repair](docs/service.md#diagnose-repair-and-remove).
+For
 a proxy that stays up, with `gobstopper proxy status` counters, see [Compact
 live coding-agent requests](#compact-live-coding-agent-requests). For Codex,
 see [Set up Gobstopper for Claude Code and
