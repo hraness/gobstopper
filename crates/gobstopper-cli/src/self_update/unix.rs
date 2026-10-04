@@ -4,15 +4,16 @@ use super::{paths, product, released_tag, InitialInstall};
 use anyhow::{bail, ensure, Context, Result};
 use hraness_cli_update::{
     run_bounded, Asset, CurlGithub, InstallReceipt, InstallRequest, InstallationKind, Installer,
-    Product, Release,
+    Product, Release, ReleaseSource,
 };
-use serde::Deserialize;
-use std::path::Path;
+use serde::{Deserialize, Serialize};
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 #[path = "unix/files.rs"]
 mod files;
+pub(crate) use files::Directory as ManagedDirectory;
 use files::{digest, read_path, Directory, Stage};
 
 #[cfg(target_os = "macos")]
@@ -427,6 +428,480 @@ fn install_update(request: &InstallRequest<'_>) -> Result<()> {
     )
 }
 
+pub(crate) struct UpgradeTarget {
+    pub current: String,
+    pub target: String,
+    pub executable: PathBuf,
+    receipt: InstallReceipt,
+    receipt_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
+pub(crate) struct PreparedUpgrade {
+    stage_device: u64,
+    stage_inode: u64,
+    from_receipt_sha256: String,
+    to_receipt_sha256: String,
+    pub(crate) from: InstallReceipt,
+    pub(crate) to: InstallReceipt,
+}
+
+pub(crate) struct UpgradeLease {
+    _file: std::fs::File,
+}
+
+fn validate_upgrade_receipt(
+    profile: &Product,
+    receipt: &InstallReceipt,
+    executable: &Path,
+) -> Result<()> {
+    ensure!(
+        executable.is_absolute()
+            && executable.file_name() == Some(std::ffi::OsStr::new("gobstopper"))
+            && receipt.schema == InstallReceipt::SCHEMA
+            && receipt.product == profile.id
+            && receipt.repository == profile.repository
+            && receipt.kind == InstallationKind::NativeRelease
+            && receipt.platform == profile.platform
+            && receipt.executable == executable
+            && receipt.release_id != 0
+            && valid_digest(&receipt.binary_sha256)
+            && valid_digest(&receipt.archive_sha256)
+            && receipt.build_sha.as_deref().is_none_or(|sha| {
+                sha.len() == 40
+                    && sha
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            })
+            && profile.accepts(&profile.version(&receipt.release_tag)?)
+            && profile.asset_names(&receipt.release_tag)?.first() == Some(&receipt.archive_name),
+        "Install receipt does not match the managed native release"
+    );
+    Ok(())
+}
+
+fn inspect_upgrade_receipt(executable: &Path) -> Result<(InstallReceipt, Vec<u8>)> {
+    let bin = Directory::open_owned(
+        executable
+            .parent()
+            .context("Install target has no parent")?,
+        false,
+        false,
+    )?;
+    let state_path = paths(executable)?.receipt;
+    let state = Directory::open_owned(
+        state_path.parent().context("Receipt has no parent")?,
+        false,
+        true,
+    )?;
+    let bytes = state
+        .read_private("install.json", RECEIPT_LIMIT)?
+        .context("Missing verified native release receipt")?;
+    let receipt: InstallReceipt = serde_json::from_slice(&bytes)?;
+    validate_upgrade_receipt(&product(), &receipt, executable)?;
+    bin.verify_executable("gobstopper")?;
+    ensure!(
+        bin.read("gobstopper", BINARY_LIMIT)?
+            .as_deref()
+            .map(digest)
+            .as_deref()
+            == Some(&receipt.binary_sha256),
+        "Installed executable differs from its native release receipt"
+    );
+    Ok((receipt, bytes))
+}
+
+fn select_upgrade_target(
+    profile: &Product,
+    receipt: &InstallReceipt,
+    version: Option<&str>,
+    releases: impl FnOnce() -> Result<Vec<Release>>,
+) -> Result<String> {
+    if receipt.pinned && version.is_none() {
+        bail!("This installation is pinned; select --version explicitly");
+    }
+    if let Some(version) = version {
+        let tag = format!("v{}", version.strip_prefix('v').unwrap_or(version));
+        ensure!(
+            profile.accepts(&profile.version(&tag)?),
+            "Release is outside Gobstopper's stable channel"
+        );
+        return Ok(tag);
+    }
+    let latest = releases()?
+        .into_iter()
+        .filter_map(|release| {
+            let version = release.validate(profile).ok()?;
+            Some((version, release.tag_name))
+        })
+        .max_by(|left, right| left.0.cmp(&right.0))
+        .context("No supported Gobstopper release is available")?;
+    if latest.0 > profile.version(&receipt.release_tag)? {
+        Ok(latest.1)
+    } else {
+        Ok(receipt.release_tag.clone())
+    }
+}
+
+pub(super) fn upgrade_target(executable: &Path, version: Option<&str>) -> Result<UpgradeTarget> {
+    eligible_destination(executable)?;
+    let (receipt, bytes) = inspect_upgrade_receipt(executable)?;
+    ensure!(
+        released_tag()? == receipt.release_tag
+            && std::env::current_exe()?.canonicalize()? == executable,
+        "Run proxy upgrade from the managed service's installed release executable"
+    );
+    crate::proxy_agent::upgrade_controller_identity(executable)?;
+    let profile = product();
+    let target = select_upgrade_target(&profile, &receipt, version, || {
+        Ok(CurlGithub::new("/usr/bin/curl")?.releases(&profile)?)
+    })?;
+    Ok(UpgradeTarget {
+        current: receipt.release_tag.clone(),
+        target,
+        executable: executable.to_path_buf(),
+        receipt,
+        receipt_sha256: digest(&bytes),
+    })
+}
+
+pub(super) fn planned_upgrade_stage(executable: &Path) -> Result<PathBuf> {
+    let bin = Directory::open_owned(
+        executable
+            .parent()
+            .context("Install target has no parent")?,
+        false,
+        false,
+    )?;
+    Ok(Stage::planned(&bin))
+}
+
+pub(super) fn prepare_upgrade(
+    selected: &UpgradeTarget,
+    explicit: bool,
+    stage_path: &Path,
+) -> Result<PreparedUpgrade> {
+    eligible_destination(&selected.executable)?;
+    let (current, current_bytes) = inspect_upgrade_receipt(&selected.executable)?;
+    ensure!(
+        current == selected.receipt && digest(&current_bytes) == selected.receipt_sha256,
+        "Installed release changed before staging"
+    );
+    let profile = product();
+    let bin = Directory::open_owned(
+        selected
+            .executable
+            .parent()
+            .context("Install target has no parent")?,
+        false,
+        false,
+    )?;
+    let mut stage = Stage::create(&bin, stage_path)?;
+    let published = Published::fetch(&profile, &selected.target)?;
+    published.download(&profile, &stage)?;
+    let binary_sha = unpack(&stage)?;
+    verify_candidate(&stage, &selected.target)?;
+    let receipt = published.receipt(
+        &selected.executable,
+        binary_sha,
+        explicit || selected.receipt.pinned,
+    );
+    let bytes = serde_json::to_vec(&receipt)?;
+    stage.directory.write_new("new-receipt", &bytes, false)?;
+    let (stage_device, stage_inode) = stage.directory.identity()?;
+    let prepared = PreparedUpgrade {
+        stage_device,
+        stage_inode,
+        from_receipt_sha256: selected.receipt_sha256.clone(),
+        to_receipt_sha256: digest(&bytes),
+        from: selected.receipt.clone(),
+        to: receipt,
+    };
+    verify_prepared_upgrade(&selected.executable, stage_path, &prepared)?;
+    stage.preserve = true;
+    Ok(prepared)
+}
+
+fn verify_upgrade_stage(
+    stage: &Stage<'_>,
+    executable: &Path,
+    prepared: &PreparedUpgrade,
+) -> Result<()> {
+    stage.validate_contents()?;
+    ensure!(
+        stage.directory.identity()? == (prepared.stage_device, prepared.stage_inode),
+        "Upgrade staging directory changed"
+    );
+    validate_upgrade_receipt(&product(), &prepared.from, executable)?;
+    validate_upgrade_receipt(&product(), &prepared.to, executable)?;
+    let bytes = stage
+        .directory
+        .read_private("new-receipt", RECEIPT_LIMIT)?
+        .context("Missing upgrade receipt")?;
+    let receipt: InstallReceipt = serde_json::from_slice(&bytes)?;
+    ensure!(
+        digest(&bytes) == prepared.to_receipt_sha256 && receipt == prepared.to,
+        "Staged upgrade receipt changed after verification"
+    );
+    Ok(())
+}
+
+pub(super) fn verify_prepared_upgrade(
+    executable: &Path,
+    stage_path: &Path,
+    prepared: &PreparedUpgrade,
+) -> Result<()> {
+    let bin = Directory::open_owned(
+        executable
+            .parent()
+            .context("Install target has no parent")?,
+        false,
+        false,
+    )?;
+    let stage = Stage::existing(&bin, stage_path)?;
+    verify_upgrade_stage(&stage, executable, prepared)?;
+    stage.directory.verify_executable("gobstopper")?;
+    ensure!(
+        stage
+            .directory
+            .read("gobstopper", BINARY_LIMIT)?
+            .as_deref()
+            .map(digest)
+            .as_deref()
+            == Some(&prepared.to.binary_sha256),
+        "Staged binary changed after release verification"
+    );
+    let (receipt, bytes) = inspect_upgrade_receipt(executable)?;
+    ensure!(
+        receipt == prepared.from && digest(&bytes) == prepared.from_receipt_sha256,
+        "Managed installation changed while upgrade was staged"
+    );
+    Ok(())
+}
+
+pub(super) fn replace_upgrade(
+    executable: &Path,
+    stage_path: &Path,
+    prepared: &PreparedUpgrade,
+) -> Result<UpgradeLease> {
+    let profile = product();
+    let bin = Directory::open_owned(
+        executable
+            .parent()
+            .context("Install target has no parent")?,
+        false,
+        false,
+    )?;
+    let state_path = paths(executable)?.receipt;
+    let state = Directory::open_owned(
+        state_path.parent().context("Receipt has no parent")?,
+        false,
+        true,
+    )?;
+    let mut stage = Stage::existing(&bin, stage_path)?;
+    let lock = state.lock()?;
+    verify_prepared_upgrade(executable, stage_path, prepared)?;
+    let old = snapshot(&bin, &state, &stage)?;
+    ensure!(
+        old.binary_sha256.as_deref() == Some(&prepared.from.binary_sha256)
+            && old.receipt.as_deref().map(digest).as_deref() == Some(&prepared.from_receipt_sha256),
+        "Previous release changed before its backup was recorded"
+    );
+    replace(
+        &bin,
+        &state,
+        &mut stage,
+        &old,
+        &prepared.to,
+        || {
+            lock.validate()?;
+            verify_prepared_upgrade(executable, stage_path, prepared)
+        },
+        || {
+            prepared.to.write_verified(&profile, &state_path)?;
+            Ok(())
+        },
+    )?;
+    match lock.into_shared() {
+        Ok(file) => Ok(UpgradeLease { _file: file }),
+        Err(error) => {
+            restore_upgrade(executable, stage_path, prepared)?;
+            Err(error)
+        }
+    }
+}
+
+pub(super) fn restore_upgrade(
+    executable: &Path,
+    stage_path: &Path,
+    prepared: &PreparedUpgrade,
+) -> Result<UpgradeLease> {
+    let bin = Directory::open_owned(
+        executable
+            .parent()
+            .context("Install target has no parent")?,
+        false,
+        false,
+    )?;
+    let state_path = paths(executable)?.receipt;
+    let state = Directory::open_owned(
+        state_path.parent().context("Receipt has no parent")?,
+        false,
+        true,
+    )?;
+    let stage = Stage::existing(&bin, stage_path)?;
+    let lock = state.lock()?;
+    verify_upgrade_stage(&stage, executable, prepared)?;
+    let installed = bin
+        .read("gobstopper", BINARY_LIMIT)?
+        .context("Installed executable disappeared; backup preserved")?;
+    bin.verify_executable("gobstopper")?;
+    let installed_receipt = state
+        .read_private("install.json", RECEIPT_LIMIT)?
+        .context("Installed receipt disappeared; backup preserved")?;
+    ensure!(
+        [&prepared.from.binary_sha256, &prepared.to.binary_sha256].contains(&&digest(&installed))
+            && [&prepared.from_receipt_sha256, &prepared.to_receipt_sha256]
+                .contains(&&digest(&installed_receipt)),
+        "Installed release changed since upgrade; backup preserved"
+    );
+    let previous = stage
+        .directory
+        .read("previous", BINARY_LIMIT)?
+        .context("Missing previous executable")?;
+    stage.directory.verify_executable("previous")?;
+    let old_receipt = stage
+        .directory
+        .read_private("old-receipt", RECEIPT_LIMIT)?
+        .context("Missing previous receipt")?;
+    let old: InstallReceipt = serde_json::from_slice(&old_receipt)?;
+    ensure!(
+        old == prepared.from
+            && digest(&old_receipt) == prepared.from_receipt_sha256
+            && digest(&previous) == prepared.from.binary_sha256,
+        "Backup differs from the reserved previous release"
+    );
+    lock.validate()?;
+    publish_restore_copy(&stage, &bin, "gobstopper", &previous, true)?;
+    publish_restore_copy(&stage, &state, "install.json", &old_receipt, false)?;
+    verify_installed_upgrade(executable, prepared, false)?;
+    Ok(UpgradeLease {
+        _file: lock.into_shared()?,
+    })
+}
+
+fn publish_restore_copy(
+    stage: &Stage<'_>,
+    destination: &Directory,
+    target: &str,
+    bytes: &[u8],
+    executable: bool,
+) -> Result<()> {
+    let temporary = if executable {
+        "restore-binary"
+    } else {
+        "restore-receipt"
+    };
+    let existing = if executable {
+        stage.directory.read(temporary, BINARY_LIMIT)?
+    } else {
+        stage.directory.read_private(temporary, RECEIPT_LIMIT)?
+    };
+    if let Some(existing) = existing {
+        ensure!(
+            existing == bytes,
+            "Interrupted restoration copy changed; backup preserved"
+        );
+    } else {
+        stage.directory.write_new(temporary, bytes, executable)?;
+    }
+    if executable {
+        stage
+            .directory
+            .copy_mode(temporary, &stage.directory, "previous")?;
+        stage.directory.verify_executable(temporary)?;
+    }
+    stage.directory.rename(temporary, destination, target)
+}
+
+pub(super) fn verify_installed_upgrade(
+    executable: &Path,
+    prepared: &PreparedUpgrade,
+    target: bool,
+) -> Result<()> {
+    let (receipt, bytes) = inspect_upgrade_receipt(executable)?;
+    let (expected, expected_sha256) = if target {
+        (&prepared.to, &prepared.to_receipt_sha256)
+    } else {
+        (&prepared.from, &prepared.from_receipt_sha256)
+    };
+    ensure!(
+        &receipt == expected && digest(&bytes) == *expected_sha256,
+        "Installed release differs from the reserved upgrade outcome"
+    );
+    Ok(())
+}
+
+pub(super) fn discard_bound_upgrade(
+    executable: &Path,
+    stage_path: &Path,
+    prepared: &PreparedUpgrade,
+) -> Result<()> {
+    let bin = Directory::open_owned(
+        executable
+            .parent()
+            .context("Install target has no parent")?,
+        false,
+        false,
+    )?;
+    let stage = Stage::existing(&bin, stage_path)?;
+    verify_upgrade_stage(&stage, executable, prepared)?;
+    stage.remove_checked()
+}
+
+pub(super) fn protect_previous_upgrade(
+    executable: &Path,
+    prepared: &PreparedUpgrade,
+) -> Result<UpgradeLease> {
+    let state_path = paths(executable)?.receipt;
+    let state = Directory::open_owned(
+        state_path.parent().context("Receipt has no parent")?,
+        false,
+        true,
+    )?;
+    let lock = state.lock()?;
+    let (receipt, bytes) = inspect_upgrade_receipt(executable)?;
+    ensure!(
+        receipt == prepared.from && digest(&bytes) == prepared.from_receipt_sha256,
+        "Previous executable and receipt differ from the reserved release"
+    );
+    Ok(UpgradeLease {
+        _file: lock.into_shared()?,
+    })
+}
+
+#[cfg(test)]
+pub(super) fn verify_previous_upgrade(executable: &Path, version: &str) -> Result<()> {
+    let (receipt, _) = inspect_upgrade_receipt(executable)?;
+    ensure!(
+        receipt.release_tag == version,
+        "Previous executable and receipt were not both restored"
+    );
+    Ok(())
+}
+
+pub(super) fn discard_upgrade(executable: &Path, stage_path: &Path) -> Result<()> {
+    let bin = Directory::open_owned(
+        executable
+            .parent()
+            .context("Install target has no parent")?,
+        false,
+        false,
+    )?;
+    let stage = Stage::existing(&bin, stage_path)?;
+    stage.remove_checked()
+}
+
 struct Previous {
     binary_sha256: Option<String>,
     receipt: Option<Vec<u8>>,
@@ -685,7 +1160,7 @@ fn enroll_verified(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     #[test]
     #[cfg(target_os = "macos")]
     fn macos_requirement_is_compilable_inline_source() {
@@ -771,6 +1246,310 @@ mod tests {
         }
     }
 
+    /// An install whose v1.0.0 executable and receipt were replaced from a
+    /// preserved stage, as the controller leaves them before starting.
+    pub(crate) struct ReplacedInstall {
+        _fixture: Fixture,
+        pub(crate) executable: PathBuf,
+        pub(crate) stage: PathBuf,
+        pub(crate) prepared: PreparedUpgrade,
+    }
+
+    pub(crate) fn staged_install() -> ReplacedInstall {
+        let fixture = Fixture::new();
+        let bin = fixture.bin();
+        bin.write_new("gobstopper", b"old release", true).unwrap();
+        let executable = bin.path.join("gobstopper");
+        fixture.state();
+        let previous = published().receipt(&executable, digest(b"old release"), false);
+        previous
+            .write_verified(&product(), &paths(&executable).unwrap().receipt)
+            .unwrap();
+        let mut stage = Stage::new(&bin).unwrap();
+        stage
+            .directory
+            .write_new("gobstopper", b"new release", true)
+            .unwrap();
+        let next = published_for("v1.0.1").receipt(&executable, digest(b"new release"), true);
+        let next_bytes = serde_json::to_vec(&next).unwrap();
+        stage
+            .directory
+            .write_new("new-receipt", &next_bytes, false)
+            .unwrap();
+        let (stage_device, stage_inode) = stage.directory.identity().unwrap();
+        let prepared = PreparedUpgrade {
+            stage_device,
+            stage_inode,
+            from_receipt_sha256: digest(&fs::read(paths(&executable).unwrap().receipt).unwrap()),
+            to_receipt_sha256: digest(&next_bytes),
+            from: previous,
+            to: next,
+        };
+        stage.preserve = true;
+        verify_prepared_upgrade(&executable, &stage.directory.path, &prepared).unwrap();
+        ReplacedInstall {
+            stage: stage.directory.path.clone(),
+            executable,
+            prepared,
+            _fixture: fixture,
+        }
+    }
+
+    pub(crate) fn replaced_install() -> ReplacedInstall {
+        let install = staged_install();
+        replace_upgrade(&install.executable, &install.stage, &install.prepared).unwrap();
+        assert_eq!(fs::read(&install.executable).unwrap(), b"new release");
+        install
+    }
+
+    #[test]
+    fn managed_upgrade_explicit_pins_are_supported_without_implicit_downgrades() {
+        let profile = product();
+        let mut receipt =
+            published().receipt(Path::new("/fixture/bin/gobstopper"), "a".repeat(64), true);
+        assert_eq!(
+            select_upgrade_target(&profile, &receipt, Some("1.0.1"), || panic!(
+                "an explicit version must not query latest"
+            ))
+            .unwrap(),
+            "v1.0.1"
+        );
+        assert!(select_upgrade_target(&profile, &receipt, None, || panic!(
+            "a pin must refuse before querying latest"
+        ))
+        .is_err());
+        for version in ["1.0.1-beta.1", "vv1.0.1", "1.0.1/other"] {
+            assert!(
+                select_upgrade_target(&profile, &receipt, Some(version), || panic!(
+                    "invalid explicit selection queried latest"
+                ))
+                .is_err()
+            );
+        }
+        receipt.pinned = false;
+        assert_eq!(
+            select_upgrade_target(&profile, &receipt, None, || Ok(vec![
+                published_for("v0.9.9").release
+            ]))
+            .unwrap(),
+            "v1.0.0"
+        );
+    }
+
+    #[test]
+    fn managed_upgrade_rejects_changed_staged_receipts_before_any_installed_write() {
+        for field in [
+            "release_tag",
+            "binary_sha256",
+            "executable",
+            "pinned",
+            "repository",
+        ] {
+            let install = staged_install();
+            let original = fs::read(&install.executable).unwrap();
+            let receipt_path = paths(&install.executable).unwrap().receipt;
+            let original_receipt = fs::read(&receipt_path).unwrap();
+            let new_receipt = install.stage.join("new-receipt");
+            let mut value: serde_json::Value =
+                serde_json::from_slice(&fs::read(&new_receipt).unwrap()).unwrap();
+            value[field] = if field == "pinned" {
+                false.into()
+            } else {
+                "foreign".into()
+            };
+            fs::write(&new_receipt, serde_json::to_vec(&value).unwrap()).unwrap();
+            assert!(
+                replace_upgrade(&install.executable, &install.stage, &install.prepared).is_err(),
+                "{field}"
+            );
+            assert_eq!(fs::read(&install.executable).unwrap(), original);
+            assert_eq!(fs::read(receipt_path).unwrap(), original_receipt);
+            assert!(!install.stage.join("previous").exists());
+        }
+    }
+
+    #[test]
+    fn managed_upgrade_rejects_symlinks_shared_files_and_unsafe_stage_permissions() {
+        for variant in [
+            "symlink",
+            "hardlink",
+            "shared_directory",
+            "writable_binary",
+            "setuid_binary",
+            "readable_receipt",
+        ] {
+            let install = staged_install();
+            let candidate = install.stage.join("gobstopper");
+            match variant {
+                "symlink" => {
+                    fs::remove_file(&candidate).unwrap();
+                    symlink(&install.executable, &candidate).unwrap();
+                }
+                "hardlink" => {
+                    fs::remove_file(&candidate).unwrap();
+                    fs::hard_link(&install.executable, &candidate).unwrap();
+                }
+                "shared_directory" => {
+                    fs::set_permissions(&install.stage, fs::Permissions::from_mode(0o755)).unwrap()
+                }
+                "writable_binary" => {
+                    fs::set_permissions(&candidate, fs::Permissions::from_mode(0o777)).unwrap()
+                }
+                "setuid_binary" => {
+                    fs::set_permissions(&candidate, fs::Permissions::from_mode(0o4755)).unwrap()
+                }
+                "readable_receipt" => fs::set_permissions(
+                    install.stage.join("new-receipt"),
+                    fs::Permissions::from_mode(0o644),
+                )
+                .unwrap(),
+                _ => unreachable!(),
+            }
+            assert!(
+                verify_prepared_upgrade(&install.executable, &install.stage, &install.prepared)
+                    .is_err(),
+                "{variant}"
+            );
+            assert_eq!(fs::read(&install.executable).unwrap(), b"old release");
+        }
+    }
+
+    #[test]
+    fn managed_upgrade_cleanup_preserves_unrecognized_or_linked_entries() {
+        for linked in [false, true] {
+            let install = staged_install();
+            if linked {
+                symlink(&install.executable, install.stage.join("archive")).unwrap();
+            } else {
+                fs::write(install.stage.join("unrelated"), b"preserve").unwrap();
+            }
+            assert!(discard_upgrade(&install.executable, &install.stage).is_err());
+            assert!(install.stage.join("new-receipt").is_file());
+            assert!(install.stage.join("gobstopper").is_file());
+            assert_eq!(fs::read(&install.executable).unwrap(), b"old release");
+        }
+    }
+
+    #[test]
+    fn managed_upgrade_rollback_resumes_each_partial_pair_without_consuming_backups() {
+        for restored in ["neither", "binary", "receipt", "both"] {
+            let install = replaced_install();
+            let bin =
+                Directory::open_owned(install.executable.parent().unwrap(), false, false).unwrap();
+            let stage = Stage::existing(&bin, &install.stage).unwrap();
+            let receipt_path = paths(&install.executable).unwrap().receipt;
+            let state = Directory::open_owned(receipt_path.parent().unwrap(), false, true).unwrap();
+            let binary = stage
+                .directory
+                .read("previous", BINARY_LIMIT)
+                .unwrap()
+                .unwrap();
+            let receipt = stage
+                .directory
+                .read_private("old-receipt", RECEIPT_LIMIT)
+                .unwrap()
+                .unwrap();
+            if matches!(restored, "binary" | "both") {
+                publish_restore_copy(&stage, &bin, "gobstopper", &binary, true).unwrap();
+            }
+            if matches!(restored, "receipt" | "both") {
+                publish_restore_copy(&stage, &state, "install.json", &receipt, false).unwrap();
+            }
+            drop(restore_upgrade(&install.executable, &install.stage, &install.prepared).unwrap());
+            verify_installed_upgrade(&install.executable, &install.prepared, false).unwrap();
+            assert_eq!(fs::read(install.stage.join("previous")).unwrap(), binary);
+            assert_eq!(
+                fs::read(install.stage.join("old-receipt")).unwrap(),
+                receipt
+            );
+            drop(restore_upgrade(&install.executable, &install.stage, &install.prepared).unwrap());
+            verify_installed_upgrade(&install.executable, &install.prepared, false).unwrap();
+        }
+    }
+
+    #[test]
+    fn managed_upgrade_rollback_rejects_foreign_executable_and_interrupted_copy() {
+        for changed in ["binary", "copy"] {
+            let install = replaced_install();
+            let path = if changed == "binary" {
+                install.executable.clone()
+            } else {
+                install.stage.join("restore-binary")
+            };
+            fs::write(&path, b"foreign executable").unwrap();
+            fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+            let receipt_path = paths(&install.executable).unwrap().receipt;
+            let receipt = fs::read(&receipt_path).unwrap();
+            assert!(
+                restore_upgrade(&install.executable, &install.stage, &install.prepared).is_err()
+            );
+            assert_eq!(fs::read(&path).unwrap(), b"foreign executable");
+            assert_eq!(fs::read(receipt_path).unwrap(), receipt);
+            assert_eq!(
+                fs::read(install.stage.join("previous")).unwrap(),
+                b"old release"
+            );
+            assert!(install.stage.join("old-receipt").exists());
+        }
+    }
+
+    #[test]
+    fn managed_upgrade_rollback_preserves_externally_changed_receipt_and_backup() {
+        let install = replaced_install();
+        let path = paths(&install.executable).unwrap().receipt;
+        let mut receipt: InstallReceipt =
+            serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        receipt.pinned = !receipt.pinned;
+        let edited = serde_json::to_vec(&receipt).unwrap();
+        fs::write(&path, &edited).unwrap();
+        assert!(restore_upgrade(&install.executable, &install.stage, &install.prepared).is_err());
+        assert_eq!(fs::read(&path).unwrap(), edited);
+        assert_eq!(fs::read(&install.executable).unwrap(), b"new release");
+        assert_eq!(
+            fs::read(install.stage.join("previous")).unwrap(),
+            b"old release"
+        );
+    }
+
+    #[test]
+    fn managed_upgrade_rollback_rejects_rebound_previous_receipt() {
+        let install = replaced_install();
+        let old = install.stage.join("old-receipt");
+        let mut receipt: InstallReceipt = serde_json::from_slice(&fs::read(&old).unwrap()).unwrap();
+        receipt.executable = PathBuf::from("/foreign/bin/gobstopper");
+        fs::write(&old, serde_json::to_vec(&receipt).unwrap()).unwrap();
+        assert!(restore_upgrade(&install.executable, &install.stage, &install.prepared).is_err());
+        assert_eq!(fs::read(&install.executable).unwrap(), b"new release");
+        assert!(install.stage.join("previous").is_file());
+    }
+
+    #[test]
+    fn descriptor_paths_reject_dot_aliases_before_creating_directories() {
+        let fixture = Fixture::new();
+        let bin = fixture.bin();
+        assert!(Directory::open(&bin.path.join("./nested"), true, false).is_err());
+        assert!(!bin.path.join("nested").exists());
+    }
+
+    #[test]
+    fn planned_upgrade_stage_precedes_creation_and_can_be_removed() {
+        let fixture = Fixture::new();
+        let bin = fixture.bin();
+        let executable = bin.path.join("gobstopper");
+        let path = planned_upgrade_stage(&executable).unwrap();
+        assert!(!path.exists());
+        let mut stage = Stage::create(&bin, &path).unwrap();
+        stage
+            .directory
+            .write_new("archive", b"partial", false)
+            .unwrap();
+        stage.preserve = true;
+        assert!(path.exists());
+        drop(stage);
+        discard_upgrade(&executable, &path).unwrap();
+        assert!(!path.exists());
+    }
+
     fn metadata() -> serde_json::Value {
         let names = product().asset_names("v1.0.0").unwrap();
         serde_json::json!({
@@ -784,12 +1563,32 @@ mod tests {
     }
 
     fn published() -> Published {
-        Published::parse(
-            &product(),
-            "v1.0.0",
-            &serde_json::to_vec(&metadata()).unwrap(),
-        )
-        .unwrap()
+        published_for("v1.0.0")
+    }
+
+    fn published_for(tag: &str) -> Published {
+        let mut value = metadata();
+        value["tag_name"] = tag.into();
+        if tag != "v1.0.0" {
+            value["id"] = 43.into();
+        }
+        let names = product().asset_names(tag).unwrap();
+        for (index, name) in names.iter().enumerate() {
+            value["assets"][index]["name"] = name.clone().into();
+            value["assets"][index]["browser_download_url"] =
+                format!("https://github.com/hraness/gobstopper/releases/download/{tag}/{name}")
+                    .into();
+        }
+        Published::parse(&product(), tag, &serde_json::to_vec(&value).unwrap()).unwrap()
+    }
+
+    pub(crate) fn assert_installation_busy(executable: &Path) {
+        let receipt = paths(executable).unwrap().receipt;
+        let state = Directory::open_owned(receipt.parent().unwrap(), false, true).unwrap();
+        assert!(
+            state.lock().is_err(),
+            "restart must hold a shared installation lease"
+        );
     }
 
     #[test]
@@ -1203,5 +2002,84 @@ mod tests {
         assert!(state.lock().is_err());
         drop(helper);
         state.lock().unwrap();
+    }
+
+    #[test]
+    fn detached_replacement_can_rollback_after_service_lease_exits() {
+        let fixture = Fixture::new();
+        let bin = fixture.bin();
+        bin.write_new("gobstopper", b"old release", true).unwrap();
+        let executable = bin.path.join("gobstopper");
+        let update_paths = paths(&executable).unwrap();
+        let state = fixture.state();
+        let mut profile = product();
+        profile.running_identity = RunningIdentity::Release {
+            release_tag: "v1.0.0",
+            build_sha: None,
+        };
+        let previous = published().receipt(&executable, digest(b"old release"), false);
+        previous
+            .write_verified(&profile, &update_paths.receipt)
+            .unwrap();
+        let updater = Updater::for_executable(profile, update_paths, executable.clone()).unwrap();
+        let mut context = StartupContext::from_process();
+        context.args = vec!["proxy".into(), "serve".into()];
+        context.no_update = true;
+        let StartupOutcome::Continue {
+            lease: Some(lease), ..
+        } = updater
+            .startup(&context, &NeverNetwork, &NativeInstaller)
+            .unwrap()
+        else {
+            panic!("service startup must hold an activity lease")
+        };
+
+        let mut stage = Stage::new(&bin).unwrap();
+        stage
+            .directory
+            .write_new("gobstopper", b"new release", true)
+            .unwrap();
+        let next = published_for("v1.0.1").receipt(&executable, digest(b"new release"), true);
+        stage
+            .directory
+            .write_new("new-receipt", &serde_json::to_vec(&next).unwrap(), false)
+            .unwrap();
+        stage.preserve = true;
+        let (stage_device, stage_inode) = stage.directory.identity().unwrap();
+        let prepared = PreparedUpgrade {
+            stage_device,
+            stage_inode,
+            from_receipt_sha256: digest(&fs::read(paths(&executable).unwrap().receipt).unwrap()),
+            to_receipt_sha256: digest(&serde_json::to_vec(&next).unwrap()),
+            from: previous.clone(),
+            to: next,
+        };
+        assert!(state.lock().is_err());
+        drop(lease);
+        verify_previous_upgrade(&executable, "v1.0.0").unwrap();
+        let restarted = replace_upgrade(&executable, &stage.directory.path, &prepared).unwrap();
+        assert!(state.lock().is_err());
+        drop(restarted);
+        assert_eq!(
+            bin.read("gobstopper", BINARY_LIMIT).unwrap().unwrap(),
+            b"new release"
+        );
+        let restarted = restore_upgrade(&executable, &stage.directory.path, &prepared).unwrap();
+        assert!(state.lock().is_err());
+        drop(restarted);
+        verify_previous_upgrade(&executable, "v1.0.0").unwrap();
+        stage
+            .directory
+            .write_new("gobstopper", b"invalid release", true)
+            .unwrap();
+        assert!(replace_upgrade(&executable, &stage.directory.path, &prepared).is_err());
+        verify_previous_upgrade(&executable, "v1.0.0").unwrap();
+        assert_eq!(
+            bin.read("gobstopper", BINARY_LIMIT).unwrap().unwrap(),
+            b"old release"
+        );
+        let restored: InstallReceipt =
+            serde_json::from_slice(&fs::read(state.path.join("install.json")).unwrap()).unwrap();
+        assert_eq!(restored.binary_sha256, previous.binary_sha256);
     }
 }

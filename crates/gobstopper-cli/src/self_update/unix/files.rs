@@ -39,7 +39,7 @@ fn check(meta: &Metadata, directory: bool, private: bool) -> Result<()> {
         (meta.uid() == uid || (directory && !private && meta.uid() == 0))
             && (root_sticky || meta.mode() & 0o022 == 0)
             && (!private || meta.mode() & 0o077 == 0)
-            && (directory || meta.nlink() == 1),
+            && (directory || (meta.nlink() == 1 && meta.mode() & 0o7000 == 0)),
         "Installation paths must be owned by this user and not shared or writable by others"
     );
     Ok(())
@@ -49,7 +49,7 @@ fn same(a: &Metadata, b: &Metadata) -> bool {
     a.dev() == b.dev() && a.ino() == b.ino()
 }
 
-pub(super) struct Directory {
+pub(crate) struct Directory {
     pub path: PathBuf,
     file: File,
     private: bool,
@@ -60,8 +60,10 @@ impl Directory {
         ensure!(path.is_absolute(), "Installation path must be absolute");
         ensure!(
             !path
-                .components()
-                .any(|c| matches!(c, Component::ParentDir | Component::CurDir)),
+                .as_os_str()
+                .as_bytes()
+                .split(|byte| *byte == b'/')
+                .any(|part| matches!(part, b"." | b"..")),
             "Installation path must not contain dot components"
         );
         let mut file = File::open("/")?;
@@ -110,6 +112,21 @@ impl Directory {
             file,
             private,
         })
+    }
+
+    pub fn open_owned(path: &Path, create: bool, private: bool) -> Result<Self> {
+        let directory = Self::open(path, create, private)?;
+        ensure!(
+            directory.file.metadata()?.uid() == unsafe { libc::geteuid() },
+            "State directory must belong to this user"
+        );
+        Ok(directory)
+    }
+
+    pub fn identity(&self) -> Result<(u64, u64)> {
+        self.validate()?;
+        let metadata = self.file.metadata()?;
+        Ok((metadata.dev(), metadata.ino()))
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -167,7 +184,15 @@ impl Directory {
     }
 
     pub fn read(&self, filename: &str, limit: usize) -> Result<Option<Vec<u8>>> {
-        let Some(file) = self.open_file(OsStr::new(filename), libc::O_RDONLY, 0, false)? else {
+        self.read_checked(filename, limit, false)
+    }
+
+    pub fn read_private(&self, filename: &str, limit: usize) -> Result<Option<Vec<u8>>> {
+        self.read_checked(filename, limit, true)
+    }
+
+    fn read_checked(&self, filename: &str, limit: usize, private: bool) -> Result<Option<Vec<u8>>> {
+        let Some(file) = self.open_file(OsStr::new(filename), libc::O_RDONLY, 0, private)? else {
             return Ok(None);
         };
         ensure!(
@@ -201,6 +226,80 @@ impl Directory {
         Ok(())
     }
 
+    pub fn verify_executable(&self, filename: &str) -> Result<()> {
+        let file = self
+            .open_file(OsStr::new(filename), libc::O_RDONLY, 0, false)?
+            .context("Installed executable disappeared")?;
+        ensure!(
+            file.metadata()?.mode() & 0o100 != 0,
+            "Installed file is not executable"
+        );
+        Ok(())
+    }
+
+    pub fn operation_file(&self, filename: &str) -> Result<File> {
+        let file = self
+            .open_file(
+                OsStr::new(filename),
+                libc::O_RDWR | libc::O_CREAT,
+                0o600,
+                true,
+            )?
+            .context("Create operation lock")?;
+        self.validate_file(filename, &file)?;
+        Ok(file)
+    }
+
+    pub fn validate_file(&self, filename: &str, file: &File) -> Result<()> {
+        let now = self
+            .open_file(OsStr::new(filename), libc::O_RDONLY, 0, true)?
+            .context("Owned file disappeared")?;
+        ensure!(
+            same(&now.metadata()?, &file.metadata()?),
+            "Owned file changed during operation"
+        );
+        Ok(())
+    }
+
+    pub fn append_file(&self, filename: &str) -> Result<File> {
+        self.open_file(
+            OsStr::new(filename),
+            libc::O_WRONLY | libc::O_CREAT | libc::O_APPEND,
+            0o600,
+            true,
+        )?
+        .context("Open private operation log")
+    }
+
+    pub fn write_atomic(&self, filename: &str, bytes: &[u8]) -> Result<()> {
+        ensure!(
+            bytes.len() <= 256 * 1024,
+            "Owned configuration exceeds its size limit"
+        );
+        self.read(filename, 256 * 1024)?;
+        let temporary = format!(
+            ".gobstopper-{}-{}.tmp",
+            std::process::id(),
+            SERIAL.fetch_add(1, Ordering::Relaxed)
+        );
+        self.write_new(&temporary, bytes, false)?;
+        let result = self.rename(&temporary, self, filename);
+        if result.is_err() {
+            let _ = self.remove(&temporary, false);
+        }
+        result
+    }
+
+    pub fn remove_matching(&self, filename: &str, expected: &[u8], limit: usize) -> Result<()> {
+        match self.read_private(filename, limit)? {
+            None => Ok(()),
+            Some(bytes) => {
+                ensure!(bytes == expected, "Owned file changed; no file was removed");
+                self.remove(filename, false)
+            }
+        }
+    }
+
     pub fn copy_mode(&self, target: &str, source: &Directory, filename: &str) -> Result<()> {
         let original = source
             .open_file(OsStr::new(filename), libc::O_RDONLY, 0, false)?
@@ -218,6 +317,9 @@ impl Directory {
     pub fn rename(&self, source: &str, destination: &Self, target: &str) -> Result<()> {
         self.validate()?;
         destination.validate()?;
+        self.open_file(OsStr::new(source), libc::O_RDONLY, 0, false)?
+            .context("Staged source disappeared before replacement")?;
+        destination.open_file(OsStr::new(target), libc::O_RDONLY, 0, false)?;
         let source = name(OsStr::new(source))?;
         let target = name(OsStr::new(target))?;
         if unsafe {
@@ -257,7 +359,7 @@ impl Directory {
         Ok(())
     }
 
-    pub fn lock(&self) -> Result<Lock<'_>> {
+    pub(super) fn lock(&self) -> Result<Lock<'_>> {
         let file = self
             .open_file(
                 OsStr::new("activity.lock"),
@@ -273,6 +375,7 @@ impl Directory {
             directory: self,
             file,
             owner: std::process::id(),
+            release_on_drop: true,
         };
         lock.validate()?;
         Ok(lock)
@@ -283,9 +386,21 @@ pub(super) struct Lock<'a> {
     directory: &'a Directory,
     file: File,
     owner: u32,
+    release_on_drop: bool,
 }
 
 impl Lock<'_> {
+    pub fn into_shared(mut self) -> Result<File> {
+        self.validate()?;
+        if unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_SH | libc::LOCK_NB) } != 0 {
+            return Err(std::io::Error::last_os_error()).context("Protect restarted installation");
+        }
+        self.validate()?;
+        let file = self.file.try_clone()?;
+        self.release_on_drop = false;
+        Ok(file)
+    }
+
     pub fn validate(&self) -> Result<()> {
         ensure!(
             self.owner == std::process::id(),
@@ -305,7 +420,7 @@ impl Lock<'_> {
 
 impl Drop for Lock<'_> {
     fn drop(&mut self) {
-        if self.owner == std::process::id() {
+        if self.release_on_drop && self.owner == std::process::id() {
             // Release this scope even if an unrelated fork briefly inherited
             // the descriptor before exec. A child cannot unlock its parent.
             unsafe {
@@ -323,6 +438,101 @@ pub(super) struct Stage<'a> {
 }
 
 impl<'a> Stage<'a> {
+    pub fn planned(parent: &Directory) -> PathBuf {
+        parent.path.join(format!(
+            ".gobstopper-update-{}-{}",
+            std::process::id(),
+            SERIAL.fetch_add(1, Ordering::Relaxed)
+        ))
+    }
+
+    pub fn create(parent: &'a Directory, path: &Path) -> Result<Self> {
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .context("Invalid upgrade stage name")?;
+        ensure!(
+            name.starts_with(".gobstopper-update-") && path.parent() == Some(parent.path.as_path()),
+            "Upgrade stage is outside the installation directory"
+        );
+        ensure!(parent.mkdir(name)?, "Upgrade stage already exists");
+        Ok(Self {
+            directory: Directory::open(path, false, true)?,
+            parent,
+            name: name.to_owned(),
+            preserve: false,
+        })
+    }
+
+    pub fn validate_contents(&self) -> Result<()> {
+        self.directory.validate()?;
+        let names = [
+            "archive",
+            "checksum",
+            "gobstopper",
+            "previous",
+            "old-receipt",
+            "new-receipt",
+            "restore-binary",
+            "restore-receipt",
+        ];
+        for entry in std::fs::read_dir(&self.directory.path)? {
+            let entry = entry?;
+            let filename = entry.file_name();
+            let filename = filename
+                .to_str()
+                .context("Unexpected staging filename; files preserved")?;
+            ensure!(
+                names.contains(&filename),
+                "Unexpected staging entry; files preserved"
+            );
+            let private = !matches!(filename, "gobstopper" | "previous" | "restore-binary");
+            let file = self
+                .directory
+                .open_file(OsStr::new(filename), libc::O_RDONLY, 0, private)?
+                .context("Staging entry disappeared")?;
+            ensure!(
+                file.metadata()?.len() <= 256 * 1024 * 1024,
+                "Staging entry exceeds its size limit"
+            );
+        }
+        self.directory.validate()
+    }
+
+    pub fn remove_checked(&self) -> Result<()> {
+        self.validate_contents()?;
+        for filename in [
+            "archive",
+            "checksum",
+            "gobstopper",
+            "previous",
+            "old-receipt",
+            "new-receipt",
+            "restore-binary",
+            "restore-receipt",
+        ] {
+            self.directory.remove(filename, false)?;
+        }
+        self.parent.remove(&self.name, true)
+    }
+
+    pub fn existing(parent: &'a Directory, path: &Path) -> Result<Self> {
+        let name = path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .context("Invalid upgrade stage name")?;
+        ensure!(
+            name.starts_with(".gobstopper-update-") && path.parent() == Some(parent.path.as_path()),
+            "Upgrade stage is outside the installation directory"
+        );
+        Ok(Self {
+            directory: Directory::open(path, false, true)?,
+            parent,
+            name: name.to_owned(),
+            preserve: true,
+        })
+    }
+
     pub fn new(parent: &'a Directory) -> Result<Self> {
         for _ in 0..100 {
             let name = format!(
@@ -348,17 +558,7 @@ impl Drop for Stage<'_> {
         if self.preserve || self.directory.validate().is_err() {
             return;
         }
-        for filename in [
-            "archive",
-            "checksum",
-            "gobstopper",
-            "previous",
-            "old-receipt",
-            "new-receipt",
-        ] {
-            let _ = self.directory.remove(filename, false);
-        }
-        let _ = self.parent.remove(&self.name, true);
+        let _ = self.remove_checked();
     }
 }
 

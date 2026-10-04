@@ -1,4 +1,5 @@
 //! Diagnostic output cannot hold a forwarding or control thread on stderr I/O.
+use crate::proxy_observations::{FailureCode, FailureHistory};
 use serde_json::{json, Value};
 use std::io::Write;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,6 +14,7 @@ struct State {
     dropped: AtomicU64,
     failures: AtomicU64,
     written: AtomicU64,
+    history: FailureHistory,
 }
 
 struct Logger {
@@ -35,14 +37,17 @@ impl Logger {
                         .and_then(|()| writer.flush())
                         .is_err()
                     {
-                        worker_state.failures.fetch_add(1, Ordering::Relaxed);
+                        worker_state.history.record(FailureCode::StorageWrite);
+                        worker_state.failures.fetch_add(1, Ordering::Release);
                     } else {
-                        worker_state.written.fetch_add(1, Ordering::Relaxed);
+                        worker_state.history.recover();
+                        worker_state.written.fetch_add(1, Ordering::Release);
                     }
                 }
             });
         if worker.is_err() {
-            state.failures.fetch_add(1, Ordering::Relaxed);
+            state.history.record(FailureCode::WorkerSpawn);
+            state.failures.fetch_add(1, Ordering::Release);
         }
         Self {
             sender: worker.ok().map(|_| sender),
@@ -52,27 +57,43 @@ impl Logger {
 
     fn write(&self, message: &str) {
         if message.len() >= LINE_LIMIT {
-            self.state.dropped.fetch_add(1, Ordering::Relaxed);
+            self.state.history.record(FailureCode::RecordLimit);
+            self.state.dropped.fetch_add(1, Ordering::Release);
             return;
         }
         let mut bytes = Vec::with_capacity(message.len() + 1);
         bytes.extend_from_slice(message.as_bytes());
         bytes.push(b'\n');
-        if self
-            .sender
-            .as_ref()
-            .is_none_or(|sender| sender.try_send(bytes).is_err())
-        {
-            self.state.dropped.fetch_add(1, Ordering::Relaxed);
+        let failure = match &self.sender {
+            Some(sender) => match sender.try_send(bytes) {
+                Ok(()) => None,
+                Err(std::sync::mpsc::TrySendError::Full(_)) => Some(FailureCode::QueueFull),
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    Some(FailureCode::WorkerStopped)
+                }
+            },
+            None => Some(FailureCode::WorkerStopped),
+        };
+        if let Some(code) = failure {
+            self.state.history.record(code);
+            self.state.dropped.fetch_add(1, Ordering::Release);
         }
     }
 
     fn status(&self) -> Value {
+        let dropped_lines = self.state.dropped.load(Ordering::Acquire);
+        let write_failures = self.state.failures.load(Ordering::Acquire);
+        let written_lines = self.state.written.load(Ordering::Acquire);
+        let (last_failure_at_ms, last_failure_code, last_recovery_at_ms) =
+            self.state.history.fields();
         json!({
-            "dropped_lines": self.state.dropped.load(Ordering::Relaxed),
-            "write_failures": self.state.failures.load(Ordering::Relaxed),
-            "written_lines": self.state.written.load(Ordering::Relaxed),
+            "dropped_lines": dropped_lines,
+            "write_failures": write_failures,
+            "written_lines": written_lines,
             "queue_limit": QUEUE_LIMIT,
+            "last_failure_at_ms": last_failure_at_ms,
+            "last_failure_code": last_failure_code,
+            "last_recovery_at_ms": last_recovery_at_ms,
         })
     }
 }
@@ -153,6 +174,49 @@ mod tests {
             assert!(started.elapsed() < Duration::from_secs(5));
             std::thread::sleep(Duration::from_millis(2));
         }
+    }
+
+    struct FailOnce(bool);
+
+    impl Write for FailOnce {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            if !self.0 {
+                self.0 = true;
+                return Err(std::io::Error::other("private writer failure"));
+            }
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn diagnostics_distinguish_historical_failure_from_recovery() {
+        let logger = Logger::start(FailOnce(false));
+        assert!(logger.status()["last_failure_at_ms"].is_null());
+        logger.write("first");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while logger.status()["last_failure_at_ms"].is_null() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let failed = logger.status();
+        assert_eq!(failed["last_failure_code"], "storage_write_failed");
+        assert!(!failed.to_string().contains("private writer failure"));
+        logger.write("second");
+        while logger.status()["last_recovery_at_ms"].is_null() {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        let recovered = logger.status();
+        assert_eq!(recovered["write_failures"], 1);
+        assert_eq!(recovered["written_lines"], 1);
+        assert!(
+            recovered["last_recovery_at_ms"].as_u64().unwrap()
+                >= failed["last_failure_at_ms"].as_u64().unwrap()
+        );
     }
 
     #[test]

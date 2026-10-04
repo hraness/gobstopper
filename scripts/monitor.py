@@ -715,7 +715,65 @@ def save_observation(directory, observation):
             pass
 
 
-def retention_summary(log_path, selected):
+def events_diagnostics_summary(data=None, error=None, read_limit_reached=False):
+    errors = ("event_log_absent", "event_log_not_regular", "event_log_limit",
+              "event_log_unavailable")
+    coverage = {"generations": int(data is not None),
+                "scanned_bytes": len(data) if data is not None else 0,
+                "scanned_records": 0, "readable_records": 0, "valid_records": 0,
+                "invalid_records": 0, "oversized_records": 0,
+                "byte_limit_per_generation": EVENTS_LOG_BYTES,
+                "read_limit_reached": bool(read_limit_reached or error == "event_log_limit"),
+                "unterminated_tail": bool(data and not read_limit_reached and not data.endswith(b"\n")),
+                "partial": False, "partial_reasons": []}
+    out = {"diagnostics_only": True, "evidence_eligible": False,
+           "available": data is not None,
+           "unavailable_reason": (None if data is not None else
+                                  error if error in errors else "event_log_unavailable"),
+           "scope": "bounded_live_generation", "coverage": coverage, "reason_counts": {}}
+    if data is not None:
+        if read_limit_reached:
+            data = data[:data.rfind(b"\n") + 1]
+        for line in data.split(b"\n"):
+            if len(line) <= EVENT_RECORD_BYTES and not line.strip(b" \t\n\r\f"):
+                continue
+            coverage["scanned_records"] += 1
+            reason = None
+            if len(line) > EVENT_RECORD_BYTES:
+                reason = "oversized_record"
+            else:
+                try:
+                    event = strict_json(line.decode("utf-8"))
+                except (ValueError, UnicodeError, RecursionError):
+                    reason = "invalid_json"
+                else:
+                    if isinstance(event, dict):
+                        coverage["readable_records"] += 1
+                        schema, provider = event.get("schema"), event.get("provider")
+                        if isinstance(schema, str) and schema != "gobstopper/compaction-events-v1":
+                            reason = "unsupported_schema"
+                        elif isinstance(provider, str) and provider not in ("codex", "claude_code"):
+                            reason = "unsupported_provider"
+                        elif not valid_compaction_event(event):
+                            reason = "invalid_fields"
+                    else:
+                        reason = "invalid_fields"
+            if reason is None:
+                coverage["valid_records"] += 1
+            else:
+                key = "oversized_records" if reason == "oversized_record" else "invalid_records"
+                coverage[key] += 1
+                out["reason_counts"][reason] = out["reason_counts"].get(reason, 0) + 1
+    coverage["partial_reasons"] = sorted(out["reason_counts"])
+    for partial, reason in ((coverage["read_limit_reached"], "read_limit"),
+                           (coverage["unterminated_tail"], "unterminated_tail")):
+        if partial:
+            coverage["partial_reasons"].append(reason)
+    coverage["partial"] = bool(coverage["partial_reasons"])
+    return out
+
+
+def retention_summary(log_path, selected, *, diagnostics=None):
     """Count distinct error-free evidence pairs for exact selected sources.
 
     Counts and flagged native IDs only. Duplicate records do not multiply a
@@ -727,17 +785,27 @@ def retention_summary(log_path, selected):
     out = {"measured": 0, "checks": 0, "literal": 0, "lexical": 0,
            "lossy_sessions": [], "available": False, "error": None,
            "invalid_records": 0, "oversized_records": 0, "conflicting_pairs": 0}
+
+    def unavailable(reason):
+        out["error"] = reason
+        if diagnostics is not None:
+            diagnostics.clear()
+            diagnostics.update(events_diagnostics_summary(error=reason))
+        return out
+
     try:
         fd = os.open(log_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
         with os.fdopen(fd, "rb") as log:
             info = os.fstat(log.fileno())
             if not stat.S_ISREG(info.st_mode):
-                out["error"] = "event_log_not_regular"
-                return out
+                return unavailable("event_log_not_regular")
             if info.st_size > EVENTS_LOG_BYTES:
-                out["error"] = "event_log_limit"
-                return out
+                return unavailable("event_log_limit")
             data = log.read(EVENTS_LOG_BYTES + 1)
+        if diagnostics is not None:
+            diagnostics.clear()
+            diagnostics.update(events_diagnostics_summary(
+                data[:EVENTS_LOG_BYTES], read_limit_reached=len(data) > EVENTS_LOG_BYTES))
         if len(data) > EVENTS_LOG_BYTES:
             out["error"] = "event_log_limit"
             return out
@@ -745,11 +813,9 @@ def retention_summary(log_path, selected):
             out["error"] = "event_log_incomplete"
             return out
     except FileNotFoundError:
-        out["error"] = "event_log_absent"
-        return out
+        return unavailable("event_log_absent")
     except OSError:
-        out["error"] = "event_log_unavailable"
-        return out
+        return unavailable("event_log_unavailable")
     pairs = {}
     for line in data.split(b"\n"):
         if len(line) > EVENT_RECORD_BYTES:
@@ -905,6 +971,9 @@ def observe(binary, output_dir, sessions, providers=(), proxy_port=None):
         # identity, not a native ID that a foreign store can also contain.
         selected = {(s["provider"], s["session_id"], s["source_identity_sha256"])
                     for s in samples if s["source_identity_sha256"] is not None}
+        events_diagnostics = {}
+        retention = retention_summary(event_log_path(environment), selected,
+                                      diagnostics=events_diagnostics)
         observation = {
             "schema": SCHEMA,
             "observed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -918,7 +987,8 @@ def observe(binary, output_dir, sessions, providers=(), proxy_port=None):
             "coverage": coverage,
             "watcher_checkpoints": watcher_checkpoints(event_log_path(environment).parent, digest,
                                                        time.time_ns() // 1_000_000),
-            "retention": retention_summary(event_log_path(environment), selected),
+            "retention": retention,
+            "events_diagnostics": events_diagnostics,
         }
         save_observation(directory, observation)
         return observation

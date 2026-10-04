@@ -1885,6 +1885,16 @@ fn data_cli(proxy: &ProxyProcess, args: &[&str]) -> Value {
 }
 fn finished_requests(proxy: &ProxyProcess, expected: usize) -> Value {
     let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while request(proxy.port, "GET", "/gobstopper/status", &[], b"").json()["observations"]
+        ["available"]
+        != true
+    {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "observation recorder did not become available"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
     loop {
         let rows = data_cli(proxy, &["data", "requests"]);
         if rows.as_array().is_some_and(|r| {
@@ -2035,9 +2045,17 @@ fn live_observations_join_retries_without_counting_them_as_separate_requests() {
     let success = rows.iter().find(|row| row["outcome"] == "success").unwrap();
     assert_eq!(success["usage"]["input_tokens"]["value"], 1000);
     assert!(success["generation"].is_null());
+    assert_eq!(success["reason"], "completed");
+    for row in rows {
+        let total = row["duration_ms"].as_u64().unwrap();
+        let preparation = row["timings"]["preparation_ms"].as_u64().unwrap();
+        let headers = row["timings"]["upstream_headers_ms"].as_u64().unwrap();
+        assert!(preparation + headers <= total);
+        assert!(row["timings"]["transform_ms"].is_null());
+    }
     assert_eq!(
         rows.iter()
-            .filter(|row| row["outcome"] == "refused")
+            .filter(|row| row["outcome"] == "refused" && row["reason"] == "provider_refused")
             .count(),
         1
     );
@@ -2069,6 +2087,7 @@ fn live_streaming_metrics_require_terminal_event_and_capture_final_usage() {
     assert_eq!(rows[0]["usage"]["output_tokens"]["value"], 250);
     assert!(rows[0]["first_output_ms"].is_number());
     assert_eq!(rows[0]["outcome"], "success");
+    assert_eq!(rows[0]["reason"], "completed");
     assert!(!rows.to_string().contains("SYNTHETIC_PRIVATE_OUTPUT"));
     let fake = Fake::start(|_| Reply::Sse(vec!["data: {\"type\":\"message_start\"}\n\n".into()]));
     let proxy = start_proxy(&fake.url(), &[]);
@@ -2081,6 +2100,7 @@ fn live_streaming_metrics_require_terminal_event_and_capture_final_usage() {
     );
     let rows = finished_requests(&proxy, 1);
     assert_eq!(rows[0]["outcome"], "interrupted");
+    assert_eq!(rows[0]["reason"], "missing_terminal");
     assert!(rows[0]["usage"].is_null());
 }
 

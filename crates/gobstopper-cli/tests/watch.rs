@@ -424,7 +424,7 @@ fn unreadable_telemetry_does_not_become_a_zero_count_report() {
     assert!(error["error"]["next"]
         .as_str()
         .unwrap()
-        .contains("events.jsonl aside"));
+        .contains("events --diagnostics --json (preserves the original log)"));
 }
 
 #[test]

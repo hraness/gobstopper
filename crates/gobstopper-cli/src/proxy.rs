@@ -11,6 +11,7 @@
 //! curl through its environment rather than argv, and nothing from a
 //! request or response body is logged.
 
+use crate::session_data::FinishReason;
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
 use gobstopper_adapters::codex_compact::rfc3339_now;
@@ -92,6 +93,17 @@ const STRIP_RESPONSE: &[&str] = &[
 
 #[derive(Subcommand)]
 pub enum ProxyCmd {
+    /// Upgrade a managed proxy through a detached service controller.
+    Upgrade {
+        #[arg(long)]
+        version: Option<String>,
+        #[arg(long)]
+        wait: bool,
+        #[arg(long)]
+        print: bool,
+        #[arg(long)]
+        allow_dependent_caller: bool,
+    },
     /// Serve on a loopback port until stopped.
     Serve {
         #[command(flatten)]
@@ -172,10 +184,16 @@ pub enum ProxyCmd {
         /// Print the platform service definition and change nothing.
         #[arg(long)]
         print: bool,
+        /// Allow a caller whose requests depend on this proxy to stop it.
+        #[arg(long)]
+        allow_dependent_caller: bool,
     },
     /// Stop the owned user service and remove it, so the proxy no longer
     /// starts at login.
-    Uninstall,
+    Uninstall {
+        #[arg(long)]
+        allow_dependent_caller: bool,
+    },
     /// Check the installed user service, its identity, and its configuration.
     Doctor {
         #[arg(long)]
@@ -185,11 +203,15 @@ pub enum ProxyCmd {
     MigrateService {
         #[arg(long)]
         print: bool,
+        #[arg(long)]
+        allow_dependent_caller: bool,
     },
     /// Repair a managed service without replacing modified or unrelated files.
     Repair {
         #[arg(long)]
         print: bool,
+        #[arg(long)]
+        allow_dependent_caller: bool,
     },
     /// Show a running proxy's settings and counters.
     Status {
@@ -351,6 +373,12 @@ pub type Resolve<'a> = dyn Fn(&str) -> Result<(gobstopper_core::Provider, std::p
 
 pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
     match command {
+        ProxyCmd::Upgrade {
+            version,
+            wait,
+            print,
+            allow_dependent_caller,
+        } => crate::proxy_upgrade::run(version.as_deref(), *wait, *print, *allow_dependent_caller),
         ProxyCmd::Replay {
             session,
             threshold,
@@ -512,13 +540,44 @@ pub fn run(command: &ProxyCmd, resolve: &Resolve) -> Result<()> {
             port,
             replace,
             print,
+            allow_dependent_caller,
         } => {
             threshold_1m(opts.threshold, opts.threshold_1m)?;
+            if *replace && !print && crate::proxy_agent::installed() {
+                crate::proxy_caller::refuse(
+                    crate::proxy_agent::status_port(None)?,
+                    *allow_dependent_caller,
+                )?;
+            }
             crate::proxy_agent::install(&install_serve_args(), *port, *replace, *print)
         }
-        ProxyCmd::Uninstall => crate::proxy_agent::uninstall(),
-        ProxyCmd::MigrateService { print } => crate::proxy_agent::migrate(*print),
-        ProxyCmd::Repair { print } => crate::proxy_agent::repair(*print),
+        ProxyCmd::Uninstall {
+            allow_dependent_caller,
+        } => {
+            if crate::proxy_agent::installed() {
+                crate::proxy_caller::refuse(
+                    crate::proxy_agent::status_port(None)?,
+                    *allow_dependent_caller,
+                )?;
+            }
+            crate::proxy_agent::uninstall()
+        }
+        ProxyCmd::MigrateService {
+            print,
+            allow_dependent_caller,
+        } => crate::proxy_agent::migrate(*print, *allow_dependent_caller),
+        ProxyCmd::Repair {
+            print,
+            allow_dependent_caller,
+        } => {
+            if !print && crate::proxy_agent::repair_may_restart()? {
+                crate::proxy_caller::refuse(
+                    crate::proxy_agent::status_port(None)?,
+                    *allow_dependent_caller,
+                )?;
+            }
+            crate::proxy_agent::repair(*print)
+        }
         ProxyCmd::Doctor { .. } => {
             println!(
                 "{}",
@@ -722,6 +781,7 @@ struct ContextAccess {
     path: Option<std::path::PathBuf>,
     state: Mutex<ContextAccessState>,
     available: AtomicBool,
+    attempted: AtomicBool,
     jobs: work::Workers,
     observer: scoped_context::Observer,
 }
@@ -735,6 +795,7 @@ impl ContextAccess {
     fn new(path: Option<std::path::PathBuf>) -> Self {
         Self {
             available: AtomicBool::new(false),
+            attempted: AtomicBool::new(false),
             jobs: work::Workers::default(),
             observer: scoped_context::Observer::default(),
             path,
@@ -753,6 +814,7 @@ impl ContextAccess {
         let mut state = self.state.try_lock().ok()?;
         if state.control.is_none() && Instant::now() >= state.retry_after {
             if let Some(path) = &self.path {
+                self.attempted.store(true, Ordering::Release);
                 state.control = crate::context::Control::open(path).ok().map(Arc::new);
                 self.available
                     .store(state.control.is_some(), Ordering::Release);
@@ -769,6 +831,7 @@ struct Prepared {
     capacity: Option<u64>,
     outgoing: Option<Vec<u8>>,
     evidence: Option<Vec<gobstopper_adapters::request::EvidenceObservation>>,
+    native_session: Option<String>,
 }
 struct PreparationUnavailable;
 
@@ -900,6 +963,15 @@ impl Proxy {
             self.count(&self.stats.est_tokens_out),
         );
         let context_available = self.control.available.load(Ordering::Acquire);
+        let context_state = if context_available {
+            "available"
+        } else if self.control.path.is_none() {
+            "disabled"
+        } else if self.control.attempted.load(Ordering::Acquire) {
+            "unavailable"
+        } else {
+            "uninitialized"
+        };
         let mut drain = self
             .admission
             .lock()
@@ -913,7 +985,7 @@ impl Proxy {
             "service_id": self.service_id,
             "keep_awake": self.power.status(),
             "observations": self.observations.status(),
-            "context_control": {"available": context_available, "error": (!context_available).then_some("context_control_unavailable"), "configured_window": self.context_window},
+            "context_control": {"available": context_available, "state": context_state, "error": (context_state == "unavailable").then_some("context_control_unavailable"), "configured_window": self.context_window},
             "version": env!("CARGO_PKG_VERSION"),
             "port": self.port,
             "threshold_tokens": cfg.threshold_tokens,
@@ -1157,6 +1229,15 @@ impl Proxy {
                 .filter(|m| m.len() <= 1024)
                 .unwrap_or_default()
                 .to_string();
+            let native_session = (dialect == Dialect::Anthropic)
+                .then(|| {
+                    parsed
+                        .get("metadata")
+                        .and_then(|metadata| metadata.get("user_id"))
+                        .and_then(Value::as_str)
+                        .and_then(claude_session_id)
+                })
+                .flatten();
             let key = (upstream, model);
             let ratio = calibrations
                 .get(&key)
@@ -1174,6 +1255,7 @@ impl Proxy {
                 capacity,
                 outgoing,
                 evidence,
+                native_session,
             })
         });
         let prepared = result.map_err(|_| PreparationUnavailable);
@@ -1510,6 +1592,7 @@ impl Proxy {
     }
 
     fn forward(&self, request: &Request, client: &mut TcpStream) -> Result<()> {
+        let started = Instant::now();
         let upstream = self.upstream_for(request);
         let dialect = Dialect::detect(request.path()).filter(|_| request.method == "POST");
         // Native provider compaction performs inference even though its request
@@ -1633,19 +1716,28 @@ impl Proxy {
             }
         }
         let request_id = dialect.and_then(|_| self.observations.request_id());
-        let session = self.observations.session_id(request.header("session_id"));
+        let session = match dialect {
+            Some(Dialect::Responses) => self
+                .observations
+                .session_id("codex", codex_session_id(request)),
+            Some(Dialect::Anthropic) => self.observations.session_id(
+                "claude_code",
+                prepared.as_ref().and_then(|p| p.native_session.as_deref()),
+            ),
+            _ => None,
+        };
         let kind = dialect.unwrap_or(Dialect::Responses);
         let model = prepared.as_ref().map(|p| p.key.1.as_str());
-        let mut attempt = self
-            .observations
-            .start(request_id.clone(), session.clone(), kind, model);
+        let mut attempt =
+            self.observations
+                .start_at(request_id.clone(), session.clone(), kind, model, started);
         if let Some(prepared) = &prepared {
             record_context(&attempt, &prepared.ctx, self.shadow, budget.as_ref());
         }
-        let response = match send_upstream(request, upstream, &body) {
+        let response = match send_observed_upstream(request, upstream, &body, &mut attempt) {
             Ok(response) => response,
             Err(error) => {
-                attempt.finish(crate::session_data::Outcome::Error, None, None);
+                attempt.finish_reason(forwarding_reason(&error), None, None);
                 return self.upstream_failed(client, &error);
             }
         };
@@ -1704,27 +1796,17 @@ impl Proxy {
         if let Some(tap) = &mut tap {
             tap.metrics.finish_json();
         }
-        let outcome = if result.is_err() {
-            crate::session_data::Outcome::Interrupted
-        } else if status >= 500 {
-            crate::session_data::Outcome::Error
-        } else if status >= 400 {
-            crate::session_data::Outcome::Refused
-        } else if tap.as_ref().is_some_and(|t| t.metrics.failed) {
-            crate::session_data::Outcome::Error
-        } else if result.as_ref().is_ok_and(|complete| !complete)
-            || tap
-                .as_ref()
-                .is_some_and(|t| t.event_stream && !t.metrics.terminal)
-        {
-            crate::session_data::Outcome::Interrupted
-        } else if !(200..300).contains(&status) || tap.as_ref().is_none_or(|t| !t.metrics.terminal)
-        {
-            crate::session_data::Outcome::Unknown
-        } else {
-            crate::session_data::Outcome::Success
+        let reason = match &result {
+            Err(error) => forwarding_reason(error),
+            Ok(Some(reason)) => *reason,
+            Ok(None) if status >= 500 => FinishReason::ProviderError,
+            Ok(None) if status >= 400 => FinishReason::ProviderRefused,
+            Ok(None) if !(200..300).contains(&status) => FinishReason::ParserUncertain,
+            Ok(None) => tap.as_ref().map_or(FinishReason::ParserUncertain, |t| {
+                t.metrics.completion_reason()
+            }),
         };
-        attempt.finish(outcome, Some(status), tap.as_ref().map(|t| &t.metrics));
+        attempt.finish_reason(reason, Some(status), tap.as_ref().map(|t| &t.metrics));
         if self.calibrate && status == 200 && result.is_ok() {
             if let (Some((key, sent)), Some(reported)) = (
                 calibration,
@@ -1738,33 +1820,41 @@ impl Proxy {
 
     /// Length retries remain separate attempts of the same logical request.
     #[allow(clippy::too_many_arguments)]
-    fn reactive(
-        &self,
+    fn reactive<'a>(
+        &'a self,
         request: &Request,
         upstream: &str,
         ctx: &mut RequestCtx,
         key: &(String, String),
-        response: Upstream,
+        mut response: Upstream,
         client: &mut TcpStream,
-        mut attempt: crate::proxy_observations::Attempt<'_>,
+        mut attempt: crate::proxy_observations::Attempt<'a>,
         request_id: Option<crate::session_data::OpaqueId>,
         session: Option<crate::session_data::OpaqueId>,
         budget: Option<&crate::context::Decision>,
         input_capacity: Option<u64>,
     ) -> Result<()> {
         let (mut status, mut headers) = (response.status, response.headers.clone());
-        let mut data = response.read_all(MAX_ERROR_BODY_BYTES)?;
-        attempt.finish(crate::session_data::Outcome::Refused, Some(status), None);
+        let Some(mut data) = response.read_all(MAX_ERROR_BODY_BYTES) else {
+            return self.relay_observed(client, response, request, attempt, ctx.dialect, None);
+        };
+        drop(response);
         if ctx.modified
             && !is_context_error(&data)
             && within_input_capacity(ctx.est_tokens_in, ctx.ratio_permille, input_capacity)
         {
+            attempt.finish_reason(FinishReason::ProviderRefused, Some(status), None);
             self.stats.fail_open.fetch_add(1, Ordering::Relaxed);
             log("provider rejected the compacted request; resending the original");
             let mut original_attempt =
                 self.observations
                     .start(request_id, session, ctx.dialect, Some(&key.1));
-            return match send_upstream(request, upstream, &request.body) {
+            return match send_observed_upstream(
+                request,
+                upstream,
+                &request.body,
+                &mut original_attempt,
+            ) {
                 Ok(original) => self.relay_observed(
                     client,
                     original,
@@ -1774,12 +1864,13 @@ impl Proxy {
                     Some((key.clone(), ctx.est_tokens_in)),
                 ),
                 Err(error) => {
-                    original_attempt.finish(crate::session_data::Outcome::Error, None, None);
+                    original_attempt.finish_reason(forwarding_reason(&error), None, None);
                     self.upstream_failed(client, &error)
                 }
             };
         }
         while is_context_error(&data) {
+            let retry_started = Instant::now();
             let Some((mut next, body)) = self.reactive_step(ctx, request.body.len()) else {
                 break;
             };
@@ -1796,17 +1887,19 @@ impl Proxy {
                 ctx.est_tokens_out / 1000,
                 ctx.rung
             ));
-            let mut retry = self.observations.start(
+            attempt.finish_reason(FinishReason::ProviderRefused, Some(status), None);
+            attempt = self.observations.start_at(
                 request_id.clone(),
                 session.clone(),
                 ctx.dialect,
                 Some(&key.1),
+                retry_started,
             );
-            record_context(&retry, ctx, false, budget);
-            let again = match send_upstream(request, upstream, &body) {
+            record_context(&attempt, ctx, false, budget);
+            let mut again = match send_observed_upstream(request, upstream, &body, &mut attempt) {
                 Ok(again) => again,
                 Err(error) => {
-                    retry.finish(crate::session_data::Outcome::Error, None, None);
+                    attempt.finish_reason(forwarding_reason(&error), None, None);
                     return self.upstream_failed(client, &error);
                 }
             };
@@ -1815,21 +1908,37 @@ impl Proxy {
                     client,
                     again,
                     request,
-                    retry,
+                    attempt,
                     ctx.dialect,
                     Some((key.clone(), ctx.est_tokens_out)),
                 );
             }
             status = again.status;
             headers = again.headers.clone();
-            data = again.read_all(MAX_ERROR_BODY_BYTES)?;
-            retry.finish(crate::session_data::Outcome::Refused, Some(status), None);
+            let Some(next_data) = again.read_all(MAX_ERROR_BODY_BYTES) else {
+                return self.relay_observed(client, again, request, attempt, ctx.dialect, None);
+            };
+            data = next_data;
         }
         let headers: Vec<_> = headers
             .into_iter()
             .filter(|(name, _)| !STRIP_RESPONSE.contains(&name.to_ascii_lowercase().as_str()))
             .collect();
-        write_buffered(client, status, "Bad Request", &headers, &data)
+        let result: Result<()> = write_buffered(client, status, "Bad Request", &headers, &data)
+            .map_err(|error| {
+                ForwardFailure::new(
+                    error
+                        .downcast_ref::<std::io::Error>()
+                        .map_or(FinishReason::ClientWriteFailed, client_failure_reason),
+                )
+                .into()
+            });
+        let reason = result
+            .as_ref()
+            .err()
+            .map_or(FinishReason::ProviderRefused, forwarding_reason);
+        attempt.finish_reason(reason, Some(status), None);
+        result
     }
 
     fn reactive_step(&self, ctx: &RequestCtx, input_bytes: usize) -> Option<(RequestCtx, Vec<u8>)> {
@@ -1856,12 +1965,13 @@ impl Proxy {
 
     fn upstream_failed(&self, client: &mut TcpStream, error: &anyhow::Error) -> Result<()> {
         self.stats.upstream_errors.fetch_add(1, Ordering::Relaxed);
-        log(&format!("upstream request failed: {error:#}"));
+        let code = forwarding_reason(error).code();
+        log(&format!("upstream request failed: {code}"));
         write_error(
             client,
             502,
             "api_error",
-            &format!("gobstopper proxy: upstream request failed: {error:#}"),
+            &format!("gobstopper proxy: upstream request failed: {code}"),
         )
     }
 }
@@ -1875,6 +1985,59 @@ fn within_input_capacity(
     capacity: Option<u64>,
 ) -> bool {
     capacity.is_none_or(|limit| estimated_tokens <= calibrated_threshold(limit, ratio_permille))
+}
+
+fn codex_session_id(request: &Request) -> Option<&str> {
+    let names: &[&str] = if request.header("thread-id").is_some() {
+        &["thread-id"]
+    } else if request.header("session-id").is_some() {
+        return None;
+    } else {
+        &["session_id", "conversation_id"]
+    };
+    let mut native = None;
+    for (name, value) in &request.headers {
+        if names.iter().any(|known| name.eq_ignore_ascii_case(known)) {
+            if value.is_empty()
+                || value.len() > 512
+                || value.chars().any(char::is_control)
+                || native.is_some_and(|prior| prior != value.as_str())
+            {
+                return None;
+            }
+            native = Some(value.as_str());
+        }
+    }
+    native
+}
+
+fn provider_uuid(value: &str) -> bool {
+    value.len() == 36
+        && value.bytes().enumerate().all(|(i, byte)| {
+            if matches!(i, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        })
+}
+
+fn claude_session_id(user_id: &str) -> Option<String> {
+    if user_id.len() > 4096 {
+        return None;
+    }
+    let device_id = |id: &str| id.len() == 64 && id.bytes().all(|byte| byte.is_ascii_hexdigit());
+    let account_id = |id: &str| id.is_empty() || provider_uuid(id);
+    if let Ok(metadata) = serde_json::from_str::<Value>(user_id) {
+        let device = metadata.get("device_id").and_then(Value::as_str)?;
+        let account = metadata.get("account_uuid").and_then(Value::as_str)?;
+        let session = metadata.get("session_id").and_then(Value::as_str)?;
+        return (device_id(device) && account_id(account) && provider_uuid(session))
+            .then(|| session.to_owned());
+    }
+    let (device, remainder) = user_id.strip_prefix("user_")?.split_once("_account_")?;
+    let (account, session) = remainder.split_once("_session_")?;
+    (device_id(device) && account_id(account) && provider_uuid(session)).then(|| session.to_owned())
 }
 
 fn requested_output(parsed: &serde_json::Map<String, Value>) -> u64 {
@@ -2245,6 +2408,83 @@ fn read_request_body(
     Ok(())
 }
 
+#[derive(Debug)]
+struct ForwardFailure {
+    reason: FinishReason,
+    eof: bool,
+}
+impl ForwardFailure {
+    fn new(reason: FinishReason) -> Self {
+        Self { reason, eof: false }
+    }
+}
+impl std::fmt::Display for ForwardFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.reason.code())
+    }
+}
+impl std::error::Error for ForwardFailure {}
+
+fn forwarding_reason(error: &anyhow::Error) -> FinishReason {
+    error
+        .downcast_ref::<ForwardFailure>()
+        .map_or(FinishReason::ProxyInterrupted, |failure| failure.reason)
+}
+
+fn client_failure_reason(error: &std::io::Error) -> FinishReason {
+    if matches!(
+        error.kind(),
+        std::io::ErrorKind::BrokenPipe
+            | std::io::ErrorKind::ConnectionReset
+            | std::io::ErrorKind::ConnectionAborted
+            | std::io::ErrorKind::NotConnected
+            | std::io::ErrorKind::UnexpectedEof
+    ) {
+        FinishReason::ClientDisconnected
+    } else {
+        FinishReason::ClientWriteFailed
+    }
+}
+
+fn client_failure(error: std::io::Error) -> ForwardFailure {
+    ForwardFailure::new(client_failure_reason(&error))
+}
+
+fn upstream_read_failure(error: std::io::Error) -> ForwardFailure {
+    ForwardFailure::new(
+        if matches!(
+            error.kind(),
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
+        ) {
+            FinishReason::UpstreamTimeout
+        } else {
+            FinishReason::UpstreamReadFailed
+        },
+    )
+}
+
+fn curl_failure_reason(exit: Option<i32>, fallback: FinishReason) -> FinishReason {
+    match exit {
+        Some(28) => FinishReason::UpstreamTimeout,
+        Some(18) => FinishReason::UpstreamTruncated,
+        Some(5 | 6 | 7 | 35 | 60) => FinishReason::UpstreamUnavailable,
+        Some(52 | 55 | 56) => FinishReason::UpstreamReadFailed,
+        _ => fallback,
+    }
+}
+
+fn send_observed_upstream(
+    request: &Request,
+    upstream: &str,
+    body: &[u8],
+    attempt: &mut crate::proxy_observations::Attempt<'_>,
+) -> Result<Upstream> {
+    let started = attempt.begin_upstream();
+    let result = send_upstream(request, upstream, body);
+    attempt.end_upstream(started);
+    result
+}
+
 /// A response streaming from a curl child.
 struct Upstream {
     child: Child,
@@ -2252,6 +2492,8 @@ struct Upstream {
     status: u16,
     reason: String,
     headers: Vec<(String, String)>,
+    prefix: Vec<u8>,
+    failure: Option<FinishReason>,
 }
 
 impl Drop for Upstream {
@@ -2272,14 +2514,37 @@ impl Upstream {
             .map(|(_, value)| value.as_str())
     }
 
-    fn read_all(mut self, limit: usize) -> Result<Vec<u8>> {
+    fn read_all(&mut self, limit: usize) -> Option<Vec<u8>> {
+        let length = self
+            .header("content-length")
+            .filter(|_| self.header("transfer-encoding").is_none())
+            .and_then(|value| value.parse::<u64>().ok());
+        if length.is_some_and(|n| n > limit as u64) {
+            return None;
+        }
         let mut data = Vec::new();
-        (&mut self.stdout)
-            .take(limit as u64)
-            .read_to_end(&mut data)?;
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-        Ok(data)
+        if let Err(error) = (&mut self.stdout)
+            .take(limit as u64 + 1)
+            .read_to_end(&mut data)
+        {
+            self.failure = Some(upstream_read_failure(error).reason);
+            self.prefix = data;
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+            return None;
+        }
+        if data.len() > limit {
+            self.prefix = data;
+            return None;
+        }
+        let exit = self.child.wait().ok().and_then(|status| status.code());
+        let complete = length.map_or(exit == Some(0), |n| n == data.len() as u64);
+        if !complete {
+            self.failure = Some(curl_failure_reason(exit, FinishReason::UpstreamTruncated));
+            self.prefix = data;
+            return None;
+        }
+        Some(data)
     }
 }
 
@@ -2335,24 +2600,31 @@ fn send_upstream(request: &Request, upstream: &str, body: &[u8]) -> Result<Upstr
             Stdio::null()
         })
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = command.spawn().context("start curl (is it installed?)")?;
+        .stderr(Stdio::null());
+    let mut child = command
+        .spawn()
+        .map_err(|_| ForwardFailure::new(FinishReason::UpstreamUnavailable))?;
     if let Some(mut stdin) = child.stdin.take() {
         let body = body.to_vec();
-        if let Err(error) = std::thread::Builder::new()
+        if std::thread::Builder::new()
             .name("gobstopper-upload".into())
             .spawn(move || {
                 let _ = stdin.write_all(&body);
             })
+            .is_err()
         {
             // Curl may already have connected. Preserve the no-replay rule,
             // and retain custody even though no response wrapper exists yet.
             let _ = child.kill();
             let _ = child.wait();
-            return Err(error).context("start upstream upload worker");
+            return Err(ForwardFailure::new(FinishReason::UpstreamUnavailable).into());
         }
     }
-    let stdout = child.stdout.take().context("curl stdout")?;
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(ForwardFailure::new(FinishReason::UpstreamUnavailable).into());
+    };
     let mut stdout = BufReader::new(stdout);
     loop {
         match read_response_head(&mut stdout) {
@@ -2364,16 +2636,23 @@ fn send_upstream(request: &Request, upstream: &str, body: &[u8]) -> Result<Upstr
                     status,
                     reason,
                     headers,
+                    prefix: Vec::new(),
+                    failure: None,
                 });
             }
             Err(error) => {
-                let _ = child.kill();
-                let output = child.wait_with_output().ok();
-                let detail = output
-                    .map(|output| String::from_utf8_lossy(&output.stderr).trim().to_string())
-                    .filter(|text| !text.is_empty())
-                    .unwrap_or_else(|| format!("{error:#}"));
-                bail!("{detail}");
+                if !error
+                    .downcast_ref::<ForwardFailure>()
+                    .is_some_and(|failure| failure.eof)
+                {
+                    let _ = child.kill();
+                }
+                let exit = child.wait().ok().and_then(|status| status.code());
+                return Err(ForwardFailure::new(curl_failure_reason(
+                    exit,
+                    forwarding_reason(&error),
+                ))
+                .into());
             }
         }
     }
@@ -2386,13 +2665,20 @@ fn read_response_head(stdout: &mut impl BufRead) -> Result<(u16, String, Headers
     let mut total = 0;
     let mut read_line = |line: &mut Vec<u8>| -> Result<String> {
         line.clear();
-        let read = stdout.read_until(b'\n', line)?;
+        let read = (&mut *stdout)
+            .take(MAX_HEAD_BYTES.saturating_sub(total) as u64 + 1)
+            .read_until(b'\n', line)
+            .map_err(upstream_read_failure)?;
         total += read;
         if read == 0 {
-            bail!("upstream closed before a response");
+            return Err(ForwardFailure {
+                reason: FinishReason::UpstreamReadFailed,
+                eof: true,
+            }
+            .into());
         }
         if total > MAX_HEAD_BYTES {
-            bail!("upstream response head too large");
+            return Err(ForwardFailure::new(FinishReason::ParserUncertain).into());
         }
         Ok(String::from_utf8_lossy(line)
             .trim_end_matches(['\r', '\n'])
@@ -2402,12 +2688,13 @@ fn read_response_head(stdout: &mut impl BufRead) -> Result<(u16, String, Headers
     let mut parts = status_line.splitn(3, ' ');
     let version = parts.next().unwrap_or_default();
     if !version.starts_with("HTTP/") {
-        bail!("unexpected upstream status line");
+        return Err(ForwardFailure::new(FinishReason::ParserUncertain).into());
     }
     let status: u16 = parts
         .next()
         .and_then(|code| code.parse().ok())
-        .context("unexpected upstream status code")?;
+        .filter(|code| (100..=599).contains(code))
+        .ok_or_else(|| ForwardFailure::new(FinishReason::ParserUncertain))?;
     let reason = parts.next().unwrap_or("").to_string();
     let mut headers = Vec::new();
     loop {
@@ -2653,7 +2940,7 @@ fn relay_tapped(
     mut upstream: Upstream,
     method: &str,
     mut tap: Option<&mut UsageTap>,
-) -> Result<bool> {
+) -> Result<Option<FinishReason>> {
     let headers: Vec<(String, String)> = upstream
         .headers
         .iter()
@@ -2667,10 +2954,13 @@ fn relay_tapped(
         .and_then(|value| value.parse::<u64>().ok());
     let result = (|| -> Result<bool> {
         if bodyless {
-            write_head(client, upstream.status, &upstream.reason, &headers, "")?;
+            write_head(client, upstream.status, &upstream.reason, &headers, "")
+                .map_err(client_failure)?;
             return Ok(true);
         }
         let mut buffer = vec![0u8; 64 * 1024];
+        let mut body =
+            std::io::Cursor::new(std::mem::take(&mut upstream.prefix)).chain(&mut upstream.stdout);
         match length {
             Some(length) => {
                 write_head(
@@ -2679,19 +2969,27 @@ fn relay_tapped(
                     &upstream.reason,
                     &headers,
                     &format!("content-length: {length}\r\n"),
-                )?;
-                let mut body = (&mut upstream.stdout).take(length);
-                let copied = match tap.as_deref_mut() {
-                    None => std::io::copy(&mut body, client)?,
-                    Some(tap) => std::io::copy(
-                        &mut body,
-                        &mut Tee {
+                )
+                .map_err(client_failure)?;
+                let mut body = (&mut body).take(length);
+                let mut copied = 0u64;
+                loop {
+                    let read = body.read(&mut buffer).map_err(upstream_read_failure)?;
+                    if read == 0 {
+                        break;
+                    }
+                    match tap.as_deref_mut() {
+                        None => client.write_all(&buffer[..read]).map_err(client_failure)?,
+                        Some(tap) => Tee {
                             inner: &mut *client,
                             tap: Some(tap),
-                        },
-                    )?,
-                };
-                client.flush()?;
+                        }
+                        .write_all(&buffer[..read])
+                        .map_err(client_failure)?,
+                    }
+                    copied += read as u64;
+                }
+                client.flush().map_err(client_failure)?;
                 Ok(copied == length)
             }
             None => {
@@ -2701,16 +2999,19 @@ fn relay_tapped(
                     &upstream.reason,
                     &headers,
                     "transfer-encoding: chunked\r\n",
-                )?;
+                )
+                .map_err(client_failure)?;
                 loop {
-                    let read = upstream.stdout.read(&mut buffer)?;
+                    let read = body.read(&mut buffer).map_err(upstream_read_failure)?;
                     if read == 0 {
                         break;
                     }
-                    client.write_all(format!("{read:x}\r\n").as_bytes())?;
-                    client.write_all(&buffer[..read])?;
-                    client.write_all(b"\r\n")?;
-                    client.flush()?;
+                    client
+                        .write_all(format!("{read:x}\r\n").as_bytes())
+                        .map_err(client_failure)?;
+                    client.write_all(&buffer[..read]).map_err(client_failure)?;
+                    client.write_all(b"\r\n").map_err(client_failure)?;
+                    client.flush().map_err(client_failure)?;
                     if let Some(tap) = tap.as_deref_mut() {
                         tap.observe(&buffer[..read]);
                     }
@@ -2730,9 +3031,13 @@ fn relay_tapped(
     };
     let exit = upstream.child.wait().ok().and_then(|status| status.code());
     let exited_cleanly = exit == Some(0);
-    if complete && exited_cleanly && length.is_none() && !bodyless {
-        client.write_all(b"0\r\n\r\n")?;
-        client.flush()?;
+    let failure = upstream.failure.or_else(|| {
+        (!complete || (!exited_cleanly && length.is_none() && !bodyless))
+            .then(|| curl_failure_reason(exit, FinishReason::UpstreamTruncated))
+    });
+    if complete && exited_cleanly && failure.is_none() && length.is_none() && !bodyless {
+        client.write_all(b"0\r\n\r\n").map_err(client_failure)?;
+        client.flush().map_err(client_failure)?;
     } else if !complete || (!exited_cleanly && length.is_none() && !bodyless) {
         // A fixed-length body that arrived whole is complete even when the
         // upstream closed the connection afterwards.
@@ -2741,7 +3046,7 @@ fn relay_tapped(
             exit.map_or_else(|| "signal".to_string(), |code| code.to_string())
         ));
     }
-    Ok(complete && (exited_cleanly || length.is_some()))
+    Ok(failure)
 }
 
 /// The `serve` settings given to `proxy install`, as typed: everything after
@@ -2764,7 +3069,10 @@ fn serve_args_after_install(args: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     let mut rest = args[at + 2..].iter();
     while let Some(arg) = rest.next() {
-        if matches!(arg.as_str(), "--replace" | "--print") {
+        if matches!(
+            arg.as_str(),
+            "--replace" | "--print" | "--allow-dependent-caller"
+        ) {
             continue;
         }
         if GLOBAL.contains(&arg.as_str()) {
@@ -2892,6 +3200,124 @@ mod resilience_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forwarding_diagnostics_keep_read_timeout_disconnect_and_parser_failures_distinct() {
+        struct FailedRead(std::io::ErrorKind);
+        impl Read for FailedRead {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(self.0, "PRIVATE_TRANSPORT_ERROR"))
+            }
+        }
+        let read_error =
+            read_response_head(&mut BufReader::new(FailedRead(std::io::ErrorKind::Other)))
+                .unwrap_err();
+        assert_eq!(
+            forwarding_reason(&read_error),
+            FinishReason::UpstreamReadFailed
+        );
+        let timeout = read_response_head(&mut BufReader::new(FailedRead(
+            std::io::ErrorKind::TimedOut,
+        )))
+        .unwrap_err();
+        assert_eq!(forwarding_reason(&timeout), FinishReason::UpstreamTimeout);
+        let invalid = read_response_head(&mut BufReader::new(
+            &b"PRIVATE_UPSTREAM_PAYLOAD\r\n\r\n"[..],
+        ))
+        .unwrap_err();
+        assert_eq!(forwarding_reason(&invalid), FinishReason::ParserUncertain);
+        let oversized = read_response_head(&mut BufReader::new(
+            vec![b'x'; MAX_HEAD_BYTES + 1].as_slice(),
+        ))
+        .unwrap_err();
+        assert_eq!(forwarding_reason(&oversized), FinishReason::ParserUncertain);
+        for error in [read_error, timeout, invalid, oversized] {
+            assert!(!format!("{error:#}").contains("PRIVATE_"));
+        }
+        assert_eq!(
+            client_failure_reason(&std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "private"
+            )),
+            FinishReason::ClientDisconnected
+        );
+        assert_eq!(
+            client_failure_reason(&std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "private"
+            )),
+            FinishReason::ClientWriteFailed
+        );
+        assert_eq!(
+            curl_failure_reason(Some(28), FinishReason::UpstreamTruncated),
+            FinishReason::UpstreamTimeout
+        );
+        assert_eq!(
+            curl_failure_reason(Some(18), FinishReason::UpstreamReadFailed),
+            FinishReason::UpstreamTruncated
+        );
+        assert_eq!(
+            curl_failure_reason(Some(56), FinishReason::UpstreamTruncated),
+            FinishReason::UpstreamReadFailed
+        );
+    }
+
+    #[test]
+    fn session_attribution_accepts_only_known_provider_identifiers() {
+        let input = json!({});
+        for (headers, expected) in [
+            (vec![("session_id", "legacy")], Some("legacy")),
+            (
+                vec![("session_id", "legacy"), ("conversation_id", "legacy")],
+                Some("legacy"),
+            ),
+            (
+                vec![("session_id", "first"), ("conversation_id", "second")],
+                None,
+            ),
+            (
+                vec![("thread-id", "thread"), ("session-id", "cache-affinity")],
+                Some("thread"),
+            ),
+            (vec![("thread-id", "first"), ("THREAD-ID", "second")], None),
+            (vec![("session-id", "cache-affinity")], None),
+            (
+                vec![
+                    ("session-id", "cache-affinity"),
+                    ("session_id", "ambiguous"),
+                ],
+                None,
+            ),
+            (
+                vec![
+                    ("x-client-request-id", "request"),
+                    ("x-session-id", "unadvertised"),
+                ],
+                None,
+            ),
+        ] {
+            assert_eq!(
+                codex_session_id(&request("/v1/responses", &headers, &input)),
+                expected
+            );
+        }
+        let native = "11111111-1111-4111-8111-111111111111";
+        let device = "a".repeat(64);
+        let current = json!({"device_id":device,"account_uuid":"","session_id":native}).to_string();
+        assert_eq!(claude_session_id(&current).as_deref(), Some(native));
+        assert_eq!(
+            claude_session_id(&format!("user_{device}_account__session_{native}")).as_deref(),
+            Some(native)
+        );
+        for unsupported in [
+            native.to_string(),
+            json!({"session_id":native}).to_string(),
+            json!({"device_id":device,"account_uuid":"","session_id":"not-a-session"}).to_string(),
+            "user_label_account_label_session_guessed".into(),
+        ] {
+            assert_eq!(claude_session_id(&unsupported), None);
+        }
+    }
 
     fn status_fixture(
         response: impl FnOnce(u16) -> Vec<u8> + Send + 'static,

@@ -445,8 +445,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-01-085-standing-threshold-core.json",
-        "sha256": "e91da06600e6cc14664061238a3ad3c7ce32cd037e5733597249f97eb27ff98a"
+        "path": "docs/assurance/receipts/2026-10-04-reliability-steel-thread-core.json",
+        "sha256": "e26adb505bfa3ff9625db4e441467e3f18db3b75b103a0e303837d215960f93f"
       }
     },
     {
@@ -466,8 +466,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-25-watch-r20.json",
-        "sha256": "f1eab44a0db9bba0bed060b1280ac3ba33b568c718ebb1fdc11f489f69f80539"
+        "path": "docs/assurance/receipts/2026-10-04-reliability-steel-thread-watch.json",
+        "sha256": "428e92812d5b592e53620dbe8b58944d63abb3655bea9b79c0d0ff1ddc04e9f1"
       }
     },
     {
@@ -487,8 +487,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-25-vault-r20.json",
-        "sha256": "fee2354c1a7c5679e0f14a374f46372f23d63c94cb21ab1e7eaa10810632fceb"
+        "path": "docs/assurance/receipts/2026-10-04-reliability-steel-thread-vault.json",
+        "sha256": "1444c64d7b47b95cf3ce34a020c08954525dd6638482bed3a6e5c696f6d69fc6"
       }
     },
     {
@@ -508,8 +508,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-01-085-standing-threshold-transcript.json",
-        "sha256": "27248220e17ff0ce1174a3fdef85ac13595b8400d2d1f2863d0642ef26fa4788"
+        "path": "docs/assurance/receipts/2026-10-04-reliability-steel-thread-transcript.json",
+        "sha256": "13a0f265ec1468db36749c6a1822b8162e767232d37cac4c8894475b4ffe2d10"
       }
     },
     {
@@ -529,8 +529,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-01-085-standing-threshold-stress.json",
-        "sha256": "beb2594e96e6a47757b923d42069d362401242cdb2122ff19b6389b10d915f48"
+        "path": "docs/assurance/receipts/2026-10-04-reliability-steel-thread-final-stress.json",
+        "sha256": "4ca42e636c6a17c5c974ab32079509285ab71bb57446664cdfa832ab8d7b9e97"
       }
     },
     {

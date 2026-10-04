@@ -16,8 +16,64 @@ pub struct Request {
     pub first_output_ms: Option<u64>,
     pub usage: Option<Usage>,
     pub generation: Option<Generation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<FinishReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub timings: Option<RequestTimings>,
     /// A missing terminal is incomplete evidence, including after a process crash.
     pub incomplete: bool,
+}
+
+impl Request {
+    pub(super) fn new(item: &Envelope) -> Self {
+        Self {
+            source: item.source.clone(),
+            identity: item.identity.clone(),
+            started_at_ms: None,
+            finished_at_ms: None,
+            provider: None,
+            model: None,
+            outcome: None,
+            duration_ms: None,
+            first_output_ms: None,
+            usage: None,
+            generation: None,
+            reason: None,
+            timings: None,
+            incomplete: true,
+        }
+    }
+
+    pub(super) fn observe(&mut self, item: &Envelope) {
+        match &item.event {
+            Event::RequestStarted { provider, model } => {
+                self.started_at_ms = Some(item.observed_at_ms);
+                self.provider = Some(provider.clone());
+                self.model = model.clone();
+            }
+            Event::RequestFinished {
+                outcome,
+                duration_ms,
+                first_output_ms,
+                usage,
+                generation,
+                reason,
+                timings,
+                ..
+            } => {
+                self.finished_at_ms = Some(item.observed_at_ms);
+                self.outcome = Some(*outcome);
+                self.duration_ms = *duration_ms;
+                self.first_output_ms = *first_output_ms;
+                self.usage = usage.clone();
+                self.generation = *generation;
+                self.reason = *reason;
+                self.timings = *timings;
+                self.incomplete = false;
+            }
+            _ => {}
+        }
+    }
 }
 
 pub fn requests(events: &[Envelope]) -> Vec<Request> {
@@ -32,46 +88,9 @@ pub fn requests(events: &[Envelope]) -> Vec<Request> {
         let Some(attempt) = &item.identity.attempt_id else {
             continue;
         };
-        let row = rows
-            .entry((item.source.id.clone(), attempt.clone()))
-            .or_insert_with(|| Request {
-                source: item.source.clone(),
-                identity: item.identity.clone(),
-                started_at_ms: None,
-                finished_at_ms: None,
-                provider: None,
-                model: None,
-                outcome: None,
-                duration_ms: None,
-                first_output_ms: None,
-                usage: None,
-                generation: None,
-                incomplete: true,
-            });
-        match &item.event {
-            Event::RequestStarted { provider, model } => {
-                row.started_at_ms = Some(item.observed_at_ms);
-                row.provider = Some(provider.clone());
-                row.model = model.clone();
-            }
-            Event::RequestFinished {
-                outcome,
-                duration_ms,
-                first_output_ms,
-                usage,
-                generation,
-                ..
-            } => {
-                row.finished_at_ms = Some(item.observed_at_ms);
-                row.outcome = Some(*outcome);
-                row.duration_ms = *duration_ms;
-                row.first_output_ms = *first_output_ms;
-                row.usage = usage.clone();
-                row.generation = *generation;
-                row.incomplete = false;
-            }
-            _ => {}
-        }
+        rows.entry((item.source.id.clone(), attempt.clone()))
+            .or_insert_with(|| Request::new(item))
+            .observe(item);
     }
     rows.into_values().collect()
 }
@@ -210,38 +229,74 @@ pub struct Measure {
     pub unavailable_reason: Option<&'static str>,
 }
 
-fn mean(
-    id: &'static str,
-    unit: &'static str,
-    values: impl Iterator<Item = Option<u64>>,
-) -> Measure {
-    let mut sum = 0u128;
-    let mut measured = 0u64;
-    let mut missing = 0u64;
-    for value in values {
+#[derive(Default)]
+struct Mean {
+    sum: u128,
+    measured: u64,
+    missing: u64,
+}
+
+impl Mean {
+    fn observe(&mut self, value: Option<u64>) {
         if let Some(value) = value {
-            sum += value as u128;
-            measured += 1;
+            self.sum += value as u128;
+            self.measured += 1;
         } else {
-            missing += 1;
+            self.missing += 1;
         }
     }
-    Measure {
-        id,
-        unit,
-        value: (measured > 0).then(|| sum as f64 / measured as f64),
-        numerator: sum.to_string(),
-        denominator: measured.to_string(),
-        measured,
-        missing,
-        status: if measured == 0 {
-            "unavailable"
-        } else if missing > 0 {
-            "partial"
-        } else {
-            "available"
-        },
-        unavailable_reason: (measured == 0).then_some("no_measured_observations"),
+
+    fn measure(&self, id: &'static str, unit: &'static str) -> Measure {
+        Measure {
+            id,
+            unit,
+            value: (self.measured > 0).then(|| self.sum as f64 / self.measured as f64),
+            numerator: self.sum.to_string(),
+            denominator: self.measured.to_string(),
+            measured: self.measured,
+            missing: self.missing,
+            status: coverage(self.measured, self.missing),
+            unavailable_reason: (self.measured == 0).then_some("no_measured_observations"),
+        }
+    }
+}
+
+fn coverage(measured: u64, missing: u64) -> &'static str {
+    if measured == 0 {
+        "unavailable"
+    } else if missing > 0 {
+        "partial"
+    } else {
+        "available"
+    }
+}
+
+#[derive(Default)]
+struct Rate {
+    tokens: u128,
+    ms: u128,
+    measured: u64,
+}
+
+impl Rate {
+    fn observe(&mut self, tokens: u64, ms: u64) {
+        self.tokens += tokens as u128;
+        self.ms += ms as u128;
+        self.measured += 1;
+    }
+
+    fn measure(&self, id: &'static str, attempts: u64, reason: &'static str) -> Measure {
+        Measure {
+            id,
+            unit: "tokens/s",
+            value: (self.ms > 0).then(|| 1000.0 * self.tokens as f64 / self.ms as f64),
+            numerator: self.tokens.to_string(),
+            denominator: self.ms.to_string(),
+            measured: self.measured,
+            missing: attempts - self.measured,
+            status: coverage(self.measured, attempts - self.measured),
+            unavailable_reason: (self.measured == 0).then_some(reason),
+        }
     }
 }
 
@@ -272,198 +327,381 @@ pub struct Metrics {
     pub cohort_rule: &'static str,
 }
 
-pub fn metrics(events: &[Envelope]) -> Metrics {
-    let all = requests(events);
-    let mut cohorts = Vec::new();
-    let mut cohort_keys = Vec::new();
-    for kind in [
-        SourceKind::LiveProxy,
-        SourceKind::NativeTranscript,
-        SourceKind::LegacyStats,
-    ] {
-        let profiles: BTreeSet<_> = events
-            .iter()
-            .filter(|e| e.source.kind == kind)
-            .map(|e| e.source.profile.clone())
-            .collect();
-        cohort_keys.extend(profiles.into_iter().map(|profile| (kind, profile)));
+const OUTCOMES: [(Outcome, &str); 7] = [
+    (Outcome::Success, "request_outcome_success_fraction"),
+    (Outcome::Error, "request_outcome_error_fraction"),
+    (Outcome::Refused, "request_outcome_refused_fraction"),
+    (Outcome::Cancelled, "request_outcome_cancelled_fraction"),
+    (Outcome::Timeout, "request_outcome_timeout_fraction"),
+    (Outcome::Interrupted, "request_outcome_interrupted_fraction"),
+    (Outcome::Unknown, "request_outcome_unknown_fraction"),
+];
+const REASONS: [(FinishReason, &str); 12] = [
+    (FinishReason::Completed, "request_finish_completed_fraction"),
+    (
+        FinishReason::ClientDisconnected,
+        "request_finish_client_disconnected_fraction",
+    ),
+    (
+        FinishReason::ClientWriteFailed,
+        "request_finish_client_write_failed_fraction",
+    ),
+    (
+        FinishReason::UpstreamUnavailable,
+        "request_finish_upstream_unavailable_fraction",
+    ),
+    (
+        FinishReason::UpstreamReadFailed,
+        "request_finish_upstream_read_failed_fraction",
+    ),
+    (
+        FinishReason::UpstreamTimeout,
+        "request_finish_upstream_timeout_fraction",
+    ),
+    (
+        FinishReason::UpstreamTruncated,
+        "request_finish_upstream_truncated_fraction",
+    ),
+    (
+        FinishReason::MissingTerminal,
+        "request_finish_missing_terminal_fraction",
+    ),
+    (
+        FinishReason::ParserUncertain,
+        "request_finish_parser_uncertain_fraction",
+    ),
+    (
+        FinishReason::ProviderRefused,
+        "request_finish_provider_refused_fraction",
+    ),
+    (
+        FinishReason::ProviderError,
+        "request_finish_provider_error_fraction",
+    ),
+    (
+        FinishReason::ProxyInterrupted,
+        "request_finish_proxy_interrupted_fraction",
+    ),
+];
+
+fn fraction(
+    id: &'static str,
+    count: u64,
+    measured: u64,
+    attempts: u64,
+    reason: &'static str,
+) -> Measure {
+    Measure {
+        id,
+        unit: "fraction",
+        value: (measured > 0).then(|| count as f64 / measured as f64),
+        numerator: count.to_string(),
+        denominator: measured.to_string(),
+        measured,
+        missing: attempts - measured,
+        status: coverage(measured, attempts - measured),
+        unavailable_reason: (measured == 0).then_some(reason),
     }
-    for (kind, profile) in cohort_keys {
-        let rows: Vec<_> = all
-            .iter()
-            .filter(|r| r.source.kind == kind && r.source.profile == profile)
-            .collect();
-        let mut input = 0u128;
-        let mut output = 0u128;
-        let mut est_input = 0u128;
-        let mut est_output = 0u128;
-        let mut with_input = 0;
-        let mut with_output = 0;
-        for row in &rows {
-            if let Some(usage) = &row.usage {
-                if let Some(q) = usage.input_tokens {
-                    with_input += 1;
-                    match q.basis {
-                        Basis::Reported => input += q.value as u128,
-                        Basis::Estimated => est_input += q.value as u128,
-                    }
-                }
-                if let Some(q) = usage.output_tokens {
-                    with_output += 1;
-                    match q.basis {
-                        Basis::Reported => output += q.value as u128,
-                        Basis::Estimated => est_output += q.value as u128,
-                    }
+}
+
+#[derive(Default)]
+struct Aggregate {
+    attempts: u64,
+    incomplete: u64,
+    unknown: u64,
+    input: u128,
+    output: u128,
+    estimated_input: u128,
+    estimated_output: u128,
+    with_input: u64,
+    with_output: u64,
+    applied: u64,
+    shadow: u64,
+    removed: u128,
+    legacy: u64,
+    duration: Mean,
+    first_output: Mean,
+    reported_input: Mean,
+    reported_output: Mean,
+    generation_rate: Rate,
+    request_rate: Rate,
+    outcomes: [u64; 7],
+    reasons: [u64; 12],
+    preparation: Mean,
+    upstream_headers: Mean,
+    transform: Mean,
+}
+
+impl Aggregate {
+    fn event(&mut self, item: &Envelope) {
+        match item.event {
+            Event::ContextDecision {
+                estimated_before_tokens,
+                estimated_after_tokens,
+                compacted: true,
+                shadow,
+                ..
+            } => {
+                if shadow {
+                    self.shadow += 1;
+                } else {
+                    self.applied += 1;
+                    self.removed +=
+                        estimated_before_tokens.saturating_sub(estimated_after_tokens) as u128;
                 }
             }
+            Event::LegacyContext { .. } => self.legacy += 1,
+            _ => {}
         }
-        let mut applied = 0;
-        let mut shadow = 0;
-        let mut removed = 0u128;
-        let mut legacy = 0;
-        for item in events
-            .iter()
-            .filter(|e| e.source.kind == kind && e.source.profile == profile)
-        {
-            match item.event {
-                Event::ContextDecision {
-                    estimated_before_tokens,
-                    estimated_after_tokens,
-                    compacted: true,
-                    shadow: is_shadow,
-                    ..
-                } => {
-                    if is_shadow {
-                        shadow += 1;
-                    } else {
-                        applied += 1;
-                        removed +=
-                            estimated_before_tokens.saturating_sub(estimated_after_tokens) as u128;
-                    }
-                }
-                Event::LegacyContext { .. } => legacy += 1,
-                _ => {}
+    }
+
+    fn request(&mut self, row: &Request) {
+        self.attempts += 1;
+        self.incomplete += u64::from(row.incomplete);
+        self.unknown += u64::from(row.outcome.is_none_or(|o| o == Outcome::Unknown));
+        if let Some(outcome) = row.outcome {
+            self.outcomes[match outcome {
+                Outcome::Success => 0,
+                Outcome::Error => 1,
+                Outcome::Refused => 2,
+                Outcome::Cancelled => 3,
+                Outcome::Timeout => 4,
+                Outcome::Interrupted => 5,
+                Outcome::Unknown => 6,
+            }] += 1;
+        }
+        if let Some(reason) = row.reason {
+            self.reasons[match reason {
+                FinishReason::Completed => 0,
+                FinishReason::ClientDisconnected => 1,
+                FinishReason::ClientWriteFailed => 2,
+                FinishReason::UpstreamUnavailable => 3,
+                FinishReason::UpstreamReadFailed => 4,
+                FinishReason::UpstreamTimeout => 5,
+                FinishReason::UpstreamTruncated => 6,
+                FinishReason::MissingTerminal => 7,
+                FinishReason::ParserUncertain => 8,
+                FinishReason::ProviderRefused => 9,
+                FinishReason::ProviderError => 10,
+                FinishReason::ProxyInterrupted => 11,
+            }] += 1;
+        }
+        self.preparation
+            .observe(row.timings.map(|t| t.preparation_ms));
+        self.upstream_headers
+            .observe(row.timings.map(|t| t.upstream_headers_ms));
+        self.transform
+            .observe(row.timings.and_then(|t| t.transform_ms));
+        let input = row.usage.as_ref().and_then(|u| u.input_tokens);
+        let output = row.usage.as_ref().and_then(|u| u.output_tokens);
+        if let Some(q) = input {
+            self.with_input += 1;
+            match q.basis {
+                Basis::Reported => self.input += q.value as u128,
+                Basis::Estimated => self.estimated_input += q.value as u128,
             }
         }
+        if let Some(q) = output {
+            self.with_output += 1;
+            match q.basis {
+                Basis::Reported => self.output += q.value as u128,
+                Basis::Estimated => self.estimated_output += q.value as u128,
+            }
+        }
+        let reported =
+            |q: Option<Quantity>| q.filter(|q| q.basis == Basis::Reported).map(|q| q.value);
+        self.duration.observe(row.duration_ms);
+        self.first_output.observe(row.first_output_ms);
+        self.reported_input.observe(reported(input));
+        self.reported_output.observe(reported(output));
+        if let Some(span) = row.generation.filter(|g| g.duration_ms > 0) {
+            self.generation_rate
+                .observe(span.output_tokens, span.duration_ms);
+        }
+        if let (Some(tokens), Some(ms)) = (reported(output), row.duration_ms.filter(|ms| *ms > 0)) {
+            self.request_rate.observe(tokens, ms);
+        }
+    }
+
+    fn finish(self, source_kind: SourceKind, source_profile: String) -> Cohort {
         let mut measures = vec![
-            mean(
-                "request_duration_mean",
-                "ms",
-                rows.iter().map(|r| r.duration_ms),
+            self.duration.measure("request_duration_mean", "ms"),
+            self.first_output.measure("first_output_latency_mean", "ms"),
+            self.reported_input
+                .measure("reported_input_tokens_mean", "tokens"),
+            self.reported_output
+                .measure("reported_output_tokens_mean", "tokens"),
+            self.generation_rate.measure(
+                "generation_output_tokens_per_second",
+                self.attempts,
+                "no_matching_generation_spans",
             ),
-            mean(
-                "first_output_latency_mean",
-                "ms",
-                rows.iter().map(|r| r.first_output_ms),
+            self.request_rate.measure(
+                "request_output_tokens_per_second",
+                self.attempts,
+                "no_matching_request_tokens_and_durations",
             ),
-            mean(
-                "reported_input_tokens_mean",
-                "tokens",
-                rows.iter().map(|r| {
-                    r.usage
-                        .as_ref()
-                        .and_then(|u| u.input_tokens)
-                        .filter(|q| q.basis == Basis::Reported)
-                        .map(|q| q.value)
-                }),
-            ),
-            mean(
-                "reported_output_tokens_mean",
-                "tokens",
-                rows.iter().map(|r| {
-                    r.usage
-                        .as_ref()
-                        .and_then(|u| u.output_tokens)
-                        .filter(|q| q.basis == Basis::Reported)
-                        .map(|q| q.value)
-                }),
-            ),
+            self.preparation.measure("request_preparation_mean", "ms"),
+            self.upstream_headers
+                .measure("upstream_headers_latency_mean", "ms"),
+            self.transform.measure("request_transform_mean", "ms"),
         ];
-        let mut generation_tokens = 0u128;
-        let mut generation_ms = 0u128;
-        let mut generation_count = 0u64;
-        for span in rows
-            .iter()
-            .filter_map(|r| r.generation)
-            .filter(|g| g.duration_ms > 0)
-        {
-            generation_count += 1;
-            generation_tokens += span.output_tokens as u128;
-            generation_ms += span.duration_ms as u128;
-        }
-        measures.push(Measure {
-            id: "generation_output_tokens_per_second",
-            unit: "tokens/s",
-            value: (generation_ms > 0)
-                .then(|| 1000.0 * generation_tokens as f64 / generation_ms as f64),
-            numerator: generation_tokens.to_string(),
-            denominator: generation_ms.to_string(),
-            measured: generation_count,
-            missing: rows.len() as u64 - generation_count,
-            status: if generation_count == 0 {
-                "unavailable"
-            } else if generation_count < rows.len() as u64 {
-                "partial"
-            } else {
-                "available"
-            },
-            unavailable_reason: (generation_count == 0).then_some("no_matching_generation_spans"),
-        });
-        let mut request_tokens = 0u128;
-        let mut request_ms = 0u128;
-        let mut request_count = 0u64;
-        for row in &rows {
-            if let (Some(tokens), Some(ms)) = (
-                row.usage
-                    .as_ref()
-                    .and_then(|u| u.output_tokens)
-                    .filter(|q| q.basis == Basis::Reported),
-                row.duration_ms.filter(|ms| *ms > 0),
-            ) {
-                request_tokens += tokens.value as u128;
-                request_ms += ms as u128;
-                request_count += 1;
-            }
-        }
-        measures.push(Measure {
-            id: "request_output_tokens_per_second",
-            unit: "tokens/s",
-            value: (request_ms > 0).then(|| 1000.0 * request_tokens as f64 / request_ms as f64),
-            numerator: request_tokens.to_string(),
-            denominator: request_ms.to_string(),
-            measured: request_count,
-            missing: rows.len() as u64 - request_count,
-            status: if request_count == 0 {
-                "unavailable"
-            } else if request_count < rows.len() as u64 {
-                "partial"
-            } else {
-                "available"
-            },
-            unavailable_reason: (request_count == 0)
-                .then_some("no_matching_request_tokens_and_durations"),
-        });
-        cohorts.push(Cohort {
-            source_kind: kind,
-            source_profile: profile,
-            attempts: rows.len() as u64,
-            incomplete_attempts: rows.iter().filter(|r| r.incomplete).count() as u64,
-            unknown_outcomes: rows
-                .iter()
-                .filter(|r| r.outcome.is_none_or(|o| o == Outcome::Unknown))
-                .count() as u64,
-            reported_input_tokens: input.to_string(),
-            reported_output_tokens: output.to_string(),
-            estimated_input_tokens: est_input.to_string(),
-            estimated_output_tokens: est_output.to_string(),
-            requests_with_input: with_input,
-            requests_with_output: with_output,
-            applied_compactions: applied,
-            shadow_compactions: shadow,
-            legacy_observations: legacy,
-            context_tokens_removed_estimate: removed.to_string(),
+        let outcomes = self.outcomes.iter().sum();
+        let reasons = self.reasons.iter().sum();
+        measures.extend(OUTCOMES.iter().enumerate().map(|(index, (_, id))| {
+            fraction(
+                id,
+                self.outcomes[index],
+                outcomes,
+                self.attempts,
+                "no_observed_request_outcomes",
+            )
+        }));
+        measures.extend(REASONS.iter().enumerate().map(|(index, (_, id))| {
+            fraction(
+                id,
+                self.reasons[index],
+                reasons,
+                self.attempts,
+                "no_observed_finish_reasons",
+            )
+        }));
+        Cohort {
+            source_kind,
+            source_profile,
+            attempts: self.attempts,
+            incomplete_attempts: self.incomplete,
+            unknown_outcomes: self.unknown,
+            reported_input_tokens: self.input.to_string(),
+            reported_output_tokens: self.output.to_string(),
+            estimated_input_tokens: self.estimated_input.to_string(),
+            estimated_output_tokens: self.estimated_output.to_string(),
+            requests_with_input: self.with_input,
+            requests_with_output: self.with_output,
+            applied_compactions: self.applied,
+            shadow_compactions: self.shadow,
+            legacy_observations: self.legacy,
+            context_tokens_removed_estimate: self.removed.to_string(),
             measures,
-        });
+        }
     }
-    Metrics {schema_version:1,profile:"observed-request-metrics-v1",cohorts,cohort_rule:"source kinds and parser profiles remain separate; retries are distinct attempts; unmeasured values are absent"}
+}
+
+const KINDS: [SourceKind; 3] = [
+    SourceKind::LiveProxy,
+    SourceKind::NativeTranscript,
+    SourceKind::LegacyStats,
+];
+const PROFILES: [&str; 6] = [
+    "claude-metadata-v1",
+    "codex-metadata-v1",
+    "gobstopper-events-v1",
+    "gobstopper-proxy-v1",
+    "gobstopper-proxy-v2",
+    "gobstopper-stats-v0",
+];
+
+#[derive(Default)]
+pub(super) struct BoundedAccumulator {
+    cohorts: [Option<Aggregate>; KINDS.len() * PROFILES.len()],
+}
+
+impl BoundedAccumulator {
+    fn cohort(&mut self, source: &Source) -> anyhow::Result<&mut Aggregate> {
+        let kind = match source.kind {
+            SourceKind::LiveProxy => 0,
+            SourceKind::NativeTranscript => 1,
+            SourceKind::LegacyStats => 2,
+        };
+        let profile = PROFILES
+            .iter()
+            .position(|p| *p == source.profile)
+            .ok_or_else(|| anyhow::anyhow!("data_metric_profile_unsupported"))?;
+        Ok(self.cohorts[kind * PROFILES.len() + profile].get_or_insert_with(Aggregate::default))
+    }
+
+    pub(super) fn event(&mut self, item: &Envelope) -> anyhow::Result<()> {
+        self.cohort(&item.source)?.event(item);
+        Ok(())
+    }
+
+    pub(super) fn request(&mut self, row: &Request) -> anyhow::Result<()> {
+        self.cohort(&row.source)?.request(row);
+        Ok(())
+    }
+
+    pub(super) fn finish(self) -> Metrics {
+        report(
+            self.cohorts
+                .into_iter()
+                .enumerate()
+                .filter_map(|(index, aggregate)| {
+                    aggregate.map(|aggregate| {
+                        aggregate.finish(
+                            KINDS[index / PROFILES.len()],
+                            PROFILES[index % PROFILES.len()].into(),
+                        )
+                    })
+                })
+                .collect(),
+        )
+    }
+}
+
+fn report(cohorts: Vec<Cohort>) -> Metrics {
+    Metrics {
+        schema_version: 1,
+        profile: "observed-request-metrics-v1",
+        cohorts,
+        cohort_rule: "source kinds and parser profiles remain separate; retries are distinct attempts; unmeasured values are absent",
+    }
+}
+
+#[derive(Default)]
+struct Accumulator {
+    cohorts: BTreeMap<(u8, String), (SourceKind, Aggregate)>,
+}
+
+impl Accumulator {
+    fn cohort(&mut self, source: &Source) -> &mut Aggregate {
+        let kind = match source.kind {
+            SourceKind::LiveProxy => 0,
+            SourceKind::NativeTranscript => 1,
+            SourceKind::LegacyStats => 2,
+        };
+        &mut self
+            .cohorts
+            .entry((kind, source.profile.clone()))
+            .or_insert_with(|| (source.kind, Aggregate::default()))
+            .1
+    }
+
+    pub(super) fn event(&mut self, item: &Envelope) {
+        self.cohort(&item.source).event(item);
+    }
+
+    pub(super) fn request(&mut self, row: &Request) {
+        self.cohort(&row.source).request(row);
+    }
+
+    fn finish(self) -> Metrics {
+        report(
+            self.cohorts
+                .into_iter()
+                .map(|((_, profile), (kind, aggregate))| aggregate.finish(kind, profile))
+                .collect(),
+        )
+    }
+}
+
+#[allow(dead_code)]
+pub fn metrics(events: &[Envelope]) -> Metrics {
+    let mut accumulator = Accumulator::default();
+    for item in events {
+        accumulator.event(item);
+    }
+    for row in requests(events) {
+        accumulator.request(&row);
+    }
+    accumulator.finish()
 }
