@@ -402,7 +402,22 @@ jobs:
           path: ~/.cache/ms-playwright
           key: playwright-${{ runner.os }}-1.61.1
       - name: Provision locked Chromium
-        run: bunx --no-install playwright-core install --with-deps chromium
+        timeout-minutes: 5
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo python3 ../scripts/browser_acquisition.py
+          config=/etc/apt/apt.conf.d/99gobstopper-browser-acquisition
+          sudo test ! -e "$config"
+          sudo test ! -L "$config"
+          trap 'sudo rm -f "$config"' EXIT
+          sudo tee "$config" >/dev/null <<'APT'
+          Acquire::http::Timeout "20";
+          Acquire::https::Timeout "20";
+          Acquire::Retries "1";
+          APT
+          sudo apt-config shell HTTP_TIMEOUT Acquire::http::Timeout HTTPS_TIMEOUT Acquire::https::Timeout RETRIES Acquire::Retries
+          bunx --no-install playwright-core install --with-deps chromium
       - name: Verify public routes and appearance
         run: bun run check:public-site:browser
       - name: Retain screenshots and browser evidence
