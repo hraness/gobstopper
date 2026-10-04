@@ -95,6 +95,21 @@ fn event(session: &str, ts: u64) -> Value {
 }
 
 #[test]
+fn human_diagnostics_fingerprint_identity_without_changing_json() {
+    let fixture = Fixture::new();
+    let identifier = "unpublished-session-identity";
+    fixture.write_log(format!("{}\n", event(identifier, 10)));
+    let output = fixture.run(&["events", "--diagnostics", "--tail", "10"]);
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(!stdout.contains(identifier));
+    let fingerprint = gobstopper_adapters::copy::sha256(identifier.as_bytes());
+    assert!(stdout.contains(&format!("id:{}", &fingerprint[..12])));
+    let value = fixture.json(&["events", "--diagnostics", "--json", "--tail", "10"]);
+    assert_eq!(value["rows"][0]["session_id"], identifier);
+}
+
+#[test]
 fn historical_metadata_is_readable_but_never_replaces_strict_events() {
     let fixture = Fixture::new();
     let valid = event("current-session", 10);

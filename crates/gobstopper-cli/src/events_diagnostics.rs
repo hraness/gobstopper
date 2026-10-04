@@ -58,7 +58,16 @@ pub(crate) fn run(
             row.provider.map_or("-", |provider| provider.as_str()),
             row.action.unwrap_or("-"),
             row.outcome.unwrap_or("-"),
-            row.session_id.as_deref().unwrap_or("-"),
+            row.session_id
+                .as_deref()
+                .map(|id| {
+                    format!(
+                        "id:{}",
+                        &gobstopper_adapters::copy::sha256(id.as_bytes())[..12]
+                    )
+                })
+                .as_deref()
+                .unwrap_or("-"),
             row.reason
                 .map_or("valid_metadata", |reason| reason.as_str()),
         );

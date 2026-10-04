@@ -3360,6 +3360,17 @@ fn manager_identity_until(
 #[cfg(target_os = "linux")]
 fn process_image_matches(pid: u32, executable: &Path) -> bool {
     use std::os::unix::fs::MetadataExt;
+    if !executable.is_absolute()
+        || !executable.components().all(|component| {
+            matches!(
+                component,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        })
+        || executable.as_os_str() != executable.components().collect::<PathBuf>().as_os_str()
+    {
+        return false;
+    }
     let process = format!("/proc/{pid}");
     let Ok(owner) = fs::metadata(&process) else {
         return false;
@@ -3379,6 +3390,17 @@ fn process_image_matches(pid: u32, executable: &Path) -> bool {
 #[cfg(target_os = "macos")]
 fn process_image_matches(pid: u32, executable: &Path) -> bool {
     use std::os::unix::ffi::OsStrExt;
+    if !executable.is_absolute()
+        || !executable.components().all(|component| {
+            matches!(
+                component,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        })
+        || executable.as_os_str() != executable.components().collect::<PathBuf>().as_os_str()
+    {
+        return false;
+    }
     let Some(info) = macos_process_info(pid) else {
         return false;
     };
@@ -3716,6 +3738,33 @@ pub fn restart_command() -> String {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn process_image_requires_normalized_absolute_paths() {
+        let executable = std::env::current_exe().unwrap().canonicalize().unwrap();
+        let pid = std::process::id();
+        assert!(process_image_matches(pid, &executable));
+        let parent = executable.parent().unwrap();
+        let name = executable.file_name().unwrap();
+        let traversal = parent
+            .join("..")
+            .join(parent.file_name().unwrap())
+            .join(name);
+        let dotted = PathBuf::from(format!("{}/./{}", parent.display(), name.to_str().unwrap()));
+        for invalid in [
+            PathBuf::from(name),
+            PathBuf::from("../gobstopper"),
+            traversal,
+            dotted,
+        ] {
+            assert!(!process_image_matches(pid, &invalid));
+        }
+        assert!(!process_image_matches(
+            pid,
+            &parent.join("missing-executable")
+        ));
+    }
 
     #[test]
     #[cfg(any(target_os = "linux", target_os = "macos"))]
