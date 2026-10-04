@@ -9,9 +9,16 @@
 # ~/.local/bin/gobstopper. Nothing runs as root.
 # Update-enabled releases require authenticated GitHub CLI (gh).
 #
+# It also installs aicharts beside it for local usage history across your
+# agents (https://aicharts.io/usage), checked against the digest pinned below,
+# and on a first install turns that history on. It stays on this computer;
+# nothing is uploaded.
+#
 # Options (environment):
 #   GOBSTOPPER_VERSION         exact version, MAJOR.MINOR.PATCH (default: the latest release)
 #   GOBSTOPPER_INSTALL_PREFIX  install into <prefix>/bin (default: ~/.local)
+#   GOBSTOPPER_AICHARTS=no     skip aicharts
+#   GOBSTOPPER_USAGE_HISTORY=no  install aicharts but leave usage history off
 # Source: https://github.com/hraness/gobstopper/blob/main/scripts/install.sh
 #
 # Everything is inside main(), so a partial download runs nothing.
@@ -64,6 +71,8 @@ main() {
     *) fail "GOBSTOPPER_INSTALL_PREFIX must be an absolute path" ;;
   esac
   bin="$prefix/bin"
+  first_install=yes
+  [ ! -e "$bin/gobstopper" ] || first_install=no
 
   if command -v sha256sum >/dev/null 2>&1; then
     sha256() { sha256sum "$1" | cut -d ' ' -f 1; }
@@ -140,8 +149,102 @@ main() {
       echo "  export PATH=\"$bin:\$PATH\""
       ;;
   esac
+  install_aicharts "$bin" "$platform" "$first_install"
   echo
   echo "Next: gobstopper detect"
+}
+
+# The aicharts release this installer adds, with its reviewed archive digests.
+AICHARTS_VERSION=0.3.1
+AICHARTS_SHA256_DARWIN_AARCH64=e79a19b0b174845c939e2472b4dbf3e5738b6bf867bd16aba2daa86be6f049b6
+AICHARTS_SHA256_LINUX_X86_64=c2a8acf56019565668bbcf84884503428d857ab5c54fecec85ae145644f83559
+
+# install_aicharts BIN PLATFORM FIRST_INSTALL installs or upgrades the pinned
+# aicharts in BIN, leaves an aicharts installed elsewhere or a newer one alone,
+# and on a first install turns on local usage history. A failure here only
+# warns: gobstopper is already installed.
+install_aicharts() {
+  case "${GOBSTOPPER_AICHARTS:-yes}" in no | 0 | false | off) return 0 ;; esac
+  case "$2" in
+    darwin-aarch64) aicharts_target=aarch64-apple-darwin aicharts_sha256=$AICHARTS_SHA256_DARWIN_AARCH64 ;;
+    linux-x86_64) aicharts_target=x86_64-unknown-linux-gnu aicharts_sha256=$AICHARTS_SHA256_LINUX_X86_64 ;;
+    *) echo "aicharts has no release for this platform yet, so usage history is not installed"; return 0 ;;
+  esac
+  aicharts_base="https://github.com/hraness/aicharts/releases/download/cli-v$AICHARTS_VERSION"
+  if [ -n "${GOBSTOPPER_RELEASE_BASE_URL:-}" ]; then
+    # A loopback fixture install never reaches GitHub; tests opt in here.
+    [ -n "${GOBSTOPPER_AICHARTS_BASE_URL:-}" ] || return 0
+    printf '%s\n' "$GOBSTOPPER_AICHARTS_BASE_URL" | LC_ALL=C grep -Eq '^http://127\.0\.0\.1:[0-9]{1,5}$' \
+      || { warn "GOBSTOPPER_AICHARTS_BASE_URL may only name a loopback test server"; return 0; }
+    aicharts_base=$GOBSTOPPER_AICHARTS_BASE_URL
+    aicharts_sha256=${GOBSTOPPER_AICHARTS_SHA256:-$aicharts_sha256}
+  fi
+  aicharts="$1/aicharts"
+  elsewhere=$(command -v aicharts 2>/dev/null || true)
+  if [ -n "$elsewhere" ] && [ "$elsewhere" != "$aicharts" ]; then
+    echo "Using $elsewhere for local usage history"
+    aicharts=$elsewhere
+  else
+    current=$("$aicharts" --version 2>/dev/null | sed -n 's/^aicharts \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' || true)
+    if [ -z "$current" ] || version_older "$current" "$AICHARTS_VERSION"; then
+      fetch_aicharts "$1" "$2" || return 0
+    fi
+  fi
+  [ "$3" = yes ] || return 0
+  case "${GOBSTOPPER_USAGE_HISTORY:-yes}" in no | 0 | false | off) return 0 ;; esac
+  # Leave history alone unless it has never been turned on.
+  status=$(HRANESS_SUPPORT_AUDIENCE=off "$aicharts" history status --json 2>/dev/null) || return 0
+  case "$status" in *'"collecting":"off"'*) ;; *) return 0 ;; esac
+  if HRANESS_SUPPORT_AUDIENCE=off "$aicharts" history enable >/dev/null 2>&1; then
+    echo
+    echo "Local usage history is on: aicharts records your agents' daily token totals"
+    echo "on this computer and never uploads them."
+    echo "  See them:  aicharts history report"
+    echo "  Turn off:  aicharts history disable"
+  else
+    warn "could not turn on local usage history; run: aicharts history enable"
+  fi
+}
+
+# fetch_aicharts BIN PLATFORM downloads, checks and installs the pinned build.
+fetch_aicharts() {
+  aicharts_root="aicharts-$AICHARTS_VERSION-$aicharts_target"
+  aicharts_asset="$aicharts_root.tar.gz"
+  download "$aicharts_base/$aicharts_asset" "$temporary/$aicharts_asset" \
+    || { warn "could not download $aicharts_asset; usage history is not installed"; return 1; }
+  aicharts_actual=$(sha256 "$temporary/$aicharts_asset")
+  [ "$aicharts_actual" = "$aicharts_sha256" ] \
+    || { warn "checksum mismatch for $aicharts_asset (expected $aicharts_sha256, got $aicharts_actual); usage history is not installed"; return 1; }
+  mkdir "$temporary/aicharts"
+  tar -xzf "$temporary/$aicharts_asset" -C "$temporary/aicharts" "$aicharts_root/bin/aicharts" 2>/dev/null \
+    || { warn "$aicharts_asset has no bin/aicharts; usage history is not installed"; return 1; }
+  aicharts_candidate="$temporary/aicharts/$aicharts_root/bin/aicharts"
+  [ -f "$aicharts_candidate" ] && [ ! -L "$aicharts_candidate" ] \
+    || { warn "$aicharts_asset must contain a regular bin/aicharts"; return 1; }
+  if [ "$2" = darwin-aarch64 ] && ! macos_signature_ok "$aicharts_candidate" dev.hraness.aicharts; then
+    warn "aicharts does not have the required Apple Developer ID signature; usage history is not installed"
+    return 1
+  fi
+  chmod 0755 "$aicharts_candidate"
+  case "$("$aicharts_candidate" --version 2>/dev/null)" in
+    "aicharts $AICHARTS_VERSION" | "aicharts $AICHARTS_VERSION "*) ;;
+    *) warn "the downloaded aicharts does not report version $AICHARTS_VERSION"; return 1 ;;
+  esac
+  mkdir -p "$1"
+  [ ! -L "$1/aicharts" ] || { warn "$1/aicharts is a symlink; leaving it alone"; return 1; }
+  cp "$aicharts_candidate" "$1/.aicharts-install.$$"
+  chmod 0755 "$1/.aicharts-install.$$"
+  mv -f "$1/.aicharts-install.$$" "$1/aicharts"
+  echo "Installed $1/aicharts $AICHARTS_VERSION for local usage history ($aicharts_actual)"
+}
+
+# version_older A B succeeds when MAJOR.MINOR.PATCH A sorts before B.
+version_older() {
+  printf '%s %s\n' "$1" "$2" | awk '{ split($1, a, "."); split($2, b, "."); for (i = 1; i <= 3; i++) { if (a[i] + 0 < b[i] + 0) exit 0; if (a[i] + 0 > b[i] + 0) exit 1 } exit 1 }'
+}
+
+warn() {
+  printf 'gobstopper install: %s\n' "$*" >&2
 }
 
 download() {
@@ -168,13 +271,20 @@ historical_unsigned_release() {
 }
 
 verify_macos_release_signature() {
-  apple_team_id='8AAP53VTW3'
   apple_identifier='dev.hraness.gobstopper'
-  printf '%s\n' "$apple_team_id" | LC_ALL=C grep -Eq '^[A-Z0-9]{10}$' || fail "release Apple Developer Team ID is not configured"
   [ -x /usr/bin/codesign ] || fail "macOS codesign is required to verify this release"
-  requirement="anchor apple generic and identifier \"$apple_identifier\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$apple_team_id\""
-  /usr/bin/codesign --verify --strict --all-architectures --test-requirement "=$requirement" "$1" \
+  macos_signature_ok "$1" "$apple_identifier" \
     || fail "release does not have the required Apple Developer ID signature"
+}
+
+# macos_signature_ok BINARY IDENTIFIER checks a Developer ID signature from
+# the Hraness team for IDENTIFIER, offline.
+macos_signature_ok() {
+  apple_team_id='8AAP53VTW3'
+  printf '%s\n' "$apple_team_id" | LC_ALL=C grep -Eq '^[A-Z0-9]{10}$' || fail "release Apple Developer Team ID is not configured"
+  [ -x /usr/bin/codesign ] || return 1
+  requirement="anchor apple generic and identifier \"$2\" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = \"$apple_team_id\""
+  /usr/bin/codesign --verify --strict --all-architectures --test-requirement "=$requirement" "$1"
 }
 
 tar_list() {

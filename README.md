@@ -427,8 +427,9 @@ predates them and does not measure their effect on task accuracy.
 `gobstopper usage` shows your token use across coding agents by day, agent,
 provider and model, including agents that never pass through the proxy. The
 numbers come from [aicharts](https://aicharts.io), which keeps a daily record
-on your computer and uploads nothing, so it needs the `aicharts` command
-installed ([get it](https://aicharts.io/usage)).
+on your computer and uploads nothing. The installer below adds `aicharts` and
+turns that record on; after another install method,
+[get aicharts](https://aicharts.io/usage).
 
 ```sh
 gobstopper usage                        # the last 30 days, per agent
@@ -560,6 +561,14 @@ curl -fsSL https://gobstopper.sh/install.sh | sh
 # Windows (x86_64), in PowerShell: installs to %LOCALAPPDATA%\Programs\gobstopper\bin, no administrator rights
 irm https://gobstopper.sh/install.ps1 | iex
 ```
+
+On macOS (Apple silicon) and Linux x86_64, `install.sh` also adds `aicharts`
+beside `gobstopper`, checked against a pinned SHA-256 digest and, on macOS,
+its Developer ID signature. On a first install it turns on local usage
+history: daily token totals for your agents, kept on this computer and never
+uploaded. `aicharts history disable` turns it off. Set
+`GOBSTOPPER_USAGE_HISTORY=no` to leave it off, or `GOBSTOPPER_AICHARTS=no` to
+skip aicharts.
 
 Set `GOBSTOPPER_VERSION=X.Y.Z` to install one exact release. The installers
 check each download against the release's SHA-256 file; [docs/release.md](docs/release.md)
