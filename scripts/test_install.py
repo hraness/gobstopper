@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import platform
 import shlex
+import shutil
 import subprocess
 import tarfile
 import tempfile
@@ -47,6 +48,13 @@ def archive(members):
 
 
 FAKE = f"#!/bin/sh\n[ -z \"${{FIXTURE_EXECUTION_LOG:-}}\" ] || echo executed >> \"$FIXTURE_EXECUTION_LOG\"\necho 'gobstopper {VERSION}'\n".encode()
+AICHARTS_VERSION = "0.3.1"
+AICHARTS_TARGET = {"darwin-aarch64": "aarch64-apple-darwin", "linux-x86_64": "x86_64-unknown-linux-gnu"}
+# Reports the pinned version, an off history status, and logs every enable.
+FAKE_AICHARTS = (f"#!/bin/sh\n[ -z \"${{FIXTURE_EXECUTION_LOG:-}}\" ] || echo aicharts \"$@\" >> \"$FIXTURE_EXECUTION_LOG\"\n"
+                 f"case \"$*\" in --version) echo 'aicharts {AICHARTS_VERSION} (0123456789ab)' ;;\n"
+                 "'history status --json') echo '{\"data\":{\"collecting\":\"off\"},\"ok\":true}' ;;\n"
+                 "'history enable') echo enabled >> \"$FIXTURE_HISTORY_LOG\" ;;\n*) exit 2 ;;\nesac\n").encode()
 
 
 class Quiet(http.server.SimpleHTTPRequestHandler):
@@ -71,8 +79,16 @@ class InstallShTests(unittest.TestCase):
         self.stubs.mkdir()
         verifier = self.stubs / "codesign"
         requirement = 'anchor apple generic and identifier "dev.hraness.gobstopper" and certificate 1[field.1.2.840.113635.100.6.2.6] exists and certificate leaf[field.1.2.840.113635.100.6.1.13] exists and certificate leaf[subject.OU] = "8AAP53VTW3"'
+        # aicharts is checked after gobstopper has run, but before aicharts itself runs.
+        aicharts_requirement = requirement.replace("dev.hraness.gobstopper", "dev.hraness.aicharts")
         verifier.write_text('#!/bin/sh\nset -eu\n'
             '[ "$#" = 6 ] && [ "$1" = --verify ] && [ "$2" = --strict ] && [ "$3" = --all-architectures ] && [ "$4" = --test-requirement ] || exit 91\n'
+            'if [ "$5" = ' + shlex.quote('=' + aicharts_requirement) + ' ]; then\n'
+            '  ! grep -q "^aicharts" "$FIXTURE_EXECUTION_LOG" 2>/dev/null || exit 94\n'
+            '  echo verified >> "$FIXTURE_AICHARTS_SIGNATURE_LOG"\n'
+            '  [ "${FIXTURE_AICHARTS_SIGNATURE_RESULT:-valid}" = valid ]\n'
+            '  exit\n'
+            'fi\n'
             '[ "$5" = ' + shlex.quote('=' + requirement) + ' ] || exit 92\n'
             '[ ! -e "$FIXTURE_EXECUTION_LOG" ] || exit 93\n'
             'echo verified > "$FIXTURE_SIGNATURE_LOG"\n'
@@ -110,7 +126,8 @@ class InstallShTests(unittest.TestCase):
                "GOBSTOPPER_VERSION": self.version, "GOBSTOPPER_RELEASE_BASE_URL": self.base,
                "GOBSTOPPER_INSTALL_PREFIX": str(self.prefix),
                "FIXTURE_EXECUTION_LOG": str(self.execution_log), "FIXTURE_SIGNATURE_LOG": str(self.signature_log),
-               "FIXTURE_SIGNATURE_RESULT": self.signature_result}
+               "FIXTURE_SIGNATURE_RESULT": self.signature_result, "FIXTURE_HISTORY_LOG": str(self.dir / "history-enabled"),
+               "FIXTURE_AICHARTS_SIGNATURE_LOG": str(self.dir / "aicharts-codesign-called")}
         env.update(overrides)
         env = {key: value for key, value in env.items() if value is not None}
         return subprocess.run(["sh", str(self.installer)], env=env, capture_output=True, text=True, timeout=60)
@@ -127,6 +144,82 @@ class InstallShTests(unittest.TestCase):
         # A second install replaces the binary in place.
         self.assertEqual(self.install().returncode, 0)
         self.assertEqual(sorted(p.name for p in (self.prefix / "bin").iterdir()), ["gobstopper"])
+
+    def publish_aicharts(self, data=None):
+        root = f"aicharts-{AICHARTS_VERSION}-{AICHARTS_TARGET[self.platform]}"
+        data = data or archive({f"{root}/bin/aicharts": FAKE_AICHARTS, f"{root}/LICENSE": b"MIT\n"})
+        (self.release / f"{root}.tar.gz").write_bytes(data)
+        return {"GOBSTOPPER_AICHARTS_BASE_URL": self.base, "GOBSTOPPER_AICHARTS_SHA256": hashlib.sha256(data).hexdigest()}
+
+    def history_enables(self):
+        log = self.dir / "history-enabled"
+        return len(log.read_text().splitlines()) if log.exists() else 0
+
+    @unittest.skipIf(PLATFORM not in AICHARTS_TARGET, "no aicharts release for this host")
+    def test_first_install_adds_aicharts_and_turns_on_local_history_once(self):
+        self.publish(archive({"gobstopper": FAKE}))
+        result = self.install(**self.publish_aicharts())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        aicharts = self.prefix / "bin" / "aicharts"
+        self.assertEqual(aicharts.read_bytes(), FAKE_AICHARTS)
+        self.assertTrue(os.access(aicharts, os.X_OK))
+        self.assertIn(f"Installed {aicharts} {AICHARTS_VERSION}", result.stdout)
+        self.assertIn("Local usage history is on", result.stdout)
+        self.assertIn("aicharts history disable", result.stdout)
+        self.assertEqual(self.history_enables(), 1)
+        # A later install keeps whatever history choice the user has made.
+        again = self.install(**self.publish_aicharts())
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(self.history_enables(), 1)
+        self.assertNotIn("Local usage history is on", again.stdout)
+
+    @unittest.skipIf(PLATFORM not in AICHARTS_TARGET, "no aicharts release for this host")
+    def test_aicharts_opt_outs_and_failures_keep_the_gobstopper_install(self):
+        self.publish(archive({"gobstopper": FAKE}))
+        skipped = self.install(GOBSTOPPER_AICHARTS="no", **self.publish_aicharts())
+        self.assertEqual(skipped.returncode, 0, skipped.stderr)
+        self.assertFalse((self.prefix / "bin" / "aicharts").exists())
+        shutil.rmtree(self.prefix)
+        no_history = self.install(GOBSTOPPER_USAGE_HISTORY="no", **self.publish_aicharts())
+        self.assertEqual(no_history.returncode, 0, no_history.stderr)
+        self.assertTrue((self.prefix / "bin" / "aicharts").exists())
+        self.assertEqual(self.history_enables(), 0)
+        shutil.rmtree(self.prefix)
+        wrong = {**self.publish_aicharts(), "GOBSTOPPER_AICHARTS_SHA256": "0" * 64}
+        mismatch = self.install(**wrong)
+        self.assertEqual(mismatch.returncode, 0, mismatch.stderr)
+        self.assertIn("checksum mismatch for aicharts-", mismatch.stderr)
+        self.assertTrue((self.prefix / "bin" / "gobstopper").exists())
+        self.assertFalse((self.prefix / "bin" / "aicharts").exists())
+        self.assertEqual(self.history_enables(), 0)
+
+    @unittest.skipIf(PLATFORM not in AICHARTS_TARGET, "no aicharts release for this host")
+    def test_loopback_installs_never_fetch_aicharts_from_github(self):
+        self.publish(archive({"gobstopper": FAKE}))
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sorted(p.name for p in (self.prefix / "bin").iterdir()), ["gobstopper"])
+        refused = self.install(GOBSTOPPER_AICHARTS_BASE_URL="https://github.com")
+        self.assertEqual(refused.returncode, 0, refused.stderr)
+        self.assertIn("may only name a loopback test server", refused.stderr)
+
+    def test_mac_aicharts_signature_is_checked_before_it_runs(self):
+        self.mac()
+        self.publish(archive({"gobstopper": FAKE}))
+        aicharts = self.publish_aicharts()
+        refused = self.install(**aicharts, FIXTURE_AICHARTS_SIGNATURE_RESULT="invalid")
+        self.assertEqual(refused.returncode, 0, refused.stderr)
+        self.assertIn("aicharts does not have the required Apple Developer ID signature", refused.stderr)
+        self.assertTrue((self.prefix / "bin" / "gobstopper").exists())
+        self.assertFalse((self.prefix / "bin" / "aicharts").exists())
+        self.assertNotIn("aicharts", self.execution_log.read_text())
+        self.assertEqual(self.history_enables(), 0)
+        shutil.rmtree(self.prefix)
+        accepted = self.install(**aicharts)
+        self.assertEqual(accepted.returncode, 0, accepted.stderr)
+        self.assertTrue((self.dir / "aicharts-codesign-called").exists())
+        self.assertTrue((self.prefix / "bin" / "aicharts").exists())
+        self.assertEqual(self.history_enables(), 1)
 
     def test_checksum_mismatch_installs_nothing(self):
         self.publish(archive({"gobstopper": FAKE}), digest="0" * 64)
