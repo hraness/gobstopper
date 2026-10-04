@@ -214,16 +214,16 @@ describe("launch data files", () => {
     if (gobFilm === null) return;
     expect(gobFilm.src).toBe("/media/gobstopper-film-1080p.mp4");
     expect(gobFilm.sha256).toMatch(/^[0-9a-f]{64}$/u);
-    expect(gobFilm.beats).toHaveLength(16);
     expect((await stat(join(site, "public", gobFilm.poster))).size).toBeLessThanOrEqual(300 * 1024);
     const vtt = await read(join("public", gobFilm.captions));
+    // One beat per caption cue.
+    expect(gobFilm.beats).toHaveLength(vtt.split(" --> ").length - 1);
     const stamp = (seconds: number) => {
       const ms = Math.round(seconds * 1000);
       const pad = (n: number, w = 2) => String(n).padStart(w, "0");
       return `${pad(Math.floor(ms / 3_600_000))}:${pad(Math.floor(ms / 60_000) % 60)}:${pad(Math.floor(ms / 1000) % 60)}.${pad(ms % 1000, 3)}`;
     };
     expect(vtt.startsWith("WEBVTT\n\n")).toBe(true);
-    expect(vtt.match(/ --> /gu)).toHaveLength(16);
     for (const beat of gobFilm.beats) {
       expect(vtt).toMatch(new RegExp(`${stamp(beat.start)} --> ${stamp(beat.end)}[^\n]*\n${beat.text.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&")}\n`, "u"));
     }
@@ -413,7 +413,7 @@ describe("launch pages", () => {
     expect(tracks[0]).toContain(`src="${gobFilm.captions}"`);
     expect(tracks[0]).toContain("default");
     const text = /<details id="film-text">([\s\S]*?)<\/details>/u.exec(html)?.[1] ?? "";
-    expect(text.match(/<li>/gu)).toHaveLength(16);
+    expect(text.match(/<li>/gu)).toHaveLength(gobFilm.beats.length);
   });
 
   test("the benchmarks page leads with the Terminal-Bench run and keeps the archived anchors", () => {

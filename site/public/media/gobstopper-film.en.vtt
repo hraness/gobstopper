@@ -1,65 +1,32 @@
 WEBVTT
 
 1
-00:00:00.000 --> 00:00:04.000
-Your coding agent resends everything.
+00:00:00.250 --> 00:00:04.550
+On every step, your coding agent resends the whole session.
 
 2
-00:00:04.000 --> 00:00:08.000
-Every step. The whole session.
+00:00:04.850 --> 00:00:09.550
+That includes output that mattered once.
 
 3
-00:00:08.000 --> 00:00:12.000
-Long sessions pay for it again.
+00:00:09.850 --> 00:00:13.550
+Gobstopper
+Context compaction you can undo.
 
 4
-00:00:12.000 --> 00:00:16.000
-Gobstopper sits in between.
+00:00:13.850 --> 00:00:18.750
+Gobstopper trims the old printouts before they reach the model.
 
 5
-00:00:16.000 --> 00:00:21.000
-Keep the start. Keep the last three.
+00:00:19.050 --> 00:00:23.350
+In one recorded benchmark, it solved about as many tasks and sent fewer tokens.
 
 6
-00:00:21.000 --> 00:00:26.000
-Long printouts out. Files stay on disk.
-
-7
-00:00:26.000 --> 00:00:31.000
-No model writes the summary.
-
-8
-00:00:31.000 --> 00:00:36.000
-Same prefix, so the cache keeps matching.
-
-9
-00:00:36.000 --> 00:00:41.000
-Tasks solved: 61 vs 60.
-
-10
-00:00:41.000 --> 00:00:46.000
-Input tokens sent: 29% fewer.
-
-11
-00:00:46.000 --> 00:00:51.000
-Almost all of it: cache reads.
-
-12
-00:00:51.000 --> 00:00:56.000
-Our old default cost more.
-
-13
-00:00:56.000 --> 00:01:01.000
-So v0.7.3 changed the default.
-
-14
-00:01:01.000 --> 00:01:05.000
+00:00:23.650 --> 00:00:27.890
 Your session files are never edited.
 
-15
-00:01:05.000 --> 00:01:10.000
-One trial. One model. Read the limits.
-
-16
-00:01:10.000 --> 00:01:15.000 line:10%
-gobstopper proxy run -- claude
+7
+00:00:28.240 --> 00:00:34.200
+Ask your agent: “Install Gobstopper from gobstopper.sh”
+Free and open source · Latest release v0.8.5
+gobstopper.sh
