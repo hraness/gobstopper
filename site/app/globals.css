@@ -832,7 +832,7 @@ a[href]:where(:hover, :focus-visible) { text-decoration-color: currentColor; }
     background: color-mix(in oklch, var(--foreground, CanvasText) 30%, var(--background, Canvas));
     content: "";
     inset: 0;
-    mask-image: url("/landscape/landscape-0c2bfc65215f25c79a6b54e0b952518ed28be5a2525f9675cf828583044ec6eb.jpg");
+    mask-image: image-set(url("/landscape/landscape-bf9a44e6b0f6423b16aec9d2f55a9aa7dc63b2d8088579396261204b41a2a41d.webp") 1x, url("/landscape/landscape-8fd512732088ba456f11044561670091b23080951aa4e29fe35c4c270759938f.webp") 2x);
     mask-mode: luminance;
     mask-position: top center;
     mask-repeat: no-repeat;
@@ -846,7 +846,7 @@ a[href]:where(:hover, :focus-visible) { text-decoration-color: currentColor; }
 
 @media (max-width: 48rem) {
   .product-landscape::before {
-    mask-image: url("/landscape/landscape-936a63ba0152df337f4c05c026d92ba63823a2f14a5be9a8225a2f2084612602.jpg");
+    mask-image: url("/landscape/landscape-e107b97467536e1fabe1e9cb7519cd29d3812707620d02a805431a550a921381.webp");
     opacity: .36;
   }
 }
