@@ -13,6 +13,94 @@ use std::path::{Path, PathBuf};
 #[path = "self_update/unix.rs"]
 mod native;
 
+#[cfg(unix)]
+pub(crate) use native::{ManagedDirectory, PreparedUpgrade, UpgradeLease, UpgradeTarget};
+
+#[cfg(unix)]
+pub(crate) fn upgrade_target(executable: &Path, version: Option<&str>) -> Result<UpgradeTarget> {
+    native::upgrade_target(executable, version)
+}
+
+#[cfg(unix)]
+pub(crate) fn planned_upgrade_stage(executable: &Path) -> Result<PathBuf> {
+    native::planned_upgrade_stage(executable)
+}
+
+#[cfg(unix)]
+pub(crate) fn prepare_upgrade(
+    selected: &UpgradeTarget,
+    explicit: bool,
+    stage: &Path,
+) -> Result<PreparedUpgrade> {
+    native::prepare_upgrade(selected, explicit, stage)
+}
+
+#[cfg(unix)]
+pub(crate) fn verify_prepared_upgrade(
+    executable: &Path,
+    stage: &Path,
+    prepared: &PreparedUpgrade,
+) -> Result<()> {
+    native::verify_prepared_upgrade(executable, stage, prepared)
+}
+
+#[cfg(unix)]
+pub(crate) fn replace_upgrade(
+    executable: &Path,
+    stage: &Path,
+    prepared: &PreparedUpgrade,
+) -> Result<UpgradeLease> {
+    native::replace_upgrade(executable, stage, prepared)
+}
+
+#[cfg(unix)]
+pub(crate) fn restore_upgrade(
+    executable: &Path,
+    stage: &Path,
+    prepared: &PreparedUpgrade,
+) -> Result<UpgradeLease> {
+    native::restore_upgrade(executable, stage, prepared)
+}
+
+#[cfg(unix)]
+pub(crate) fn protect_previous_upgrade(
+    executable: &Path,
+    prepared: &PreparedUpgrade,
+) -> Result<UpgradeLease> {
+    native::protect_previous_upgrade(executable, prepared)
+}
+
+#[cfg(unix)]
+pub(crate) fn verify_installed_upgrade(
+    executable: &Path,
+    prepared: &PreparedUpgrade,
+    target: bool,
+) -> Result<()> {
+    native::verify_installed_upgrade(executable, prepared, target)
+}
+
+#[cfg(unix)]
+pub(crate) fn discard_bound_upgrade(
+    executable: &Path,
+    stage: &Path,
+    prepared: &PreparedUpgrade,
+) -> Result<()> {
+    native::discard_bound_upgrade(executable, stage, prepared)
+}
+
+#[cfg(all(unix, test))]
+pub(crate) fn verify_previous_upgrade(executable: &Path, version: &str) -> Result<()> {
+    native::verify_previous_upgrade(executable, version)
+}
+
+#[cfg(all(unix, test))]
+pub(crate) use native::tests::{assert_installation_busy, replaced_install, staged_install};
+
+#[cfg(unix)]
+pub(crate) fn discard_upgrade(executable: &Path, stage: &Path) -> Result<()> {
+    native::discard_upgrade(executable, stage)
+}
+
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub(crate) enum Action {
     Install,

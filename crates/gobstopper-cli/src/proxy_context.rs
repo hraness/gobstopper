@@ -2,6 +2,7 @@
 //! consume result is never replayed: its reservation may have been consumed.
 use super::{work, ContextAccess};
 use crate::context::{Control, Decision};
+use crate::proxy_observations::{FailureCode, FailureHistory};
 use gobstopper_adapters::request::EvidenceObservation;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -131,6 +132,7 @@ struct State {
     failures: AtomicU64,
     processed: AtomicU64,
     rescues: AtomicU64,
+    history: FailureHistory,
 }
 
 pub(super) struct Observer {
@@ -163,7 +165,8 @@ impl Observer {
                     worker_state.queued.fetch_sub(1, Ordering::Relaxed);
                     match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| write(batch))) {
                         Ok(Ok(rescued)) => {
-                            worker_state.processed.fetch_add(1, Ordering::Relaxed);
+                            worker_state.history.recover();
+                            worker_state.processed.fetch_add(1, Ordering::Release);
                             if rescued {
                                 worker_state.rescues.fetch_add(1, Ordering::Relaxed);
                             }
@@ -171,14 +174,16 @@ impl Observer {
                         _ => {
                             // A failed commit has an uncertain result; never retry
                             // this batch or hold up a request on its account.
-                            worker_state.failures.fetch_add(1, Ordering::Relaxed);
-                            worker_state.dropped.fetch_add(1, Ordering::Relaxed);
+                            worker_state.history.record(FailureCode::StorageWrite);
+                            worker_state.failures.fetch_add(1, Ordering::Release);
+                            worker_state.dropped.fetch_add(1, Ordering::Release);
                         }
                     }
                 }
             });
         if worker.is_err() {
-            state.failures.fetch_add(1, Ordering::Relaxed);
+            state.history.record(FailureCode::WorkerSpawn);
+            state.failures.fetch_add(1, Ordering::Release);
         }
         Self {
             sender: worker.ok().map(|_| sender),
@@ -188,24 +193,39 @@ impl Observer {
 
     fn enqueue(&self, batch: Observation) {
         self.state.queued.fetch_add(1, Ordering::Relaxed);
-        if self
-            .sender
-            .as_ref()
-            .is_none_or(|sender| sender.try_send(batch).is_err())
-        {
+        let failure = match &self.sender {
+            Some(sender) => match sender.try_send(batch) {
+                Ok(()) => None,
+                Err(std::sync::mpsc::TrySendError::Full(_)) => Some(FailureCode::QueueFull),
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => {
+                    Some(FailureCode::WorkerStopped)
+                }
+            },
+            None => Some(FailureCode::WorkerStopped),
+        };
+        if let Some(code) = failure {
+            self.state.history.record(code);
             self.state.queued.fetch_sub(1, Ordering::Relaxed);
-            self.state.dropped.fetch_add(1, Ordering::Relaxed);
+            self.state.dropped.fetch_add(1, Ordering::Release);
         }
     }
 
     pub(super) fn status(&self) -> Value {
+        let dropped = self.state.dropped.load(Ordering::Acquire);
+        let write_failures = self.state.failures.load(Ordering::Acquire);
+        let processed = self.state.processed.load(Ordering::Acquire);
+        let (last_failure_at_ms, last_failure_code, last_recovery_at_ms) =
+            self.state.history.fields();
         json!({
             "queued": self.state.queued.load(Ordering::Relaxed),
             "queue_limit": QUEUE_LIMIT,
-            "dropped": self.state.dropped.load(Ordering::Relaxed),
-            "write_failures": self.state.failures.load(Ordering::Relaxed),
-            "processed": self.state.processed.load(Ordering::Relaxed),
+            "dropped": dropped,
+            "write_failures": write_failures,
+            "processed": processed,
             "rescues": self.state.rescues.load(Ordering::Relaxed),
+            "last_failure_at_ms": last_failure_at_ms,
+            "last_failure_code": last_failure_code,
+            "last_recovery_at_ms": last_recovery_at_ms,
         })
     }
 }
@@ -215,6 +235,32 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
     use std::sync::mpsc;
+
+    #[test]
+    fn cold_context_store_is_not_reported_as_a_storage_failure() {
+        let mut proxy = super::super::tests::test_proxy(128_000, 256_000);
+        assert_eq!(proxy.status()["context_control"]["state"], "disabled");
+        assert!(proxy.status()["context_control"]["error"].is_null());
+        let root = std::env::temp_dir().join(format!(
+            "gobstopper-cold-context-{}",
+            crate::proxy_agent::unique_id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        std::fs::write(root.join("blocked"), b"not a directory").unwrap();
+        proxy.control = Arc::new(ContextAccess::new(Some(
+            root.join("blocked/context.sqlite3"),
+        )));
+        assert_eq!(proxy.status()["context_control"]["state"], "uninitialized");
+        assert!(proxy.status()["context_control"]["error"].is_null());
+        assert!(proxy.control.get().is_none());
+        assert_eq!(proxy.status()["context_control"]["state"], "unavailable");
+        assert_eq!(
+            proxy.status()["context_control"]["error"],
+            "context_control_unavailable"
+        );
+        drop(proxy);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     fn fixture() -> (PathBuf, Arc<ContextAccess>, String) {
         let root = std::env::temp_dir().join(format!(
@@ -359,6 +405,11 @@ mod tests {
         assert_eq!(observer.status()["dropped"], 1);
         assert_eq!(observer.status()["queued"], 0);
         assert_eq!(observer.status()["processed"], 0);
+        let status = observer.status();
+        assert_eq!(status["last_failure_code"], "storage_write_failed");
+        assert!(status["last_failure_at_ms"].as_u64().unwrap() > 0);
+        assert!(status["last_recovery_at_ms"].is_null());
+        assert!(!status.to_string().contains("injected uncertain commit"));
         drop(observer);
         drop(access);
         std::fs::remove_dir_all(root).unwrap();

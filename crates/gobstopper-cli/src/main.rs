@@ -7,6 +7,7 @@ mod apple_scorer;
 mod clef;
 mod config;
 mod context;
+mod events_diagnostics;
 mod hooks;
 mod jev;
 mod llm_scorer;
@@ -15,8 +16,10 @@ mod native_operations;
 mod power;
 mod proxy;
 mod proxy_agent;
+mod proxy_caller;
 mod proxy_drain;
 mod proxy_observations;
+mod proxy_upgrade;
 mod report;
 mod secrets;
 mod self_update;
@@ -69,6 +72,8 @@ enum Cmd {
     Update(self_update::UpdateArgs),
     #[command(name = "__install-release", hide = true)]
     InstallRelease(self_update::InitialInstall),
+    #[command(name = "__upgrade-controller", hide = true)]
+    UpgradeController(proxy_upgrade::ControllerArgs),
     #[command(name = "__build-identity", hide = true)]
     BuildIdentity,
     /// List detected sessions with context occupancy, newest first.
@@ -295,6 +300,8 @@ enum Cmd {
         /// retention, plus a per-provider rollup.
         #[arg(long)]
         retention: bool,
+        #[arg(long, conflicts_with_all = ["cohort", "retention"], help = "Inspect readable metadata and partial-history coverage without qualifying savings or retention")]
+        diagnostics: bool,
         /// Only events from the last N seconds/minutes/hours/days
         /// (e.g. `3600`, `30m`, `6h`, `2d`).
         #[arg(long)]
@@ -2747,10 +2754,7 @@ fn cmd_events(
                     path.display(),
                     io_reason(&error)
                 ),
-                format!(
-                    "move {} aside and gobstopper starts a new log",
-                    path.display()
-                ),
+                "gobstopper events --diagnostics --json (preserves the original log)".to_owned(),
             ))
         }
     };
@@ -3764,6 +3768,10 @@ fn session_cost_hint(d: &Discovered) -> u64 {
         .unwrap_or(u64::MAX)
 }
 
+fn order_watch_work<T>(items: &mut [T], cost: impl FnMut(&T) -> u64) {
+    items.sort_by_cached_key(cost);
+}
+
 /// Per-daemon persisted watch state: terminal-decision fingerprints,
 /// the Claude settle arm, rate-limit clocks, and the last-emitted
 /// delegation context all survive a daemon restart, so relaunching does
@@ -4293,7 +4301,7 @@ fn cmd_watch(
         );
         // Cheapest sessions first: a multi-minute apply on one giant
         // session would otherwise delay every session behind it.
-        found.sort_by_key(session_cost_hint);
+        order_watch_work(&mut found, session_cost_hint);
         // --eval-budget bounds only the transcript work (context fallback
         // load, transcript load, plan evaluation). Discovery and the cheap
         // fingerprint/suppression gates above always run, so a deferred
@@ -5399,6 +5407,23 @@ fn main() -> std::process::ExitCode {
         match &cli.command {
             Some(Cmd::Update(args)) => return self_update::explicit(args),
             Some(Cmd::InstallRelease(args)) => return self_update::initial_install(args),
+            Some(Cmd::UpgradeController(args)) => return proxy_upgrade::controller(args),
+            Some(Cmd::Proxy {
+                command:
+                    proxy::ProxyCmd::Upgrade {
+                        version,
+                        wait,
+                        print,
+                        allow_dependent_caller,
+                    },
+            }) => {
+                return proxy_upgrade::run(
+                    version.as_deref(),
+                    *wait,
+                    *print,
+                    *allow_dependent_caller,
+                )
+            }
             Some(Cmd::BuildIdentity) => {
                 self_update::build_identity();
                 return Ok(());
@@ -5419,7 +5444,17 @@ fn main() -> std::process::ExitCode {
         Ok(()) => std::process::ExitCode::SUCCESS,
         Err(error) => {
             ux::report_error(&error, json, protocol);
-            std::process::ExitCode::FAILURE
+            if error
+                .downcast_ref::<proxy_caller::DependentCaller>()
+                .is_some()
+                || error
+                    .downcast_ref::<proxy_upgrade::PendingUpgrade>()
+                    .is_some()
+            {
+                std::process::ExitCode::from(2)
+            } else {
+                std::process::ExitCode::FAILURE
+            }
         }
     }
 }
@@ -5460,8 +5495,9 @@ fn offline_command(command: Option<&Cmd>) -> bool {
                         | proxy::ProxyCmd::Doctor { .. }
                         | proxy::ProxyCmd::Status { .. }
                         | proxy::ProxyCmd::Install { print: true, .. }
-                        | proxy::ProxyCmd::MigrateService { print: true }
-                        | proxy::ProxyCmd::Repair { print: true }
+                        | proxy::ProxyCmd::MigrateService { print: true, .. }
+                        | proxy::ProxyCmd::Repair { print: true, .. }
+                        | proxy::ProxyCmd::Upgrade { print: true, .. }
                 }
         )
     )
@@ -5472,9 +5508,27 @@ fn run(cli: Cli) -> Result<()> {
         ux::write_stdout(&ux::bare_text());
         return Ok(());
     };
+    if let Cmd::Events {
+        diagnostics: true,
+        session,
+        tail,
+        since,
+        json,
+        ..
+    } = command
+    {
+        return events_diagnostics::run(session.as_deref(), *tail, since.as_deref(), *json);
+    }
+    if let Cmd::Data(args) = command {
+        return session_data::run(args);
+    }
     let cfg = config::load()?;
     match command {
-        Cmd::Update(_) | Cmd::InstallRelease(_) | Cmd::BuildIdentity | Cmd::Usage { .. } => {
+        Cmd::Update(_)
+        | Cmd::InstallRelease(_)
+        | Cmd::UpgradeController(_)
+        | Cmd::BuildIdentity
+        | Cmd::Usage { .. } => {
             unreachable!("handled before product configuration")
         }
         Cmd::Context(args) => context::run(args),
@@ -5661,6 +5715,7 @@ fn run(cli: Cli) -> Result<()> {
             retention,
             since,
             json,
+            ..
         } => cmd_events(
             &cfg,
             session.as_deref(),
@@ -5855,6 +5910,26 @@ fn _assert_error_surface(e: AdapterError) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn watch_order_samples_each_changing_cost_once() {
+        let mut work: Vec<usize> = (0..128).collect();
+        let mut reads = [0_u64; 128];
+        super::order_watch_work(&mut work, |id| {
+            reads[*id] += 1;
+            ((127 - id) as u64 * 1000).saturating_add(reads[*id])
+        });
+        assert_eq!(reads, [1; 128]);
+        assert_eq!(work, (0..128).rev().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn watch_order_keeps_unknown_costs_last_and_equal_costs_stable() {
+        let mut work = [0, 1, 2, 3, 4];
+        let costs = [u64::MAX, 20, 10, u64::MAX, 20];
+        super::order_watch_work(&mut work, |id| costs[*id]);
+        assert_eq!(work, [2, 1, 4, 0, 3]);
+    }
+
+    #[test]
     fn self_update_skips_offline_inspection_and_retains_active_workflows() {
         use clap::Parser as _;
         for arguments in [
@@ -5882,6 +5957,7 @@ mod tests {
             "proxy install --print",
             "proxy migrate-service --print",
             "proxy repair --print",
+            "proxy upgrade --print",
             "policy-check --provider codex --context-tokens 5000",
         ] {
             let cli = super::Cli::try_parse_from(

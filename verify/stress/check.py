@@ -48,7 +48,7 @@ SUITES = {
     "codex-process": ("gobstopper", ["--bin", "gobstopper", "tests::codex_"], 12, 90, 1),
     "plugins": ("gobstopper-adapters", ["--test", "plugin_contract"], 12, 90, 1),
     "events": ("gobstopper-core", ["--lib", "events::tests::"], 15, 60, 1),
-    "monitor": (None, ["scripts/test_monitor.py", "-v"], 42, 90, 1),
+    "monitor": (None, ["scripts/test_monitor.py", "-v"], 47, 90, 1),
 }
 
 

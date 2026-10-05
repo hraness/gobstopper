@@ -77,6 +77,35 @@ fn free_port() -> u16 {
 }
 
 #[test]
+#[cfg(unix)]
+fn proxy_upgrade_refuses_dependent_callers_before_staging_unless_preview_or_override() {
+    let sandbox = Sandbox::new("upgrade-dependent-caller");
+    for args in [vec!["proxy", "upgrade"], vec!["proxy", "upgrade", "--wait"]] {
+        let output = sandbox.run(&args, &[("GOBSTOPPER_SCOPE", "isolated-test-scope")]);
+        assert!(!output.status.success());
+        assert!(
+            text(&output.stderr).contains("depends on the proxy"),
+            "{}",
+            text(&output.stderr)
+        );
+    }
+    for args in [
+        vec!["proxy", "upgrade", "--print"],
+        vec!["proxy", "upgrade", "--allow-dependent-caller"],
+    ] {
+        let output = sandbox.run(&args, &[("GOBSTOPPER_SCOPE", "isolated-test-scope")]);
+        assert!(!output.status.success());
+        assert!(!text(&output.stderr).contains("depends on the proxy"));
+        assert!(!text(&output.stderr).contains("unexpected argument"));
+    }
+    assert!(!sandbox.0.join("data").exists());
+    assert_eq!(
+        std::fs::read_dir(sandbox.0.join("config")).unwrap().count(),
+        0
+    );
+}
+
+#[test]
 fn bare_invocation_is_a_short_start_here_and_exits_zero() {
     let sandbox = Sandbox::new("bare");
     let output = sandbox.run(&[], &[]);

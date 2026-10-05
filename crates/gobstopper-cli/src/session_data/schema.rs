@@ -152,6 +152,77 @@ pub enum Outcome {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum FinishReason {
+    Completed,
+    ClientDisconnected,
+    ClientWriteFailed,
+    UpstreamUnavailable,
+    UpstreamReadFailed,
+    UpstreamTimeout,
+    UpstreamTruncated,
+    MissingTerminal,
+    ParserUncertain,
+    ProviderRefused,
+    ProviderError,
+    ProxyInterrupted,
+}
+
+impl FinishReason {
+    pub fn outcome(self) -> Outcome {
+        match self {
+            Self::Completed => Outcome::Success,
+            Self::ClientDisconnected => Outcome::Cancelled,
+            Self::ClientWriteFailed
+            | Self::UpstreamReadFailed
+            | Self::UpstreamTruncated
+            | Self::MissingTerminal
+            | Self::ProxyInterrupted => Outcome::Interrupted,
+            Self::UpstreamTimeout => Outcome::Timeout,
+            Self::ParserUncertain => Outcome::Unknown,
+            Self::ProviderRefused => Outcome::Refused,
+            Self::ProviderError | Self::UpstreamUnavailable => Outcome::Error,
+        }
+    }
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::ClientDisconnected => "client_disconnected",
+            Self::ClientWriteFailed => "client_write_failed",
+            Self::UpstreamUnavailable => "upstream_unavailable",
+            Self::UpstreamReadFailed => "upstream_read_failed",
+            Self::UpstreamTimeout => "upstream_timeout",
+            Self::UpstreamTruncated => "upstream_truncated",
+            Self::MissingTerminal => "missing_terminal",
+            Self::ParserUncertain => "parser_uncertain",
+            Self::ProviderRefused => "provider_refused",
+            Self::ProviderError => "provider_error",
+            Self::ProxyInterrupted => "proxy_interrupted",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RequestTimings {
+    pub preparation_ms: u64,
+    pub upstream_headers_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transform_ms: Option<u64>,
+}
+
+impl RequestTimings {
+    fn validate(&self, total_ms: Option<u64>) -> bool {
+        total_ms.is_some_and(|total| {
+            self.preparation_ms
+                .checked_add(self.upstream_headers_ms)
+                .is_some_and(|sum| sum <= total)
+                && self.transform_ms.is_none_or(|n| n <= self.preparation_ms)
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolStage {
     Requested,
     Dispatched,
@@ -194,6 +265,10 @@ pub enum Event {
         first_output_ms: Option<u64>,
         usage: Option<Usage>,
         generation: Option<Generation>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<FinishReason>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        timings: Option<RequestTimings>,
     },
     ContextDecision {
         estimated_before_tokens: u64,
@@ -258,6 +333,7 @@ impl Envelope {
             || !matches!(
                 self.source.profile.as_str(),
                 "gobstopper-proxy-v1"
+                    | "gobstopper-proxy-v2"
                     | "gobstopper-stats-v0"
                     | "gobstopper-events-v1"
                     | "claude-metadata-v1"
@@ -293,12 +369,19 @@ impl Envelope {
                 first_output_ms,
                 usage,
                 generation,
-                ..
+                timings,
+                reason,
+                outcome,
             } => {
                 request
+                    && reason.is_none_or(|r| {
+                        r.outcome() == *outcome
+                            && (r != FinishReason::Completed || http_status.is_none_or(|s| s < 400))
+                    })
                     && http_status.is_none_or(|s| (100..=599).contains(&s))
                     && duration_ms.is_none_or(|n| n <= 31 * 86_400_000)
                     && first_output_ms.is_none_or(|n| duration_ms.is_some_and(|d| n <= d))
+                    && timings.as_ref().is_none_or(|t| t.validate(*duration_ms))
                     && usage.as_ref().is_none_or(Usage::validate)
                     && generation.is_none_or(|g| {
                         g.output_tokens <= MAX_COUNTER

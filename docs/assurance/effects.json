@@ -4,6 +4,22 @@
   "scope": "Potential direct and delegated effects by current public surface. Conditions distinguish CLI branches and library caller responsibility; no blanket sandbox/read-only claim.",
   "profiles": [
     {
+      "id": "ci-browser-acquisition",
+      "owner": "CI workflow",
+      "reads": ["ci_system_config"],
+      "writes": [{ "state": "ci_system_config", "mode": "replace", "condition": "Explicit CI setup on a trusted disposable runner; replace only exact active Azure archive URI tokens after validating every source file." }],
+      "outbound": [],
+      "authority": "Task-owned Ubuntu runner setup only; the helper does not install packages or change signature verification.",
+      "invariants": ["PRIV-1"],
+      "assumptions": ["A-OS"],
+      "source": [{ "path": "scripts/browser_acquisition.py", "anchor": "def plan" }],
+      "status": "source_reviewed",
+      "bounds": "Finite workflow deadline; input byte and file counts are not globally bounded. Reject nonregular or symlinked inputs before writes.",
+      "exclusions": ["No transactional writes", "No hostile privileged-concurrency protection", "No provider-session authority", "No measured performance claim"],
+      "evidence": ["E-CI-BROWSER-SOURCE"],
+      "next_gate": "C15"
+    },
+    {
       "id": "pure",
       "owner": "core/adapter caller",
       "reads": [],
@@ -1282,7 +1298,9 @@
         "source_file",
         "archive",
         "vault_index",
-        "config"
+        "config",
+        "native_installation",
+        "process_state"
       ],
       "writes": [
         {
@@ -1294,6 +1312,11 @@
           "state": "process_state",
           "mode": "spawn",
           "condition": "Pinned/selected offline binary and bounded replay commands."
+        },
+        {
+          "state": "process_state",
+          "mode": "create_delete",
+          "condition": "Tail comparison creates private read-only transcript and executable copies, empty isolated homes/configuration and per-arm workspaces, then removes only its owned temporary root after child cleanup; original input bytes and executable remain unchanged."
         }
       ],
       "outbound": [],
@@ -1320,13 +1343,19 @@
         {
           "path": "scripts/recovery-study/run.py",
           "anchor": "def main"
+        },
+        {
+          "path": "scripts/compare_proxy_tails.py",
+          "anchor": "def main"
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Fresh private registered synthetic outputs; bounded owned subprocesses, exact source/binary/config hashes and incomplete arm reporting. Retention reader follows shared vault custody.",
+      "bounds": "Fresh private registered synthetic outputs; bounded owned subprocesses, exact source/binary/config hashes and incomplete arm reporting. Retention reader follows shared vault custody. Tail comparison accepts at most eight explicit sources, 16 MiB/8192 records per source and a 128 MiB reviewed executable; it runs two sequential offline proxy replay arms per source from private byte-identical copies with --no-update, empty PATH, allowlisted environment and empty configuration/provider homes. Each arm has a 0.05-120 second limit, 2 MiB combined captured output and owned-group cleanup; total budget is twice the source count times the selected timeout plus 60 seconds. The new private receipt is at most 1 MiB, contains hashes/counts rather than original paths/content, and retains failed/incomplete arms. Input identity/hash stability is not provider custody or executable attestation.",
       "exclusions": [
         "No live qualification",
-        "No universal corpus evidence"
+        "No universal corpus evidence",
+        "Offline tail replay does not measure quality, billing, cost or new model continuations",
+        "Reviewed offline executable is trusted, not network-sandboxed; there is no live-provider command route"
       ],
       "evidence": [
         "E-FOUNDATION-SOURCE"
@@ -1707,7 +1736,7 @@
         {
           "state": "experiment_output",
           "mode": "create",
-          "condition": "Compile-time test-only synthetic bridge fixture."
+          "condition": "Compile-time test-only synthetic bridge, native-install, service-manifest, and recovery fixtures in isolated temporary roots."
         }
       ],
       "outbound": [],
@@ -1731,7 +1760,7 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Enclosing synthetic tests own temporary roots and thread-local fault state.",
+      "bounds": "Enclosing synthetic tests own temporary roots and thread-local fault state. Test-only service fixtures also bind explicitly selected or ephemeral loopback ports, spawn owned response threads, and join/close them during cleanup; they do not invoke production service managers or providers.",
       "exclusions": [
         "Not present in production builds"
       ],
@@ -1843,7 +1872,9 @@
       "reads": [
         "config",
         "service_state",
-        "launch_agent"
+        "launch_agent",
+        "native_installation",
+        "process_state"
       ],
       "writes": [
         {
@@ -1988,7 +2019,7 @@
       ],
       "writes": [],
       "outbound": [],
-      "authority": "OS clock, entropy and configured local paths; no provider access.",
+      "authority": "OS clock, entropy, configured local paths and selected process birth/image/liveness metadata. Signal-zero probes deliver no signal; these observations alone do not grant stop or provider authority.",
       "invariants": [
         "READ-1"
       ],
@@ -2003,10 +2034,14 @@
         {
           "path": "crates/gobstopper-cli/src/context.rs",
           "anchor": "pub fn now_ms"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+          "anchor": "pub(crate) fn process_may_be_alive"
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Clock and entropy reads are nondeterministic; supplied-value hashing remains pure.",
+      "bounds": "Clock and entropy reads are nondeterministic; supplied-value hashing remains pure. Service probes use checked positive i32 PIDs, kernel birth/image metadata or signal zero. Missing kernel identity remains conservatively possibly alive; liveness is not custody or permission to force-stop.",
       "exclusions": [
         "No universal execution or native platform qualification claim"
       ],
@@ -2139,7 +2174,7 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Queries select at most 100000 events; metrics preserve provenance, missing coverage and denominator units.",
+      "bounds": "Materialized events/requests/sessions/tools refuse windows above 100000 events or 64 MiB of serialized records. Streaming metrics scan the selected complete window in one read transaction under an explicit deadline; event pages retain at most 10000 events/64 MiB with continuation and a snapshot sequence/revision. Every retained envelope is validated. Metrics preserve provenance, missing coverage, finish-reason denominators and histogram approximation; SQLite query runtime and auxiliary filesystem effects are classified separately.",
       "exclusions": [
         "No universal execution or native platform qualification claim"
       ],
@@ -2159,7 +2194,7 @@
         {
           "state": "session_data",
           "mode": "sql_transaction",
-          "condition": "Private database creation, schema migration, WAL metadata and append-only idempotent observations. Opening status/check/query commands can initialize or migrate schema; damaged/newer schemas refuse. Source event corrections require explicit new evidence."
+          "condition": "Private database creation, schema migration, WAL metadata and append-only idempotent observations. Writer opens may initialize or migrate; open_for_read refuses absent state and opens existing databases query-only without initialization or migration. Damaged/newer schemas refuse. Source event corrections require explicit new evidence."
         },
         {
           "state": "process_state",
@@ -2198,7 +2233,7 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Batch cap 10000 events; query cap 100000; import cap 64 MiB; database page limit 1 GiB. Current-schema identity checks use one read snapshot; initialization and migration recheck under writer locks. Proxy recording has one background owner of database open/append/retry/destruction, a 1024-event queue and 256-event batches, and a 25 ms SQLite busy timeout. Producers use try_lock and drop/count events on contention or a full queue; wakeups are atomic and coalesced. Cached status never waits on storage. The worker retries failures after 1\u201360 seconds without new requests and sleeps when idle. Recorder drop only signals the worker, without joining it; the worker attempts at most four final 256-event batches, stopping after the first failure and counts/drops unsaved events. Process exit may lose buffered events. Stable event identities make uncertain append recovery idempotent; retry availability and degradation remain explicit.",
+      "bounds": "Batch cap 10000 events; materialized-query cap 100000 events/64 MiB; import cap 64 MiB; database page limit 1 GiB. Schema 2 adds the indexed streaming request projection; older supported schemas require explicit write-path migration for metrics. Read-only existing-database opens do not initialize or migrate; open_for_read refuses an absent database without creating state. Current-schema identity checks use one read snapshot; initialization and migration recheck under writer locks. Proxy recording has one background owner of database open/append/retry/destruction, a 1024-event queue and 256-event batches, and a 25 ms SQLite busy timeout. Producers use try_lock and drop/count events on contention or a full queue; wakeups are atomic and coalesced. Cached status never waits on storage. The worker retries failures after 1\u201360 seconds without new requests and sleeps when idle. Recorder drop only signals the worker, without joining it; the worker attempts at most four final 256-event batches, stopping after the first failure and counts/drops unsaved events. Process exit may lose buffered events. Stable event identities make uncertain append recovery idempotent; retry availability and degradation remain explicit.",
       "exclusions": [
         "No complete-observation guarantee after process crash, dropped queue or full storage",
         "Windows ACLs inherit OS user-directory policy; Unix mode checks do not prove equivalent ACL restrictions"
@@ -2274,11 +2309,11 @@
         {
           "state": "experiment_output",
           "mode": "create",
-          "condition": "Explicit export path must be new; backup uses fresh SQLite destination and verified committed data, including WAL-visible events and private identity namespace."
+          "condition": "Explicit export path must be new; segmented archive creates a fresh private directory, checksummed manifest and bounded segments, verifies all parts, then publishes completion only after full success. Backup uses a fresh SQLite destination and verified committed data, including WAL-visible events and private identity namespace. Failures may retain incomplete private output; no pre-existing destination is overwritten."
         }
       ],
       "outbound": [],
-      "authority": "Explicit data export or backup only; no automatic publishing.",
+      "authority": "Explicit data export, segmented archive or backup only; no automatic publishing.",
       "invariants": [
         "SRC-1",
         "REC-1",
@@ -2303,7 +2338,7 @@
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Portable export excludes the secret identity namespace. Backups contain it and remain private; no transcripts or credentials are recorded as events.",
+      "bounds": "Portable export and archives exclude the secret identity namespace. A single export is at most 10000 events/64 MiB; full archives retain at most 100000 checked segments of 10000 events/64 MiB each with a 64 MiB manifest and explicit completion marker under one read snapshot/deadline. Archive verification rereads those local artifacts. Backups contain the namespace and remain private; no transcripts or credentials are recorded as events. Query timer/temp/WAL coordination effects are classified separately; incomplete output is never a completed archive.",
       "exclusions": [
         "No universal execution or native platform qualification claim"
       ],
@@ -2317,7 +2352,10 @@
       "owner": "CLI proxy_agent",
       "reads": [
         "service_state",
-        "launch_agent"
+        "launch_agent",
+        "native_installation",
+        "process_state",
+        "config"
       ],
       "writes": [
         {
@@ -2457,14 +2495,14 @@
         },
         {
           "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
-          "anchor": "pub fn lock"
+          "anchor": "pub(super) fn lock"
         }
       ],
       "bounds": "Archive 128 MiB, binary 256 MiB, install receipt 64 KiB; nonblocking activity lock and no-follow descriptor-relative filesystem operations.",
       "exclusions": [
         "No system/root, Cargo, Homebrew or checkout replacement",
         "No physical power-loss guarantee or OS sandbox",
-        "Running services are not restarted"
+        "The ordinary updater does not restart services; explicit detached service control is classified separately"
       ]
     },
     {
@@ -2653,6 +2691,551 @@
       ],
       "evidence": [
         "E-RESILIENCE-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "event-diagnostics",
+      "owner": "core events and CLI events_diagnostics",
+      "reads": [
+        "event_log",
+        "config"
+      ],
+      "writes": [],
+      "outbound": [],
+      "authority": "Explicit diagnostics view of the configured event log and its one retained rotation; requested metadata output is classified separately.",
+      "invariants": [
+        "READ-1",
+        "OBS-1",
+        "PRIV-1",
+        "RES-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-core/src/events.rs",
+          "anchor": "pub fn read_events_diagnostics"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/events_diagnostics.rs",
+          "anchor": "pub(crate) fn run"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "At most two observed generations, 16 MiB plus one lookahead byte per generation, 16 KiB parsed records and 2000 retained rows. Regular no-follow log reads; closed provider/action/outcome/reason fields and bounded identifier grammar. Missing, invalid, oversized, truncated and omitted history is explicit; diagnostics are never reduction or retention evidence.",
+      "exclusions": [
+        "No complete lifetime-history or snapshot-existence claim",
+        "No savings, billing, retention or live-provider qualification"
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "session-query-runtime",
+      "owner": "CLI session_data SQLite readers",
+      "reads": [
+        "session_data",
+        "process_state"
+      ],
+      "writes": [
+        {
+          "state": "process_state",
+          "mode": "spawn",
+          "condition": "Each deadline-managed snapshot starts one owned timer thread that interrupts the same SQLite connection, then cancels and joins it on drop; backup also owns an outer timer. No external executable."
+        },
+        {
+          "state": "process_state",
+          "mode": "create_delete",
+          "condition": "SQLite may create file-backed temporary sorting/query state when temp_store=FILE; query-only does not mean filesystem-sandboxed."
+        },
+        {
+          "state": "session_data",
+          "mode": "create_replace",
+          "condition": "SQLite WAL readers may create or update shared-memory coordination sidecars when permitted by filesystem access. Read-only/query-only connections do not append observations, initialize schema or migrate it."
+        }
+      ],
+      "outbound": [],
+      "authority": "Read a selected already initialized private observation database. Opening a missing database through open_for_read refuses without initializing state.",
+      "invariants": [
+        "READ-1",
+        "OBS-1",
+        "PRIV-1",
+        "RES-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-IDENTITY",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/session_data/store.rs",
+          "anchor": "struct ReadDeadline"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/session_data/store.rs",
+          "anchor": "pub fn open_readonly"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/session_data/store.rs",
+          "anchor": "pub fn metrics_with_timeout"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Default read deadline 120 seconds, explicit deadlines 1 through 600000 ms, SQLite busy timeout 2 seconds and 2 MiB configured cache on read-only opens. Streaming metrics validate every selected envelope in one transaction without the 100000-event materialization cap; they retain aggregates and one request group rather than all events. Event pages retain at most 10000 events and 64 MiB with an explicit snapshot sequence/revision and continuation. Deadline checks and SQLite interrupt do not preempt blocked filesystem calls or prove whole-process memory bounds.",
+      "exclusions": [
+        "No observation-row writes or schema migration on the read-only branch",
+        "No no-filesystem-write or hard kernel-call deadline guarantee",
+        "No proof that separately requested pages share one SQLite transaction"
+      ],
+      "evidence": [
+        "E-EVERLASTING-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "session-archive-read",
+      "owner": "CLI session_data archive checker",
+      "reads": [
+        "experiment_output"
+      ],
+      "writes": [],
+      "outbound": [],
+      "authority": "Explicit verification of a caller-selected private observation archive; no database mutation or transcript reconstruction.",
+      "invariants": [
+        "READ-1",
+        "REC-1",
+        "PRIV-1",
+        "RES-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-HASH",
+        "A-IDENTITY",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/session_data/store.rs",
+          "anchor": "pub fn check_archive"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Private regular no-follow completion, manifest and named segment reads; exact hashes and event counts, at most 100000 segments, 64 MiB manifest and 64 MiB/10000 events per segment. An explicit 1 through 600000 ms cooperative deadline is checked during parsing; incomplete archives refuse.",
+      "exclusions": [
+        "No import, retention deletion, provider call or cloud publication",
+        "No physical power-loss or blocked-kernel-call theorem"
+      ],
+      "evidence": [
+        "E-EVERLASTING-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "upgrade-directory-read",
+      "owner": "CLI native updater and service-upgrade callers",
+      "reads": [
+        "native_installation",
+        "native_update_state",
+        "service_state",
+        "launch_agent",
+        "process_state",
+        "config"
+      ],
+      "writes": [],
+      "outbound": [],
+      "authority": "Crate-visible descriptor-relative metadata and byte readers; enclosing callers select an owned installation, staged release or service directory. These helpers confer no target authority.",
+      "invariants": [
+        "ID-1",
+        "OWN-1",
+        "READ-1",
+        "REC-2"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-HASH",
+        "A-IDENTITY",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+          "anchor": "pub fn read_private"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+          "anchor": "pub(super) fn verify_prepared_upgrade"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Absolute owner-controlled directory chains, no-follow descriptor-relative regular single-link files, caller-supplied byte limits, inode/owner/mode checks. Upgrade inspection binds old/new receipts and binary hashes to the reserved stage inode and fixed managed executable; read helpers do not execute a candidate.",
+      "exclusions": [
+        "No installation, service restart, network or mutation authority from a read",
+        "No hostile same-user replacement, loader-race or physical durability theorem"
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "upgrade-directory-write",
+      "owner": "CLI native updater and service-upgrade callers",
+      "reads": [
+        "native_installation",
+        "native_update_state",
+        "service_state",
+        "launch_agent",
+        "process_state"
+      ],
+      "writes": [
+        {
+          "state": "native_installation",
+          "mode": "create_replace",
+          "condition": "Installation callers create private staging directories/files and rename verified binaries/backups into the checked destination. Replacement authority and rollback checks remain in the enclosing native transaction."
+        },
+        {
+          "state": "native_installation",
+          "mode": "permissions",
+          "condition": "Set the executable bit only on newly created staged binaries or copy the original mode onto the owned backup; no unrelated file-mode changes."
+        },
+        {
+          "state": "native_installation",
+          "mode": "delete",
+          "condition": "Remove only the enclosing installation caller's known owned staging file/directory inventory; no provider or user-data cleanup authority."
+        },
+        {
+          "state": "native_update_state",
+          "mode": "create_replace",
+          "condition": "Installation callers create/lock activity.lock or publish the verified receipt under the same process-owned lock. Conversion to a shared lease protects the restarted installation."
+        },
+        {
+          "state": "service_state",
+          "mode": "create_replace",
+          "condition": "Service callers create/lock the stable service operation file, atomically publish bounded manifest/upgrade/drain metadata or create an append-only local upgrade log."
+        },
+        {
+          "state": "service_state",
+          "mode": "append",
+          "condition": "The returned private append-file handle is used only for the enclosing caller's fixed local upgrade log; no transcript content or unrelated target is authorized."
+        },
+        {
+          "state": "service_state",
+          "mode": "delete",
+          "condition": "Remove only caller-identified owned temporary or exact-byte matched operation files; never infer permission to remove uncertain journals."
+        },
+        {
+          "state": "launch_agent",
+          "mode": "create_delete",
+          "condition": "Only the enclosing service caller may use these file primitives for its current-user definition; the helper does not register or dispatch a manager."
+        }
+      ],
+      "outbound": [],
+      "authority": "Internal directory/file primitives used by the native updater and owned service state. Path parameters are not a sandbox or an authorization decision; exact installation/service checks must precede destructive callers.",
+      "invariants": [
+        "ID-1",
+        "OWN-1",
+        "REC-2",
+        "PRIV-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-HASH",
+        "A-IDENTITY",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+          "anchor": "pub fn write_atomic"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+          "anchor": "pub fn remove_matching"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+          "anchor": "pub fn operation_file"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "No-follow descriptor-relative operations revalidate directory/file identity. New files use create_new/private mode; atomic metadata replacement is capped at 256 KiB. Advisory locks are nonblocking and require cooperating callers; rename and unlink sync the owned directory. Low-level rename/remove take caller-selected ordinary filenames, so the enclosing operation must impose its narrower inventory.",
+      "exclusions": [
+        "No provider/session data replacement or arbitrary user-directory authorization",
+        "No subprocess, external network or OS sandbox",
+        "No hostile-ancestor or power-loss theorem"
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "native-upgrade-stage",
+      "owner": "CLI self_update detached-upgrade staging",
+      "reads": [
+        "native_installation",
+        "native_update_state"
+      ],
+      "writes": [
+        {
+          "state": "native_installation",
+          "mode": "create_delete",
+          "condition": "Reserve one fresh private .gobstopper-update-* directory under the owned install parent; stage verified archive/checksum/executable/receipts and previous-byte/mode backups. Explicit discard removes only the known staged file inventory and that directory."
+        }
+      ],
+      "outbound": [],
+      "authority": "Only an explicitly selected verified native-release upgrade. Fetch/unpack/candidate execution and installed-file replacement are separately classified.",
+      "invariants": [
+        "ID-1",
+        "OWN-1",
+        "REC-1",
+        "REC-2",
+        "PRIV-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-HASH",
+        "A-IDENTITY",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+          "anchor": "pub(super) fn prepare_upgrade"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+          "anchor": "pub fn remove_checked"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Archive 128 MiB, executable 256 MiB, receipt 64 KiB. Reserved prior receipt/hash, verified target receipt/hash and stage device/inode are checked before replacement; unknown extra stage files prevent directory removal. Failure can retain private backups for recovery rather than inventing success.",
+      "exclusions": [
+        "No source, package-manager, system/root or provider-data replacement",
+        "No native service/platform qualification from staging",
+        "No physical power-loss or hostile same-user path-race theorem"
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "service-upgrade-state",
+      "owner": "CLI proxy_upgrade and proxy_agent",
+      "reads": [
+        "service_state",
+        "process_state",
+        "config"
+      ],
+      "writes": [
+        {
+          "state": "service_state",
+          "mode": "create_replace",
+          "condition": "Reserve and advance the schema-1 upgrade journal under the owned service lock, retaining staged/old/new identity, process incarnations, stage and closed failure/recovery state; unresolved work blocks competing service operations."
+        },
+        {
+          "state": "process_state",
+          "mode": "in_memory",
+          "condition": "The detached controller pins its invocation-local configuration directory and tracks clock/process identity and the upgrade stage; library claim callbacks retain separately reviewed caller effects."
+        }
+      ],
+      "outbound": [],
+      "authority": "Explicit managed proxy upgrade or explicit repair reconciliation; a journal is intent/evidence, not permission to activate or discard uncertain work.",
+      "invariants": [
+        "ID-1",
+        "OWN-1",
+        "REC-2",
+        "PRIV-1",
+        "RES-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-HASH",
+        "A-IDENTITY",
+        "A-CLOCK",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+          "anchor": "pub(crate) fn upgrade_write_journal"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_upgrade.rs",
+          "anchor": "pub(crate) fn reconcile"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_upgrade.rs",
+          "anchor": "pub(crate) fn require_no_pending_at"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "256 KiB private owned metadata reads/replacements, schema/stage validation, operation ID/revision comparison and nonblocking service lock. Reserved service/installation/stage and controller process identities are rechecked by enclosing transitions; unresolved recovery markers are retained. Competing service operations consult pending upgrade state. Managed inference startup separately checks its pinned manifest and drain journal; no additional upgrade-startup guard is inferred here. Elapsed time alone is not recovery evidence.",
+      "exclusions": [
+        "No background native-provider activation or inference replay",
+        "No whole-program state-machine or physical-durability proof",
+        "Source review does not establish live crash/rollback qualification"
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE",
+        "E-EVERLASTING-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "service-upgrade-job",
+      "owner": "CLI proxy_agent detached controller launcher",
+      "reads": [
+        "config",
+        "service_state",
+        "launch_agent",
+        "native_installation",
+        "process_state"
+      ],
+      "writes": [
+        {
+          "state": "launch_agent",
+          "mode": "create_delete",
+          "condition": "Explicit upgrade creates and bootstraps the fixed current-user sh.gobstopper.upgrade job on macOS; controller entry and self-cleanup unlink only its definition without unloading the running controller. A later upgrade removes the finished registration only after checking its recorded process has exited and the loaded job reports no process. An unacknowledged launch is reconciled only after verified owner exit and manager absence under the service-operation lock. Linux uses a one-shot user transient gobstopper-upgrade unit with --collect and no Restart property."
+        },
+        {
+          "state": "service_state",
+          "mode": "create_replace",
+          "condition": "Create owned upgrade-log directories/files and append the detached controller's requested diagnostics to its fixed local log; no request/response content."
+        },
+        {
+          "state": "process_state",
+          "mode": "spawn",
+          "condition": "Bounded fixed launchctl/systemd-run commands start exactly the verified managed executable's hidden controller with the reserved stage and pinned service directory. Controller lifecycle effects are classified separately; no shell/provider invocation."
+        }
+      ],
+      "outbound": [],
+      "authority": "Explicit detached upgrade of the current user's already owned managed native service. --print renders a plan without creating, registering or starting a job.",
+      "invariants": [
+        "ID-1",
+        "OWN-1",
+        "REC-2",
+        "PRIV-1",
+        "RES-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-IDENTITY",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+          "anchor": "pub(crate) fn upgrade_launch"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+          "anchor": "pub(crate) fn upgrade_unlink_on_entry"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Only the fixed per-user upgrade job and fixed log path. Existing macOS job definitions refuse clobber; manager commands have bounded output/time. Optional frontend wait is at most 900 seconds with 200 ms status polling. Unsupported non-Unix controllers refuse; a detached job is not completion evidence.",
+      "exclusions": [
+        "No system-wide daemon, install enrollment or provider call",
+        "No Linux/native manager or crash/reboot qualification claim",
+        "No guarantee that raw local diagnostic paths/errors are nonsensitive"
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE"
+      ],
+      "next_gate": "C15"
+    },
+    {
+      "id": "service-upgrade-control",
+      "owner": "CLI proxy_agent UpgradeControl and detached controller",
+      "reads": [
+        "service_state",
+        "launch_agent",
+        "native_installation",
+        "native_update_state",
+        "process_state",
+        "config"
+      ],
+      "writes": [
+        {
+          "state": "service_state",
+          "mode": "create_replace",
+          "condition": "Persist exact owned drain/stop/start intent, acknowledgement and refreshed manifest before manager transitions; unknown outcomes retain recovery evidence. Only conclusively completed owned drain files may be cleared."
+        },
+        {
+          "state": "service_state",
+          "mode": "delete",
+          "condition": "Clear only the exact completed owned drain-operation intent after confirmed stop/start; unresolved or mismatched state refuses."
+        },
+        {
+          "state": "launch_agent",
+          "mode": "native",
+          "condition": "Stop, start or restore only the exact manifest-owned current-user proxy registration; never restart arbitrary user or provider processes."
+        },
+        {
+          "state": "process_state",
+          "mode": "spawn",
+          "condition": "Bounded fixed platform manager queries and stop/start commands. Silent failed-start rollback may stop only the same manager-reported PID and kernel birth identity started by this upgrade; an answering service uses owned drain control."
+        }
+      ],
+      "outbound": [
+        "Loopback identity/status/drain lease acquire/renew/commit and readiness checks only; no inference or provider call."
+      ],
+      "authority": "Explicit detached upgrade or its identity-bound rollback. Healthy late startup wins over rollback; an answering but unsafe-to-drain service, changed identity, unresolved drain, unavailable kernel identity or unacknowledged start refuses forced stop.",
+      "invariants": [
+        "ID-1",
+        "OWN-1",
+        "CTRL-1",
+        "REC-2",
+        "RES-1"
+      ],
+      "assumptions": [
+        "A-OS",
+        "A-FS",
+        "A-HASH",
+        "A-IDENTITY",
+        "A-CLOCK",
+        "A-AUTH"
+      ],
+      "source": [
+        {
+          "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+          "anchor": "impl UpgradeControl"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+          "anchor": "pub(crate) fn stop_after_failed_start_on"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/proxy_upgrade.rs",
+          "anchor": "pub(crate) fn controller"
+        }
+      ],
+      "status": "source_reviewed",
+      "bounds": "Service lock, exact manifest/definition/installation binding and process-incarnation checks. Owned drain lease precedes external stop. Failed-start readiness is limited to five seconds within the recorded 25-second rollback window; one rollback deadline covers stop and port-clear checks. Native replacement/restore requires a separately classified exclusive update lock and protects the restarted executable with a shared lease.",
+      "exclusions": [
+        "No provider-session mutation, client replay or stop from port-freedom alone",
+        "No source/package-manager/system installation replacement",
+        "No universal live upgrade, power-loss, reboot or unbounded-progress guarantee"
+      ],
+      "evidence": [
+        "E-FOUNDATION-SOURCE",
+        "E-EVERLASTING-SOURCE"
       ],
       "next_gate": "C15"
     },
@@ -2914,10 +3497,12 @@
       "name": "Events",
       "effects": [
         "inspect",
+        "event-diagnostics",
+        "runtime-input",
         "output",
         "native-update-storage"
       ],
-      "contract": "Requested event/retention stream includes identities and metrics. Automatic release checks are suppressed; the native installation lease remains held.",
+      "contract": "Requested event/retention stream includes identities and metrics. The explicit --diagnostics branch reads only bounded allowlisted metadata and partial-history reasons, never qualifies reductions or retention, and supports tail/session/since filters. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -3087,9 +3672,15 @@
         "output",
         "native-update-storage",
         "native-update-network",
+        "native-upgrade-stage",
+        "upgrade-directory-read",
+        "service-upgrade-state",
+        "service-upgrade-job",
+        "service-upgrade-control",
+        "runtime-input",
         "client-launch"
       ],
-      "contract": "Loopback proxy for Anthropic Messages, OpenAI Responses and Chat Completions; bounded evidence and scoped budgets, content-free observation recording and inference-only idle-sleep inhibition. Hard configured capacity constrains fallbacks and retries. Replay reads a selected transcript without a provider call. Explicit current-user install/migrate/repair/uninstall preserve service identity, recover owned interrupted operations and leave user data intact. Replay, doctor and status suppress automatic release checks; all commands retain their native installation lease. Launch selects one healthy proxy or direct official route before starting a new client; invocation-local overrides preserve saved settings and configured authentication. It does not reroute existing sessions or replay inference. Status follows the managed port unless explicitly overridden.",
+      "contract": "Loopback proxy for Anthropic Messages, OpenAI Responses and Chat Completions; bounded evidence and scoped budgets, content-free observation recording and inference-only idle-sleep inhibition. Hard configured capacity constrains fallbacks and retries. Replay reads a selected transcript without a provider call. Explicit current-user install/migrate/repair/uninstall preserve service identity, recover owned interrupted operations and leave user data intact. Detached upgrade stages a verified immutable native release, records owned intent, launches one current-user controller, drains and stops the exact managed service, replaces under the native updater lock, then checks startup or performs identity-bound rollback. --print creates no job or stage but target selection may fetch canonical release metadata. Dependent tool-shell callers cannot restart through upgrade/migration/repair without the explicit override. Replay, doctor and status suppress automatic release checks; ordinary commands retain their native installation lease, while upgrade/controller use their separate checked update/service leases. Launch selects one healthy proxy or direct official route before starting a new client; invocation-local overrides preserve saved settings and configured authentication. It does not reroute existing sessions or replay inference. Status follows the managed port unless explicitly overridden.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -3270,13 +3861,16 @@
       "name": "Data",
       "effects": [
         "session-store",
+        "session-read",
+        "session-query-runtime",
+        "session-archive-read",
         "session-import",
         "session-export",
         "inspect",
         "output",
         "native-update-storage"
       ],
-      "contract": "Local versioned session/request/tool/metric/status/check output; opening may initialize or migrate private SQLite state. Explicit content-free native/legacy import, checksummed portable import/export and verified fresh backup. No cloud publication. Automatic release checks are suppressed; the native installation lease remains held.",
+      "contract": "Local versioned session/request/tool/metric/status/check output; read commands use an existing query-only database without migration, while a missing database may be initialized and explicit write commands may migrate it. Streaming full-window metrics and bounded event pages retain explicit revision, timeout and incomplete-history semantics; query deadlines use owned timer threads and SQLite may use temporary/shared-memory files. Explicit content-free native/legacy import, checksummed portable import/export, fresh segmented archives with completion verification and verified fresh backup. No cloud publication or retention deletion. Automatic release checks are suppressed; the native installation lease remains held.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -3317,6 +3911,26 @@
       "effects": [
         "native-update-storage",
         "native-update-network",
+        "output"
+      ]
+    },
+    {
+      "name": "UpgradeController",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "anchor": "UpgradeController(proxy_upgrade::ControllerArgs)"
+      },
+      "contract": "Hidden one-shot detached upgrade controller before product configuration. Pin the exact owned service directory, remove only its upgrade job definition, validate reserved journal/service/stage/native-release identities, then perform owned drain/stop, checked replacement and startup or identity-bound rollback. No provider calls, inference replay or new release fetch; unsupported platforms refuse. Unresolved work retains its journal/backups and blocks unrelated service mutation.",
+      "effects": [
+        "upgrade-directory-read",
+        "upgrade-directory-write",
+        "service-upgrade-state",
+        "service-upgrade-job",
+        "service-upgrade-control",
+        "service-inspect",
+        "native-update-storage",
+        "native-upgrade-stage",
+        "runtime-input",
         "output"
       ]
     },
@@ -3509,6 +4123,17 @@
     }
   ],
   "scripts": [
+    {
+      "path": "scripts/browser_acquisition.py",
+      "effects": ["ci-browser-acquisition", "output"]
+    },
+    {
+      "path": "scripts/compare_proxy_tails.py",
+      "effects": [
+        "offline-study-script",
+        "output"
+      ]
+    },
     {
       "path": "scripts/check-dialects.py",
       "effects": [
@@ -5750,7 +6375,7 @@
       "path": "crates/gobstopper-core/src/events.rs",
       "symbol": "default_log_path",
       "effects": [
-        "inspect"
+        "runtime-input"
       ]
     },
     {
@@ -6398,14 +7023,22 @@
       "path": "crates/gobstopper-cli/src/proxy_agent.rs",
       "symbol": "migrate",
       "effects": [
-        "launch-agent"
+        "launch-agent",
+        "service-upgrade-state",
+        "native-upgrade-stage",
+        "upgrade-directory-read",
+        "runtime-input"
       ]
     },
     {
       "path": "crates/gobstopper-cli/src/proxy_agent.rs",
       "symbol": "repair",
       "effects": [
-        "launch-agent"
+        "launch-agent",
+        "service-upgrade-state",
+        "native-upgrade-stage",
+        "upgrade-directory-read",
+        "runtime-input"
       ]
     },
     {
@@ -6413,6 +7046,7 @@
       "symbol": "context",
       "effects": [
         "session-store",
+        "runtime-input",
         "memory"
       ]
     },
@@ -6428,6 +7062,7 @@
       "symbol": "finish",
       "effects": [
         "session-store",
+        "runtime-input",
         "memory"
       ]
     },
@@ -6435,6 +7070,7 @@
       "path": "crates/gobstopper-cli/src/proxy_observations.rs",
       "symbol": "finish_json",
       "effects": [
+        "runtime-input",
         "memory"
       ]
     },
@@ -6449,6 +7085,7 @@
       "path": "crates/gobstopper-cli/src/proxy_observations.rs",
       "symbol": "observe",
       "effects": [
+        "runtime-input",
         "memory"
       ]
     },
@@ -6457,6 +7094,7 @@
       "symbol": "open",
       "effects": [
         "session-store",
+        "runtime-input",
         "memory"
       ]
     },
@@ -6464,7 +7102,7 @@
       "path": "crates/gobstopper-cli/src/proxy_observations.rs",
       "symbol": "request_id",
       "effects": [
-        "session-store",
+        "runtime-input",
         "memory"
       ]
     },
@@ -6480,6 +7118,7 @@
       "symbol": "start",
       "effects": [
         "session-store",
+        "runtime-input",
         "memory"
       ]
     },
@@ -6495,6 +7134,9 @@
       "symbol": "run",
       "effects": [
         "session-store",
+        "session-read",
+        "session-query-runtime",
+        "session-archive-read",
         "session-import",
         "session-export",
         "inspect",
@@ -6624,6 +7266,8 @@
       "path": "crates/gobstopper-cli/src/session_data/store.rs",
       "symbol": "backup",
       "effects": [
+        "session-read",
+        "session-query-runtime",
         "session-export"
       ]
     },
@@ -6631,7 +7275,8 @@
       "path": "crates/gobstopper-cli/src/session_data/store.rs",
       "symbol": "check",
       "effects": [
-        "session-read"
+        "session-read",
+        "session-query-runtime"
       ]
     },
     {
@@ -6652,13 +7297,16 @@
       "path": "crates/gobstopper-cli/src/session_data/store.rs",
       "symbol": "events",
       "effects": [
-        "session-read"
+        "session-read",
+        "session-query-runtime"
       ]
     },
     {
       "path": "crates/gobstopper-cli/src/session_data/store.rs",
       "symbol": "export",
       "effects": [
+        "session-read",
+        "session-query-runtime",
         "session-export"
       ]
     },
@@ -6722,7 +7370,8 @@
       "path": "crates/gobstopper-cli/src/session_data/store.rs",
       "symbol": "status",
       "effects": [
-        "session-read"
+        "session-read",
+        "session-query-runtime"
       ]
     },
     {
@@ -6793,7 +7442,7 @@
       "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
       "symbol": "copy_mode",
       "effects": [
-        "native-update-storage"
+        "upgrade-directory-write"
       ]
     },
     {
@@ -6814,63 +7463,65 @@
       "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
       "symbol": "mkdir",
       "effects": [
-        "native-update-storage"
+        "upgrade-directory-write"
       ]
     },
     {
       "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
       "symbol": "new",
       "effects": [
-        "native-update-storage"
+        "native-upgrade-stage"
       ]
     },
     {
       "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
       "symbol": "open",
       "effects": [
-        "native-update-storage"
+        "upgrade-directory-read",
+        "upgrade-directory-write"
       ]
     },
     {
       "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
       "symbol": "read",
       "effects": [
-        "native-update-storage"
+        "upgrade-directory-read"
       ]
     },
     {
       "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
       "symbol": "read_path",
       "effects": [
-        "native-update-storage"
+        "upgrade-directory-read",
+        "runtime-input"
       ]
     },
     {
       "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
       "symbol": "remove",
       "effects": [
-        "native-update-storage"
+        "upgrade-directory-write"
       ]
     },
     {
       "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
       "symbol": "rename",
       "effects": [
-        "native-update-storage"
+        "upgrade-directory-write"
       ]
     },
     {
       "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
       "symbol": "validate",
       "effects": [
-        "native-update-storage"
+        "upgrade-directory-read"
       ]
     },
     {
       "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
       "symbol": "write_new",
       "effects": [
-        "native-update-storage"
+        "upgrade-directory-write"
       ]
     },
     {
@@ -7015,6 +7666,13 @@
     },
     {
       "path": "crates/gobstopper-cli/src/proxy_stats.rs",
+      "symbol": "snapshot",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_stats.rs",
       "symbol": "status",
       "effects": [
         "memory"
@@ -7081,6 +7739,791 @@
       "symbol": "try_store_stats",
       "effects": [
         "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/events_diagnostics.rs",
+      "symbol": "run",
+      "effects": [
+        "event-diagnostics",
+        "runtime-input",
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/events.rs",
+      "symbol": "absent",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/events.rs",
+      "symbol": "as_str",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-core/src/events.rs",
+      "symbol": "read_events_diagnostics",
+      "effects": [
+        "event-diagnostics"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "open",
+      "effects": [
+        "service-upgrade-state",
+        "upgrade-directory-read",
+        "upgrade-directory-write",
+        "service-inspect"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "process_identity",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "repair_may_restart",
+      "effects": [
+        "service-inspect",
+        "upgrade-directory-read",
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "restart_previous",
+      "effects": [
+        "service-upgrade-control",
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "same_process",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "start",
+      "effects": [
+        "service-upgrade-control",
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "started_identity",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "started_pid",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "stop",
+      "effects": [
+        "service-upgrade-control",
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "stop_after_failed_start",
+      "effects": [
+        "service-upgrade-control",
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "stop_after_failed_start_on",
+      "effects": [
+        "service-upgrade-control",
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "fixture_upgrade_service",
+      "effects": ["test-fixture", "service-upgrade-state", "upgrade-directory-write"]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "start_at",
+      "effects": ["test-fixture"]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "upgrade_cleanup_finished",
+      "effects": ["service-upgrade-job", "runtime-input"]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "upgrade_job_absent",
+      "effects": ["service-upgrade-job", "runtime-input"]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "upgrade_claim",
+      "effects": [
+        "service-upgrade-state",
+        "upgrade-directory-write",
+        "service-inspect",
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "upgrade_cleanup",
+      "effects": [
+        "service-upgrade-job",
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "upgrade_job",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "upgrade_journal_path",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "upgrade_launch",
+      "effects": [
+        "service-upgrade-job",
+        "service-upgrade-state",
+        "service-upgrade-control",
+        "upgrade-directory-read",
+        "native-update-storage",
+        "native-upgrade-stage",
+        "runtime-input",
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "upgrade_probe",
+      "effects": [
+        "service-inspect",
+        "service-upgrade-state",
+        "upgrade-directory-read",
+        "upgrade-directory-write",
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "upgrade_read_journal_at",
+      "effects": [
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "upgrade_service_binding",
+      "effects": [
+        "upgrade-directory-read",
+        "service-inspect",
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "upgrade_unlink_on_entry",
+      "effects": [
+        "service-upgrade-job",
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "upgrade_write_journal",
+      "effects": [
+        "service-upgrade-state",
+        "upgrade-directory-write",
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_caller.rs",
+      "symbol": "refuse",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_upgrade.rs",
+      "symbol": "controller",
+      "effects": [
+        "upgrade-directory-read",
+        "upgrade-directory-write",
+        "service-upgrade-state",
+        "service-upgrade-job",
+        "service-upgrade-control",
+        "service-inspect",
+        "native-update-storage",
+        "native-upgrade-stage",
+        "runtime-input",
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_upgrade.rs",
+      "symbol": "reconcile",
+      "effects": [
+        "service-inspect",
+        "service-upgrade-state",
+        "upgrade-directory-read",
+        "native-upgrade-stage",
+        "runtime-input",
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_upgrade.rs",
+      "symbol": "require_no_pending_at",
+      "effects": [
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_upgrade.rs",
+      "symbol": "run",
+      "effects": [
+        "service-inspect",
+        "service-upgrade-state",
+        "service-upgrade-job",
+        "service-upgrade-control",
+        "upgrade-directory-read",
+        "upgrade-directory-write",
+        "native-update-storage",
+        "native-update-network",
+        "native-upgrade-stage",
+        "runtime-input",
+        "output"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "discard_upgrade",
+      "effects": [
+        "native-upgrade-stage"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "planned_upgrade_stage",
+      "effects": [
+        "upgrade-directory-read",
+        "runtime-input",
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "prepare_upgrade",
+      "effects": [
+        "native-upgrade-stage",
+        "native-update-network",
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "protect_previous_upgrade",
+      "effects": [
+        "native-update-storage",
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "replace_upgrade",
+      "effects": [
+        "native-update-storage",
+        "native-upgrade-stage",
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "restore_upgrade",
+      "effects": [
+        "native-update-storage",
+        "native-upgrade-stage",
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "upgrade_target",
+      "effects": [
+        "upgrade-directory-read",
+        "native-update-network",
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "verify_prepared_upgrade",
+      "effects": [
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "verify_previous_upgrade",
+      "effects": [
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+      "symbol": "discard_upgrade",
+      "effects": [
+        "native-upgrade-stage"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+      "symbol": "planned_upgrade_stage",
+      "effects": [
+        "upgrade-directory-read",
+        "runtime-input",
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+      "symbol": "prepare_upgrade",
+      "effects": [
+        "native-upgrade-stage",
+        "native-update-network",
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+      "symbol": "protect_previous_upgrade",
+      "effects": [
+        "native-update-storage",
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+      "symbol": "replace_upgrade",
+      "effects": [
+        "native-update-storage",
+        "native-upgrade-stage",
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+      "symbol": "replaced_install",
+      "effects": [
+        "test-fixture",
+        "native-update-storage",
+        "native-upgrade-stage",
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+      "symbol": "restore_upgrade",
+      "effects": [
+        "native-update-storage",
+        "native-upgrade-stage",
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+      "symbol": "upgrade_target",
+      "effects": [
+        "upgrade-directory-read",
+        "native-update-network",
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+      "symbol": "verify_prepared_upgrade",
+      "effects": [
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+      "symbol": "verify_previous_upgrade",
+      "effects": [
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "append_file",
+      "effects": [
+        "upgrade-directory-write"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "create",
+      "effects": [
+        "native-upgrade-stage"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "existing",
+      "effects": [
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "identity",
+      "effects": [
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "into_shared",
+      "effects": [
+        "native-update-storage",
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "operation_file",
+      "effects": [
+        "upgrade-directory-write"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "open_owned",
+      "effects": [
+        "upgrade-directory-read",
+        "upgrade-directory-write"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "planned",
+      "effects": [
+        "runtime-input",
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "read_private",
+      "effects": [
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "remove_checked",
+      "effects": [
+        "native-upgrade-stage"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "remove_matching",
+      "effects": [
+        "upgrade-directory-write"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "validate_file",
+      "effects": [
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "verify_executable",
+      "effects": [
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "write_atomic",
+      "effects": [
+        "upgrade-directory-write"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "begin_upstream",
+      "effects": [
+        "runtime-input",
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "completion_reason",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "end_upstream",
+      "effects": [
+        "runtime-input",
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "fields",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "finish_reason",
+      "effects": [
+        "session-store",
+        "runtime-input",
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "record",
+      "effects": [
+        "runtime-input",
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "recover",
+      "effects": [
+        "runtime-input",
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_observations.rs",
+      "symbol": "start_at",
+      "effects": [
+        "session-store",
+        "runtime-input",
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/metrics.rs",
+      "symbol": "event",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/metrics.rs",
+      "symbol": "finish",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/metrics.rs",
+      "symbol": "new",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/metrics.rs",
+      "symbol": "observe",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/metrics.rs",
+      "symbol": "request",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/schema.rs",
+      "symbol": "code",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/schema.rs",
+      "symbol": "outcome",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "archive",
+      "effects": [
+        "session-read",
+        "session-query-runtime",
+        "session-export",
+        "session-archive-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "check_archive",
+      "effects": [
+        "session-archive-read",
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "event_page",
+      "effects": [
+        "session-read",
+        "session-query-runtime"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "metrics",
+      "effects": [
+        "session-read",
+        "session-query-runtime"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "metrics_with_timeout",
+      "effects": [
+        "session-read",
+        "session-query-runtime"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "open_for_read",
+      "effects": [
+        "session-read",
+        "session-query-runtime"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/session_data/store.rs",
+      "symbol": "open_readonly",
+      "effects": [
+        "session-read",
+        "session-query-runtime"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "process_may_be_alive",
+      "effects": [
+        "runtime-input"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "start_submitted",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_agent.rs",
+      "symbol": "upgrade_controller_identity",
+      "effects": [
+        "runtime-input",
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "discard_bound_upgrade",
+      "effects": [
+        "native-upgrade-stage",
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "verify_installed_upgrade",
+      "effects": [
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+      "symbol": "assert_installation_busy",
+      "effects": ["test-fixture", "native-update-storage"]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+      "symbol": "staged_install",
+      "effects": ["test-fixture", "native-update-storage", "upgrade-directory-write"]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+      "symbol": "discard_bound_upgrade",
+      "effects": [
+        "native-upgrade-stage",
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+      "symbol": "verify_installed_upgrade",
+      "effects": [
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix/files.rs",
+      "symbol": "validate_contents",
+      "effects": [
+        "upgrade-directory-read"
       ]
     },
     {
