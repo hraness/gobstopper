@@ -417,11 +417,23 @@
       "scope": "Exact Ubuntu mirror URI normalization, tempfile regression cases and browser workflow wiring.",
       "bounds": "Source review and focused tests only; normal exact-head CI must qualify real package acquisition and browser behavior.",
       "references": [
-        { "path": "scripts/browser_acquisition.py", "anchor": "def plan" },
-        { "path": "scripts/test_browser_acquisition.py" },
-        { "path": ".github/workflows/ci.yml", "anchor": "Provision locked Chromium" }
+        {
+          "path": "scripts/browser_acquisition.py",
+          "anchor": "def plan"
+        },
+        {
+          "path": "scripts/test_browser_acquisition.py"
+        },
+        {
+          "path": ".github/workflows/ci.yml",
+          "anchor": "Provision locked Chromium"
+        }
       ],
-      "exclusions": ["No live acquisition timing claim", "No race-proof or transactional filesystem claim", "No persistent-host qualification"]
+      "exclusions": [
+        "No live acquisition timing claim",
+        "No race-proof or transactional filesystem claim",
+        "No persistent-host qualification"
+      ]
     },
     {
       "id": "E-FOUNDATION-SOURCE",
@@ -549,7 +561,7 @@
       ],
       "receipt": {
         "path": "docs/assurance/receipts/2026-10-05-mcp-lease-stress.json",
-        "sha256": "ff79f06a9079b4a5507fc7b53702c9ace61516fdd2c285ac1a14014d7b7083f9"
+        "sha256": "cab01c7c85781bf5fba0e654213262ef6fb3c1b1fa20dd8625badf98699efe40"
       }
     },
     {

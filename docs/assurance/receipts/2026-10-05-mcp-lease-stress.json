@@ -1,6 +1,6 @@
 {
   "schema": "gobstopper.assurance-receipt.v1",
-  "observed_at": "2026-10-05T17:12:58.905708+00:00",
+  "observed_at": "2026-10-05T18:48:39.561430+00:00",
   "scope": "Bounded synthetic operation, process and fault suites.",
   "bounds": "See retained exact suite inventory and receipt bounds; fixed sequence seed and finite capacities.",
   "exclusions": [
@@ -11,7 +11,7 @@
   "passed": true,
   "inputs_unchanged": true,
   "source_sha256": {
-    "Cargo.lock": "b1e85016f7159e337601fe6cf960ff0799747a7c5f0852ed9ae548274ccfe21b",
+    "Cargo.lock": "5ef79b27eb9325924e19e499c49b89f9feb981816a44ed2b644fd32d299c8d26",
     "Cargo.toml": "0e6b55504269e6be141b5dff532e19f19f42c4ea13c79f30cc7946d231266c2c",
     "crates/gobstopper-adapters/Cargo.toml": "75d7d3d99250d94637544877bae3d00d83a0e5cd6ed1821dfda2afeeeb1fa07c",
     "crates/gobstopper-adapters/src/claude.rs": "d0fe42b50bd536c987cdfff5311fee7d939e4c0dbee08ef9ccea23c2fa6efbfe",
@@ -19,11 +19,11 @@
     "crates/gobstopper-adapters/src/codex_compact.rs": "b1c5c9717eb4bbf0e8ed0b7a1930b4b794b6378a429591594f1d17917a483233",
     "crates/gobstopper-adapters/src/copy.rs": "dbef5ae6bca3865c0fed11a4dbd53a6e4c3738e4963f689917be672016e4d6d1",
     "crates/gobstopper-adapters/src/detect.rs": "9231fac464657634942f9cefa0f3e4ecbaf5f25f434bc289618b43f09ea7efe2",
-    "crates/gobstopper-adapters/src/eval.rs": "6724042647ac016a0641df8b89aa7fcacc41e2ba39d84c929b3ece65acc76a5e",
+    "crates/gobstopper-adapters/src/eval.rs": "c9c562b855b1f8d0ebeedccec99d62ae33bca458ca4948ba52c0c064be5e9f49",
     "crates/gobstopper-adapters/src/fork.rs": "506109014db54ecc1d1481d8890d82eddedcd7fad4826eb7815955c36178ef91",
     "crates/gobstopper-adapters/src/lib.rs": "16b5d42382539146115dc48f53595e7787b5ea52691360c908c9e215bb65b2f5",
     "crates/gobstopper-adapters/src/payload.rs": "bdf9b225f303580f8cf72de68d34dce48e03689935055e3bc332743c16c4acf1",
-    "crates/gobstopper-adapters/src/plugins.rs": "1ff94072f9a60c7224872e0672c256a711070a49d4deaccee3caacf93280dff5",
+    "crates/gobstopper-adapters/src/plugins.rs": "306297e64f0ac0377ce788c50b014f4d74325b0c0db434d1b1678775515b40bb",
     "crates/gobstopper-adapters/src/recovery.rs": "7b778325eaff80aff7397cbd8928cd8247f4da89941c70b8595103bc0b596a3c",
     "crates/gobstopper-adapters/src/request/anthropic.rs": "c42af6877ce1a11cee696cae522b57fddb7429c782dc777ff84b5af427316544",
     "crates/gobstopper-adapters/src/request/calibrate.rs": "bf8c7c8156f25569377e5e5d2734ba71bb4b984d6f1b8988ec102e46caeba5e6",
@@ -50,22 +50,23 @@
     "crates/gobstopper-adapters/tests/lean_correspondence.rs": "c16340e1262fcc2c5e10face8d4dbc249c73c6bd013d3492769266c1c9a06f1b",
     "crates/gobstopper-adapters/tests/measurement.rs": "0aec39598ec86466a1c37c689afd51b7d0d4a74cda222a4415492d97d8042751",
     "crates/gobstopper-adapters/tests/native_process.rs": "11c98c93d681e2d647b4d7712dbfe8a3a9c71b0dc27cfd41b6efd4c668815e88",
-    "crates/gobstopper-adapters/tests/plugin_contract.rs": "4f660b8d7024ceb26cda8b629d354489c8729ad5a360998c47d8d3aee842fba2",
+    "crates/gobstopper-adapters/tests/plugin_contract.rs": "7278f1870bf2d5b19126a274495c7c581434cc52b17aba513df2cb67a1dc6a7f",
     "crates/gobstopper-adapters/tests/recovery.rs": "4d8d9e27aae631dcb85917e116642dc94d7b45108bda86a90a2d6cf681c525c7",
     "crates/gobstopper-adapters/tests/sequence.rs": "b038625979fab7096947db343c090e08938678e0b575f3546904096d62d57d42",
     "crates/gobstopper-adapters/tests/surgery_hegel.rs": "f4b0c3b7952c8372a08733f33909f4c53d681e0eeba9c6a66b01a588c14f36fd",
-    "crates/gobstopper-cli/Cargo.toml": "3fddfde47f40855179fb6e8614e721a2dc3e91c9c41406b95b5d69914a18be62",
-    "crates/gobstopper-cli/src/apple.rs": "dd5dd58e89d192f47e090d682f5ed2f379eb4f54341c2f18ef67f99b90da675c",
+    "crates/gobstopper-cli/Cargo.toml": "0703c44accf1c9375202adf802f9e22b07b5ff5e2371507399e6b51445ff1a3c",
+    "crates/gobstopper-cli/src/apple.rs": "813a714f7a38c2feeed40c6f9817c91c166147477e236a40b26de05e3b9b5391",
     "crates/gobstopper-cli/src/apple_cmd.rs": "819efabeaf849d9113b89de1cb4dac4346fb7746ad47bcc34b3123286d2f182c",
     "crates/gobstopper-cli/src/apple_digest.rs": "a38ad95bbb31e1cf8c50136271ea60e9b3048791f95c22491e27649e86eea78d",
     "crates/gobstopper-cli/src/apple_scorer.rs": "2c1a2f604c25d6a8d8b7a5ea9f2dc28462aea9a0f4db265ad06723ad7a578749",
+    "crates/gobstopper-cli/src/clef.rs": "aa2d0be856ded3da137294649d25c60ee8b3e60bef204b0169964e56126cc815",
     "crates/gobstopper-cli/src/config.rs": "16313fc910ada2fe9576aa37c3f5eccf559f042f0d7bab92940ad5d6b0d77f72",
     "crates/gobstopper-cli/src/context.rs": "7db5a1510923a6a56661a2b4f31bb1a60601e75039dedf5e0b7a31e20e42f6b9",
     "crates/gobstopper-cli/src/events_diagnostics.rs": "1a9a7cb1efd79ce61e9a7be06127a7bf0e1e412fa3b1c0295ed2afe971d2433a",
     "crates/gobstopper-cli/src/hooks.rs": "8d3876dfd5f9354be2760c46dce86a8fd2f604cfaff4d4d963d8eeda438866f0",
-    "crates/gobstopper-cli/src/jev.rs": "2966f5e1f3b5663a5571094b7fdf766f5d3f1f44ec2305a30d9d9a33ad3dce07",
-    "crates/gobstopper-cli/src/llm_scorer.rs": "fe62f99e95c4be92111e033babcc552802d2b91117f198c40bf6fb4cfbd3298d",
-    "crates/gobstopper-cli/src/main.rs": "0705de6c54d917ea5ebc8c74f6860bf977d16658dee8ad7fcee93eb20595df1c",
+    "crates/gobstopper-cli/src/jev.rs": "9d23e55abdbb78eff21b336dae3c51284c15f305fa613655cd2a6a22aeb66099",
+    "crates/gobstopper-cli/src/llm_scorer.rs": "916fda66b979e3887460e42f8d5507eded83c0f5d36b8eeb2dd837ba83398263",
+    "crates/gobstopper-cli/src/main.rs": "febd8214d91a4ed82f7c172f4f1c9a2edb57799da077ad3699b66e6014716e71",
     "crates/gobstopper-cli/src/mcp.rs": "f6d2ead11228a63973a9f324f606cb6a293680ce7348009d142ee6e20c503693",
     "crates/gobstopper-cli/src/native_operations.rs": "9be729c383845c5396037526353cbf322f4c0c7abacbf12f2624f2649c53f8c7",
     "crates/gobstopper-cli/src/power.rs": "317011562ec9e35f9b55d15b866aa5b5bb6b1491c79329ab26737afb3d2ff084",
@@ -82,7 +83,7 @@
     "crates/gobstopper-cli/src/proxy_upgrade.rs": "0120c1294e48d102587d47cd2fcbec0c2a86ddc485e99b7942ef12d77295fcc0",
     "crates/gobstopper-cli/src/proxy_work.rs": "b01dbbe0be8f7cc212e414a0872d203c7ddfd49efd5e84f2c8887e6285760000",
     "crates/gobstopper-cli/src/report.rs": "ee4e09f62069f64ee9e06199c7476f9ec59471b5323658e19f25f5c035e34b59",
-    "crates/gobstopper-cli/src/secrets.rs": "669cd44695a4498ca28a90bbe5fbfb8675f8a90be054ec01e248d067f1c28966",
+    "crates/gobstopper-cli/src/secrets.rs": "71c7d7df3d645af86180ce3ddc61d859084b065c08604bc1d527c72e67a7f544",
     "crates/gobstopper-cli/src/self_update/unix/files.rs": "459a6ccf4153e5861d11f98e31d3e83931f4c78b523b0bbfc53dabc23e00c53c",
     "crates/gobstopper-cli/src/self_update/unix.rs": "dfd4a8a0b52b46f8554c5a007ba883c97bf90749c37a3407a09c8bae8915fc49",
     "crates/gobstopper-cli/src/self_update.rs": "434cc0965ffdd4acfe5bbe78c0ee58070b4d4533f5f508018f4e786b6e786d68",
@@ -93,10 +94,10 @@
     "crates/gobstopper-cli/src/session_data.rs": "5044fdc9215177a6bc9f315661571e5d6b06eb01e175bf34406a7d7decdafcc3",
     "crates/gobstopper-cli/src/telemetry.rs": "f637d3f2baed2b0857285c7505a444f2efeaafce749c9ddda3181b4b65de143c",
     "crates/gobstopper-cli/src/usage.rs": "18fe0cbeaf581161e8b12b3799b2c677d48a5f241645fd565cca763f64d8ac25",
-    "crates/gobstopper-cli/src/ux.rs": "e7fad675f1a49ae3117313dd641129c34b0c3638609dfe2109b9cc288d46c1b3",
+    "crates/gobstopper-cli/src/ux.rs": "9ab588f11ecdf1262b8a02766a1a9a20ee69ed09f9621ac86ca7731454c6d571",
     "crates/gobstopper-cli/tests/apple.rs": "7f4f7a439c9bcc4542f4b46e512e4d0ce63a9879795662230bf1f4b2f2e94513",
-    "crates/gobstopper-cli/tests/auth_privacy.rs": "b5112e4ba782156475d1f1239429cd6a2c146a3974925bb2ad480a07b0f6dcb4",
-    "crates/gobstopper-cli/tests/cli_ux.rs": "e268105f852f5df670964789d31bb890abdd509b43a17270f121e2cb96e797ae",
+    "crates/gobstopper-cli/tests/auth_privacy.rs": "e1a223a8ab1c4f74f6f236479c75b8da91d15f6a86ad855dc5cf215edec35395",
+    "crates/gobstopper-cli/tests/cli_ux.rs": "e824cdb8084e4b0b30cc3869aa12aa46d6a5f3f69f77f297c665d92b4260d79d",
     "crates/gobstopper-cli/tests/custody.rs": "d3f189dc5fbb27067fc024476e4eb332fae8e36b91fbbfdd92a11f089c77e924",
     "crates/gobstopper-cli/tests/eval_score.rs": "9b78d14d923498bae6b84ab4e64a8f3ea15756a6ee717477846742b87dea3abc",
     "crates/gobstopper-cli/tests/eval_study.rs": "9166b168396ec0727934ffb441a310d0c18a047388e59d8437100fb7313d32cc",
@@ -105,7 +106,7 @@
     "crates/gobstopper-cli/tests/fixtures/codex-app-server.sh": "a6670be6343b1ae86c9396b742fe5e621a6173fa27d3aa322b6782f54dc00e16",
     "crates/gobstopper-cli/tests/golden/apple_cmd.txt": "abff89bef406a897a432cbf9adbbeb88d5b757db483d91ee220d085d2704dbea",
     "crates/gobstopper-cli/tests/golden/apple_fallback.txt": "28e094a2e67e670bde08d94a66a8875e3c42e4103ab77ce64928641ddacf9efc",
-    "crates/gobstopper-cli/tests/mcp.rs": "d5b09bcabc2f3abd7d87226af2ca2418d873580967e1722357c40fbd580effa7",
+    "crates/gobstopper-cli/tests/mcp.rs": "1456cf0b4a5be0e34088012ab63c88ea4477a39ba2c0278875c3e8d547c07ef0",
     "crates/gobstopper-cli/tests/plan.rs": "18877ade9a60269bcffdde8cbe16954e1338cb2a2eca4d6658ee522a06b142db",
     "crates/gobstopper-cli/tests/proxy/drain.rs": "0ebbdbfaae1c579b0fae31ccfb9663153080bac6491efc9bde3de402f1458701",
     "crates/gobstopper-cli/tests/proxy.rs": "169576c94b3d4eaee75127f781bab62a68f45f22a2fa54a46d294e6286c3eccf",
@@ -138,15 +139,15 @@
     "crates/gobstopper-core/src/strategy/middle.rs": "e03bd8d80ea87d521425f1c8f6af575d545a1ea908a0c2c8635f39070e0aa31d",
     "crates/gobstopper-core/src/strategy/mod.rs": "7cfe8517c0a1144259f21a1abf94336b8f467410cb4e6e950b9bcf3c06a376b9",
     "crates/gobstopper-core/src/strategy/sawtooth.rs": "89bbe87f9f454ca5ae468fab07cc94bbde599bfd57198a637a15d7f2213f45ff",
-    "crates/gobstopper-core/src/strategy/scored.rs": "ba3c13121045ed669bceb7e590668afde0c888ebdb4425e7d8c7dbf6b5c178de",
+    "crates/gobstopper-core/src/strategy/scored.rs": "08d047e7bfa4171dcf80c44ddcf13ea503f74c122b2c99580566fd63ae22a2c2",
     "crates/gobstopper-core/src/strategy/structured.rs": "032114f60b92f9bf41646b8d1459c2717bf7becd032e89bd87bcc0660ce98157",
     "crates/gobstopper-core/src/validation.rs": "f7735d12c5af9d86a2964ce9ab6502159a5dfe97ff74f2ef5bee07f42698219e",
     "scripts/monitor.py": "f7bc79818e19d70878135760257cb190780ab8eb48fbd9291217cd52e04d181b",
     "scripts/test_monitor.py": "fb9672273403e5bef69c9d72323781d24329d0a5083b4caf8592a6729bc06808",
     "verify/stress/README.md": "6a9631368ae478f2c93c20d21a5a27ca2e198abba42e833c681d585435ddb4af",
-    "verify/stress/check.py": "450cd69220d0b709df1cfc1ac9ef8581b82ec9149003d162d5e7755071b251a5",
-    "verify/stress/suites.json": "45e49f0c954cb8487aa03271d69e9de62c52a1975390b55bdf95897a6187e0ac",
-    "verify/stress/test_check.py": "19771f248030850237c9278d1a10309f48a7fc8acb42337c047b30dce71949f6",
+    "verify/stress/check.py": "584b370828d705eeb8d8a0e71f21c32b751f18d86df644cfeb939c90f0a747ce",
+    "verify/stress/suites.json": "7322ef79ccc72fdc9e46426a302295fe1f97d9ff5229db032f83dc3054da6a58",
+    "verify/stress/test_check.py": "5cdfb1fed1439c962521a8ee082a9594ed97558534eadebcf34ce5f80eaf322a",
     "verify/watch/check.py": "97ce34ea1926af465cfd242074ad80d9941311c9f412ee163923a90b7bfaebad"
   },
   "tool_sha256": {
@@ -162,7 +163,7 @@
     "cargo-version.log": "22cf38b38044f7e66c130e80d546028773672b549ec7bb81bf1e7652ede0c8ac",
     "rust-version.log": "eaf195daced7a434718b67881bed97c02440b2b6196dad18db476478c66b1c36"
   },
-  "elapsed_seconds": 117.45760979107581,
+  "elapsed_seconds": 219.5931141669862,
   "raw_bounds": {
     "total_seconds": 900,
     "max_log_bytes_per_command": 8388608,
@@ -190,8 +191,8 @@
         "steps": 64,
         "corruption_recoveries": 16,
         "peak_files": 402,
-        "peak_bytes": 334248,
-        "elapsed_ms": 33564
+        "peak_bytes": 333603,
+        "elapsed_ms": 32714
       },
       "case": "sequence",
       "argv": [
@@ -209,9 +210,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "0fe71ab3d623964a28a75047bf91f108a53839427cd3a0324ed3be649c70bc6c",
-      "elapsed_seconds": 34.2912966250442,
-      "largest_reaped_child_rss_bytes": 55394304
+      "log_sha256": "b148b192ddbf7b80f2531d8b8b97eda1b4c8ee67afb7d63ad21995027536039b",
+      "elapsed_seconds": 71.64105904195458,
+      "largest_reaped_child_rss_bytes": 553762816
     },
     {
       "passed": true,
@@ -268,9 +269,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "94753b1fab45142eb34a7cb7b8f7698b35dbd3a6c32e20ea4b2144d974836217",
-      "elapsed_seconds": 3.974421333987266,
-      "largest_reaped_child_rss_bytes": 55394304
+      "log_sha256": "2b9cdaffa3d3b359d66b875423d3f01cc85f880b6f9888b93c1d2930a2a90378",
+      "elapsed_seconds": 12.222679874976166,
+      "largest_reaped_child_rss_bytes": 561741824
     },
     {
       "passed": true,
@@ -321,9 +322,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "345df403729c7dca1cf9f55c7328e7509d89925e949d2991c96e7b170afad404",
-      "elapsed_seconds": 1.1139680839842185,
-      "largest_reaped_child_rss_bytes": 55394304
+      "log_sha256": "4c0b5a109e1dadc7fcbbaf955a4dbc0361c1d8b65f1b4c3064918515167c1615",
+      "elapsed_seconds": 9.13121812499594,
+      "largest_reaped_child_rss_bytes": 553762816
     },
     {
       "passed": true,
@@ -352,9 +353,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "f13c25970063e9592d508c8f56d884df130bd33a8b1d106181cf2e0f740fd7e7",
-      "elapsed_seconds": 7.623933416907676,
-      "largest_reaped_child_rss_bytes": 578387968
+      "log_sha256": "4508c2a41c1141c0d713b7d5429bf7eb57c1c599327916a3cb65a5c6d9e2e8da",
+      "elapsed_seconds": 61.41483841603622,
+      "largest_reaped_child_rss_bytes": 816332800
     },
     {
       "passed": true,
@@ -400,9 +401,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "05c4d05e22bf5b0138ff9ebdee08cae3c6728fc9ce60759dfcea046b9b41e68f",
-      "elapsed_seconds": 0.6621625830885023,
-      "largest_reaped_child_rss_bytes": 578387968
+      "log_sha256": "48a1078deeac965dfb7a8bd0b99e755f8f43f5ec63324604ebc891f539629d4c",
+      "elapsed_seconds": 16.47024708299432,
+      "largest_reaped_child_rss_bytes": 989872128
     },
     {
       "passed": true,
@@ -441,13 +442,13 @@
         "discovery_cache_persists_across_processes_and_never_gates_correctness": "ok",
         "dry_run_once_does_not_write_events_or_forks": "ok",
         "eval_budget_flag_completes_a_pass_and_deferred_line_is_not_a_plan_line": "ok",
-        "claude_native_dispatch_precedes_planning_and_persists_clean_first_pass": "ok",
-        "fixture_roots_remain_isolated_when_clock_ticks_repeat": "ok",
         "failed_watch_state_write_aborts_before_native_dispatch": "ok",
+        "fixture_roots_remain_isolated_when_clock_ticks_repeat": "ok",
+        "claude_native_dispatch_precedes_planning_and_persists_clean_first_pass": "ok",
         "legacy_native_uncertainty_crosses_watch_lane_boundaries": "ok",
         "legacy_uncertainty_and_malformed_watch_state_fail_closed": "ok",
-        "malformed_operation_journal_cannot_be_cleared_by_watch_or_reconciliation": "ok",
         "native_dispatch_checkpoints_unknown_outcome_before_starting_provider": "ok",
+        "malformed_operation_journal_cannot_be_cleared_by_watch_or_reconciliation": "ok",
         "native_dispatch_requires_identity_from_the_retained_snapshot_bytes": "ok",
         "native_operation_inspection_of_missing_root_is_effect_free": "ok",
         "native_noop_has_snapshot_evidence_and_retries_after_cooldown_expiry": "ok",
@@ -457,14 +458,14 @@
         "owner_delegation_is_skipped_without_savings_or_transcript_mutation": "ok",
         "policy_change_invalidates_unchanged_session_decisions": "ok",
         "reconciliation_uses_recorded_terminal_evidence_and_never_guesses": "ok",
-        "two_watchers_and_process_death_cannot_replay_dispatched_operation": "ok",
         "standalone_native_noop_and_failure_never_credit_the_projected_floor": "ok",
+        "two_watchers_and_process_death_cannot_replay_dispatched_operation": "ok",
         "unqualified_native_activation_never_runs_a_provider_or_creates_a_journal": "ok",
         "unqualified_standalone_native_apply_refuses_before_fork_or_snapshot": "ok",
         "unknown_native_outcome_survives_state_removal_policy_change_and_other_watch_lane": "ok",
+        "unqualified_watch_suppresses_restarts_but_rechecks_source_policy_and_artifact": "ok",
         "unqualified_watch_preserves_control_cohort_before_artifact_refusal": "ok",
-        "unreadable_telemetry_does_not_become_a_zero_count_report": "ok",
-        "unqualified_watch_suppresses_restarts_but_rechecks_source_policy_and_artifact": "ok"
+        "unreadable_telemetry_does_not_become_a_zero_count_report": "ok"
       },
       "sequence_metrics": null,
       "case": "watch",
@@ -483,9 +484,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "60be2845a2486aadf6ee9730a72749bd5b225eb5808d07547b26b62ebd897a2e",
-      "elapsed_seconds": 70.28645266697276,
-      "largest_reaped_child_rss_bytes": 578387968
+      "log_sha256": "c1770622c99cb434cdbb80034f48980107c7711f4d55bddeeab55b8e998386d1",
+      "elapsed_seconds": 67.35785029199906,
+      "largest_reaped_child_rss_bytes": 989872128
     },
     {
       "passed": true,
@@ -514,9 +515,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "1d4b0f31b4a1eb17ad8690dd83352cb711fc23010e40960da3041c9aba97058d",
-      "elapsed_seconds": 5.165449291933328,
-      "largest_reaped_child_rss_bytes": 578387968
+      "log_sha256": "d4dc198f6cf1fd0974ae422845cfcbc1ff140dfb0a6da7ec1e04c314b0bf6694",
+      "elapsed_seconds": 36.909040624974295,
+      "largest_reaped_child_rss_bytes": 816332800
     },
     {
       "passed": true,
@@ -566,9 +567,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "0914a29c75ab38bac7b961672296ce54f06170857263ee5e63a8b48640e9cade",
-      "elapsed_seconds": 4.245160209015012,
-      "largest_reaped_child_rss_bytes": 578387968
+      "log_sha256": "bb48a45bbe84dcd8329b2f61bd01c5f1b6e21854480880fa199677d03c52b5da",
+      "elapsed_seconds": 2.3572560410248116,
+      "largest_reaped_child_rss_bytes": 989872128
     },
     {
       "passed": true,
@@ -578,6 +579,7 @@
         "captured_bundle_uses_declared_relative_dependencies_and_cleans_up",
         "child_timeout_and_output_overflow_fail_closed",
         "exact_trust_and_source_binding_are_required",
+        "http_input_capacity_preserves_plugin_limits_and_all_lifecycle_bounds",
         "inherited_pipe_outside_group_cannot_hold_runner_threads",
         "normal_exit_still_collects_owned_background_descendants",
         "strategy_cannot_return_provider_controls_or_unrequested_inspection",
@@ -591,6 +593,7 @@
         "captured_bundle_uses_declared_relative_dependencies_and_cleans_up": "ok",
         "child_timeout_and_output_overflow_fail_closed": "ok",
         "exact_trust_and_source_binding_are_required": "ok",
+        "http_input_capacity_preserves_plugin_limits_and_all_lifecycle_bounds": "ok",
         "inherited_pipe_outside_group_cannot_hold_runner_threads": "ok",
         "normal_exit_still_collects_owned_background_descendants": "ok",
         "strategy_cannot_return_provider_controls_or_unrequested_inspection": "ok",
@@ -615,9 +618,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "750a8be25584894d741aecb19827ba0927bdd7c098063b92b8165de7ff9fb4bb",
-      "elapsed_seconds": 11.087700125062838,
-      "largest_reaped_child_rss_bytes": 578387968
+      "log_sha256": "990ea1709be54b076486e3017ea05f86cc382515d10fffbb6d3812669d00fb9c",
+      "elapsed_seconds": 57.37449745798949,
+      "largest_reaped_child_rss_bytes": 816332800
     },
     {
       "passed": true,
@@ -672,9 +675,9 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "1634182ef0452ea09e4774e7d284d32d2fe86ba4cb8b54b6db0b5366c4418444",
-      "elapsed_seconds": 0.47648420894984156,
-      "largest_reaped_child_rss_bytes": 578387968
+      "log_sha256": "ffbfe96e680e6038eec33959cf0c57a3001277f8af1956eeaf0e8a8d44a6fa7d",
+      "elapsed_seconds": 13.7658573751105,
+      "largest_reaped_child_rss_bytes": 989872128
     },
     {
       "passed": true,
@@ -786,11 +789,11 @@
       "exit_code": 0,
       "timeout": false,
       "log_limit": false,
-      "log_sha256": "81599c196c584d418837234ee19af53147f0c2d50f307d0ff1b44a3fe39ccc2a",
-      "elapsed_seconds": 18.269037500023842,
-      "largest_reaped_child_rss_bytes": 578387968
+      "log_sha256": "5b178daefe7216b701aa3f144389e6c6f699bea1223118100bc0504830728f47",
+      "elapsed_seconds": 17.478757916018367,
+      "largest_reaped_child_rss_bytes": 561741824
     }
   ],
-  "raw_receipt_sha256": "76c3751c45dc97b04c04cfa39d0d297add5b977baa828be9350bb93248863d9f",
+  "raw_receipt_sha256": "2fc5f2cd8028e7f9e6484dc95c129830d44c5031690570f8fae78b00fa30bce9",
   "local_verification": "Recorded source/tool and local artifact hashes rechecked; no proof rerun or provider attestation."
 }
