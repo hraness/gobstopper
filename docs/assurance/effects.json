@@ -4210,6 +4210,13 @@
     },
     {
       "path": "crates/gobstopper-adapters/src/plugins.rs",
+      "symbol": "run_bounded_http",
+      "effects": [
+        "plugin"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-adapters/src/plugins.rs",
       "symbol": "run_bounded_inference",
       "effects": [
         "plugin"

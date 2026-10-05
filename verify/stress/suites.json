@@ -255,6 +255,7 @@
       ],
       "source": "crates/gobstopper-adapters/tests/plugin_contract.rs",
       "tests": [
+        "http_input_capacity_preserves_plugin_limits_and_all_lifecycle_bounds",
         "exact_trust_and_source_binding_are_required",
         "undeclared_content_and_bundle_files_are_rejected",
         "child_timeout_and_output_overflow_fail_closed",

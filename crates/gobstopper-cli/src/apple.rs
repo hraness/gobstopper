@@ -562,8 +562,16 @@ mod tests {
     #[test]
     fn local_bridge_does_not_inherit_cloudflare_credentials() {
         let command = inference_command(Path::new("/synthetic/must-not-spawn"));
-        for key in ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_AUTH_TOKEN", "TYPESAFE_API_KEY", "GOBSTOPPER_JEV_API_KEY", "GOBSTOPPER_CURL_BEARER"] {
-            assert!(command.get_envs().any(|(name, value)| name == key && value.is_none()));
+        for key in [
+            "CLOUDFLARE_API_TOKEN",
+            "CLOUDFLARE_AUTH_TOKEN",
+            "TYPESAFE_API_KEY",
+            "GOBSTOPPER_JEV_API_KEY",
+            "GOBSTOPPER_CURL_BEARER",
+        ] {
+            assert!(command
+                .get_envs()
+                .any(|(name, value)| name == key && value.is_none()));
         }
     }
 
