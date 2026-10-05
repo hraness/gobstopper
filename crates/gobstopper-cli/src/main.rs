@@ -5555,6 +5555,12 @@ fn main() -> std::process::ExitCode {
         // contract. Their lease still prevents replacement while they run.
         let offline = offline_command(cli.command.as_ref());
         _update_lease = self_update::startup(offline, cli.no_update)?;
+        // A long-lived stdio MCP server would pin the installation lock for
+        // the whole agent session and starve upgrades; it never re-execs its
+        // binary, so the completed startup check is the only guard it needs.
+        if !holds_update_lease(cli.command.as_ref()) {
+            _update_lease = None;
+        }
         run(cli)
     })();
     match result {
@@ -5574,6 +5580,14 @@ fn main() -> std::process::ExitCode {
             }
         }
     }
+}
+
+/// Whether this command keeps the installation activity lease for its whole
+/// lifetime. `mcp` is a read-only stdio server living as long as its agent
+/// session — days — and never re-executes its binary, so replacement under it
+/// is safe and holding the lease only starves upgrades.
+fn holds_update_lease(command: Option<&Cmd>) -> bool {
+    !matches!(command, Some(Cmd::Mcp { .. }))
 }
 
 fn offline_command(command: Option<&Cmd>) -> bool {
@@ -6068,6 +6082,30 @@ mod tests {
             )
             .unwrap();
             assert!(!super::offline_command(cli.command.as_ref()), "{arguments}");
+        }
+    }
+
+    #[test]
+    fn mcp_releases_the_update_lease_but_other_commands_hold_it() {
+        use clap::Parser as _;
+        for (arguments, holds) in [
+            ("mcp", false),
+            ("watch", true),
+            ("watch --once", true),
+            ("proxy serve", true),
+            ("apply fixture.jsonl", true),
+            ("proxy doctor", true),
+            ("report", true),
+        ] {
+            let cli = super::Cli::try_parse_from(
+                std::iter::once("gobstopper").chain(arguments.split_whitespace()),
+            )
+            .unwrap();
+            assert_eq!(
+                super::holds_update_lease(cli.command.as_ref()),
+                holds,
+                "{arguments}"
+            );
         }
     }
 

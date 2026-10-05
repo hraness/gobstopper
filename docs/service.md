@@ -88,7 +88,7 @@ The controller runs outside the caller's tool shell. On macOS it uses a one-shot
 
 ### Updates and long-running commands
 
-Every command on a managed release installation holds its update activity lock for its entire lifetime, so the executable is never replaced under a running process. `gobstopper update` reports `Busy` while any command holds the lock; while the managed service is running, `proxy upgrade` is the path that works — it stops the service under the drain protocol, releases the lock, replaces, and restarts.
+Every command on a managed release installation holds its update activity lock for its entire lifetime, so the executable is never replaced under a running process — except `gobstopper mcp`, which releases the lock once its startup check completes because a stdio tool server never re-executes its binary and would otherwise pin the lock for the whole agent session. `gobstopper update` reports `Busy` while any command holds the lock and names the lock path for `lsof` holder enumeration; while the managed service is running, `proxy upgrade` is the path that works — it stops the service under the drain protocol, releases the lock, replaces, and restarts.
 
 Continuous daemons on the managed binary block every update path the same way, including `proxy upgrade`. Run watchers and monitors as periodic supervised passes — `gobstopper watch --once` under `StartInterval` or a timer — rather than always-on `KeepAlive` loops, so the lock is free between passes. A continuous `watch` on an enrolled installation prints a reminder. The upgrade controller also retries brief lock contention for up to 90 seconds before rolling back.
 

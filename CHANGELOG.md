@@ -2,6 +2,13 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## v0.8.9 - 2026-10-05
+
+Agent-session tool servers no longer pin a managed installation's update lock, and a busy update names how to see its holders.
+
+- `gobstopper mcp` releases the installation activity lease once its startup check completes. A stdio tool server lives as long as its agent session and never re-executes its binary, so holding the lease for days could starve `gobstopper update` and `gobstopper proxy upgrade` — including the upgrade's own rollback restore.
+- A `Busy` update result now names the activity-lock path and the `lsof` command that lists its holders.
+
 ## v0.8.8 - 2026-10-05
 
 Managed installations stay updatable alongside a running service and supervised helpers, and the doctor now reports how the service executable is enrolled.
