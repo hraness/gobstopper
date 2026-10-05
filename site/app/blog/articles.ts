@@ -24,6 +24,8 @@ const REVIEWED_ON: ArticleIsoDate = "2026-09-30";
 const REASSESS_ON: ArticleIsoDate = "2026-11-10";
 // The introduction was rewritten around the Terminal-Bench study and reviewed again.
 const INTRO_REVIEWED_ON: ArticleIsoDate = "2026-09-30";
+/** Ben Guo's human review in the October 4 editorial pass. */
+const EDITOR_REVIEW = { reviewer: "Ben Guo", reviewerType: "human-editor", reviewedOn: "2026-10-04" } as const;
 
 function repo(path: string, name = "gobstopper"): string {
   return `https://github.com/hraness/${name}/blob/main/${path}`;
@@ -99,7 +101,7 @@ const introducing: BlogPost = {
     owner: "Hraness",
     drafting: "ai-from-source",
     review: { reviewer: REVIEWER, reviewerType: "ai", reviewedOn: REVIEWED_ON },
-    humanReview: null,
+    humanReview: EDITOR_REVIEW,
     reassessOn: REASSESS_ON,
     harmIfWrong: "A reader could take one single-trial run as proof that the proxy never costs tasks, or assume the benchmark's 45,000-token threshold is the default.",
     refreshTriggers: [
@@ -157,7 +159,7 @@ const terminalBench: BlogPost = {
     owner: "Hraness",
     drafting: "ai-from-source",
     review: { reviewer: REVIEWER, reviewerType: "ai", reviewedOn: REVIEWED_ON },
-    humanReview: null,
+    humanReview: EDITOR_REVIEW,
     reassessOn: REASSESS_ON,
     harmIfWrong: "A reader could trust a single-trial resolution or cost difference as a ranking, read gateway dollars for one model as their own bill, or assume the 128,000-token default behaves like the 45,000-token benchmark.",
     refreshTriggers: [
@@ -216,7 +218,7 @@ const proofs: BlogPost = {
     owner: "Hraness",
     drafting: "ai-from-source",
     review: { reviewer: REVIEWER, reviewerType: "ai", reviewedOn: REVIEWED_ON },
-    humanReview: null,
+    humanReview: EDITOR_REVIEW,
     reassessOn: REASSESS_ON,
     harmIfWrong: "A reader could believe Gobstopper proves more than it does, such as staying under a context budget or recovering the original transcript.",
     refreshTriggers: [
@@ -274,7 +276,7 @@ const vault: BlogPost = {
     owner: "Hraness",
     drafting: "ai-from-source",
     review: { reviewer: REVIEWER, reviewerType: "ai", reviewedOn: REVIEWED_ON },
-    humanReview: null,
+    humanReview: EDITOR_REVIEW,
     reassessOn: REASSESS_ON,
     harmIfWrong: "A reader could trust the archive through failures the models do not cover, such as a power cut that loses unsynced writes.",
     refreshTriggers: [
@@ -301,7 +303,7 @@ const aicharts: BlogPost = {
   keywords: ["Gobstopper", "aicharts", "token usage", "coding agents", "Claude Code", "Codex", "local usage history"],
   admission: {
     href: "/blog/how-gobstopper-uses-aicharts",
-    lifecycle: "quarantined",
+    lifecycle: "indexable",
     readerJob: "Find out what the Gobstopper installer adds for usage history, how to read it, and how it relates to the proxy's own counts.",
     nonObviousAnswer: "gobstopper usage counts every agent aicharts can read, including sessions that never pass through the proxy, so a proxied request appears in both gobstopper data and the aicharts record; compare the two instead of adding them.",
     originalContribution: "The installer's checks and defaults, the five forwarded history commands, and the difference between the proxy's counts and aicharts' record, read from the v0.8.6 source and the aicharts 0.3.1 release.",
@@ -325,8 +327,8 @@ const aicharts: BlogPost = {
     scores: {"readerUtility": 2, "originalEvidence": 1, "factualConfidence": 2, "hostFit": 2, "voiceIntegrity": 2, "maintenanceValue": 2},
     owner: "Hraness",
     drafting: "ai-from-source",
-    review: null,
-    humanReview: null,
+    review: EDITOR_REVIEW,
+    humanReview: EDITOR_REVIEW,
     reassessOn: "2026-11-15",
     harmIfWrong: "A reader could add the proxy's counts to aicharts' totals and overstate their token use, or expect usage data to leave the computer.",
     refreshTriggers: [
