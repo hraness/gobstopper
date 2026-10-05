@@ -35,7 +35,7 @@ export default function Blog() {
   return (
     <>
       <SiteHeader path={BLOG_PATH} />
-      <main id="main" tabIndex={-1}>
+      <main id="main" tabIndex={-1} data-hraness-landscape="page">
         <script
           dangerouslySetInnerHTML={{ __html: serializeJsonLd(blogIndexJsonLd()) }}
           type="application/ld+json"

@@ -41,7 +41,7 @@ export default function Docs() {
   return (
     <>
       <SiteHeader path="/docs" />
-      <main id="main" tabIndex={-1}>
+      <main id="main" tabIndex={-1} data-hraness-landscape="page">
         <SiteDocument
           dek={description}
           eyebrow="Reference"
