@@ -56,10 +56,11 @@ fn claude_owned_group_cleanup_covers_normal_exit_and_timeout() {
     for mode in ["normal", "timeout"] {
         let fixture = Fixture::new(mode);
         let started = std::time::Instant::now();
+        let timeout_secs = if mode == "normal" { 5 } else { 1 };
         let result = gobstopper_adapters::claude::headless_compact_in_home(
             &fixture.0.join("provider"),
             "synthetic-session",
-            1,
+            timeout_secs,
             Some(&fixture.0),
         );
         assert_eq!(result.is_ok(), mode == "normal");
