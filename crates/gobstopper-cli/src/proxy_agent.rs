@@ -218,7 +218,7 @@ fn definition(manifest: &Manifest, log: &Path) -> String {
                 }
                 extra.push_str("</dict>\n");
             }
-            format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n{extra}<key>Label</key><string>{LABEL}</string>\n<key>ProgramArguments</key><array>\n{arguments}</array>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n<key>ThrottleInterval</key><integer>30</integer>\n<key>ExitTimeOut</key><integer>30</integer>\n<key>StandardOutPath</key><string>{}</string>\n<key>StandardErrorPath</key><string>{}</string>\n</dict></plist>\n", xml(&log.display().to_string()), xml(&log.display().to_string()))
+            format!("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n<plist version=\"1.0\"><dict>\n{extra}<key>Label</key><string>{LABEL}</string>\n<key>ProgramArguments</key><array>\n{arguments}</array>\n<key>RunAtLoad</key><true/>\n<key>KeepAlive</key><true/>\n<key>ThrottleInterval</key><integer>30</integer>\n<key>ExitTimeOut</key><integer>30</integer>\n<key>StandardOutPath</key><string>{}</string>\n<key>StandardErrorPath</key><string>{}</string>\n</dict></plist>\n", xml(&log.display().to_string()), xml(&log.display().to_string()))
         }
         Platform::Linux => {
             let command = std::iter::once(manifest.executable.display().to_string())
@@ -4572,6 +4572,7 @@ pub(crate) mod tests {
     #[test]
     fn definitions_bound_restart_and_do_not_request_display_wake_or_admin() {
         let mac = definition(&manifest(Platform::Macos), Path::new("/tmp/gobstopper.log"));
+        assert!(mac.contains("<key>KeepAlive</key><true/>"));
         assert!(mac.contains("<key>ThrottleInterval</key><integer>30</integer>"));
         assert!(mac.contains("<string>--service-id</string>"));
         let linux = definition(&manifest(Platform::Linux), Path::new("/tmp/log"));
