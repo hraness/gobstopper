@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.8.10 - 2026-10-05
+
+The managed proxy now stays supervised through clean exits and uses a stable HTTP/1.1 upstream path.
+
+- launchd relaunches the proxy after any exit, including supervisor-visible success.
+- Upstream requests force HTTP/1.1 to avoid recurring HTTP/2 stream transport failures.
+
+
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
 ## v0.8.9 - 2026-10-05
