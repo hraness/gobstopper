@@ -256,8 +256,14 @@ pub(crate) fn explicit(args: &UpdateArgs) -> Result<()> {
         &installer,
     )?;
     if report.status == UpdateStatus::Busy {
+        let lock = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.canonicalize().ok())
+            .and_then(|exe| paths(&exe).ok())
+            .map(|paths| paths.receipt.with_file_name("activity.lock"));
         report.instructions = Some(busy_instructions(
             crate::proxy_agent::installed(),
+            lock.as_deref(),
             report.instructions.take(),
         ));
     }
@@ -268,18 +274,27 @@ pub(crate) fn explicit(args: &UpdateArgs) -> Result<()> {
 /// activity lock — which a managed proxy does for its entire lifetime, so a
 /// bare retry can never succeed while the service runs. Say who is holding it
 /// and name the path that actually works.
-fn busy_instructions(service_installed: bool, existing: Option<String>) -> String {
-    let hint = if service_installed {
+fn busy_instructions(
+    service_installed: bool,
+    lock: Option<&Path>,
+    existing: Option<String>,
+) -> String {
+    let mut hint = if service_installed {
         "A managed Gobstopper service holds this installation's update lock for \
         its entire lifetime. `gobstopper proxy upgrade` pauses requests, \
         replaces the executable, and restarts the service."
+            .to_string()
     } else {
         "Running Gobstopper commands hold this installation's update lock for \
         their entire lifetime. Retry after they finish, or stop them first."
+            .to_string()
     };
+    if let Some(lock) = lock {
+        hint += &format!("\nSee who holds it: lsof {}", lock.display());
+    }
     match existing {
         Some(previous) => format!("{previous}\n{hint}"),
-        None => hint.into(),
+        None => hint,
     }
 }
 
@@ -395,18 +410,25 @@ mod tests {
 
     #[test]
     fn busy_instructions_names_the_service_upgrade_path() {
-        let text = busy_instructions(true, None);
+        let text = busy_instructions(true, None, None);
         assert!(text.contains("proxy upgrade"));
         assert!(text.contains("managed Gobstopper service"));
-        let text = busy_instructions(true, Some("prior".into()));
+        let text = busy_instructions(true, None, Some("prior".into()));
         assert!(text.starts_with("prior\n"));
     }
 
     #[test]
     fn busy_instructions_without_a_service_points_at_holders() {
-        let text = busy_instructions(false, None);
+        let text = busy_instructions(false, None, None);
         assert!(text.contains("Retry after they finish"));
         assert!(!text.contains("proxy upgrade"));
+    }
+
+    #[test]
+    fn busy_instructions_names_the_lock_for_holder_enumeration() {
+        let lock = Path::new("/usr/local/bin/.hraness-cli-update-gobstopper/activity.lock");
+        let text = busy_instructions(true, Some(lock), None);
+        assert!(text.contains(&format!("lsof {}", lock.display())));
     }
 
     #[test]

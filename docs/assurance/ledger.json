@@ -464,8 +464,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-05-update-lock-lease-core.json",
-        "sha256": "e69d5e4a0bb636341d3e1ce6da32e6043e9c7a8656603274ef13d27c4d1e60b7"
+        "path": "docs/assurance/receipts/2026-10-05-mcp-lease-core.json",
+        "sha256": "a21c8e502f36becdec03e1ce10eab4723caa061127d9403d9dd9e6a6eefeb61f"
       }
     },
     {
@@ -527,8 +527,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-05-update-lock-lease-transcript.json",
-        "sha256": "890895c852b1c17a1cc2b7aa01d7e801d261d2526f5574ad4aed035fc0775ce3"
+        "path": "docs/assurance/receipts/2026-10-05-mcp-lease-transcript.json",
+        "sha256": "f567a77bdcf2e74c8b2782d2cf82a1fc9722d4bd06c5e006ec796ed764692f7a"
       }
     },
     {
@@ -548,8 +548,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-05-update-lock-lease-stress.json",
-        "sha256": "35fd5092793c2bd0fa6d3c5e6e28239c8eea167ce872382e2b679507104d4ef9"
+        "path": "docs/assurance/receipts/2026-10-05-mcp-lease-stress.json",
+        "sha256": "90e0138a6bf0aee9f9b8afdc6747de87ac207a1cad8662974c1830290e021395"
       }
     },
     {
