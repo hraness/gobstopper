@@ -18,13 +18,14 @@ use session_data::{
     Basis, Envelope, Event, Generation, Identity, OpaqueId, Outcome, Quantity, Query, Source,
     SourceKind, Store, Usage,
 };
-use std::io::Cursor;
+use std::io::{BufReader, Cursor};
 use std::path::PathBuf;
+use store::{check_archive, PageOptions, DEFAULT_READ_TIMEOUT_MS};
 
 struct Temp(PathBuf);
 impl Temp {
     fn new() -> Self {
-        let path = std::env::temp_dir().join(format!(
+        let path = std::env::temp_dir().canonicalize().unwrap().join(format!(
             "gobstopper-data-test-{}",
             OpaqueId::random().unwrap().0
         ));
@@ -75,6 +76,8 @@ fn finish(start: &Envelope) -> Envelope {
             duration_ms: Some(10_000),
             first_output_ms: Some(1000),
             generation: None,
+            reason: None,
+            timings: None,
             usage: Some(Usage {
                 input_tokens: Some(Quantity::reported(100)),
                 output_tokens: Some(Quantity::reported(50)),
@@ -83,6 +86,40 @@ fn finish(start: &Envelope) -> Envelope {
         },
     )
     .unwrap()
+}
+
+#[test]
+fn read_commands_refuse_absent_state_without_initializing_a_database() {
+    let temp = Temp::new();
+    assert!(Store::open_for_read(&temp.database()).is_err());
+    assert!(!temp.database().exists());
+    for command in ["status", "metrics", "events", "check"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_gobstopper"))
+            .args([
+                "--no-update",
+                "data",
+                "--state-dir",
+                temp.0.to_str().unwrap(),
+                command,
+            ])
+            .env("XDG_CONFIG_HOME", &temp.0)
+            .env("HRANESS_NO_UPDATE", "1")
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{command}");
+        let combined = format!(
+            "{}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            combined
+                .to_ascii_lowercase()
+                .contains("data_state_unavailable"),
+            "{command}: {combined}"
+        );
+        assert!(!temp.database().exists());
+    }
 }
 
 #[test]
@@ -708,6 +745,8 @@ fn cli_data_directory_falls_back_to_windows_user_profile_without_home() {
 
 fn assert_cli_data_directory(variables: &[(&str, &str)], expected: &str) {
     let temp = Temp::new();
+    let expected_path = temp.0.join(expected).join("sessions.sqlite3");
+    drop(Store::open(&expected_path).unwrap());
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_gobstopper"));
     command.args(["data", "status"]);
     for variable in [
@@ -731,6 +770,747 @@ fn assert_cli_data_directory(variables: &[(&str, &str)], expected: &str) {
     let status: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(status["events"], 0);
     assert!(temp.0.join(expected).join("sessions.sqlite3").is_file());
+}
+
+fn measure<'a>(report: &'a metrics::Metrics, id: &str) -> &'a metrics::Measure {
+    report.cohorts[0]
+        .measures
+        .iter()
+        .find(|m| m.id == id)
+        .unwrap()
+}
+
+fn expected_measure(
+    id: &str,
+    unit: &str,
+    value: Option<f64>,
+    counts: (&str, &str, u64, u64),
+    reason: Option<&str>,
+) -> serde_json::Value {
+    let (numerator, denominator, measured, missing) = counts;
+    serde_json::json!({
+        "id": id, "unit": unit, "value": value,
+        "numerator": numerator, "denominator": denominator,
+        "measured": measured, "missing": missing,
+        "status": if measured == 0 { "unavailable" } else if missing > 0 { "partial" } else { "available" },
+        "unavailable_reason": reason,
+    })
+}
+
+#[test]
+fn streaming_metrics_match_old_measures_and_slice_lenses() {
+    let temp = Temp::new();
+    let mut store = temp.store();
+    let begun = start();
+    let mut terminal = finish(&begun);
+    if let Event::RequestFinished { generation, .. } = &mut terminal.event {
+        *generation = Some(Generation {
+            output_tokens: 40,
+            duration_ms: 2000,
+        });
+    }
+    let pending = start();
+    let mut zero = finish(&start());
+    if let Event::RequestFinished {
+        duration_ms,
+        first_output_ms,
+        usage,
+        ..
+    } = &mut zero.event
+    {
+        *duration_ms = Some(0);
+        *first_output_ms = Some(0);
+        *usage = Some(Usage {
+            input_tokens: Some(Quantity::reported(0)),
+            output_tokens: Some(Quantity::reported(0)),
+            ..Usage::default()
+        });
+    }
+    let mut estimated = finish(&start());
+    if let Event::RequestFinished {
+        duration_ms,
+        first_output_ms,
+        usage,
+        ..
+    } = &mut estimated.event
+    {
+        *duration_ms = Some(5000);
+        *first_output_ms = None;
+        *usage = Some(Usage {
+            input_tokens: Some(Quantity {
+                value: 150,
+                basis: Basis::Estimated,
+            }),
+            output_tokens: Some(Quantity {
+                value: 70,
+                basis: Basis::Estimated,
+            }),
+            ..Usage::default()
+        });
+    }
+    let mut unknown = finish(&start());
+    if let Event::RequestFinished {
+        outcome,
+        duration_ms,
+        first_output_ms,
+        usage,
+        ..
+    } = &mut unknown.event
+    {
+        *outcome = Outcome::Unknown;
+        *duration_ms = None;
+        *first_output_ms = None;
+        *usage = None;
+    }
+    let mut events = vec![begun.clone(), terminal, pending, zero, estimated, unknown];
+    for (before, after, shadow) in [(100, 60, false), (0, 10, false), (90, 30, true)] {
+        events.push(
+            Envelope::new(
+                begun.source.clone(),
+                begun.identity.clone(),
+                Event::ContextDecision {
+                    estimated_before_tokens: before,
+                    estimated_after_tokens: after,
+                    threshold_tokens: 100,
+                    compacted: true,
+                    shadow,
+                    policy: None,
+                },
+            )
+            .unwrap(),
+        );
+    }
+    events.push(
+        Envelope::new(
+            Source {
+                kind: SourceKind::LegacyStats,
+                id: OpaqueId::random().unwrap(),
+                profile: "gobstopper-stats-v0".into(),
+            },
+            Identity::default(),
+            Event::LegacyContext {
+                estimated_before_tokens: 100,
+                estimated_after_tokens: 50,
+                compacted: true,
+            },
+        )
+        .unwrap(),
+    );
+    for (index, event) in events.iter_mut().enumerate() {
+        event.observed_at_ms = 100 + index as u64 * 10;
+    }
+    store.append_batch(&events).unwrap();
+    for query in [
+        Query::default(),
+        Query {
+            since_ms: Some(110),
+            until_ms: Some(150),
+            session_id: None,
+        },
+        Query {
+            session_id: begun.identity.session_id.clone(),
+            ..Query::default()
+        },
+    ] {
+        let selected = store.events(&query).unwrap();
+        assert_eq!(
+            serde_json::to_value(store.metrics(&query).unwrap()).unwrap(),
+            serde_json::to_value(metrics::metrics(&selected)).unwrap()
+        );
+    }
+    let mut old = serde_json::to_value(store.metrics(&Query::default()).unwrap()).unwrap();
+    old["cohorts"][0]["measures"]
+        .as_array_mut()
+        .unwrap()
+        .truncate(6);
+    assert_eq!(
+        old["cohorts"][0],
+        serde_json::json!({
+            "source_kind": "live_proxy", "source_profile": "gobstopper-proxy-v1",
+            "attempts": 5, "incomplete_attempts": 1, "unknown_outcomes": 2,
+            "reported_input_tokens": "100", "reported_output_tokens": "50",
+            "estimated_input_tokens": "150", "estimated_output_tokens": "70",
+            "requests_with_input": 3, "requests_with_output": 3,
+            "applied_compactions": 2, "shadow_compactions": 1, "legacy_observations": 0,
+            "context_tokens_removed_estimate": "40",
+            "measures": [
+                expected_measure("request_duration_mean", "ms", Some(5000.0), ("15000", "3", 3, 2), None),
+                expected_measure("first_output_latency_mean", "ms", Some(500.0), ("1000", "2", 2, 3), None),
+                expected_measure("reported_input_tokens_mean", "tokens", Some(50.0), ("100", "2", 2, 3), None),
+                expected_measure("reported_output_tokens_mean", "tokens", Some(25.0), ("50", "2", 2, 3), None),
+                expected_measure("generation_output_tokens_per_second", "tokens/s", Some(20.0), ("40", "2000", 1, 4), None),
+                expected_measure("request_output_tokens_per_second", "tokens/s", Some(5.0), ("50", "10000", 1, 4), None),
+            ],
+        })
+    );
+    let legacy = &old["cohorts"][1];
+    assert_eq!(legacy["attempts"], 0);
+    assert_eq!(legacy["legacy_observations"], 1);
+    for item in legacy["measures"].as_array().unwrap() {
+        assert_eq!(item["value"], serde_json::Value::Null);
+        assert_eq!(item["numerator"], "0");
+        assert_eq!(item["denominator"], "0");
+        assert_eq!(item["missing"], 0);
+        assert_eq!(item["status"], "unavailable");
+    }
+}
+
+#[test]
+fn materialized_queries_refuse_over_64_mib_without_limiting_streaming_metrics() {
+    use sha2::Digest;
+    let temp = Temp::new();
+    let mut store = temp.store();
+    let events = (0..4097).map(|_| start()).collect::<Vec<_>>();
+    store.append_batch(&events).unwrap();
+    let mut connection = rusqlite::Connection::open(temp.database()).unwrap();
+    let transaction = connection.transaction().unwrap();
+    {
+        let mut update = transaction
+            .prepare("UPDATE events SET envelope=?1,digest=?2 WHERE event_id=?3")
+            .unwrap();
+        for event in &events {
+            let mut body = serde_json::to_string(event).unwrap();
+            body.extend(std::iter::repeat_n(
+                ' ',
+                schema::MAX_EVENT_BYTES - body.len(),
+            ));
+            let digest = sha2::Sha256::digest(body.as_bytes());
+            update
+                .execute(rusqlite::params![body, digest.as_slice(), event.event_id.0])
+                .unwrap();
+        }
+    }
+    transaction.commit().unwrap();
+    let error = match store.events(&Query::default()) {
+        Ok(rows) => panic!("expected query byte limit, returned {} rows", rows.len()),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("data_query_limit_narrow_window"));
+    let report = store.metrics(&Query::default()).unwrap();
+    assert_eq!(report.cohorts.len(), 1);
+    assert_eq!(report.cohorts[0].attempts, 4097);
+    assert_eq!(store.check().unwrap().checked_events, 4097);
+}
+
+#[test]
+fn streaming_metrics_cover_more_than_100000_events_with_exact_counters() {
+    let temp = Temp::new();
+    let mut store = temp.store();
+    let template = start();
+    let mut terminal = finish(&template);
+    if let Event::RequestFinished { usage, .. } = &mut terminal.event {
+        *usage = Some(Usage {
+            input_tokens: Some(Quantity::reported(schema::MAX_COUNTER)),
+            output_tokens: Some(Quantity::reported(schema::MAX_COUNTER)),
+            ..Usage::default()
+        });
+    }
+    let attempts = 50_001u64;
+    let mut batch = Vec::with_capacity(store::MAX_BATCH_EVENTS);
+    for index in 1..=attempts {
+        let mut begun = template.clone();
+        begun.event_id = OpaqueId(format!("{:064x}", index * 2));
+        begun.identity.request_id = Some(OpaqueId(format!("{index:064x}")));
+        begun.identity.attempt_id = Some(OpaqueId(format!("{index:064x}")));
+        begun.observed_at_ms = index * 2;
+        let mut finished = terminal.clone();
+        finished.event_id = OpaqueId(format!("{:064x}", index * 2 + 1));
+        finished.identity = begun.identity.clone();
+        finished.observed_at_ms = index * 2 + 1;
+        batch.extend([begun, finished]);
+        if batch.len() == store::MAX_BATCH_EVENTS {
+            store.append_batch(&batch).unwrap();
+            batch.clear();
+        }
+    }
+    store.append_batch(&batch).unwrap();
+    let report = store.metrics(&Query::default()).unwrap();
+    assert_eq!(store::MAX_QUERY_EVENTS, 100_000);
+    assert_eq!(store.status().unwrap().events, attempts * 2);
+    assert_eq!(report.cohorts.len(), 1);
+    let cohort = &report.cohorts[0];
+    let total = (attempts as u128 * schema::MAX_COUNTER as u128).to_string();
+    assert_eq!(cohort.attempts, attempts);
+    assert_eq!(cohort.incomplete_attempts, 0);
+    assert_eq!(cohort.reported_input_tokens, total);
+    assert_eq!(cohort.reported_output_tokens, total);
+    let input = measure(&report, "reported_input_tokens_mean");
+    assert_eq!(input.numerator, total);
+    assert_eq!(input.denominator, attempts.to_string());
+    assert_eq!(input.missing, 0);
+    let request = measure(&report, "request_output_tokens_per_second");
+    assert_eq!(request.numerator, total);
+    assert_eq!(request.denominator, (attempts as u128 * 10_000).to_string());
+    let generation = measure(&report, "generation_output_tokens_per_second");
+    assert_eq!(generation.measured, 0);
+    assert_eq!(generation.missing, attempts);
+    assert_eq!(
+        generation.unavailable_reason,
+        Some("no_matching_generation_spans")
+    );
+    assert!(store
+        .export(&Query::default(), Vec::new())
+        .unwrap_err()
+        .to_string()
+        .contains("export_limit"));
+    let page = store
+        .event_page(
+            &Query::default(),
+            &PageOptions {
+                after_sequence: 100_000,
+                limit: 3,
+                ..PageOptions::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(page.events.len(), 2);
+    assert!(page.complete);
+}
+
+#[test]
+fn timing_profiles_remain_distinct_and_streaming_matches_the_slice_lens() {
+    let temp = Temp::new();
+    let mut store = temp.store();
+    let legacy = start();
+    let legacy_finish = finish(&legacy);
+    let mut current = start();
+    current.source.profile = "gobstopper-proxy-v2".into();
+    let mut current_finish = finish(&current);
+    if let Event::RequestFinished {
+        reason, timings, ..
+    } = &mut current_finish.event
+    {
+        *reason = Some(schema::FinishReason::Completed);
+        *timings = Some(schema::RequestTimings {
+            preparation_ms: 10,
+            upstream_headers_ms: 20,
+            transform_ms: None,
+        });
+    }
+    store
+        .append_batch(&[legacy, legacy_finish, current, current_finish])
+        .unwrap();
+    let selected = store.events(&Query::default()).unwrap();
+    let streamed = store.metrics(&Query::default()).unwrap();
+    assert_eq!(
+        serde_json::to_value(&streamed).unwrap(),
+        serde_json::to_value(metrics::metrics(&selected)).unwrap()
+    );
+    assert_eq!(streamed.cohorts.len(), 2);
+    assert_eq!(streamed.cohorts[0].source_profile, "gobstopper-proxy-v1");
+    assert_eq!(streamed.cohorts[1].source_profile, "gobstopper-proxy-v2");
+    assert_eq!(streamed.cohorts[0].attempts, 1);
+    assert_eq!(streamed.cohorts[1].attempts, 1);
+}
+
+#[test]
+fn finish_reasons_and_stage_timings_are_additive_and_missing_stays_missing() {
+    use schema::{FinishReason, RequestTimings};
+    let temp = Temp::new();
+    let mut store = temp.store();
+    let begun = start();
+    let mut finished = finish(&begun);
+    if let Event::RequestFinished {
+        reason, timings, ..
+    } = &mut finished.event
+    {
+        *reason = Some(FinishReason::Completed);
+        *timings = Some(RequestTimings {
+            preparation_ms: 100,
+            upstream_headers_ms: 200,
+            transform_ms: Some(50),
+        });
+    }
+    let interrupted = start();
+    let mut interrupted_finish = finish(&interrupted);
+    if let Event::RequestFinished {
+        outcome,
+        reason,
+        timings,
+        ..
+    } = &mut interrupted_finish.event
+    {
+        *outcome = Outcome::Interrupted;
+        *reason = Some(FinishReason::UpstreamReadFailed);
+        *timings = Some(RequestTimings {
+            preparation_ms: 0,
+            upstream_headers_ms: 0,
+            transform_ms: None,
+        });
+    }
+    let legacy = finish(&start());
+    let old_json = serde_json::to_vec(&legacy).unwrap();
+    let old_fields: serde_json::Value = serde_json::from_slice(&old_json).unwrap();
+    assert!(old_fields["event"].get("reason").is_none());
+    assert!(old_fields["event"].get("timings").is_none());
+    let legacy: Envelope = serde_json::from_slice(&old_json).unwrap();
+    let pending = start();
+    store
+        .append_batch(&[
+            begun,
+            finished,
+            interrupted,
+            interrupted_finish,
+            legacy,
+            pending,
+        ])
+        .unwrap();
+    let report = store.metrics(&Query::default()).unwrap();
+    let success = measure(&report, "request_outcome_success_fraction");
+    assert_eq!(
+        (
+            success.numerator.as_str(),
+            success.denominator.as_str(),
+            success.measured,
+            success.missing
+        ),
+        ("2", "3", 3, 1)
+    );
+    let completed = measure(&report, "request_finish_completed_fraction");
+    assert_eq!(
+        (
+            completed.numerator.as_str(),
+            completed.denominator.as_str(),
+            completed.measured,
+            completed.missing
+        ),
+        ("1", "2", 2, 2)
+    );
+    let preparation = measure(&report, "request_preparation_mean");
+    assert_eq!(preparation.value, Some(50.0));
+    assert_eq!((preparation.measured, preparation.missing), (2, 2));
+    assert_eq!(
+        measure(&report, "upstream_headers_latency_mean").value,
+        Some(100.0)
+    );
+    let transform = measure(&report, "request_transform_mean");
+    assert_eq!(
+        (transform.value, transform.measured, transform.missing),
+        (Some(50.0), 1, 3)
+    );
+}
+
+#[test]
+fn raw_event_pagination_is_bounded_half_open_and_stable_across_appends() {
+    let temp = Temp::new();
+    let mut store = temp.store();
+    let session = OpaqueId::random().unwrap();
+    let events: Vec<_> = (1..=5)
+        .map(|time| {
+            let mut event = start();
+            event.observed_at_ms = time;
+            event.identity.session_id = Some(session.clone());
+            event
+        })
+        .collect();
+    store.append_batch(&events).unwrap();
+    let query = Query {
+        since_ms: Some(2),
+        until_ms: Some(5),
+        session_id: Some(session.clone()),
+    };
+    let first = store
+        .event_page(
+            &query,
+            &PageOptions {
+                limit: 2,
+                ..PageOptions::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        first.events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+        [2, 3]
+    );
+    assert_eq!(first.next_after_sequence, Some(3));
+    assert_eq!(first.snapshot_sequence, 5);
+    assert!(!first.complete);
+    let mut appended = start();
+    appended.observed_at_ms = 4;
+    appended.identity.session_id = Some(session);
+    store.append_batch(&[appended]).unwrap();
+    let next = store
+        .event_page(
+            &query,
+            &PageOptions {
+                after_sequence: first.next_after_sequence.unwrap(),
+                through_sequence: Some(first.snapshot_sequence),
+                limit: 2,
+                ..PageOptions::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        next.events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+        [4]
+    );
+    assert!(next.complete);
+    assert_eq!(next.next_after_sequence, None);
+    assert_eq!(next.revision, 2);
+    assert_eq!(store.events(&query).unwrap().len(), 4);
+    for page in [
+        PageOptions {
+            limit: 0,
+            ..PageOptions::default()
+        },
+        PageOptions {
+            limit: 10_001,
+            ..PageOptions::default()
+        },
+        PageOptions {
+            after_sequence: 7,
+            ..PageOptions::default()
+        },
+        PageOptions {
+            timeout_ms: 0,
+            ..PageOptions::default()
+        },
+        PageOptions {
+            timeout_ms: 600_001,
+            ..PageOptions::default()
+        },
+    ] {
+        assert!(store.event_page(&query, &page).is_err());
+    }
+    assert!(store.metrics_with_timeout(&query, 0).is_err());
+    assert!(store.metrics_with_timeout(&query, 600_001).is_err());
+}
+
+#[test]
+fn segmented_archive_reimports_beyond_one_batch_and_never_changes_source() {
+    let source = Temp::new();
+    let restored = Temp::new();
+    let mut writer = source.store();
+    let template = start();
+    let total = 11_001u64;
+    for offset in (0..total).step_by(store::MAX_BATCH_EVENTS) {
+        let events: Vec<_> = (offset..(offset + store::MAX_BATCH_EVENTS as u64).min(total))
+            .map(|index| {
+                let mut event = template.clone();
+                event.event_id = OpaqueId(format!("{:064x}", index + 1));
+                event.observed_at_ms = index;
+                event.event = Event::ContextDecision {
+                    estimated_before_tokens: 100,
+                    estimated_after_tokens: 50,
+                    threshold_tokens: 100,
+                    compacted: true,
+                    shadow: false,
+                    policy: None,
+                };
+                event
+            })
+            .collect();
+        writer.append_batch(&events).unwrap();
+    }
+    let original = std::fs::read(source.database()).unwrap();
+    let wal = source.0.join("sessions.sqlite3-wal");
+    let original_wal = std::fs::read(&wal).unwrap();
+    let reader = Store::open_readonly(&source.database()).unwrap();
+    let archive = source.0.join("archive");
+    let receipt = reader
+        .archive(
+            &Query::default(),
+            &archive,
+            store::MAX_BATCH_EVENTS,
+            DEFAULT_READ_TIMEOUT_MS,
+        )
+        .unwrap();
+    assert!(receipt.complete);
+    assert_eq!((receipt.event_count, receipt.segments), (total, 2));
+    assert_eq!(
+        check_archive(&archive, DEFAULT_READ_TIMEOUT_MS)
+            .unwrap()
+            .manifest_sha256,
+        receipt.manifest_sha256
+    );
+    let mut destination = restored.store();
+    for index in 1..=receipt.segments {
+        let file = std::fs::File::open(archive.join(format!("segment-{index:06}.jsonl"))).unwrap();
+        destination.import(BufReader::new(file)).unwrap();
+    }
+    assert_eq!(destination.status().unwrap().events, total);
+    assert_eq!(
+        serde_json::to_value(reader.metrics(&Query::default()).unwrap()).unwrap(),
+        serde_json::to_value(destination.metrics(&Query::default()).unwrap()).unwrap()
+    );
+    assert_eq!(std::fs::read(source.database()).unwrap(), original);
+    assert_eq!(std::fs::read(wal).unwrap(), original_wal);
+    assert_eq!(writer.status().unwrap().revision, 2);
+    assert!(reader
+        .archive(&Query::default(), &archive, 2, DEFAULT_READ_TIMEOUT_MS)
+        .unwrap_err()
+        .to_string()
+        .contains("must_be_new"));
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            std::fs::metadata(&archive).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+        for entry in std::fs::read_dir(&archive).unwrap() {
+            assert_eq!(
+                entry.unwrap().metadata().unwrap().permissions().mode() & 0o777,
+                0o600
+            );
+        }
+    }
+    let segment = archive.join("segment-000002.jsonl");
+    let file = std::fs::OpenOptions::new()
+        .write(true)
+        .open(segment)
+        .unwrap();
+    file.set_len(20).unwrap();
+    assert!(check_archive(&archive, DEFAULT_READ_TIMEOUT_MS).is_err());
+}
+
+#[test]
+fn corrupt_rows_fail_metrics_pagination_and_leave_archives_incomplete() {
+    let temp = Temp::new();
+    let mut writer = temp.store();
+    writer
+        .append_batch(&(0..4).map(|_| start()).collect::<Vec<_>>())
+        .unwrap();
+    let connection = rusqlite::Connection::open(temp.database()).unwrap();
+    connection
+        .execute("UPDATE events SET digest=zeroblob(32) WHERE sequence=4", [])
+        .unwrap();
+    drop(connection);
+    let reader = Store::open_readonly(&temp.database()).unwrap();
+    assert!(reader
+        .metrics(&Query::default())
+        .unwrap_err()
+        .to_string()
+        .contains("integrity_failed"));
+    assert!(reader
+        .event_page(&Query::default(), &PageOptions::default())
+        .is_err());
+    let archive = temp.0.join("incomplete");
+    assert!(reader
+        .archive(&Query::default(), &archive, 2, DEFAULT_READ_TIMEOUT_MS)
+        .is_err());
+    assert!(!archive.join("complete.json").exists());
+    assert!(archive.join("segment-000001.jsonl").is_file());
+    assert!(check_archive(&archive, DEFAULT_READ_TIMEOUT_MS)
+        .unwrap_err()
+        .to_string()
+        .contains("incomplete"));
+    let restored = Temp::new();
+    assert_eq!(
+        restored
+            .store()
+            .import(BufReader::new(
+                std::fs::File::open(archive.join("segment-000001.jsonl")).unwrap()
+            ))
+            .unwrap()
+            .inserted,
+        2
+    );
+    let other = Temp::new();
+    let mut writer = other.store();
+    writer.append_batch(&[start()]).unwrap();
+    let connection = rusqlite::Connection::open(other.database()).unwrap();
+    connection
+        .execute("UPDATE events SET kind='legacy_context'", [])
+        .unwrap();
+    assert!(writer
+        .metrics(&Query::default())
+        .unwrap_err()
+        .to_string()
+        .contains("projection_inconsistent"));
+}
+
+#[test]
+fn invalid_event_errors_never_echo_untrusted_field_values() {
+    use sha2::Digest;
+    let temp = Temp::new();
+    let mut store = temp.store();
+    let event = start();
+    store.append_batch(std::slice::from_ref(&event)).unwrap();
+    let mut body = serde_json::to_value(&event).unwrap();
+    body["source"]["kind"] = serde_json::json!("PRIVATE_PROMPT_DO_NOT_LOG");
+    let body = serde_json::to_string(&body).unwrap();
+    let digest = sha2::Sha256::digest(body.as_bytes());
+    let connection = rusqlite::Connection::open(temp.database()).unwrap();
+    connection
+        .execute(
+            "UPDATE events SET envelope=?1,digest=?2",
+            rusqlite::params![body, digest.as_slice()],
+        )
+        .unwrap();
+    let error = store.metrics(&Query::default()).unwrap_err();
+    assert_eq!(error.to_string(), "data_invalid_event");
+    assert!(!format!("{error:#}").contains("PRIVATE_PROMPT"));
+}
+
+#[test]
+fn oversized_private_database_remains_readable_and_exportable_but_not_writable() {
+    let temp = Temp::new();
+    let mut writer = temp.store();
+    let begun = start();
+    writer
+        .append_batch(&[begun.clone(), finish(&begun)])
+        .unwrap();
+    let namespace = writer.opaque("session", "unchanged");
+    drop(writer);
+    let bytes = 1024 * 1024 * 1024 + 4096u64;
+    std::fs::OpenOptions::new()
+        .write(true)
+        .open(temp.database())
+        .unwrap()
+        .set_len(bytes)
+        .unwrap();
+    assert!(Store::open(&temp.database())
+        .err()
+        .unwrap()
+        .to_string()
+        .contains("database_limit"));
+    let mut reader = Store::open_readonly(&temp.database()).unwrap();
+    let status = reader.status().unwrap();
+    assert_eq!(status.capacity_warning, Some("write_limit_exceeded"));
+    assert_eq!(status.remaining_capacity_bytes, 0);
+    assert!(status.at_write_capacity && status.read_only);
+    assert_eq!(status.write_limit_bytes, 1024 * 1024 * 1024);
+    assert_eq!(reader.check().unwrap().checked_events, 2);
+    assert_eq!(
+        reader.metrics(&Query::default()).unwrap().cohorts[0].attempts,
+        1
+    );
+    assert_eq!(
+        reader
+            .event_page(&Query::default(), &PageOptions::default())
+            .unwrap()
+            .events
+            .len(),
+        2
+    );
+    let mut exported = Vec::new();
+    assert_eq!(reader.export(&Query::default(), &mut exported).unwrap(), 2);
+    let recovered = Temp::new();
+    assert_eq!(
+        recovered
+            .store()
+            .import(Cursor::new(exported))
+            .unwrap()
+            .inserted,
+        2
+    );
+    let archive = temp.0.join("copy-out");
+    assert!(
+        reader
+            .archive(&Query::default(), &archive, 1, DEFAULT_READ_TIMEOUT_MS)
+            .unwrap()
+            .complete
+    );
+    let target = Temp::new();
+    assert_eq!(reader.backup(&target.database()).unwrap().checked_events, 2);
+    assert_eq!(target.store().opaque("session", "unchanged"), namespace);
+    assert!(reader
+        .append_batch(&[start()])
+        .unwrap_err()
+        .to_string()
+        .contains("read_only"));
+    assert_eq!(std::fs::metadata(temp.database()).unwrap().len(), bytes);
 }
 
 #[test]
@@ -769,6 +1549,28 @@ fn cli_exports_imports_and_checks_a_private_store() {
     assert_eq!(run(&destination, &["status"])["incomplete_attempts"], 1);
     assert_eq!(run(&destination, &["metrics"])["cohorts"][0]["attempts"], 1);
     assert_eq!(run(&destination, &["check"])["ok"], true);
+    assert!(run(&destination, &["requests"]).is_array());
+    assert!(run(&destination, &["tools"]).is_array());
+    let page = run(&source, &["events", "--limit", "1"]);
+    assert_eq!(page["complete"], true);
+    assert_eq!(page["snapshot_sequence"], 1);
+    assert_eq!(page["events"][0]["sequence"], 1);
+    let archive = source.0.join("archive-cli");
+    assert_eq!(
+        run(&source, &["archive", "--output", archive.to_str().unwrap()])["event_count"],
+        1
+    );
+    let untouched = Temp::new();
+    assert_eq!(
+        run(&untouched, &["archive-check", archive.to_str().unwrap()])["complete"],
+        true
+    );
+    assert!(!untouched.database().exists());
+    let segment = archive.join("segment-000001.jsonl");
+    assert_eq!(
+        run(&destination, &["import", segment.to_str().unwrap()])["duplicates"],
+        1
+    );
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;

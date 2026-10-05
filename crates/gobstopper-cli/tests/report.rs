@@ -344,10 +344,14 @@ fn lossy_event_history_cannot_qualify_report_cohort_retention_or_adaptive_input(
     provenance_conflict.binary_sha256 = Some("invalid".into());
     let mut invalid_denominator = event;
     invalid_denominator.retention_retained = Some(3);
+    let mut unsupported_provider: Value = serde_json::from_str(&valid).unwrap();
+    unsupported_provider["provider"] = json!("devin");
     for (invalid, oversized) in [
         (serde_json::to_string(&provenance_conflict).unwrap(), false),
         (serde_json::to_string(&invalid_denominator).unwrap(), false),
+        (serde_json::to_string(&unsupported_provider).unwrap(), false),
         ("{torn}".into(), false),
+        (valid[..valid.len() - 1].to_owned(), false),
         ("x".repeat(16 * 1024 + 1), true),
     ] {
         for invalid_first in [false, true] {
@@ -402,6 +406,20 @@ fn lossy_event_history_cannot_qualify_report_cohort_retention_or_adaptive_input(
                 json_command(&["tune", source_selector, "--json"])["recent_applied"],
                 0
             );
+            let diagnostics = json_command(&["events", "--diagnostics", "--json"]);
+            assert_eq!(diagnostics["diagnostics_only"], true);
+            assert_eq!(diagnostics["evidence_eligible"], false);
+            assert_eq!(diagnostics["available"], true);
+            assert_eq!(diagnostics["coverage"]["valid_records"], 2);
+            assert_eq!(
+                diagnostics["coverage"]["invalid_records"],
+                u64::from(!oversized)
+            );
+            assert_eq!(
+                diagnostics["coverage"]["oversized_records"],
+                u64::from(oversized)
+            );
+            assert_eq!(diagnostics["coverage"]["partial"], true);
             assert_eq!(fs::read(&log).unwrap(), bytes.as_bytes());
             assert_eq!(fs::read(&source).unwrap(), original_source);
             assert!(!fixture.0.join("data/gobstopper/vault").exists());

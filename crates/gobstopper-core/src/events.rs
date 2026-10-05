@@ -608,6 +608,316 @@ pub fn read_events_with_status(log_path: &Path) -> std::io::Result<EventRead> {
     Ok(result)
 }
 
+pub const MAX_DIAGNOSTIC_ROWS: usize = 2_000;
+pub const MAX_DIAGNOSTIC_LOG_BYTES: u64 = 16 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+pub struct EventDiagnosticsFilter<'a> {
+    pub session_prefix: Option<&'a str>,
+    pub since_ts: Option<u64>,
+    pub tail: usize,
+}
+
+impl Default for EventDiagnosticsFilter<'_> {
+    fn default() -> Self {
+        Self {
+            session_prefix: None,
+            since_ts: None,
+            tail: MAX_DIAGNOSTIC_ROWS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DiagnosticProvider {
+    Codex,
+    ClaudeCode,
+    Unsupported,
+}
+
+impl DiagnosticProvider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Codex => "codex",
+            Self::ClaudeCode => "claude_code",
+            Self::Unsupported => "unsupported",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum EventDiagnosticReason {
+    InvalidJson,
+    UnsupportedSchema,
+    UnsupportedProvider,
+    InvalidFields,
+    OversizedRecord,
+}
+
+impl EventDiagnosticReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidJson => "invalid_json",
+            Self::UnsupportedSchema => "unsupported_schema",
+            Self::UnsupportedProvider => "unsupported_provider",
+            Self::InvalidFields => "invalid_fields",
+            Self::OversizedRecord => "oversized_record",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct EventDiagnosticRow {
+    pub generation: usize,
+    pub line_number: usize,
+    pub ts: Option<u64>,
+    pub provider: Option<DiagnosticProvider>,
+    pub session_id: Option<String>,
+    pub action: Option<&'static str>,
+    pub outcome: Option<&'static str>,
+    pub reason: Option<EventDiagnosticReason>,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct EventDiagnosticsCoverage {
+    pub generations: usize,
+    pub scanned_bytes: u64,
+    pub scanned_records: usize,
+    pub readable_records: usize,
+    pub valid_records: usize,
+    pub invalid_records: usize,
+    pub oversized_records: usize,
+    pub matched_records: usize,
+    pub exported_rows: usize,
+    pub omitted_rows: usize,
+    pub row_limit: usize,
+    pub byte_limit_per_generation: u64,
+    pub read_limit_reached: bool,
+    pub unterminated_tail: bool,
+    pub missing_live_generation: bool,
+    pub partial: bool,
+    pub partial_reasons: Vec<&'static str>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct EventDiagnostics {
+    pub schema: &'static str,
+    pub diagnostics_only: bool,
+    pub evidence_eligible: bool,
+    pub available: bool,
+    pub unavailable_reason: Option<&'static str>,
+    pub rows: Vec<EventDiagnosticRow>,
+    pub reason_counts: std::collections::BTreeMap<EventDiagnosticReason, usize>,
+    pub coverage: EventDiagnosticsCoverage,
+}
+
+impl EventDiagnostics {
+    pub fn absent(tail: usize) -> Self {
+        Self {
+            schema: "gobstopper/event-diagnostics-v1",
+            diagnostics_only: true,
+            evidence_eligible: false,
+            available: false,
+            unavailable_reason: Some("event_log_absent"),
+            rows: Vec::new(),
+            reason_counts: Default::default(),
+            coverage: EventDiagnosticsCoverage {
+                row_limit: tail.min(MAX_DIAGNOSTIC_ROWS),
+                byte_limit_per_generation: MAX_DIAGNOSTIC_LOG_BYTES,
+                ..Default::default()
+            },
+        }
+    }
+}
+
+fn event_diagnostic_row(
+    line: &[u8],
+    generation: usize,
+    line_number: usize,
+) -> (EventDiagnosticRow, bool) {
+    let mut row = EventDiagnosticRow {
+        generation,
+        line_number,
+        ts: None,
+        provider: None,
+        session_id: None,
+        action: None,
+        outcome: None,
+        reason: None,
+    };
+    if line.len() > 16 * 1024 {
+        row.reason = Some(EventDiagnosticReason::OversizedRecord);
+        return (row, false);
+    }
+    let value: serde_json::Value = match serde_json::from_slice(line) {
+        Ok(value) => value,
+        Err(_) => {
+            row.reason = Some(EventDiagnosticReason::InvalidJson);
+            return (row, false);
+        }
+    };
+    if !value.is_object() {
+        row.reason = Some(EventDiagnosticReason::InvalidFields);
+        return (row, false);
+    }
+    row.ts = value.get("ts").and_then(serde_json::Value::as_u64);
+    row.provider = value.get("provider").and_then(|provider| {
+        provider.as_str().map(|provider| match provider {
+            "codex" => DiagnosticProvider::Codex,
+            "claude_code" => DiagnosticProvider::ClaudeCode,
+            _ => DiagnosticProvider::Unsupported,
+        })
+    });
+    row.session_id = value
+        .get("session_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|id| {
+            !id.is_empty()
+                && id.len() <= 256
+                && id
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
+        })
+        .map(str::to_owned);
+    row.action = match value.get("action").and_then(serde_json::Value::as_str) {
+        Some("provider_compact") => Some("provider_compact"),
+        Some("transcript_compact") => Some("transcript_compact"),
+        Some("none") => Some("none"),
+        _ => None,
+    };
+    row.outcome = match value.get("outcome").and_then(serde_json::Value::as_str) {
+        Some("applied") => Some("applied"),
+        Some("planned") => Some("planned"),
+        Some("failed") => Some("failed"),
+        Some("skipped") => Some("skipped"),
+        Some("blocked") => Some("blocked"),
+        _ => None,
+    };
+    row.reason = if value
+        .get("schema")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|schema| schema != CompactionEvent::SCHEMA)
+    {
+        Some(EventDiagnosticReason::UnsupportedSchema)
+    } else if row.provider == Some(DiagnosticProvider::Unsupported) {
+        Some(EventDiagnosticReason::UnsupportedProvider)
+    } else if serde_json::from_slice::<CompactionEvent>(line)
+        .ok()
+        .is_some_and(|event| valid_event(&event))
+    {
+        None
+    } else {
+        Some(EventDiagnosticReason::InvalidFields)
+    };
+    (row, true)
+}
+
+pub fn read_events_diagnostics(
+    log_path: &Path,
+    filter: EventDiagnosticsFilter<'_>,
+) -> std::io::Result<EventDiagnostics> {
+    let mut result = EventDiagnostics::absent(filter.tail);
+    let mut rows = std::collections::VecDeque::new();
+    let rotated = rotated_path(log_path);
+    for (generation, path) in [(1, rotated.as_path()), (0, log_path)] {
+        let file = match open_event_log(path, u64::MAX) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                result.coverage.missing_live_generation |= generation == 0;
+                continue;
+            }
+            Err(error) => return Err(error),
+        };
+        let mut bytes = Vec::new();
+        file.take(MAX_DIAGNOSTIC_LOG_BYTES + 1)
+            .read_to_end(&mut bytes)?;
+        let limited = bytes.len() as u64 > MAX_DIAGNOSTIC_LOG_BYTES;
+        if limited {
+            bytes.truncate(MAX_DIAGNOSTIC_LOG_BYTES as usize);
+        }
+        result.coverage.generations += 1;
+        result.coverage.scanned_bytes += bytes.len() as u64;
+        result.coverage.read_limit_reached |= limited;
+        result.coverage.unterminated_tail |=
+            !limited && !bytes.is_empty() && !bytes.ends_with(b"\n");
+        if limited {
+            let complete_bytes = bytes
+                .iter()
+                .rposition(|byte| *byte == b'\n')
+                .map_or(0, |index| index + 1);
+            bytes.truncate(complete_bytes);
+        }
+        for (index, line) in bytes.split(|byte| *byte == b'\n').enumerate() {
+            if line.len() <= 16 * 1024 && line.iter().all(u8::is_ascii_whitespace) {
+                continue;
+            }
+            result.coverage.scanned_records += 1;
+            let (row, readable) = event_diagnostic_row(line, generation, index + 1);
+            result.coverage.readable_records += usize::from(readable);
+            match row.reason {
+                None => result.coverage.valid_records += 1,
+                Some(EventDiagnosticReason::OversizedRecord) => {
+                    result.coverage.oversized_records += 1;
+                }
+                Some(_) => result.coverage.invalid_records += 1,
+            }
+            if let Some(reason) = row.reason {
+                *result.reason_counts.entry(reason).or_default() += 1;
+            }
+            if filter.session_prefix.is_some_and(|prefix| {
+                !row.session_id
+                    .as_deref()
+                    .is_some_and(|id| id.starts_with(prefix))
+            }) || filter
+                .since_ts
+                .is_some_and(|cutoff| !row.ts.is_some_and(|ts| ts >= cutoff))
+            {
+                continue;
+            }
+            result.coverage.matched_records += 1;
+            if result.coverage.row_limit > 0 {
+                if rows.len() == result.coverage.row_limit {
+                    rows.pop_front();
+                }
+                rows.push_back(row);
+            }
+        }
+    }
+    if result.coverage.generations == 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            "compaction event log is absent",
+        ));
+    }
+    result.available = true;
+    result.unavailable_reason = None;
+    result.rows = rows.into_iter().collect();
+    result.coverage.exported_rows = result.rows.len();
+    result.coverage.omitted_rows = result.coverage.matched_records - result.rows.len();
+    result.coverage.partial_reasons = result
+        .reason_counts
+        .keys()
+        .map(|reason| reason.as_str())
+        .collect();
+    for (partial, reason) in [
+        (result.coverage.read_limit_reached, "read_limit"),
+        (result.coverage.unterminated_tail, "unterminated_tail"),
+        (
+            result.coverage.missing_live_generation,
+            "missing_live_generation",
+        ),
+        (result.coverage.omitted_rows > 0, "row_limit"),
+    ] {
+        if partial {
+            result.coverage.partial_reasons.push(reason);
+        }
+    }
+    result.coverage.partial = !result.coverage.partial_reasons.is_empty();
+    Ok(result)
+}
+
 fn open_event_log(path: &Path, max_bytes: u64) -> std::io::Result<std::fs::File> {
     #[cfg(unix)]
     {

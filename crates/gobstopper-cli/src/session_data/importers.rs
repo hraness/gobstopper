@@ -344,6 +344,8 @@ pub fn import_native(
                                 duration_ms: None,
                                 first_output_ms: None,
                                 generation: None,
+                                reason: None,
+                                timings: None,
                                 usage: Some(Usage {
                                     input_tokens: input.map(Quantity::reported),
                                     output_tokens: usage.output_tokens.map(Quantity::reported),

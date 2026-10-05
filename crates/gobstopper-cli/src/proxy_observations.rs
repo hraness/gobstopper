@@ -1,7 +1,7 @@
 //! Best-effort, content-free collection. Transport never depends on telemetry.
 use crate::session_data::{
-    self as data, Envelope, Event, Identity, OpaqueId, Outcome, Quantity, Source, SourceKind,
-    Store, Usage,
+    self as data, Envelope, Event, FinishReason, Identity, OpaqueId, Outcome, Quantity,
+    RequestTimings, Source, SourceKind, Store, Usage,
 };
 use gobstopper_adapters::request::Dialect;
 use serde_json::{json, Value};
@@ -17,6 +17,72 @@ use std::time::{Duration, Instant};
 const MAX_PENDING_EVENTS: usize = 1024;
 const MAX_FLUSH_EVENTS: usize = 256;
 const PROXY_STORE_WAIT: Duration = Duration::from_millis(25);
+
+#[derive(Clone, Copy)]
+#[repr(u8)]
+pub(crate) enum FailureCode {
+    IdentityUnavailable = 1,
+    WorkerSpawn = 2,
+    WorkerPanic = 3,
+    StorageOpen = 4,
+    StorageWrite = 5,
+    StorageRead = 6,
+    QueueContended = 7,
+    QueueFull = 8,
+    WorkerStopped = 9,
+    InvalidEvent = 10,
+    RecordLimit = 11,
+}
+
+#[derive(Default)]
+pub(crate) struct FailureHistory {
+    failure: AtomicU64,
+    recovery: AtomicU64,
+    recovery_pending: AtomicBool,
+}
+
+impl FailureHistory {
+    pub(crate) fn record(&self, code: FailureCode) {
+        let timestamp = data::now_ms().clamp(1, u64::MAX >> 8);
+        let _ = self
+            .failure
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |prior| {
+                Some((timestamp.max(prior >> 8) << 8) | code as u64)
+            });
+        self.recovery_pending.store(true, Ordering::Release);
+    }
+    pub(crate) fn recover(&self) {
+        if self.recovery_pending.swap(false, Ordering::AcqRel) {
+            let failure = self.failure.load(Ordering::Acquire);
+            self.recovery
+                .fetch_max(data::now_ms().max(failure >> 8), Ordering::Release);
+        }
+    }
+    pub(crate) fn fields(&self) -> (Option<u64>, Option<&'static str>, Option<u64>) {
+        let failure = self.failure.load(Ordering::Acquire);
+        let recovery = self.recovery.load(Ordering::Acquire);
+        let code = match failure as u8 {
+            1 => Some("identity_unavailable"),
+            2 => Some("worker_spawn_failed"),
+            3 => Some("worker_panicked"),
+            4 => Some("storage_open_failed"),
+            5 => Some("storage_write_failed"),
+            6 => Some("storage_read_failed"),
+            7 => Some("queue_contended"),
+            8 => Some("queue_full"),
+            9 => Some("worker_stopped"),
+            10 => Some("invalid_event"),
+            11 => Some("record_limit"),
+            _ => None,
+        };
+        (
+            (failure != 0).then_some(failure >> 8),
+            code,
+            (recovery != 0).then_some(recovery),
+        )
+    }
+}
+
 struct RecorderState {
     store: Option<Store>,
     path: Option<PathBuf>,
@@ -35,6 +101,7 @@ struct RecorderShared {
     failures: AtomicU64,
     dropped: AtomicU64,
     recoveries: AtomicU64,
+    history: FailureHistory,
     // 0: disabled/unopened, 1: available, 2: degraded. Status never waits on I/O.
     health: AtomicU8,
     wake: Arc<RecorderWake>,
@@ -109,8 +176,9 @@ impl RecorderWorker {
                     }
                 }));
                 if result.is_err() {
-                    shared.failures.fetch_add(1, Ordering::Relaxed);
+                    shared.history.record(FailureCode::WorkerPanic);
                     shared.health.store(2, Ordering::Release);
+                    shared.failures.fetch_add(1, Ordering::Release);
                 }
                 shared.wake.stopped.store(true, Ordering::Release);
                 let mut pending = shared.pending.lock().unwrap_or_else(|e| e.into_inner());
@@ -173,9 +241,13 @@ impl Recorder {
         let source = runtime.as_ref().map(|id| Source {
             kind: SourceKind::LiveProxy,
             id: id.clone(),
-            profile: "gobstopper-proxy-v1".into(),
+            profile: "gobstopper-proxy-v2".into(),
         });
         let unavailable = enabled && source.is_none();
+        let history = FailureHistory::default();
+        if unavailable {
+            history.record(FailureCode::IdentityUnavailable);
+        }
         let shared = Arc::new(RecorderShared {
             pending: Mutex::new(VecDeque::new()),
             pending_count: AtomicUsize::new(0),
@@ -187,6 +259,7 @@ impl Recorder {
             failures: AtomicU64::new(u64::from(unavailable)),
             dropped: AtomicU64::new(0),
             recoveries: AtomicU64::new(0),
+            history,
             health: AtomicU8::new(if unavailable { 2 } else { 0 }),
             wake: Arc::new(RecorderWake::default()),
             #[cfg(test)]
@@ -204,8 +277,9 @@ impl Recorder {
             ) {
                 Ok(worker) => Some(worker),
                 Err(_) => {
-                    shared.failures.fetch_add(1, Ordering::Relaxed);
+                    shared.history.record(FailureCode::WorkerSpawn);
                     shared.health.store(2, Ordering::Release);
+                    shared.failures.fetch_add(1, Ordering::Release);
                     shared.wake.stopped.store(true, Ordering::Release);
                     None
                 }
@@ -216,15 +290,20 @@ impl Recorder {
         Self { shared, worker }
     }
     pub fn status(&self) -> Value {
+        let write_failures = self.shared.failures.load(Ordering::Acquire);
         let health = self.shared.health.load(Ordering::Acquire);
         let pending = self.shared.pending_count.load(Ordering::Acquire);
         let running = self.worker.as_ref().is_some_and(RecorderWorker::is_running);
+        let (last_failure_at_ms, last_failure_code, last_recovery_at_ms) =
+            self.shared.history.fields();
         json!({"enabled":self.shared.enabled,"available":health == 1 && running,
             "degraded":health == 2 || (self.shared.enabled && !running),
-            "background_retry":running,"write_failures":self.shared.failures.load(Ordering::Relaxed),
+            "background_retry":running,"write_failures":write_failures,
             "recoveries":self.shared.recoveries.load(Ordering::Relaxed),"pending_events":pending,
             "dropped_events":self.shared.dropped.load(Ordering::Relaxed),"pending_limit":MAX_PENDING_EVENTS,
-            "runtime_id":self.shared.runtime,"content_recorded":false})
+            "runtime_id":self.shared.runtime,"content_recorded":false,
+            "last_failure_at_ms":last_failure_at_ms,"last_failure_code":last_failure_code,
+            "last_recovery_at_ms":last_recovery_at_ms})
     }
     pub fn request_id(&self) -> Option<OpaqueId> {
         self.shared
@@ -234,17 +313,29 @@ impl Recorder {
     }
     /// Provider-native session ID only. An unopened store has no persistent
     /// identity namespace, so early requests retain an explicitly unknown session.
-    pub fn session_id(&self, native: Option<&str>) -> Option<OpaqueId> {
-        let native = native.filter(|s| !s.is_empty() && s.len() <= 256)?;
+    pub fn session_id(&self, provider: &str, native: Option<&str>) -> Option<OpaqueId> {
+        if !matches!(provider, "codex" | "claude_code") {
+            return None;
+        }
+        let native = native
+            .filter(|s| !s.is_empty() && s.len() <= 512 && !s.chars().any(char::is_control))?;
+        let key = serde_json::to_string(&(provider, native)).ok()?;
         self.shared
             .namespace
             .get()
-            .map(|namespace| namespace.opaque("session", native))
+            .map(|namespace| namespace.opaque("native-session", &key))
     }
     fn emit(&self, identity: Identity, event: Event) {
         self.emit_many(std::iter::once((identity, event)));
     }
     fn emit_many(&self, events: impl IntoIterator<Item = (Identity, Event)>) {
+        self.emit_many_at(
+            events
+                .into_iter()
+                .map(|(identity, event)| (identity, event, None)),
+        );
+    }
+    fn emit_many_at(&self, events: impl IntoIterator<Item = (Identity, Event, Option<u64>)>) {
         let Some(source) = &self.shared.source else {
             return;
         };
@@ -255,6 +346,7 @@ impl Recorder {
                 self.shared
                     .dropped
                     .fetch_add(events.into_iter().count() as u64, Ordering::Relaxed);
+                self.shared.history.record(FailureCode::QueueContended);
                 return;
             }
         };
@@ -262,21 +354,32 @@ impl Recorder {
             self.shared
                 .dropped
                 .fetch_add(events.into_iter().count() as u64, Ordering::Relaxed);
+            self.shared.history.record(FailureCode::WorkerStopped);
             return;
         }
-        for (identity, event) in events {
-            match Envelope::new(source.clone(), identity, event) {
+        for (identity, event, observed_at_ms) in events {
+            let envelope =
+                Envelope::new(source.clone(), identity, event).and_then(|mut envelope| {
+                    if let Some(observed_at_ms) = observed_at_ms {
+                        envelope.observed_at_ms = observed_at_ms;
+                    }
+                    envelope.validate()?;
+                    Ok(envelope)
+                });
+            match envelope {
                 Ok(envelope) => {
                     if pending.len() < MAX_PENDING_EVENTS {
                         pending.push_back(envelope);
                         self.shared.pending_count.fetch_add(1, Ordering::Release);
                     } else {
                         self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+                        self.shared.history.record(FailureCode::QueueFull);
                     }
                 }
                 Err(_) => {
-                    self.shared.failures.fetch_add(1, Ordering::Relaxed);
                     self.shared.dropped.fetch_add(1, Ordering::Relaxed);
+                    self.shared.history.record(FailureCode::InvalidEvent);
+                    self.shared.failures.fetch_add(1, Ordering::Release);
                 }
             }
         }
@@ -289,6 +392,16 @@ impl Recorder {
         session: Option<OpaqueId>,
         dialect: Dialect,
         model: Option<&str>,
+    ) -> Attempt<'a> {
+        self.start_at(request, session, dialect, model, Instant::now())
+    }
+    pub fn start_at<'a>(
+        &'a self,
+        request: Option<OpaqueId>,
+        session: Option<OpaqueId>,
+        dialect: Dialect,
+        model: Option<&str>,
+        started: Instant,
     ) -> Attempt<'a> {
         let identity = request.and_then(|request| {
             OpaqueId::random().ok().map(|attempt| Identity {
@@ -305,18 +418,21 @@ impl Recorder {
                 Dialect::Responses => "responses",
                 Dialect::ChatCompletions => "chat_completions",
             };
-            self.emit(
+            let observed_at_ms = data::now_ms().saturating_sub(elapsed_ms(started.elapsed()));
+            self.emit_many_at(std::iter::once((
                 identity.clone(),
                 Event::RequestStarted {
                     provider: provider.into(),
                     model: model.filter(|m| data::safe_label(m)).map(String::from),
                 },
-            );
+                Some(observed_at_ms),
+            )));
         }
         Attempt {
             recorder: self,
             identity,
-            started: Instant::now(),
+            started,
+            timings: None,
             finished: false,
         }
     }
@@ -339,7 +455,7 @@ impl RecorderShared {
         if !shutdown && state.next_retry.is_some_and(|time| Instant::now() < time) {
             return;
         }
-        let result = (|| -> anyhow::Result<()> {
+        let result = (|| -> Result<(), FailureCode> {
             if state.store.is_none() {
                 #[cfg(test)]
                 {
@@ -350,9 +466,10 @@ impl RecorderShared {
                 }
                 let path = match &state.path {
                     Some(path) => path.clone(),
-                    None => data::default_path()?,
+                    None => data::default_path().map_err(|_| FailureCode::StorageOpen)?,
                 };
-                let store = Store::open_with_busy_timeout(&path, PROXY_STORE_WAIT)?;
+                let store = Store::open_with_busy_timeout(&path, PROXY_STORE_WAIT)
+                    .map_err(|_| FailureCode::StorageOpen)?;
                 let _ = self.namespace.set(store.identity_namespace());
                 state.store = Some(store);
             }
@@ -376,7 +493,8 @@ impl RecorderShared {
                     .store
                     .as_mut()
                     .expect("opened store")
-                    .append_batch(&batch)?;
+                    .append_batch(&batch)
+                    .map_err(|_| FailureCode::StorageWrite)?;
                 let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
                 pending.drain(..batch.len());
                 self.pending_count.fetch_sub(batch.len(), Ordering::Release);
@@ -390,13 +508,15 @@ impl RecorderShared {
                 }
                 state.next_retry = None;
                 state.backoff = Duration::from_secs(1);
+                self.history.recover();
                 self.health.store(1, Ordering::Release);
             }
-            Err(_) => {
-                self.failures.fetch_add(1, Ordering::Relaxed);
+            Err(code) => {
+                self.history.record(code);
                 state.next_retry = Some(Instant::now() + state.backoff);
                 state.backoff = (state.backoff * 2).min(Duration::from_secs(60));
                 self.health.store(2, Ordering::Release);
+                self.failures.fetch_add(1, Ordering::Release);
             }
         }
     }
@@ -408,13 +528,32 @@ impl Drop for Recorder {
         drop(self.worker.take());
     }
 }
+fn elapsed_ms(duration: Duration) -> u64 {
+    duration.as_millis().min(31 * 86_400_000) as u64
+}
+
 pub struct Attempt<'a> {
     recorder: &'a Recorder,
     identity: Option<Identity>,
     pub started: Instant,
+    timings: Option<RequestTimings>,
     finished: bool,
 }
 impl Attempt<'_> {
+    pub fn begin_upstream(&mut self) -> Instant {
+        let started = Instant::now();
+        self.timings = Some(RequestTimings {
+            preparation_ms: elapsed_ms(started.saturating_duration_since(self.started)),
+            upstream_headers_ms: 0,
+            transform_ms: None,
+        });
+        started
+    }
+    pub fn end_upstream(&mut self, started: Instant) {
+        if let Some(timings) = &mut self.timings {
+            timings.upstream_headers_ms = elapsed_ms(started.elapsed());
+        }
+    }
     pub fn context(&self, event: Event) {
         if let Some(identity) = &self.identity {
             self.recorder.emit(identity.clone(), event);
@@ -426,21 +565,58 @@ impl Attempt<'_> {
         status: Option<u16>,
         metrics: Option<&StreamMetrics>,
     ) {
+        let reason = match outcome {
+            Outcome::Success => FinishReason::Completed,
+            Outcome::Error => FinishReason::ProviderError,
+            Outcome::Refused => FinishReason::ProviderRefused,
+            Outcome::Cancelled => FinishReason::ClientDisconnected,
+            Outcome::Timeout => FinishReason::UpstreamTimeout,
+            Outcome::Interrupted => FinishReason::ProxyInterrupted,
+            Outcome::Unknown => FinishReason::ParserUncertain,
+        };
+        self.finish_recorded(outcome, reason, status, metrics);
+    }
+    pub fn finish_reason(
+        &mut self,
+        reason: FinishReason,
+        status: Option<u16>,
+        metrics: Option<&StreamMetrics>,
+    ) {
+        self.finish_recorded(reason.outcome(), reason, status, metrics);
+    }
+    fn finish_recorded(
+        &mut self,
+        outcome: Outcome,
+        reason: FinishReason,
+        status: Option<u16>,
+        metrics: Option<&StreamMetrics>,
+    ) {
         if self.finished {
             return;
         }
         self.finished = true;
         if let Some(identity) = &self.identity {
+            let duration_ms = elapsed_ms(self.started.elapsed());
+            let timings = self.timings.map(|mut timings| {
+                timings.preparation_ms = timings.preparation_ms.min(duration_ms);
+                timings.upstream_headers_ms = timings
+                    .upstream_headers_ms
+                    .min(duration_ms.saturating_sub(timings.preparation_ms));
+                timings.transform_ms = timings.transform_ms.map(|n| n.min(timings.preparation_ms));
+                timings
+            });
             let mut events = vec![(
                 identity.clone(),
                 Event::RequestFinished {
                     outcome,
                     http_status: status,
-                    duration_ms: Some(
-                        self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
-                    ),
-                    first_output_ms: metrics.and_then(|m| m.first_output_ms),
+                    duration_ms: Some(duration_ms),
+                    first_output_ms: metrics
+                        .and_then(|m| m.first_output_ms)
+                        .map(|n| n.min(duration_ms)),
                     usage: metrics.and_then(|m| m.usage.clone()),
+                    reason: Some(reason),
+                    timings,
                     // Provider usage does not supply a matching generation interval.
                     generation: None,
                 },
@@ -490,6 +666,9 @@ pub struct StreamMetrics {
     pub usage: Option<Usage>,
     pub terminal: bool,
     pub failed: bool,
+    pub refused: bool,
+    pub uncertain: bool,
+    protocol_observed: bool,
     tools: BTreeMap<String, Option<String>>,
     chat_tools: BTreeMap<(u64, u64), ChatTool>,
     dropped_tools: u64,
@@ -513,6 +692,9 @@ impl StreamMetrics {
             usage: None,
             terminal: false,
             failed: false,
+            refused: false,
+            uncertain: false,
+            protocol_observed: false,
             tools: BTreeMap::new(),
             chat_tools: BTreeMap::new(),
             dropped_tools: 0,
@@ -523,6 +705,7 @@ impl StreamMetrics {
         if !self.event_stream {
             if self.buffer.len().saturating_add(bytes.len()) > LIMIT {
                 self.discard = true;
+                self.uncertain = true;
                 self.buffer.clear();
             }
             if !self.discard {
@@ -556,30 +739,87 @@ impl StreamMetrics {
                     .collect();
                 let data = lines.join(&b'\n');
                 if data == b"[DONE]" {
-                    self.terminal = true;
+                    if self.dialect == Dialect::ChatCompletions {
+                        self.terminal = true;
+                        self.protocol_observed = true;
+                    } else {
+                        self.uncertain = true;
+                    }
                     continue;
                 }
-                if let Ok(event) = serde_json::from_slice::<Value>(&data) {
-                    self.event(&event);
+                if !data.is_empty() {
+                    match serde_json::from_slice::<Value>(&data) {
+                        Ok(event) => self.event(&event),
+                        Err(_) => self.uncertain = true,
+                    }
                 }
             } else if self.buffer.len() > LIMIT {
                 // Keep the possible delimiter prefix across the size boundary.
                 // Otherwise a newline at LIMIT+1 can consume the next usage frame.
                 self.buffer = self.buffer.split_off(self.buffer.len().saturating_sub(3));
                 self.discard = true;
+                self.uncertain = true;
             }
         }
     }
     pub fn finish_json(&mut self) {
         if !self.event_stream && !self.discard {
-            if let Ok(value) = serde_json::from_slice::<Value>(&self.buffer) {
-                self.event(&value);
+            match serde_json::from_slice::<Value>(&self.buffer) {
+                Ok(value) => self.event(&value),
+                Err(_) => self.uncertain = true,
             }
+        } else if self.event_stream && (!self.buffer.trim_ascii().is_empty() || self.discard) {
+            self.uncertain = true;
         }
         self.buffer.clear();
     }
+    pub fn completion_reason(&self) -> FinishReason {
+        if self.failed {
+            FinishReason::ProviderError
+        } else if self.refused {
+            FinishReason::ProviderRefused
+        } else if self.uncertain {
+            FinishReason::ParserUncertain
+        } else if self.terminal {
+            FinishReason::Completed
+        } else if self.protocol_observed {
+            FinishReason::MissingTerminal
+        } else {
+            FinishReason::ParserUncertain
+        }
+    }
     fn event(&mut self, event: &Value) {
+        if !event.is_object() {
+            self.uncertain = true;
+            return;
+        }
         let kind = event.get("type").and_then(Value::as_str).unwrap_or("");
+        self.protocol_observed |= match self.dialect {
+            Dialect::Anthropic => matches!(
+                kind,
+                "message"
+                    | "message_start"
+                    | "message_delta"
+                    | "message_stop"
+                    | "content_block_start"
+                    | "content_block_delta"
+                    | "content_block_stop"
+                    | "ping"
+                    | "error"
+            ),
+            Dialect::Responses => {
+                kind.starts_with("response.")
+                    || kind == "error"
+                    || event.get("object").and_then(Value::as_str) == Some("response")
+            }
+            Dialect::ChatCompletions => {
+                event.get("choices").is_some_and(Value::is_array)
+                    || event
+                        .get("object")
+                        .and_then(Value::as_str)
+                        .is_some_and(|s| matches!(s, "chat.completion" | "chat.completion.chunk"))
+            }
+        };
         let usage = match self.dialect {
             Dialect::Anthropic => event
                 .pointer("/message/usage")
@@ -603,6 +843,47 @@ impl StreamMetrics {
             }
         }
         let nonempty = |v: Option<&Value>| v.and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+        self.refused |=
+            match self.dialect {
+                Dialect::Anthropic => {
+                    event
+                        .get("stop_reason")
+                        .or_else(|| event.pointer("/delta/stop_reason"))
+                        .and_then(Value::as_str)
+                        == Some("refusal")
+                }
+                Dialect::Responses => {
+                    (matches!(kind, "response.refusal.delta" | "response.refusal.done")
+                        && (nonempty(event.get("delta")) || nonempty(event.get("refusal"))))
+                        || event
+                            .pointer("/response/output")
+                            .or_else(|| event.get("output"))
+                            .and_then(Value::as_array)
+                            .is_some_and(|output| {
+                                output.iter().any(|item| {
+                                    item.get("content").and_then(Value::as_array).is_some_and(
+                                        |blocks| {
+                                            blocks.iter().any(|block| {
+                                                block.get("type").and_then(Value::as_str)
+                                                    == Some("refusal")
+                                            })
+                                        },
+                                    )
+                                })
+                            })
+                }
+                Dialect::ChatCompletions => event
+                    .get("choices")
+                    .and_then(Value::as_array)
+                    .is_some_and(|choices| {
+                        choices.iter().any(|choice| {
+                            choice.get("finish_reason").and_then(Value::as_str)
+                                == Some("content_filter")
+                                || nonempty(choice.pointer("/delta/refusal"))
+                                || nonempty(choice.pointer("/message/refusal"))
+                        })
+                    }),
+            };
         let output =
             match self.dialect {
                 Dialect::Anthropic => {
@@ -924,6 +1205,71 @@ impl StreamMetrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn content_free_finish_reasons_distinguish_refusal_error_missing_terminal_and_uncertainty() {
+        for (dialect, stream, bytes, reason) in [
+            (Dialect::Anthropic, false, br#"{"type":"message","content":[],"stop_reason":"refusal"}"#.as_slice(), FinishReason::ProviderRefused),
+            (Dialect::Responses, true, b"data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"message\":\"PRIVATE_ERROR\"}}}\n\n".as_slice(), FinishReason::ProviderError),
+            (Dialect::Anthropic, true, b"data: {\"type\":\"message_start\"}\n\n".as_slice(), FinishReason::MissingTerminal),
+            (Dialect::Responses, true, b"data: PRIVATE_UNPARSEABLE_PAYLOAD\n\n".as_slice(), FinishReason::ParserUncertain),
+            (Dialect::Responses, false, br#"{"usage":{},"unrelated":"PRIVATE_PAYLOAD"}"#.as_slice(), FinishReason::ParserUncertain),
+            (Dialect::ChatCompletions, false, br#"{"object":"chat.completion","choices":[{"finish_reason":"stop","message":{"refusal":"PRIVATE_REFUSAL"}}]}"#.as_slice(), FinishReason::ProviderRefused),
+            (Dialect::Responses, true, b"data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"error\":null}}\n\n".as_slice(), FinishReason::Completed),
+        ] {
+            let mut tap = StreamMetrics::new(dialect, stream, Instant::now());
+            for part in bytes.chunks(3) {
+                tap.observe(part);
+            }
+            tap.finish_json();
+            assert_eq!(tap.completion_reason(), reason);
+        }
+    }
+
+    #[test]
+    fn failure_history_keeps_recovery_time_instead_of_latest_healthy_write_time() {
+        let history = FailureHistory::default();
+        assert_eq!(history.fields(), (None, None, None));
+        history.record(FailureCode::StorageWrite);
+        let failed = history.fields();
+        assert_eq!(failed.1, Some("storage_write_failed"));
+        assert!(failed.0.is_some());
+        assert_eq!(failed.2, None);
+        history.recover();
+        let recovered = history.fields();
+        assert!(recovered.2.unwrap() >= failed.0.unwrap());
+        thread::sleep(Duration::from_millis(5));
+        history.recover();
+        assert_eq!(history.fields(), recovered);
+        history.record(FailureCode::QueueFull);
+        assert_eq!(history.fields().1, Some("queue_full"));
+        history.recover();
+        assert!(history.fields().2.unwrap() >= recovered.2.unwrap());
+    }
+
+    #[test]
+    fn provider_session_namespace_matches_native_imports_without_cross_provider_aliases() {
+        let temp = Temp::new();
+        let recorder = Recorder::open_path(true, Some(temp.path()));
+        wait_for_idle_recorder(&recorder);
+        let native = "11111111-1111-4111-8111-111111111111";
+        let codex = recorder.session_id("codex", Some(native)).unwrap();
+        let claude = recorder.session_id("claude_code", Some(native)).unwrap();
+        assert_ne!(codex, claude);
+        let store = Store::open(&temp.path()).unwrap();
+        assert_eq!(
+            codex,
+            store.opaque(
+                "native-session",
+                &serde_json::to_string(&("codex", native)).unwrap()
+            )
+        );
+        assert_eq!(recorder.session_id("codex", Some(native)), Some(codex));
+        assert_eq!(recorder.session_id("unrecognized", Some(native)), None);
+        assert_eq!(recorder.session_id("codex", Some("\n")), None);
+        assert_eq!(recorder.session_id("codex", None), None);
+    }
+
     #[test]
     fn anthropic_final_output_survives_long_stream_and_arbitrary_chunking() {
         let mut tap = StreamMetrics::new(Dialect::Anthropic, true, Instant::now());
@@ -981,13 +1327,34 @@ mod tests {
         }
     }
     fn no_usage_attempt(recorder: &Recorder) {
-        let mut attempt = recorder.start(
-            recorder.request_id(),
-            None,
-            Dialect::Responses,
-            Some("test-model"),
-        );
-        attempt.finish(Outcome::Success, Some(200), None);
+        let identity = Identity {
+            runtime_id: recorder.shared.runtime.clone(),
+            request_id: recorder.request_id(),
+            attempt_id: OpaqueId::random().ok(),
+            ..Identity::default()
+        };
+        recorder.emit_many([
+            (
+                identity.clone(),
+                Event::RequestStarted {
+                    provider: "responses".into(),
+                    model: Some("test-model".into()),
+                },
+            ),
+            (
+                identity,
+                Event::RequestFinished {
+                    outcome: Outcome::Success,
+                    http_status: Some(200),
+                    duration_ms: Some(0),
+                    first_output_ms: None,
+                    usage: None,
+                    generation: None,
+                    reason: Some(FinishReason::Completed),
+                    timings: None,
+                },
+            ),
+        ]);
     }
 
     fn wait_for_idle_recorder(recorder: &Recorder) {
@@ -1123,6 +1490,39 @@ mod tests {
     }
 
     #[test]
+    fn invalid_timestamp_override_drops_only_that_event_and_does_not_poison_flushes() {
+        let temp = Temp::new();
+        let recorder = Recorder::open_path(true, Some(temp.path()));
+        wait_for_idle_recorder(&recorder);
+        let identity = Identity {
+            runtime_id: recorder.shared.runtime.clone(),
+            request_id: Some(OpaqueId::random().unwrap()),
+            attempt_id: Some(OpaqueId::random().unwrap()),
+            ..Identity::default()
+        };
+        recorder.emit_many_at(std::iter::once((
+            identity,
+            Event::RequestStarted {
+                provider: "responses".into(),
+                model: None,
+            },
+            Some(8_640_000_000_000_001),
+        )));
+        assert_eq!(recorder.status()["dropped_events"], 1);
+        assert_eq!(recorder.status()["last_failure_code"], "invalid_event");
+        no_usage_attempt(&recorder);
+        wait_for_idle_recorder(&recorder);
+        let store = Store::open(&temp.path()).unwrap();
+        let events = store.events(&data::Query::default()).unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(events
+            .iter()
+            .all(|event| event.observed_at_ms <= 8_640_000_000_000_000));
+        assert_eq!(store.status().unwrap().incomplete_attempts, 0);
+        assert_eq!(recorder.status()["dropped_events"], 1);
+    }
+
+    #[test]
     fn recorder_contended_queue_drops_events_without_blocking_status_or_drop() {
         let temp = Temp::new();
         let recorder = Recorder::open_path(true, Some(temp.path()));
@@ -1133,6 +1533,10 @@ mod tests {
         no_usage_attempt(&recorder);
         assert_eq!(recorder.status()["dropped_events"], 2);
         assert_eq!(recorder.status()["pending_events"], 0);
+        assert_eq!(recorder.status()["available"], true);
+        assert_eq!(recorder.status()["degraded"], false);
+        assert_eq!(recorder.status()["last_failure_code"], "queue_contended");
+        assert!(recorder.status()["last_failure_at_ms"].is_number());
         drop(recorder);
         assert!(started.elapsed() < Duration::from_millis(500));
         drop(pending);
@@ -1175,7 +1579,9 @@ mod tests {
         eventually(|| recorder.status()["write_failures"].as_u64().unwrap() >= 1);
         assert_eq!(recorder.status()["pending_events"], 2);
         assert!(recorder.status()["write_failures"].as_u64().unwrap() >= 1);
-        assert!(recorder.session_id(Some("native-session")).is_none());
+        assert!(recorder
+            .session_id("codex", Some("native-session"))
+            .is_none());
         std::fs::set_permissions(&temp.0, std::fs::Permissions::from_mode(0o700)).unwrap();
         wait_for_idle_recorder(&recorder);
         assert_eq!(recorder.status()["runtime_id"], runtime);
@@ -1187,8 +1593,11 @@ mod tests {
         assert_eq!(records.len(), 2);
         assert!(records.iter().all(|r| r.identity.session_id.is_none()));
         assert_eq!(
-            recorder.session_id(Some("native-session")),
-            Some(store.opaque("session", "native-session"))
+            recorder.session_id("codex", Some("native-session")),
+            Some(store.opaque(
+                "native-session",
+                &serde_json::to_string(&("codex", "native-session")).unwrap()
+            ))
         );
     }
 
@@ -1204,11 +1613,21 @@ mod tests {
         assert!(recorder.status()["write_failures"].as_u64().unwrap() >= 1);
         assert_eq!(recorder.status()["available"], false);
         assert_eq!(recorder.status()["pending_events"], 2);
+        let failed = recorder.status();
+        assert_eq!(failed["last_failure_code"], "storage_write_failed");
+        let failed_at = failed["last_failure_at_ms"].as_u64().unwrap();
+        assert!(failed["last_recovery_at_ms"].is_null());
         connection.execute_batch("ROLLBACK").unwrap();
         // No request, explicit flush, or retry-clock manipulation follows release.
         wait_for_idle_recorder(&recorder);
         assert_eq!(recorder.status()["recoveries"], 1);
         assert_eq!(recorder.status()["pending_events"], 0);
+        assert_eq!(recorder.status()["degraded"], false);
+        assert!(recorder.status()["last_recovery_at_ms"].as_u64().unwrap() >= failed_at);
+        assert_eq!(
+            recorder.status()["last_failure_code"],
+            "storage_write_failed"
+        );
         assert_eq!(
             Store::open(&temp.path()).unwrap().status().unwrap().events,
             2
@@ -1275,13 +1694,25 @@ mod tests {
         assert_eq!(disabled.status()["background_retry"], false);
         assert!(disabled.worker.is_none());
         let temp = Temp::new();
-        let recorder = Recorder::open_path(true, Some(temp.path()));
-        wait_for_idle_recorder(&recorder);
+        drop(Store::open(&temp.path()).unwrap());
+        let (hook, entered, release) = stalled_hook();
+        let recorder = Recorder::open_impl(
+            true,
+            Some(temp.path()),
+            StorageHooks {
+                open: Some(hook),
+                append: None,
+            },
+        );
+        entered.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(recorder.status()["background_retry"], true);
         let shared = Arc::downgrade(&recorder.shared);
         let connection = rusqlite::Connection::open(temp.path()).unwrap();
         connection.execute_batch("BEGIN IMMEDIATE").unwrap();
         no_usage_attempt(&recorder);
+        assert_eq!(recorder.status()["pending_events"], 2);
+        assert_eq!(recorder.status()["dropped_events"], 0);
+        release.send(()).unwrap();
         eventually(|| recorder.status()["write_failures"].as_u64().unwrap() >= 1);
         let pending: std::collections::BTreeSet<_> = recorder
             .shared

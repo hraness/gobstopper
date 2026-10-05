@@ -5,7 +5,7 @@ pub mod schema;
 mod store;
 
 pub use schema::*;
-pub use store::{default_path, prepare_private_dir, IdentityNamespace, Query, Store};
+pub use store::{default_path, prepare_private_dir, IdentityNamespace, PageOptions, Query, Store};
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Subcommand};
@@ -59,7 +59,56 @@ pub enum DataCommand {
     /// Observed tool invocations and explicit outcomes.
     Tools(Selection),
     /// Pure metric lenses with measured/missing coverage and explicit denominators.
-    Metrics(Selection),
+    Metrics {
+        #[command(flatten)]
+        selection: Selection,
+        #[arg(
+            long,
+            help = "Read deadline in milliseconds (default 120000; 1..=600000)."
+        )]
+        timeout_ms: Option<u64>,
+    },
+    #[command(
+        about = "Page through validated observations without changing session, request or tool reports."
+    )]
+    Events {
+        #[command(flatten)]
+        selection: Selection,
+        #[arg(long, default_value_t = 0)]
+        after_sequence: u64,
+        #[arg(
+            long,
+            help = "Snapshot sequence from the first page; repeat it on later pages."
+        )]
+        through_sequence: Option<u64>,
+        #[arg(
+            long,
+            default_value_t = 1000,
+            help = "Maximum observations in this page (1..=10000)."
+        )]
+        limit: usize,
+        #[arg(long, default_value_t = store::DEFAULT_READ_TIMEOUT_MS, help = "Read deadline in milliseconds (1..=600000).")]
+        timeout_ms: u64,
+    },
+    #[command(
+        about = "Copy observations into a new private directory of checksummed import files; leave the database unchanged."
+    )]
+    Archive {
+        #[command(flatten)]
+        selection: Selection,
+        #[arg(long)]
+        output: PathBuf,
+        #[arg(long, default_value_t = store::MAX_BATCH_EVENTS, help = "Maximum observations per segment (1..=10000).")]
+        segment_events: usize,
+        #[arg(long, default_value_t = store::DEFAULT_READ_TIMEOUT_MS, help = "Read deadline in milliseconds (1..=600000).")]
+        timeout_ms: u64,
+    },
+    #[command(about = "Verify an archive's completion marker, manifest and every import segment.")]
+    ArchiveCheck {
+        input: PathBuf,
+        #[arg(long, default_value_t = store::DEFAULT_READ_TIMEOUT_MS, help = "Read deadline in milliseconds (1..=600000).")]
+        timeout_ms: u64,
+    },
     /// Export a bounded, portable, checksummed observation snapshot.
     Export {
         #[command(flatten)]
@@ -108,11 +157,23 @@ fn input(path: &PathBuf) -> Result<BufReader<File>> {
 }
 
 pub fn run(args: &DataArgs) -> Result<()> {
+    if let DataCommand::ArchiveCheck { input, timeout_ms } = &args.command {
+        return print(&store::check_archive(input, *timeout_ms)?);
+    }
     let path = match &args.state_dir {
         Some(dir) => dir.join("sessions.sqlite3"),
         None => default_path()?,
     };
-    let mut store = Store::open(&path)?;
+    let mut store = if matches!(
+        &args.command,
+        DataCommand::Import { .. }
+            | DataCommand::ImportLegacy { .. }
+            | DataCommand::ImportNative { .. }
+    ) {
+        Store::open(&path)?
+    } else {
+        Store::open_for_read(&path)?
+    };
     match &args.command {
         DataCommand::Status => print(&store.status()?),
         DataCommand::Sessions(selection) => {
@@ -122,8 +183,40 @@ pub fn run(args: &DataArgs) -> Result<()> {
             print(&metrics::requests(&store.events(&selection.query())?))
         }
         DataCommand::Tools(selection) => print(&metrics::tools(&store.events(&selection.query())?)),
-        DataCommand::Metrics(selection) => {
-            print(&metrics::metrics(&store.events(&selection.query())?))
+        DataCommand::Metrics {
+            selection,
+            timeout_ms,
+        } => {
+            let query = selection.query();
+            let report = match timeout_ms {
+                Some(timeout_ms) => store.metrics_with_timeout(&query, *timeout_ms)?,
+                None => store.metrics(&query)?,
+            };
+            print(&report)
+        }
+        DataCommand::Events {
+            selection,
+            after_sequence,
+            through_sequence,
+            limit,
+            timeout_ms,
+        } => print(&store.event_page(
+            &selection.query(),
+            &PageOptions {
+                after_sequence: *after_sequence,
+                through_sequence: *through_sequence,
+                limit: *limit,
+                timeout_ms: *timeout_ms,
+            },
+        )?),
+        DataCommand::Archive {
+            selection,
+            output,
+            segment_events,
+            timeout_ms,
+        } => print(&store.archive(&selection.query(), output, *segment_events, *timeout_ms)?),
+        DataCommand::ArchiveCheck { .. } => {
+            unreachable!("archive inspection does not open a database")
         }
         DataCommand::Export { selection, output } => {
             let mut bytes = Vec::new();

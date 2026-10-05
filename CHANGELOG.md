@@ -2,6 +2,24 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## v0.8.7 - 2026-10-04
+
+Gobstopper can inspect long histories without loading them all into memory, explain interrupted requests, and preserve observations in verified archives. Managed upgrades run independently of the agent session that requested them.
+
+- The installer preserves an existing aicharts usage-history choice instead of re-enabling collection when Gobstopper is first installed. Proxy observations remain separate from aicharts usage, so reports can be read side by side without adding overlapping requests.
+- `gobstopper proxy upgrade` stages a verified release, then drains, replaces, and restarts the managed service from a detached one-shot controller. Doctor reports its journal and rollback outcome.
+- Stop-capable service commands refuse a caller whose environment depends on the proxy, with an explicit override for a separate terminal.
+- Upgrade reservations refuse a concurrent upgrade, repair reconciles an exited controller, and rollback can stop the unresponsive process started by the controller when its identity is proven.
+- Upgrade recovery tracks process birth times, records stage paths before creation, and bounds the force-stop sequence after a failed health check.
+- Upgrade rollback drains a responding service before stopping it, polls for late health, and records the reason when stopping is unsafe; macOS process identity uses the kernel's birth timestamp. Executable-path checks reject relative and unnormalized paths; Linux binds the installed inode check to the kernel-reported executable path.
+- Watcher scheduling samples transcript sizes once per pass, so growing files cannot invalidate the sort order.
+- `data metrics` streams validated full histories into fixed-size aggregates. `data events` offers bounded snapshot pagination. Capacity warnings and read-only recovery keep existing observations inspectable beyond the write limit.
+- `data archive` copies observations into private, checksummed import segments without deleting source data. `archive-check` requires a verified completion marker before treating the set as complete.
+- New proxy observations distinguish client disconnects, upstream failures, truncation, and parser uncertainty, and measure preparation and upstream-header spans. The v2 profile keeps their timing definitions separate from older records; older binaries cannot read those new observations.
+- Persistence status reports fixed failure codes and failure/recovery timestamps. Status only reports history loaded after its recovered totals are included. A lazy context store that has not been used is no longer reported as a storage failure.
+- `events --diagnostics` exposes bounded historical metadata and explicit partial-history coverage without qualifying savings or retention. Human-readable rows use session fingerprints; explicit JSON exports retain their metadata fields. Strict qualification still refuses damaged or unsupported history.
+- `scripts/compare_proxy_tails.py` compares tail settings on private, unchanged replay copies with bounded execution and recorded hashes. It calls no provider and does not measure task quality or billing.
+
 ## v0.8.6 - 2026-10-04
 
 `gobstopper usage` shows your token use across coding agents, from aicharts' daily record on your computer.
