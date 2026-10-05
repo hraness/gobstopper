@@ -155,6 +155,36 @@ describe("built Gobstopper site", () => {
       await stopBuiltSite(server);
     }
   }, 20_000);
+  test("serves the proxy guide with its own canonical, card, and sitemap entry", async () => {
+    const server = await startBuiltSite();
+    try {
+      const canonical = (html: string): string => html.replaceAll(/https:\/\/[a-z0-9-]+\.vercel\.app/gu, "https://gobstopper.sh");
+      const [guideResponse, cardResponse, sitemapResponse, docsResponse] = await Promise.all([
+        fetch(`${server.origin}/docs/proxy`, { redirect: "manual" }),
+        fetch(`${server.origin}/docs/proxy/opengraph-image`, { redirect: "manual" }),
+        fetch(`${server.origin}/sitemap.xml`, { redirect: "manual" }),
+        fetch(`${server.origin}/docs`, { redirect: "manual" }),
+      ]);
+      expect(guideResponse.status).toBe(200);
+      const guide = canonical(await guideResponse.text());
+      expect(guide).toContain('<link rel="canonical" href="https://gobstopper.sh/docs/proxy"');
+      expect(guide).toContain("<title>Route Claude Code and Codex through the proxy | Gobstopper</title>");
+      expect(guide).toMatch(/<meta\s+property="og:image"\s+content="https:\/\/gobstopper\.sh\/docs\/proxy\/opengraph-image(?:\?[^"]+)?"/u);
+      expect(guide).not.toMatch(/<meta\s+name="robots"\s+content="noindex/u);
+      for (const id of ["troubleshooting", "diagnose-repair-and-remove", "launch-with-a-direct-fallback", "codex"]) {
+        expect(guide).toContain(`id="${id}"`);
+      }
+      expect(cardResponse.status).toBe(200);
+      expect(cardResponse.headers.get("content-type")).toContain("image/png");
+      expect(await sitemapResponse.text()).toContain("<loc>https://gobstopper.sh/docs/proxy</loc>");
+      // The README rendered at /docs sends setup readers to the guide, not GitHub.
+      const docs = await docsResponse.text();
+      expect(docs).toContain('href="/docs/proxy"');
+      expect(docs).not.toContain("blob/main/docs/proxy.md");
+    } finally {
+      await stopBuiltSite(server);
+    }
+  }, 20_000);
   test("serves the blog, its posts, the Atom feed, and indexable sitemap entries", async () => {
     const server = await startBuiltSite();
     try {

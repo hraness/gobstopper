@@ -2,6 +2,7 @@ import { resolve } from "node:path";
 
 import { documentSections, readmeLanding, renderReadmeHtml } from "./readme-html.ts";
 import { publishedReadme } from "./published-readme.ts";
+import { createSiteLinkResolver, SERVICE_SOURCE } from "./site-documents.ts";
 import { publishedRelease } from "../app/publication.ts";
 
 const siteRoot = resolve(import.meta.dir, "..");
@@ -20,12 +21,14 @@ async function workspaceVersion(): Promise<string> {
 
 if (import.meta.main) {
   const source = await Bun.file(resolve(repositoryRoot, "README.md")).text();
+  const service = await Bun.file(resolve(repositoryRoot, SERVICE_SOURCE)).text();
   const version = await workspaceVersion();
   const landing = readmeLanding(source);
   const html = renderReadmeHtml(
     publishedRelease === null
       ? source
       : publishedReadme(source, version, publishedRelease.version),
+    { resolveSiteLink: createSiteLinkResolver(service) },
   );
   await Bun.write(
     resolve(siteRoot, "app/readme.generated.ts"),
