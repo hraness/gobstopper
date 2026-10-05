@@ -7,6 +7,7 @@ import io
 import os
 from pathlib import Path
 import platform
+import re
 import shlex
 import shutil
 import subprocess
@@ -48,7 +49,9 @@ def archive(members):
 
 
 FAKE = f"#!/bin/sh\n[ -z \"${{FIXTURE_EXECUTION_LOG:-}}\" ] || echo executed >> \"$FIXTURE_EXECUTION_LOG\"\necho 'gobstopper {VERSION}'\n".encode()
-AICHARTS_VERSION = "0.3.1"
+# The aicharts release the installer pins, read from the script so a pin
+# refresh cannot drift this harness away from what the installer fetches.
+AICHARTS_VERSION = re.search(r"^AICHARTS_VERSION=(\d+\.\d+\.\d+)$", INSTALL.read_text(), re.M).group(1)
 AICHARTS_TARGET = {"darwin-aarch64": "aarch64-apple-darwin", "linux-x86_64": "x86_64-unknown-linux-gnu"}
 # Reports the pinned version, an off history status, and logs every enable.
 # `update status` answers FIXTURE_UPDATE_STATUS; unset it to stand in for an
