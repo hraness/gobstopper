@@ -3378,10 +3378,14 @@ fn process_image_matches(pid: u32, executable: &Path) -> bool {
     if owner.uid() != unsafe { libc::geteuid() } {
         return false;
     }
-    let (Ok(loaded), Ok(installed)) = (
-        fs::metadata(format!("{process}/exe")),
-        fs::metadata(executable),
-    ) else {
+    let image = format!("{process}/exe");
+    let Ok(kernel_path) = fs::read_link(&image) else {
+        return false;
+    };
+    if kernel_path.as_os_str() != executable.as_os_str() {
+        return false;
+    }
+    let (Ok(loaded), Ok(installed)) = (fs::metadata(&image), fs::metadata(&kernel_path)) else {
         return false;
     };
     loaded.dev() == installed.dev() && loaded.ino() == installed.ino()
@@ -3764,6 +3768,29 @@ pub(crate) mod tests {
             pid,
             &parent.join("missing-executable")
         ));
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn process_image_requires_kernel_path_and_current_inode() {
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("gobstopper-process-image-{}", unique_id()));
+        fs::create_dir(&root).unwrap();
+        let executable = root.join("sleep");
+        let alias = root.join("alias");
+        fs::copy("/bin/sleep", &executable).unwrap();
+        fs::hard_link(&executable, &alias).unwrap();
+        let mut child = Command::new(&executable).arg("30").spawn().unwrap();
+        assert!(process_image_matches(child.id(), &executable));
+        assert!(!process_image_matches(child.id(), &alias));
+        fs::rename(&executable, root.join("replaced")).unwrap();
+        fs::copy("/bin/sleep", &executable).unwrap();
+        assert!(!process_image_matches(child.id(), &executable));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

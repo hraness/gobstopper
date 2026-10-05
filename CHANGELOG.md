@@ -11,7 +11,7 @@ Gobstopper can inspect long histories without loading them all into memory, expl
 - Stop-capable service commands refuse a caller whose environment depends on the proxy, with an explicit override for a separate terminal.
 - Upgrade reservations refuse a concurrent upgrade, repair reconciles an exited controller, and rollback can stop the unresponsive process started by the controller when its identity is proven.
 - Upgrade recovery tracks process birth times, records stage paths before creation, and bounds the force-stop sequence after a failed health check.
-- Upgrade rollback drains a responding service before stopping it, polls for late health, and records the reason when stopping is unsafe; macOS process identity uses the kernel's birth timestamp. Executable-path checks reject relative and unnormalized paths.
+- Upgrade rollback drains a responding service before stopping it, polls for late health, and records the reason when stopping is unsafe; macOS process identity uses the kernel's birth timestamp. Executable-path checks reject relative and unnormalized paths; Linux binds the installed inode check to the kernel-reported executable path.
 - Watcher scheduling samples transcript sizes once per pass, so growing files cannot invalidate the sort order.
 - `data metrics` streams validated full histories into fixed-size aggregates. `data events` offers bounded snapshot pagination. Capacity warnings and read-only recovery keep existing observations inspectable beyond the write limit.
 - `data archive` copies observations into private, checksummed import segments without deleting source data. `archive-check` requires a verified completion marker before treating the set as complete.
