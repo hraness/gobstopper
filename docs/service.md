@@ -69,11 +69,28 @@ A damaged manifest, a missing executable, unavailable service manager, or change
 
 Uninstall uses the same [drain procedure](#install-and-inspect), then removes the owned startup definition. It retains observation data, logs, and backups. Older proxies require idle inference; unresolved operations require recovery first.
 
-### Interrupted upgrades
+## Upgrade the service
+
+```sh
+gobstopper proxy upgrade --print
+gobstopper proxy upgrade
+gobstopper proxy upgrade --version 0.8.6 --wait
+gobstopper proxy doctor --json
+```
+
+The foreground command requires a healthy installed managed service. It resolves the latest supported release, or the requested `--version`; a pinned installation requires an explicit version. It downloads and verifies the archive, checksum, executable identity, and macOS signature before starting a detached controller. If that version is already installed, it exits without starting a job. `--print` shows the versions, planned staging directory, and one-shot job definition without writing. The command returns the job label and log path; `--wait` follows the doctor's upgrade result and exits unsuccessfully when the controller fails or rolls back.
+
+The controller runs outside the caller's tool shell. On macOS it uses a one-shot `sh.gobstopper.upgrade` LaunchAgent with `RunAtLoad` and no `KeepAlive`; on Linux it uses a transient `gobstopper-upgrade` systemd user unit without a restart policy. The macOS controller removes its plist immediately on entry; once removed, a later login cannot relaunch it after a crash. It exits normally rather than unloading its own running job; the next upgrade removes that finished registration only after verifying the controller has exited. It drains and stops the owned proxy, replaces the installed executable and receipt under the update lock, and starts the same service definition. Health is polled through the five-second readiness deadline, and a target that reports the new version by then is kept, even after a failed start. If replacement or startup fails after a confirmed stop, it restores the previous executable and receipt and restarts the old service when the stop can be proven. A responding but unhealthy service is stopped through the drain protocol. An unresponsive service may be force-stopped only while the manager still reports the observed PID and its kernel-reported birth time is unchanged. The rollback stop has one recorded deadline. A refused stop leaves the journal and backup with its reason for repair.
+
+`proxy doctor` includes an `upgrade` object with the last outcome. Its stages are `staging`, `started`, `draining`, `stopped`, `replacing`, `replaced`, `starting`, `healthy`, `failed`, and `rolled_back`; failures include a reason. A second upgrade refuses while one is pending and directs you to doctor. The stage directory path is recorded before creation. `proxy repair` records `healthy` when the installed target is running and `failed` with `controller_exited` when the controller is gone. It removes a recorded stage left by a dead controller before the service stop, or reports why removal failed. A later upgrade can proceed after that reconciliation. An unacknowledged launch with no recorded controller is reconciled only when the owner has exited and the service manager proves the job is absent under the service-operation lock; unknown manager results still block recovery. Restoration keeps the original binary and receipt backups while publishing verified copies, so interruption between the two replacements does not consume the recovery source. Changed installed bytes or receipts are never overwritten. A failed restoration retains the journal and backup for investigation. The existing drain journal remains authoritative when an external stop has no durable acknowledgement.
+
+`proxy upgrade`, `proxy install --replace`, `proxy uninstall`, `proxy repair` when it might restart, and `proxy migrate-service` refuse callers whose environment indicates they depend on this proxy: a matching loopback `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL`, `GOBSTOPPER_SCOPE`, an `X-Gobstopper-Scope` custom header, or `CLAUDECODE`. Run the command from a terminal outside an agent tool shell, or pass `--allow-dependent-caller`. A detached controller does not make it safe to stop the service its caller depends on. Preview commands with `--print` do not refuse.
+
+### Interrupted service operations
 
 Generated service definitions record their private state directory. At startup, the proxy checks its recorded identity and that directory's journal before accepting inference. It refuses startup for commit intent, committed or submitted stops, and damaged journals. This prevents an automatic replacement process from accepting work that a delayed stop could interrupt. Public status reports `drain_control.startup_guard`.
 
-Service definitions without the recorded directory use idle-only replacement. Run `proxy install --replace` with the intended proxy settings while idle to generate a guarded definition. Older running binaries cannot gain the startup check until that first upgrade.
+Service definitions without the recorded directory use idle-only configuration replacement. Run `proxy install --replace` with the intended proxy settings while idle to generate a guarded definition. Older running binaries cannot gain the startup check until that first configuration replacement.
 
 Once active inference reaches zero, the controller commits the drain before asking the operating system to stop the service. A committed drain does not expire: reopening it after an uncertain stop could accept work that a delayed operating-system command then interrupts. Other controllers and the legacy resume endpoint cannot release it.
 

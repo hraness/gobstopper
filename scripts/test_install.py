@@ -53,7 +53,7 @@ AICHARTS_TARGET = {"darwin-aarch64": "aarch64-apple-darwin", "linux-x86_64": "x8
 # Reports the pinned version, an off history status, and logs every enable.
 FAKE_AICHARTS = (f"#!/bin/sh\n[ -z \"${{FIXTURE_EXECUTION_LOG:-}}\" ] || echo aicharts \"$@\" >> \"$FIXTURE_EXECUTION_LOG\"\n"
                  f"case \"$*\" in --version) echo 'aicharts {AICHARTS_VERSION} (0123456789ab)' ;;\n"
-                 "'history status --json') echo '{\"data\":{\"collecting\":\"off\"},\"ok\":true}' ;;\n"
+                 "'history status --json') echo '{\"data\":{\"collecting\":\"off\",\"record\":null},\"ok\":true}' ;;\n"
                  "'history enable') echo enabled >> \"$FIXTURE_HISTORY_LOG\" ;;\n*) exit 2 ;;\nesac\n").encode()
 
 
@@ -172,6 +172,29 @@ class InstallShTests(unittest.TestCase):
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertEqual(self.history_enables(), 1)
         self.assertNotIn("Local usage history is on", again.stdout)
+
+    @unittest.skipIf(PLATFORM not in AICHARTS_TARGET, "no aicharts release for this host")
+    def test_first_install_preserves_existing_aicharts_history_choice(self):
+        self.publish(archive({"gobstopper": FAKE}))
+        binary = self.prefix / "bin" / "aicharts"
+        binary.parent.mkdir(parents=True)
+        binary.write_bytes(FAKE_AICHARTS)
+        binary.chmod(0o755)
+        result = self.install(**self.publish_aicharts())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(binary.read_bytes(), FAKE_AICHARTS)
+        self.assertEqual(self.history_enables(), 0)
+        self.assertNotIn("Local usage history is on", result.stdout)
+
+    @unittest.skipIf(PLATFORM not in AICHARTS_TARGET, "no aicharts release for this host")
+    def test_first_install_preserves_existing_usage_record_without_binary(self):
+        self.publish(archive({"gobstopper": FAKE}))
+        root = f"aicharts-{AICHARTS_VERSION}-{AICHARTS_TARGET[self.platform]}"
+        existing = FAKE_AICHARTS.replace(b'"record":null', b'"record":{"rows":0}')
+        result = self.install(**self.publish_aicharts(archive({f"{root}/bin/aicharts": existing})))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.prefix / "bin" / "aicharts").exists())
+        self.assertEqual(self.history_enables(), 0)
 
     @unittest.skipIf(PLATFORM not in AICHARTS_TARGET, "no aicharts release for this host")
     def test_aicharts_opt_outs_and_failures_keep_the_gobstopper_install(self):

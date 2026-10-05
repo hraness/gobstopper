@@ -180,21 +180,25 @@ install_aicharts() {
     aicharts_sha256=${GOBSTOPPER_AICHARTS_SHA256:-$aicharts_sha256}
   fi
   aicharts="$1/aicharts"
+  aicharts_new=yes
+  [ ! -e "$aicharts" ] || aicharts_new=no
   elsewhere=$(command -v aicharts 2>/dev/null || true)
   if [ -n "$elsewhere" ] && [ "$elsewhere" != "$aicharts" ]; then
     echo "Using $elsewhere for local usage history"
     aicharts=$elsewhere
+    aicharts_new=no
   else
     current=$("$aicharts" --version 2>/dev/null | sed -n 's/^aicharts \([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' || true)
     if [ -z "$current" ] || version_older "$current" "$AICHARTS_VERSION"; then
       fetch_aicharts "$1" "$2" || return 0
     fi
   fi
-  [ "$3" = yes ] || return 0
+  [ "$3" = yes ] && [ "$aicharts_new" = yes ] || return 0
   case "${GOBSTOPPER_USAGE_HISTORY:-yes}" in no | 0 | false | off) return 0 ;; esac
   # Leave history alone unless it has never been turned on.
   status=$(HRANESS_SUPPORT_AUDIENCE=off "$aicharts" history status --json 2>/dev/null) || return 0
   case "$status" in *'"collecting":"off"'*) ;; *) return 0 ;; esac
+  case "$status" in *'"record":null'*) ;; *) return 0 ;; esac
   if HRANESS_SUPPORT_AUDIENCE=off "$aicharts" history enable >/dev/null 2>&1; then
     echo
     echo "Local usage history is on: aicharts records your agents' daily token totals"

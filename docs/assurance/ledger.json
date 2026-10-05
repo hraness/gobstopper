@@ -464,8 +464,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-087-release-0.8.6-core.json",
-        "sha256": "94a38b2793ba57ebc093dc80000adeca92887a3c33cc97dc5b9260ba2779ccfd"
+        "path": "docs/assurance/receipts/2026-10-04-release-087-r3-reliability-core.json",
+        "sha256": "d545473fffae482b879cdbbcbb9238b11f37131e240d8a34ac0217664b4b82e5"
       }
     },
     {
@@ -485,8 +485,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-25-watch-r20.json",
-        "sha256": "f1eab44a0db9bba0bed060b1280ac3ba33b568c718ebb1fdc11f489f69f80539"
+        "path": "docs/assurance/receipts/2026-10-04-release-087-r3-reliability-watch.json",
+        "sha256": "3a90112db5e0df60a53a4e26126348e7811bc7d791ff296643c2ea01811c4d33"
       }
     },
     {
@@ -506,8 +506,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-09-25-vault-r20.json",
-        "sha256": "fee2354c1a7c5679e0f14a374f46372f23d63c94cb21ab1e7eaa10810632fceb"
+        "path": "docs/assurance/receipts/2026-10-04-release-087-r3-reliability-vault.json",
+        "sha256": "acd81f48b0f80d4ca8a6072e842af79c28988c0052829da70658ec5a2a3e4d68"
       }
     },
     {
@@ -527,8 +527,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-087-release-0.8.6-transcript.json",
-        "sha256": "251fdf94b4228169670f766302e1d1a588c14a6c824dcafe21bc88c320d0bf07"
+        "path": "docs/assurance/receipts/2026-10-04-release-087-r3-reliability-transcript.json",
+        "sha256": "52c00ed1c678e32c890b331ac897081f273d7d64abee2c4679c5dacb587d4a1c"
       }
     },
     {

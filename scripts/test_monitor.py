@@ -474,6 +474,140 @@ else:
         self.report_file.write_text(json.dumps(value))
         self.assertIsNone(self.sample()["sessions"][0]["closed_session_compact"])
 
+    def test_event_diagnostics_explain_invalid_history_without_qualifying_retention(self):
+        log = self.root / "events.jsonl"
+        valid = bind_event({"session_id": A, "retention_total": 2,
+                            "retention_retained": 1, "retention_lexical": 1})
+        legacy = {**valid, "provider": "devin", "prompt": "PRIVATE_PROMPT",
+                  "tool_output": "PRIVATE_TOOL", "error_code": "PRIVATE_ERROR"}
+        invalid = {**valid, "error_code": "PRIVATE_ERROR"}
+        data = (json.dumps(valid).encode() + b"\n" + json.dumps(legacy).encode() + b"\n"
+                + b"{PRIVATE_MALFORMED\n" + b" " * (monitor.EVENT_RECORD_BYTES + 1) + b"\n"
+                + json.dumps(invalid).encode() + b"\n")
+        log.write_bytes(data)
+        diagnostics = {"PRIVATE_PREVIOUS": "must be discarded"}
+        with patch.object(monitor.os, "open", wraps=monitor.os.open) as opened:
+            retention = monitor.retention_summary(log, selected_sources(A), diagnostics=diagnostics)
+        self.assertEqual(opened.call_count, 1)
+        self.assertFalse(retention["available"])
+        self.assertEqual(retention["error"], "event_log_invalid")
+        self.assertEqual(retention["invalid_records"], 3)
+        self.assertEqual(retention["oversized_records"], 1)
+        self.assertEqual([retention[key] for key in ("measured", "checks", "literal", "lexical")],
+                         [0, 0, 0, 0])
+        self.assertTrue(diagnostics["diagnostics_only"])
+        self.assertFalse(diagnostics["evidence_eligible"])
+        self.assertTrue(diagnostics["available"])
+        self.assertTrue(diagnostics["coverage"]["partial"])
+        self.assertEqual(diagnostics["coverage"]["scanned_records"], 5)
+        self.assertEqual(diagnostics["coverage"]["readable_records"], 3)
+        self.assertEqual(diagnostics["coverage"]["valid_records"], 1)
+        self.assertEqual(diagnostics["coverage"]["invalid_records"], 3)
+        self.assertEqual(diagnostics["coverage"]["oversized_records"], 1)
+        self.assertEqual(diagnostics["reason_counts"], {"unsupported_provider": 1,
+            "invalid_json": 1, "invalid_fields": 1, "oversized_record": 1})
+        self.assertNotIn("PRIVATE", json.dumps(diagnostics))
+        self.assertEqual(log.read_bytes(), data)
+
+    def test_event_diagnostics_keep_readable_rows_and_reasons_for_a_truncated_tail(self):
+        log = self.root / "events.jsonl"
+        valid = bind_event({"session_id": A, "retention_total": 2,
+                            "retention_retained": 1, "retention_lexical": 1})
+        data = (json.dumps(valid).encode() + b"\n"
+                + json.dumps({**valid, "provider": "PRIVATE_UNKNOWN_PROVIDER"}).encode() + b"\n"
+                + b'{"PRIVATE_TRUNCATED":')
+        log.write_bytes(data)
+        diagnostics = {}
+        retention = monitor.retention_summary(log, selected_sources(A), diagnostics=diagnostics)
+        self.assertFalse(retention["available"])
+        self.assertEqual(retention["error"], "event_log_incomplete")
+        self.assertEqual(retention["invalid_records"], 0)
+        self.assertEqual(retention["oversized_records"], 0)
+        self.assertEqual(retention["measured"], 0)
+        self.assertTrue(diagnostics["available"])
+        self.assertFalse(diagnostics["evidence_eligible"])
+        self.assertEqual(diagnostics["coverage"]["scanned_records"], 3)
+        self.assertEqual(diagnostics["coverage"]["valid_records"], 1)
+        self.assertEqual(diagnostics["coverage"]["invalid_records"], 2)
+        self.assertEqual(diagnostics["reason_counts"], {"unsupported_provider": 1, "invalid_json": 1})
+        self.assertTrue(diagnostics["coverage"]["unterminated_tail"])
+        self.assertIn("unterminated_tail", diagnostics["coverage"]["partial_reasons"])
+        self.assertNotIn("PRIVATE", json.dumps(diagnostics))
+        self.assertEqual(log.read_bytes(), data)
+
+    def test_event_diagnostics_classify_schema_fields_and_limits_without_copying_values(self):
+        valid = bind_event({"session_id": A})
+        rows = [{**valid, "schema": "PRIVATE_FUTURE_SCHEMA"},
+                {**valid, "provider": []}, {**valid, "error_code": "PRIVATE_ERROR"},
+                {**valid, "ts": True}, True]
+        data = "".join(json.dumps(row) + "\n" for row in rows).encode()
+        diagnostics = monitor.events_diagnostics_summary(data)
+        self.assertEqual(diagnostics["reason_counts"], {"unsupported_schema": 1, "invalid_fields": 4})
+        self.assertEqual(diagnostics["coverage"]["readable_records"], 4)
+        self.assertNotIn("PRIVATE", json.dumps(diagnostics))
+        limited = monitor.events_diagnostics_summary(
+            json.dumps(valid).encode() + b"\n{PRIVATE_LIMITED", read_limit_reached=True)
+        self.assertEqual(limited["coverage"]["scanned_records"], 1)
+        self.assertEqual(limited["coverage"]["invalid_records"], 0)
+        self.assertTrue(limited["coverage"]["read_limit_reached"])
+        self.assertFalse(limited["coverage"]["unterminated_tail"])
+        self.assertEqual(limited["coverage"]["partial_reasons"], ["read_limit"])
+        log = self.root / "limited.jsonl"
+        log.write_bytes(b"x" * 33)
+        collected = {}
+        with patch.object(monitor, "EVENTS_LOG_BYTES", 32):
+            retention = monitor.retention_summary(log, selected_sources(A), diagnostics=collected)
+        self.assertEqual(retention["error"], "event_log_limit")
+        self.assertFalse(collected["available"])
+        self.assertEqual(collected["unavailable_reason"], "event_log_limit")
+        self.assertTrue(collected["coverage"]["read_limit_reached"])
+
+    def test_latest_exposes_event_diagnostics_from_the_existing_single_log_read(self):
+        log = self.root / "data/gobstopper/events.jsonl"
+        log.parent.mkdir(parents=True)
+        valid = bind_event({"session_id": A, "retention_total": 2,
+                            "retention_retained": 1, "retention_lexical": 1})
+        data = (json.dumps(valid) + "\n" + json.dumps({**valid, "provider": "devin",
+                "prompt": "PRIVATE_HISTORY_PROMPT", "error_code": "PRIVATE_HISTORY_ERROR"}) + "\n").encode()
+        log.write_bytes(data)
+        with patch.object(monitor.os, "open", wraps=monitor.os.open) as opened:
+            observation = self.sample()
+        self.assertEqual(sum(call.args[0] == log for call in opened.call_args_list), 1)
+        self.assertFalse(observation["retention"]["available"])
+        self.assertEqual(observation["retention"]["measured"], 0)
+        self.assertTrue(observation["events_diagnostics"]["available"])
+        self.assertFalse(observation["events_diagnostics"]["evidence_eligible"])
+        self.assertEqual(observation["events_diagnostics"]["reason_counts"], {"unsupported_provider": 1})
+        self.assertEqual(observation["events_diagnostics"]["scope"], "bounded_live_generation")
+        latest = json.loads((self.output / "latest.json").read_text())
+        self.assertEqual(latest["events_diagnostics"], observation["events_diagnostics"])
+        self.assertNotIn("PRIVATE_HISTORY", json.dumps(latest))
+        self.assertEqual(len(self.calls.read_text().splitlines()), 2)
+        self.assertEqual(log.read_bytes(), data)
+        self.assertEqual(self.transcript.read_text(), "PRIVATE_UNCHANGED_SESSION\n")
+        self.assertFalse((log.parent / "vault").exists())
+
+    def test_event_diagnostic_read_failures_are_closed_and_do_not_create_logs(self):
+        diagnostics = {}
+        missing = self.root / "missing/events.jsonl"
+        retention = monitor.retention_summary(missing, selected_sources(A), diagnostics=diagnostics)
+        self.assertEqual(retention["error"], "event_log_absent")
+        self.assertFalse(diagnostics["available"])
+        self.assertEqual(diagnostics["unavailable_reason"], "event_log_absent")
+        self.assertFalse(missing.parent.exists())
+        target = self.root / "PRIVATE_TARGET"
+        target.write_text("PRIVATE_UNCHANGED\n")
+        link = self.root / "events.jsonl"
+        link.symlink_to(target)
+        retention = monitor.retention_summary(link, selected_sources(A), diagnostics=diagnostics)
+        self.assertFalse(retention["available"])
+        self.assertFalse(diagnostics["available"])
+        self.assertEqual(diagnostics["unavailable_reason"], "event_log_unavailable")
+        self.assertEqual(target.read_text(), "PRIVATE_UNCHANGED\n")
+        self.assertEqual(link.readlink(), target)
+        self.assertNotIn("PRIVATE", json.dumps(diagnostics))
+        self.assertNotIn("PRIVATE", json.dumps(monitor.events_diagnostics_summary(error="PRIVATE_ERROR")))
+
     def test_retention_summary_counts_allowlisted_events_and_flags_lossy(self):
         log = self.root / "events.jsonl"
         events = [

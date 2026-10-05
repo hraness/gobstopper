@@ -14,7 +14,7 @@ When to use this site:
 - Use /benchmarks for a live Terminal-Bench 2.1 run of the request proxy, dated results, cohort sizes, limitations, and aggregate downloads.
 - Use /compare/cliffcompaction to see how Gobstopper and its proxy compare with CliffCompaction, the API-proxy compactor, and what the cliff strategy does.
 - Use /compare/claude-code-compact to see how Gobstopper compares with Claude Code's built-in /compact, which replaces session history with a model-written summary.
-- Use /blog for longer posts on the Terminal-Bench result, how Gobstopper compacts Claude Code and Codex sessions and how its archive and edit limits are model-checked and proved.
+- Use /blog for longer posts on the Terminal-Bench result, how Gobstopper compacts Claude Code and Codex sessions, how its archive and edit limits are model-checked and proved, and how it reads token use through aicharts.
 
 ## Pages
 
@@ -33,6 +33,7 @@ When to use this site:
 - [Gobstopper on Terminal-Bench: fewer tokens, the same tasks solved](https://gobstopper.sh/blog/gobstopper-on-terminal-bench): on Terminal-Bench 2.1 (one trial per arm, 45,000-token threshold), Claude Code behind gobstopper proxy solved about as many tasks as without it (61 vs 60 of 89, within single-trial noise) and sent 29% fewer input tokens; how the proxy works and how to try it.
 - [What Kani and Lean prove about Gobstopper's compaction](https://gobstopper.sh/blog/proofs-for-the-admission-math): what the Kani and Lean proofs cover and leave out.
 - [How Gobstopper model-checks its archive against crashes](https://gobstopper.sh/blog/vault-models-that-fail-on-purpose): the TLA+ models, their broken copies, and the Hegel tests.
+- [How Gobstopper uses aicharts to show token use across your agents](https://gobstopper.sh/blog/how-gobstopper-uses-aicharts): the installer adds aicharts, which keeps a daily record of your agents' token use on your computer; gobstopper usage reads it beside the proxy's own counts.
 
 ## Optional
 

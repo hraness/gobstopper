@@ -1,9 +1,10 @@
 //! Optional legacy JSONL accounting must never wait on disk in request threads.
+use crate::proxy_observations::{FailureCode, FailureHistory};
 use serde_json::{json, Value};
 use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{sync_channel, Receiver, SyncSender};
+use std::sync::mpsc::{sync_channel, Receiver, SyncSender, TrySendError};
 use std::sync::{Arc, OnceLock};
 
 const QUEUE_LIMIT: usize = 1024;
@@ -17,6 +18,25 @@ struct State {
     dropped: AtomicU64,
     failures: AtomicU64,
     history_incomplete: AtomicBool,
+    degraded: AtomicBool,
+    recoveries: AtomicU64,
+    history: FailureHistory,
+}
+
+impl State {
+    fn failed(&self, code: FailureCode) {
+        self.history.record(code);
+        self.available.store(false, Ordering::Release);
+        self.degraded.store(true, Ordering::Release);
+        self.failures.fetch_add(1, Ordering::Release);
+    }
+    fn recovered(&self) {
+        if self.degraded.swap(false, Ordering::AcqRel) {
+            self.recoveries.fetch_add(1, Ordering::Relaxed);
+        }
+        self.history.recover();
+        self.available.store(true, Ordering::Release);
+    }
 }
 
 pub(super) struct StatsLog {
@@ -56,7 +76,7 @@ impl StatsLog {
         if spawned.is_err() {
             state.loading.store(false, Ordering::Release);
             state.history_incomplete.store(true, Ordering::Release);
-            state.failures.fetch_add(1, Ordering::Relaxed);
+            state.failed(FailureCode::WorkerSpawn);
             return Self {
                 path,
                 sender: None,
@@ -77,15 +97,21 @@ impl StatsLog {
         let mut bytes = serde_json::to_vec(value).unwrap_or_default();
         if bytes.is_empty() || bytes.len() >= MAX_RECORD {
             self.state.dropped.fetch_add(1, Ordering::Relaxed);
+            self.state.history.record(FailureCode::RecordLimit);
             return;
         }
         bytes.push(b'\n');
-        if self
-            .sender
-            .as_ref()
-            .is_none_or(|s| s.try_send(bytes).is_err())
-        {
-            self.state.dropped.fetch_add(1, Ordering::Relaxed);
+        let result = self.sender.as_ref().map(|sender| sender.try_send(bytes));
+        match result {
+            Some(Ok(())) => {}
+            Some(Err(TrySendError::Full(_))) => {
+                self.state.dropped.fetch_add(1, Ordering::Relaxed);
+                self.state.history.record(FailureCode::QueueFull);
+            }
+            Some(Err(TrySendError::Disconnected(_))) | None => {
+                self.state.dropped.fetch_add(1, Ordering::Relaxed);
+                self.state.failed(FailureCode::WorkerStopped);
+            }
         }
     }
 
@@ -97,14 +123,28 @@ impl StatsLog {
         )
     }
 
+    pub(super) fn snapshot(&self, current_in: u64, current_out: u64) -> ((u64, u64), Value) {
+        let persistence = self.status();
+        (self.totals(current_in, current_out), persistence)
+    }
+
     pub(super) fn status(&self) -> Value {
+        let write_failures = self.state.failures.load(Ordering::Acquire);
+        let available = self.state.available.load(Ordering::Acquire);
+        let (last_failure_at_ms, last_failure_code, last_recovery_at_ms) =
+            self.state.history.fields();
         json!({
             "enabled": self.path.is_some(),
-            "available": self.state.available.load(Ordering::Acquire),
+            "available": available,
+            "degraded": self.state.degraded.load(Ordering::Acquire),
+            "recoveries": self.state.recoveries.load(Ordering::Relaxed),
+            "last_failure_at_ms": last_failure_at_ms,
+            "last_failure_code": last_failure_code,
+            "last_recovery_at_ms": last_recovery_at_ms,
             "loading_history": self.state.loading.load(Ordering::Acquire),
             "history_incomplete": self.state.history_incomplete.load(Ordering::Acquire),
             "dropped_events": self.state.dropped.load(Ordering::Relaxed),
-            "write_failures": self.state.failures.load(Ordering::Relaxed),
+            "write_failures": write_failures,
             "pending_limit": QUEUE_LIMIT,
         })
     }
@@ -124,6 +164,7 @@ fn history(reader: impl std::io::Read, state: &State) {
             Ok([]) => break,
             Err(_) => {
                 state.history_incomplete.store(true, Ordering::Release);
+                state.history.record(FailureCode::StorageRead);
                 break;
             }
             Ok(buffer) => buffer,
@@ -134,6 +175,7 @@ fn history(reader: impl std::io::Read, state: &State) {
             if line.len().saturating_add(count) > MAX_RECORD {
                 oversized = true;
                 state.history_incomplete.store(true, Ordering::Release);
+                state.history.record(FailureCode::RecordLimit);
                 line.clear();
             } else {
                 line.extend_from_slice(&buffer[..count]);
@@ -151,9 +193,11 @@ fn history(reader: impl std::io::Read, state: &State) {
                         total_out = total_out.saturating_add(output);
                     } else {
                         state.history_incomplete.store(true, Ordering::Release);
+                        state.history.record(FailureCode::InvalidEvent);
                     }
                 } else {
                     state.history_incomplete.store(true, Ordering::Release);
+                    state.history.record(FailureCode::InvalidEvent);
                 }
             }
             line.clear();
@@ -162,6 +206,7 @@ fn history(reader: impl std::io::Read, state: &State) {
     }
     if !line.is_empty() || oversized {
         state.history_incomplete.store(true, Ordering::Release);
+        state.history.record(FailureCode::InvalidEvent);
     }
     let _ = state.prior.set((total_in, total_out));
 }
@@ -173,10 +218,16 @@ fn write_loop(path: PathBuf, receiver: Receiver<Vec<u8>>, state: Arc<State>) {
                 use std::io::Read;
                 history(file.take(meta.len()), &state);
             }
-            _ => state.history_incomplete.store(true, Ordering::Release),
+            _ => {
+                state.history_incomplete.store(true, Ordering::Release);
+                state.history.record(FailureCode::StorageRead);
+            }
         },
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => state.history_incomplete.store(true, Ordering::Release),
+        Err(_) => {
+            state.history_incomplete.store(true, Ordering::Release);
+            state.history.record(FailureCode::StorageRead);
+        }
     }
     state.loading.store(false, Ordering::Release);
     let mut writer = None;
@@ -208,17 +259,19 @@ fn write_loop(path: PathBuf, receiver: Receiver<Vec<u8>>, state: Arc<State>) {
                 Some(file)
             });
         }
-        if let Some(file) = writer.as_mut() {
+        let code = if let Some(file) = writer.as_mut() {
             if file.write_all(&record).is_ok() {
-                state.available.store(true, Ordering::Release);
+                state.recovered();
                 continue;
             }
-        }
+            FailureCode::StorageWrite
+        } else {
+            FailureCode::StorageOpen
+        };
         // A partial append has an uncertain result: never replay it. Fresh
         // records may recover later, with explicit loss counters for visibility.
         writer = None;
-        state.available.store(false, Ordering::Release);
-        state.failures.fetch_add(1, Ordering::Relaxed);
+        state.failed(code);
         state.dropped.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -262,6 +315,9 @@ mod tests {
         }
         assert!(started.elapsed() < Duration::from_secs(2));
         assert_eq!(log.status()["dropped_events"], 999);
+        assert_eq!(log.status()["degraded"], false);
+        assert_eq!(log.status()["last_failure_code"], "queue_full");
+        assert!(log.status()["last_failure_at_ms"].is_number());
         assert!(receiver.try_recv().is_ok());
         assert!(receiver.try_recv().is_err());
     }
@@ -296,6 +352,41 @@ mod tests {
     }
 
     #[test]
+    fn completed_history_snapshot_includes_recovered_totals() {
+        let (sender, receiver) = sync_channel::<Arc<State>>(1);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let worker_barrier = Arc::clone(&barrier);
+        let worker = std::thread::spawn(move || {
+            for state in receiver {
+                worker_barrier.wait();
+                state.prior.set((7, 4)).unwrap();
+                state.loading.store(false, Ordering::Release);
+                worker_barrier.wait();
+            }
+        });
+        for _ in 0..10_000 {
+            let log = StatsLog {
+                path: Some("unused".into()),
+                sender: None,
+                state: Arc::default(),
+            };
+            log.state.loading.store(true, Ordering::Release);
+            sender.send(Arc::clone(&log.state)).unwrap();
+            barrier.wait();
+            let (totals, persistence) = log.snapshot(3, 2);
+            barrier.wait();
+            if persistence["loading_history"] == false {
+                assert_eq!(totals, (10, 6));
+            }
+            let (totals, persistence) = log.snapshot(3, 2);
+            assert_eq!(persistence["loading_history"], false);
+            assert_eq!(totals, (10, 6));
+        }
+        drop(sender);
+        worker.join().unwrap();
+    }
+
+    #[test]
     fn disconnected_writer_and_overlarge_record_count_loss() {
         let (sender, receiver) = sync_channel(1);
         drop(receiver);
@@ -323,6 +414,10 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert_eq!(log.status()["write_failures"], 1);
+        assert_eq!(log.status()["degraded"], true);
+        assert_eq!(log.status()["last_failure_code"], "storage_open_failed");
+        let failed_at = log.status()["last_failure_at_ms"].as_u64().unwrap();
+        assert!(log.status()["last_recovery_at_ms"].is_null());
         std::fs::remove_file(&parent).unwrap();
         std::fs::create_dir(&parent).unwrap();
         std::fs::write(&path, b"{\"partial\":").unwrap();
@@ -338,6 +433,10 @@ mod tests {
             .collect();
         assert_eq!(records, vec![json!({"est_tokens_in":9})]);
         assert_eq!(log.status()["dropped_events"], 1);
+        assert_eq!(log.status()["degraded"], false);
+        assert_eq!(log.status()["recoveries"], 1);
+        assert_eq!(log.status()["last_failure_code"], "storage_open_failed");
+        assert!(log.status()["last_recovery_at_ms"].as_u64().unwrap() >= failed_at);
     }
     #[test]
     fn maximum_accepted_record_is_counted_after_restart() {
