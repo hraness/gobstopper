@@ -548,8 +548,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-05-088-browser-acquisition-merge-stress.json",
-        "sha256": "91041ff1330e89e4c77262cef83cf5e6f6a3dfd7ccc29e06f9e5a1d82f0718b2"
+        "path": "docs/assurance/receipts/2026-10-05-fixture-nonblocking-accept-stress.json",
+        "sha256": "f7200b33e71c7a595b3385cc190ac604c728ba4a6cb39c96b0168c0a639ab4e0"
       }
     },
     {
