@@ -548,8 +548,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-086-aicharts-usage-stress.json",
-        "sha256": "1f00407e85f6fd6a15d3c17397d88b5c62c01b5da20f3d9228bfb8128ed688f8"
+        "path": "docs/assurance/receipts/2026-10-05-086-windows-test-fix-stress.json",
+        "sha256": "4d5538147c74c857f5984f2e794d3bd7f54fafa0759d5627e55759a52be0a254"
       }
     },
     {
