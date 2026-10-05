@@ -27,7 +27,7 @@ The proxy requires system `curl` 8.3 or later. Check it with `curl --version`.
 
 - **A smaller request each turn.** Past the threshold, older file reads and
   command output are summarized. Selected original observations can survive in
-  bounded evidence carry; see [context retention](context-retention.md). The system
+  a size-limited evidence carry; see [context retention](context-retention.md). The system
   prompt, the first task, and the newest turns stay word for word, so the
   agent keeps what it was just working on.
 - **No model call to compact.** The summary is built by a fixed rule, so a
@@ -45,7 +45,7 @@ The proxy requires system `curl` 8.3 or later. Check it with `curl --version`.
   the proxy can send the client's original bytes. Explicit context limits,
   strict sizing and scoped policy still apply; see [Limits](#limits).
 
-CliffCompaction's authors report up to 50% lower cost at a bounded context,
+CliffCompaction's authors report up to 50% lower cost with a capped context,
 with Terminal-Bench 2.0 scores held or improved, on the Kimi K2.6 and GLM 5.1
 models they tested. In one run through Claude Code, their proxy scored above
 Claude Code's own auto-compaction. Those are their
@@ -59,7 +59,8 @@ Vercel AI Gateway, one trial per arm, at a 45,000-token threshold (the
 default is 128,000). At tail 0, the proxy solved 61 tasks against 60 with no
 proxy, within single-trial noise, and sent 29% fewer provider-reported input
 tokens (84.3 million against 118.6 million). Its provider-reported cost for
-that model was 16% lower, which is not statistically significant. The
+that model was 16% lower, with a 95% interval from 32% lower to 2% higher, so
+one run does not establish a saving. The
 [benchmarks page](https://gobstopper.sh/benchmarks#terminal-bench-2026-09-28)
 has the full study; replays and estimates are in the
 [README](../README.md#what-gobstopper-has-measured).
@@ -305,7 +306,7 @@ lines are illustrative.*
   `tool` messages answering a `tool_calls` turn for Chat Completions. The
   summary keeps human and assistant text (and readable thinking), keeps tool
   results of at most 500 characters, reduces each tool call to its name and
-  up to 150 characters of arguments. Bounded evidence carry additionally retains
+  up to 150 characters of arguments. A size-limited evidence carry also retains
   selected original tool results and supported images, with invocation provenance
   and explicit excerpt labels; see [context retention](context-retention.md).
   Calls are never
@@ -443,6 +444,17 @@ Claude Code sessions never cross the threshold. The Terminal-Bench run used
 45,000. Try `gobstopper proxy replay <session> --threshold N` on your own
 sessions before you lower it.
 
+Keep the threshold below the point where the client compacts on its own.
+Claude Code's
+[environment variables](https://code.claude.com/docs/en/env-vars) can move
+that point or turn it off, as Anthropic's reference described them on
+October 4, 2026. `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` sets “the percentage
+(1-100) of the auto-compact window at which auto-compaction triggers”, and
+“the variable can't raise the threshold”, so after you set it, keep
+`--threshold` below the earlier point. `DISABLE_AUTO_COMPACT=1` disables
+“automatic compaction when approaching the context limit”, and “the manual
+`/compact` command remains available.”
+
 ![Line chart: estimated input cut across 24 recorded sessions. Tail 0 cuts 78% at 32K, 73% at 64K, 61% at 128K and 38% at 256K. Tail 40 is a little lower at every threshold.](assets/gob-grid.png)
 
 *Lower thresholds cut more. Estimates, not billed · 24 recorded sessions
@@ -473,8 +485,8 @@ usage to adjust later compaction thresholds when the byte estimate runs low.
   running ratio per upstream and model (each sample moves it one eighth of
   the way), for up to 64 pairs, in memory only.
 - After five samples, a request's threshold is divided by that ratio,
-  bounded to 1.0 to 2.0: at a ratio of 1.25, a 128,000-token threshold
-  compacts at 102,400 estimated tokens. The bound means calibration can only
+  limited to 1.0 to 2.0: at a ratio of 1.25, a 128,000-token threshold
+  compacts at 102,400 estimated tokens. The limit means calibration can only
   compact earlier, never later, and never below half the threshold. Stored
   compactions include the applied ratio and context policy in their identity.
   A changed ratio or policy rebuilds the prefix from the original history.
@@ -530,7 +542,8 @@ tokens (`reported_over_threshold`), and each compaction's
   proxy returns HTTP 503 with `Retry-After`; a payload it cannot size returns
   HTTP 400. Unavailable scoped context storage also returns a retryable 503
   before inference is sent; an invalid scope returns 400. See [recovery and
-  fallback](service.md) for launch-time choices and existing-session limits.
+  fallback](service.md#launch-with-a-direct-fallback) for launch-time choices
+  and existing-session limits.
 - Sizes are estimates at four characters per token, with images priced by
   their dimensions; the provider's count can differ. Calibration corrects
   the threshold only after five responses, so the first requests of each
@@ -551,3 +564,27 @@ tokens (`reported_over_threshold`), and each compaction's
   threshold. It did not test an Anthropic model, other agents, or the
   default threshold, and its dollar figures are provider-reported prices
   for that model through Vercel AI Gateway, not a general bill.
+
+## Troubleshooting
+
+Claude Code and Codex behavior in this table follows their documentation as
+checked on October 4, 2026: Claude Code's
+[environment variables](https://code.claude.com/docs/en/env-vars),
+[gateway connection](https://code.claude.com/docs/en/llm-gateway-connect) and
+[gateway rollout](https://code.claude.com/docs/en/llm-gateway-rollout) guides,
+and Codex's [advanced configuration](https://developers.openai.com/codex/config-advanced).
+For the service itself, see [diagnose, repair, and remove](service.md#diagnose-repair-and-remove).
+
+| Symptom | What to check |
+|---|---|
+| Claude Code shows no output for several minutes, then reports a connection error | Nothing is answering at `ANTHROPIC_BASE_URL`, and Claude Code retries an unreachable base URL with backoff before it reports the error. `gobstopper proxy status` prints `No proxy is running on 127.0.0.1:8260` when the proxy is stopped. Start it with `gobstopper proxy serve`, or check an installed service with `gobstopper proxy doctor --json` and repair it with `gobstopper proxy repair`. `env -u ANTHROPIC_BASE_URL claude` runs one session without the proxy. |
+| `gobstopper proxy run -- claude` does not start Claude Code | Check that `claude` runs directly in the same terminal. |
+| Claude Code still uses the proxy after you remove the export | An `ANTHROPIC_BASE_URL` in the `env` block of a Claude Code settings file applies over the shell. Run `/status` in Claude Code to see the base URL in use, then remove the entry from `~/.claude/settings.json` or the project's settings file. |
+| Claude Code uses an API key instead of your claude.ai sign-in | `ANTHROPIC_API_KEY` is set. Claude Code uses it instead of a subscription sign-in, with or without the proxy. Run `unset ANTHROPIC_API_KEY` to use the sign-in. |
+| Codex requests do not reach the proxy | Put `model_provider = "gobstopper"` at the top level of `~/.codex/config.toml`, above the first table, and check that `base_url` ends in `/backend-api/codex` with ChatGPT sign-in or `/v1` with an API key. Codex ignores `model_provider` and `model_providers` in a project's `.codex/config.toml`. |
+| Codex cannot reach a stopped proxy | Codex has no direct fallback. `codex -c model_provider=openai` runs one session without the proxy; otherwise repair the proxy. `gobstopper proxy launch --client codex` refuses to start Codex until the proxy is healthy. |
+| `gobstopper proxy launch` reports `Custom client upstream is configured` | An environment variable or a client settings file sets a base URL that is neither the provider's nor this proxy's. The launcher reads the user settings, managed settings, and the project settings in the working directory and each of its parents. For Codex, match `--codex-auth` to the provider block: `chatgpt` for a `base_url` ending in `/backend-api/codex`, `api-key` for one ending in `/v1`. |
+| Claude Code compacts its own history while the proxy is running | The proxy threshold must stay below Claude Code's trigger. Lower `--threshold`, especially after setting `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`; see [Choosing a threshold](#choosing-a-threshold). |
+| `gobstopper proxy status` shows no compacted requests | Compaction starts only when a supported request crosses the threshold, 128,000 estimated tokens by default, so a short session can report zero. Preview a recorded session with `gobstopper proxy replay <session> --threshold N`. |
+| A request fails with HTTP 503 and `Retry-After` | Required sizing timed out or its workers were busy, scoped context storage was unavailable, or a service change is pausing new requests. Retry after the stated delay; `gobstopper proxy doctor --json` reports the drain phase. |
+| A request fails with HTTP 400 from the proxy | The proxy could not size the payload, the scope was invalid, or `--strict` refused a request still over the threshold. See [Limits](#limits) and [Settings](#settings). |

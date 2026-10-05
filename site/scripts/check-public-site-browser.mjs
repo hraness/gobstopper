@@ -15,8 +15,8 @@ const localOrigin = localVerificationOrigin(values['local-origin'], values.produ
 const repository = resolve(import.meta.dirname, '..');
 const artifacts = resolve(repository, '.impeccable/review', `public-${Date.now()}`);
 await mkdir(artifacts, { recursive: true });
-const routes = ['/', '/docs', '/benchmarks', '/methodology', '/compare/claude-code-compact', '/compare/cliffcompaction', '/blog', '/blog/introducing-gobstopper', '/blog/gobstopper-on-terminal-bench', '/blog/proofs-for-the-admission-math', '/blog/vault-models-that-fail-on-purpose', '/missing-public-verification'];
-const anchors = ['/#terminal-bench', '/benchmarks#terminal-bench-2026-09-28'];
+const routes = ['/', '/docs', '/docs/proxy', '/benchmarks', '/methodology', '/compare/claude-code-compact', '/compare/cliffcompaction', '/blog', '/blog/introducing-gobstopper', '/blog/gobstopper-on-terminal-bench', '/blog/proofs-for-the-admission-math', '/blog/vault-models-that-fail-on-purpose', '/missing-public-verification'];
+const anchors = ['/#terminal-bench', '/benchmarks#terminal-bench-2026-09-28', '/docs/proxy#troubleshooting'];
 const errors = [];
 const records = [];
 const startedAt = Date.now();

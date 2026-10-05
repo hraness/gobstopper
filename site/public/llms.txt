@@ -9,6 +9,7 @@ For saved Claude Code and Codex sessions, Gobstopper previews what each strategy
 When to use this site:
 - Use gobstopper.sh to learn what Gobstopper does, which strategies it runs, and how to install it.
 - Use /docs for the full reference: installation, the proxy, strategies, configuration, the watcher, hooks, the snapshot vault, and the MCP server.
+- Use /docs/proxy to point Claude Code, Codex, or another agent at the proxy, choose its settings, and troubleshoot, diagnose, repair, or bypass the proxy service. Routing for opencode, Crush, Aider, and Goose is tested against synthetic histories, not live sessions.
 - Use /methodology for the occupancy model behind the projections and what each strategy does.
 - Use /benchmarks for a live Terminal-Bench 2.1 run of the request proxy, dated results, cohort sizes, limitations, and aggregate downloads.
 - Use /compare/cliffcompaction to see how Gobstopper and its proxy compare with CliffCompaction, the API-proxy compactor, and what the cliff strategy does.
@@ -19,6 +20,7 @@ When to use this site:
 
 - [Gobstopper](https://gobstopper.sh/): what Gobstopper does, how to install it, and what it will not do to a running session.
 - [Gobstopper documentation](https://gobstopper.sh/docs): the README, with every command, strategy, and configuration setting it documents.
+- [Route Claude Code and Codex through the proxy](https://gobstopper.sh/docs/proxy): per-agent setup, every proxy setting, how compaction works, estimate calibration, limits, a troubleshooting table, service diagnosis and repair, and launching with a direct fallback.
 - [Gobstopper methodology](https://gobstopper.sh/methodology): the occupancy model, the strategies, and the limits of the published benchmarks.
 - [Gobstopper benchmarks](https://gobstopper.sh/benchmarks): a live Terminal-Bench 2.1 run of the request proxy with three arms, offline replays of 729 archived sessions, request-proxy replays and one afternoon of live proxy counters, a synthetic snapshot-recovery study, and historical single-session resume trials.
 - [Gobstopper compared with CliffCompaction](https://gobstopper.sh/compare/cliffcompaction): where each tool runs, what each keeps and drops, what each has measured, the seven ways gobstopper proxy departs from the reference, gobstopper proxy, which ports CliffCompaction's summary rule to the same three API dialects, and the cliff strategy for transcript copies.

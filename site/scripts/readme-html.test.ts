@@ -2,8 +2,15 @@ import { describe, expect, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { LANDING_END, LANDING_START, readmeLanding, renderReadmeHtml } from "./readme-html.ts";
+import { documentSections, headingIds, LANDING_END, LANDING_START, readmeLanding, renderReadmeHtml } from "./readme-html.ts";
 import { publishedReadme } from "./published-readme.ts";
+import {
+  createSiteLinkResolver,
+  markdownSection,
+  PROXY_GUIDE_SOURCE,
+  renderProxyGuideHtml,
+  SERVICE_SOURCE,
+} from "./site-documents.ts";
 
 const repository = join(import.meta.dir, "..", "..");
 
@@ -106,5 +113,66 @@ describe("README HTML boundary", () => {
     expect(renderReadmeHtml("[Reference](docs/example.md)")).toContain(
       'href="https://github.com/hraness/gobstopper/blob/main/docs/example.md"',
     );
+  });
+});
+
+
+describe("proxy guide at /docs/proxy", () => {
+  const read = (path: string) => readFile(join(repository, path), "utf8");
+
+  test("composes docs/proxy.md with the diagnosis and direct-fallback sections of docs/service.md", async () => {
+    const [proxy, service] = await Promise.all([read(PROXY_GUIDE_SOURCE), read(SERVICE_SOURCE)]);
+    const html = renderProxyGuideHtml(proxy, service);
+    const sections = documentSections(html).map((section) => section.href);
+    expect(sections).toContain("#troubleshooting");
+    expect(sections.slice(-2)).toEqual(["#diagnose-repair-and-remove", "#launch-with-a-direct-fallback"]);
+    // Other docs/service.md sections stay on GitHub.
+    expect(html).not.toContain('id="install-and-inspect"');
+    expect(html).toContain('href="https://github.com/hraness/gobstopper/blob/main/docs/service.md#install-and-inspect"');
+    expect(html).toContain('href="#launch-with-a-direct-fallback"');
+    expect(html).not.toContain("blob/main/docs/proxy.md");
+    // Images and links resolve from docs/, not the repository root.
+    expect(html).toContain('src="https://raw.githubusercontent.com/hraness/gobstopper/main/docs/assets/gob-anatomy.png"');
+    expect(html).toContain('href="https://github.com/hraness/gobstopper/blob/main/docs/context-retention.md"');
+    expect(html).toContain('href="/docs#what-gobstopper-has-measured"');
+  });
+
+  test("keeps the Chat Completions limit for opencode, Crush, Aider, and Goose verbatim", async () => {
+    const proxy = await read(PROXY_GUIDE_SOURCE);
+    const limit = "Chat Completions coverage is tested against synthetic histories and recorded contracts, not a live opencode, Crush, Aider, or Goose session; provider acceptance of that dialect is unqualified.";
+    expect(proxy.replace(/\s+/gu, " ")).toContain(limit);
+    const html = renderProxyGuideHtml(proxy, await read(SERVICE_SOURCE));
+    expect(html.replace(/\s+/gu, " ")).toContain(limit);
+  });
+
+  test("links between the README and the guide land on headings that exist", async () => {
+    const [readme, proxy, service] = await Promise.all([read("README.md"), read(PROXY_GUIDE_SOURCE), read(SERVICE_SOURCE)]);
+    const readmeHtml = renderReadmeHtml(readme, { resolveSiteLink: createSiteLinkResolver(service) });
+    const guideHtml = renderProxyGuideHtml(proxy, service);
+    expect(readmeHtml).not.toContain("blob/main/docs/proxy.md");
+    expect(readmeHtml).toContain('href="/docs/proxy"');
+    expect(readmeHtml).toContain('href="/docs/proxy#diagnose-repair-and-remove"');
+    const guideIds = headingIds(guideHtml);
+    for (const [, fragment] of readmeHtml.matchAll(/href="\/docs\/proxy#([^"]+)"/gu)) {
+      expect(guideIds.has(fragment ?? "")).toBe(true);
+    }
+    const readmeIds = headingIds(readmeHtml);
+    for (const [, fragment] of guideHtml.matchAll(/href="\/docs#([^"]+)"/gu)) {
+      expect(readmeIds.has(fragment ?? "")).toBe(true);
+    }
+  });
+
+  test("reads level-2 sections through their subsections and skips headings inside code", () => {
+    const source = ["# Title", "## One", "text", "```sh", "## not a heading", "```", "### Sub", "more", "## Two", "end"].join("\n");
+    expect(markdownSection(source, "One")).toBe(["## One", "text", "```sh", "## not a heading", "```", "### Sub", "more"].join("\n"));
+    expect(markdownSection(source, "Two")).toBe("## Two\nend");
+    expect(() => markdownSection(source, "Three")).toThrow("has no section");
+  });
+
+  test("resolves relative links from the document's directory and refuses links outside the repository", () => {
+    const html = renderReadmeHtml("[Notices](../THIRD_PARTY_NOTICES.md) [Budgets](context-budgets.md#scopes)", { baseDirectory: "docs" });
+    expect(html).toContain('href="https://github.com/hraness/gobstopper/blob/main/THIRD_PARTY_NOTICES.md"');
+    expect(html).toContain('href="https://github.com/hraness/gobstopper/blob/main/docs/context-budgets.md#scopes"');
+    expect(() => renderReadmeHtml("[Outside](../../secret.md)", { baseDirectory: "docs" })).toThrow("leaves the repository");
   });
 });
