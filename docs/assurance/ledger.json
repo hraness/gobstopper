@@ -464,8 +464,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-release-087-r3-reliability-core.json",
-        "sha256": "d545473fffae482b879cdbbcbb9238b11f37131e240d8a34ac0217664b4b82e5"
+        "path": "docs/assurance/receipts/2026-10-05-089-clef-core.json",
+        "sha256": "fc089cfc5c5f9cb1ce0770263f77aa1734fe588c8eb51c9b9d5f4e4d3ededd74"
       }
     },
     {
@@ -527,8 +527,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-release-087-r3-reliability-transcript.json",
-        "sha256": "52c00ed1c678e32c890b331ac897081f273d7d64abee2c4679c5dacb587d4a1c"
+        "path": "docs/assurance/receipts/2026-10-05-089-clef-transcript.json",
+        "sha256": "83b8d1ad82c315fe4445c89e879009792536c8c3802397187f1ccbba04f47daa"
       }
     },
     {
@@ -548,8 +548,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-05-088-browser-acquisition-merge-stress.json",
-        "sha256": "91041ff1330e89e4c77262cef83cf5e6f6a3dfd7ccc29e06f9e5a1d82f0718b2"
+        "path": "docs/assurance/receipts/2026-10-05-089-clef-stress.json",
+        "sha256": "9954839a83c7137eff08c4efaffe4ceff3f78d0bd09dcdb1471ad67094f87e78"
       }
     },
     {
