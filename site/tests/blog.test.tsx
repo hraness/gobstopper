@@ -47,7 +47,7 @@ describe("Gobstopper blog", () => {
   });
 
   test("the validator refuses an indexable post without its review", () => {
-    const [first] = articleAdmissions;
+    const first = articleAdmissions.find((admission) => admission.lifecycle === "indexable");
     const unreviewed: ArticleAdmission = { ...first!, review: null };
     expect(() => assertArticleAdmissions([unreviewed])).toThrow(ArticleAdmissionError);
   });
@@ -167,9 +167,15 @@ describe("Gobstopper blog", () => {
       expect(html).toContain('data-author-kind="organization"');
       expect(html).toMatch(/By <a href="https:\/\/hraness\.com" rel="author">Hraness<\/a>/u);
       const sentence = articleProvenanceSentence(postProvenance(post));
-      expect(sentence).toBe(`Drafted with AI from the source code and reviewed by ${post.admission.review?.reviewer}.`);
       expect(html).toContain(sentence);
-      expect(html).toContain('data-reviewer-type="ai"');
+      // A post awaiting its independent review stays out of every index.
+      if (post.admission.review === null) {
+        expect(post.admission.lifecycle).toBe("quarantined");
+        expect(sentence).not.toContain("reviewed by");
+      } else {
+        expect(sentence).toBe(`Drafted with AI from the source code and reviewed by ${post.admission.review.reviewer}.`);
+        expect(html).toContain('data-reviewer-type="ai"');
+      }
       expect(sentence).not.toMatch(/human/iu);
       expect(html).not.toContain("<time");
       expect(post.admission.humanReview).toBeNull();

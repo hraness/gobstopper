@@ -15,7 +15,8 @@ type SitePage = Readonly<{
 /** The site's fixed pages. The sitemap and the 404 page's known routes both read this list. */
 export const SITE_PAGES: readonly SitePage[] = [
   { path: "/", label: "Gobstopper", changeFrequency: "weekly", priority: 1, lastModified: "2026-09-28" },
-  { path: "/docs", label: "Documentation", changeFrequency: "monthly", priority: 0.9, lastModified: "2026-09-28" },
+  { path: "/docs", label: "Documentation", changeFrequency: "monthly", priority: 0.9, lastModified: "2026-10-04" },
+  { path: "/docs/proxy", label: "Proxy guide", changeFrequency: "monthly", priority: 0.8, lastModified: "2026-10-04" },
   { path: "/methodology", label: "Methodology", changeFrequency: "monthly", priority: 0.7, lastModified: "2026-09-28" },
   { path: "/benchmarks", label: "Benchmarks", changeFrequency: "weekly", priority: 0.7, lastModified: "2026-09-28" },
   {

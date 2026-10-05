@@ -23,6 +23,7 @@ export const gobstopperPostHogSite = {
   routes: [
     { match: "exact", path: "/", pageKind: "home" },
     { match: "exact", path: "/docs", pageKind: "docs" },
+    { match: "exact", path: "/docs/proxy", pageKind: "docs" },
     { match: "exact", path: "/benchmarks", pageKind: "benchmarks" },
     { match: "exact", path: "/methodology", pageKind: "methodology" },
     { match: "exact", path: "/blog", pageKind: "blog_index", contentGroup: "blog" },

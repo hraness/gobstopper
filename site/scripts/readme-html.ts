@@ -1,3 +1,4 @@
+import { posix } from "node:path";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { Terminal } from "../app/_components/code-block.tsx";
@@ -5,6 +6,21 @@ import { highlightCode } from "@hraness/design-kit/syntax-highlighting";
 
 const REPOSITORY_BLOB_ROOT = "https://github.com/hraness/gobstopper/blob/main/";
 const REPOSITORY_RAW_ROOT = "https://raw.githubusercontent.com/hraness/gobstopper/main/";
+
+/**
+ * Maps a repository file and optional fragment to the site page that publishes
+ * it, or returns undefined to keep the GitHub link.
+ */
+export type SiteLinkResolver = (repositoryPath: string, fragment: string | undefined) => string | undefined;
+
+export interface RenderDocumentOptions {
+  /** Repository directory the document's relative links start from ("" for the root). */
+  readonly baseDirectory?: string;
+  /** Sends links to published repository documents to their site pages. */
+  readonly resolveSiteLink?: SiteLinkResolver;
+  /** The page being rendered; links into it become same-page fragments. */
+  readonly currentRoute?: string;
+}
 
 export const LANDING_START = "<!-- hraness:gobstopper-landing:start -->";
 export const LANDING_END = "<!-- hraness:gobstopper-landing:end -->";
@@ -33,7 +49,21 @@ export function assertSafeTarget(encodedTarget: string): void {
   }
 }
 
-function rewriteRelativeTargets(html: string): string {
+/** A relative target as a repository path, resolved from the document's directory. */
+function repositoryTarget(target: string, baseDirectory: string): Readonly<{ path: string; fragment: string | undefined }> {
+  const hash = target.indexOf("#");
+  const relative = hash < 0 ? target : target.slice(0, hash);
+  const fragment = hash < 0 ? undefined : target.slice(hash + 1);
+  if (relative === "") return { path: "", fragment };
+  const path = posix.normalize(posix.join(baseDirectory, relative));
+  if (path === ".." || path.startsWith("../") || path.startsWith("/")) {
+    throw new Error(`Document link leaves the repository: ${JSON.stringify(target)}`);
+  }
+  return { path, fragment };
+}
+
+function rewriteRelativeTargets(html: string, options: RenderDocumentOptions = {}): string {
+  const baseDirectory = options.baseDirectory ?? "";
   return html.replace(/(href|src)="([^"]*)"/gu, (
     attribute,
     name: "href" | "src",
@@ -48,8 +78,20 @@ function rewriteRelativeTargets(html: string): string {
     ) {
       return attribute;
     }
+    if (baseDirectory === "" && options.resolveSiteLink === undefined) {
+      const root = name === "src" ? REPOSITORY_RAW_ROOT : REPOSITORY_BLOB_ROOT;
+      return `${name}="${root}${target}"`;
+    }
+    const { path, fragment } = repositoryTarget(target, baseDirectory);
+    if (name === "href") {
+      const site = options.resolveSiteLink?.(path, fragment);
+      if (site !== undefined) {
+        const route = options.currentRoute;
+        return `href="${route !== undefined && site.startsWith(`${route}#`) ? site.slice(route.length) : site}"`;
+      }
+    }
     const root = name === "src" ? REPOSITORY_RAW_ROOT : REPOSITORY_BLOB_ROOT;
-    return `${name}="${root}${target}"`;
+    return `${name}="${root}${path}${fragment === undefined ? "" : `#${fragment}`}"`;
   });
 }
 
@@ -151,7 +193,7 @@ function wrapTablesInScrollableFigures(html: string): string {
   return html.replace(/<table[\s>][\s\S]*?<\/table>/gu, (table) => `<figure>${table}</figure>`);
 }
 
-export function renderReadmeHtml(source: string): string {
+export function renderReadmeHtml(source: string, options: RenderDocumentOptions = {}): string {
   const document = source.replaceAll(LANDING_START, "").replaceAll(LANDING_END, "")
     .replace(/^\[!\[Agent Skill\]\([^)]+\)\]\(([^)]+)\)\s*$/mu, "[Install the Agent Skill]($1)");
   const html = Bun.markdown.html(document, {
@@ -163,9 +205,14 @@ export function renderReadmeHtml(source: string): string {
     const target = match[1];
     if (target !== undefined) assertSafeTarget(target);
   }
-  const rendered = rewriteRelativeTargets(addHeadingIds(html));
+  const rendered = rewriteRelativeTargets(addHeadingIds(html), options);
   assertFragmentsResolve(rendered);
   return highlightCodeBlocks(wrapTablesInScrollableFigures(rendered));
+}
+
+/** Every heading fragment a rendered document defines. */
+export function headingIds(html: string): ReadonlySet<string> {
+  return new Set(Array.from(html.matchAll(/<h[1-6] id="([^"]+)">/gu), ([, id]) => id ?? ""));
 }
 
 /** Section entries for a rendered document's contents list: each h2's id and text. */
