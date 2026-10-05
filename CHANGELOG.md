@@ -2,6 +2,16 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## v0.8.8 - 2026-10-05
+
+Managed installations stay updatable alongside a running service and supervised helpers, and the doctor now reports how the service executable is enrolled.
+
+- A `Busy` update result explains that a managed service holds the installation lock for its lifetime and names `gobstopper proxy upgrade` as the path that drains, replaces, and restarts it.
+- The service upgrade controller retries brief installation-lock contention from short-lived helpers for up to ninety seconds before falling back to rollback, instead of rolling back a healthy upgrade on one collision.
+- A continuous `gobstopper watch` on an enrolled installation warns that it holds the update lock for its lifetime and recommends periodic `watch --once` passes under a scheduler.
+- `proxy doctor --json` adds an `installation` object — whether the service executable is a managed release, its kind, release tag, pin state, and update policy — and `stale_references`, embedded gobstopper command paths in agent configs and service definitions that are missing or unmanaged.
+- Watch-state saves use unique temporary names, retry collisions, sweep stranded temporaries older than an hour, and preserve the previous checkpoint when a save fails, so a crashed watcher's leftover file can no longer block every later save.
+
 ## v0.8.7 - 2026-10-04
 
 Gobstopper can inspect long histories without loading them all into memory, explain interrupted requests, and preserve observations in verified archives. Managed upgrades run independently of the agent session that requested them.

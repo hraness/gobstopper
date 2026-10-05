@@ -13,6 +13,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 static SERIAL: AtomicU64 = AtomicU64::new(0);
 
+/// The activity-lock contention error. `proxy upgrade` retries this bounded
+/// instead of rolling back over a transient watcher or monitor pass.
+pub(super) const BUSY_MESSAGE: &str =
+    "Gobstopper is running or another installer is active; retry when it finishes";
+
 fn name(value: &OsStr) -> Result<CString> {
     ensure!(
         matches!(
@@ -369,7 +374,7 @@ impl Directory {
             )?
             .context("Create activity lock")?;
         if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
-            bail!("Gobstopper is running or another installer is active; retry when it finishes");
+            bail!("{}", BUSY_MESSAGE);
         }
         let lock = Lock {
             directory: self,

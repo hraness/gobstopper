@@ -810,13 +810,25 @@ mod platform {
         {
             return rollback(journal, control, error, false, false, persist);
         }
-        let lease = match crate::self_update::replace_upgrade(
-            &journal.executable,
-            &journal.stage_dir,
-            &prepared,
-        ) {
-            Ok(lease) => lease,
-            Err(error) => return rollback(journal, control, error, false, false, persist),
+        // A watcher or monitor pass may hold the installation's activity lock
+        // briefly; the service is already stopped, so wait out transient
+        // contention instead of rolling back a healthy upgrade.
+        let lease_deadline = Instant::now() + Duration::from_secs(90);
+        let lease = loop {
+            match crate::self_update::replace_upgrade(
+                &journal.executable,
+                &journal.stage_dir,
+                &prepared,
+            ) {
+                Ok(lease) => break lease,
+                Err(error)
+                    if crate::self_update::is_installation_busy(&error)
+                        && Instant::now() < lease_deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(500));
+                }
+                Err(error) => return rollback(journal, control, error, false, false, persist),
+            }
         };
         if let Err(error) = advance_recorded(journal, "replaced", persist)
             .and_then(|()| advance_recorded(journal, "starting", persist))

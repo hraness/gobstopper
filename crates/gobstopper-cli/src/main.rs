@@ -3965,6 +3965,10 @@ fn legacy_native_uncertainty() -> Result<std::collections::HashSet<String>> {
     Ok(unresolved)
 }
 
+/// A tmp file only ever exists for the rename window; anything older than this
+/// was left by a process that died mid-save and can never complete.
+const STALE_WATCH_TMP_SECS: u64 = 3600;
+
 /// Atomic write (tmp + rename) so a SIGKILL mid-save cannot leave a torn
 /// state file that wipes the suppression map on next load.
 fn save_watch_state(path: &Path, state: &WatchState) -> Result<()> {
@@ -3974,11 +3978,7 @@ fn save_watch_state(path: &Path, state: &WatchState) -> Result<()> {
         .parent()
         .context("watch state has no parent directory")?;
     std::fs::create_dir_all(parent)?;
-    let tmp = parent.join(format!(
-        ".watch-state-{}-{}.tmp",
-        std::process::id(),
-        NEXT_WRITE.fetch_add(1, Ordering::Relaxed),
-    ));
+    sweep_stale_watch_tmps(parent);
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -3986,22 +3986,76 @@ fn save_watch_state(path: &Path, state: &WatchState) -> Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let result = (|| -> Result<()> {
-        let mut file = options.open(&tmp)?;
-        serde_json::to_writer(&mut file, state)?;
-        if file.metadata()?.len() > MAX_WATCH_STATE_BYTES {
-            bail!("watch state exceeds byte bound; prior checkpoint preserved for repair");
+    // A stranded tmp from a dead process can collide with a recycled pid;
+    // nanos plus a retry make the collision unrecoverable only in principle.
+    let mut last_error = None;
+    for _ in 0..3 {
+        let nanos = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.subsec_nanos())
+            .unwrap_or(0);
+        let tmp = parent.join(format!(
+            ".watch-state-{}-{}-{}.tmp",
+            std::process::id(),
+            NEXT_WRITE.fetch_add(1, Ordering::Relaxed),
+            nanos,
+        ));
+        let result = (|| -> Result<()> {
+            let mut file = options.open(&tmp)?;
+            serde_json::to_writer(&mut file, state)?;
+            if file.metadata()?.len() > MAX_WATCH_STATE_BYTES {
+                bail!("watch state exceeds byte bound; prior checkpoint preserved for repair");
+            }
+            file.sync_all()?;
+            std::fs::rename(&tmp, path)?;
+            #[cfg(unix)]
+            std::fs::File::open(parent)?.sync_all()?;
+            Ok(())
+        })();
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|e| e.kind() == std::io::ErrorKind::AlreadyExists) =>
+            {
+                last_error = Some(error);
+            }
+            Err(error) => {
+                let _ = std::fs::remove_file(&tmp);
+                return Err(error).context("persist watch state");
+            }
         }
-        file.sync_all()?;
-        std::fs::rename(&tmp, path)?;
-        #[cfg(unix)]
-        std::fs::File::open(parent)?.sync_all()?;
-        Ok(())
-    })();
-    if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
     }
-    result.context("persist watch state")
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("watch state tmp name exhausted")))
+        .context("persist watch state")
+}
+
+/// Remove tmp files a dead process left in the watch-state directory. Files
+/// inside the freshness window may be another live process's in-flight write
+/// and are left alone.
+fn sweep_stale_watch_tmps(parent: &Path) {
+    let now = std::time::SystemTime::now();
+    let stale = std::time::Duration::from_secs(STALE_WATCH_TMP_SECS);
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(".watch-state-") || !name.ends_with(".tmp") {
+            continue;
+        }
+        let Ok(modified) = entry.metadata().and_then(|m| m.modified()) else {
+            continue;
+        };
+        if now.duration_since(modified).is_ok_and(|age| age > stale) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// Persisted discovery cache: same directory and same write discipline as
@@ -4115,6 +4169,17 @@ fn cmd_watch(
         .transpose()?;
     if double_buffer {
         bail!("in-place double-buffer swapping is retired; use copy-only watch without --double-buffer");
+    }
+    if !once
+        && std::env::current_exe()
+            .ok()
+            .is_some_and(|exe| self_update::installation_enrolled(&exe))
+    {
+        eprintln!(
+            "note: a continuous watch holds this installation's update lock for \
+            its lifetime; run periodic `gobstopper watch --once` passes under a \
+            scheduler so updates can proceed"
+        );
     }
     // Stable artifact identity participates in decision invalidation. It is
     // retained for this process and revalidated at both ends of every pass.
@@ -6786,6 +6851,36 @@ mod tests {
             state.legacy_unresolved
         );
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 1);
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn watch_state_save_survives_stranded_tmp_files() {
+        let dir = tempdir("watch-state-tmp");
+        let path = dir.join("state.json");
+        let state = WatchState::default();
+        // A stranded tmp from a crashed process can collide with a recycled
+        // pid under the old pid-counter name; the save must still succeed.
+        fs::write(
+            dir.join(format!(".watch-state-{}-0.tmp", std::process::id())),
+            b"dead",
+        )
+        .unwrap();
+        // A fresh tmp may be another live process's in-flight write.
+        let fresh = dir.join(".watch-state-999999999-0.tmp");
+        fs::write(&fresh, b"live writer").unwrap();
+        save_watch_state(&path, &state).unwrap();
+        assert!(load_watch_state(&path).is_ok());
+        assert_eq!(fs::read(&fresh).unwrap(), b"live writer");
+        // An old tmp is definitively dead and is swept on the next save.
+        let stale = dir.join(".watch-state-1-0.tmp");
+        fs::write(&stale, b"stale").unwrap();
+        filetime_set(
+            &stale,
+            std::time::SystemTime::now() - std::time::Duration::from_secs(7200),
+        );
+        save_watch_state(&path, &state).unwrap();
+        assert!(!stale.exists());
         fs::remove_dir_all(&dir).unwrap();
     }
 
