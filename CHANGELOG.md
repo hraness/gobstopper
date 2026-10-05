@@ -16,7 +16,7 @@ Gobstopper can inspect long histories without loading them all into memory, expl
 - `data metrics` streams validated full histories into fixed-size aggregates. `data events` offers bounded snapshot pagination. Capacity warnings and read-only recovery keep existing observations inspectable beyond the write limit.
 - `data archive` copies observations into private, checksummed import segments without deleting source data. `archive-check` requires a verified completion marker before treating the set as complete.
 - New proxy observations distinguish client disconnects, upstream failures, truncation, and parser uncertainty, and measure preparation and upstream-header spans. The v2 profile keeps their timing definitions separate from older records; older binaries cannot read those new observations.
-- Persistence status reports fixed failure codes and failure/recovery timestamps. A lazy context store that has not been used is no longer reported as a storage failure.
+- Persistence status reports fixed failure codes and failure/recovery timestamps. Status only reports history loaded after its recovered totals are included. A lazy context store that has not been used is no longer reported as a storage failure.
 - `events --diagnostics` exposes bounded historical metadata and explicit partial-history coverage without qualifying savings or retention. Human-readable rows use session fingerprints; explicit JSON exports retain their metadata fields. Strict qualification still refuses damaged or unsupported history.
 - `scripts/compare_proxy_tails.py` compares tail settings on private, unchanged replay copies with bounded execution and recorded hashes. It calls no provider and does not measure task quality or billing.
 

@@ -958,7 +958,7 @@ impl Proxy {
     fn status(&self) -> Value {
         let cfg = self.engine.config();
         let store = self.engine.try_store_stats();
-        let totals = self.stats_log.totals(
+        let (totals, stats_persistence) = self.stats_log.snapshot(
             self.count(&self.stats.est_tokens_in),
             self.count(&self.stats.est_tokens_out),
         );
@@ -1022,7 +1022,7 @@ impl Proxy {
             "uptime_secs": self.started.elapsed().as_secs(),
         });
         status["store_details_available"] = json!(store.is_some());
-        status["stats_persistence"] = self.stats_log.status();
+        status["stats_persistence"] = stats_persistence;
         status["transforms"] = self.transforms.status();
         status["transforms"]["timeout_ms"] = json!(self.transform_timeout.as_millis());
         status["request_memory"] =

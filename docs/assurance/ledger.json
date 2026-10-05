@@ -445,8 +445,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-release-087-r2-reliability-core.json",
-        "sha256": "fe919fc9652ceb30c43f38785c8b39bdfe7f32e255c2d0f27ea0e35dd459b788"
+        "path": "docs/assurance/receipts/2026-10-04-release-087-r3-reliability-core.json",
+        "sha256": "d545473fffae482b879cdbbcbb9238b11f37131e240d8a34ac0217664b4b82e5"
       }
     },
     {
@@ -466,8 +466,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-release-087-r2-reliability-watch.json",
-        "sha256": "9f45534d40f655fd57616717568ba57103a3508997451241deed6e6fda6df83b"
+        "path": "docs/assurance/receipts/2026-10-04-release-087-r3-reliability-watch.json",
+        "sha256": "3a90112db5e0df60a53a4e26126348e7811bc7d791ff296643c2ea01811c4d33"
       }
     },
     {
@@ -487,8 +487,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-release-087-r2-reliability-vault.json",
-        "sha256": "f54b8afe81e612df78b9570c742143f3dd2b9c25c665bba56b4a1c53fefa5cb5"
+        "path": "docs/assurance/receipts/2026-10-04-release-087-r3-reliability-vault.json",
+        "sha256": "acd81f48b0f80d4ca8a6072e842af79c28988c0052829da70658ec5a2a3e4d68"
       }
     },
     {
@@ -508,8 +508,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-release-087-r2-reliability-transcript.json",
-        "sha256": "0fc7de8cf0f956edc5d888ac13e1962c9a7c27634801687ce43f44c3f9a8be75"
+        "path": "docs/assurance/receipts/2026-10-04-release-087-r3-reliability-transcript.json",
+        "sha256": "52c00ed1c678e32c890b331ac897081f273d7d64abee2c4679c5dacb587d4a1c"
       }
     },
     {
@@ -529,8 +529,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-release-087-r2-reliability-stress.json",
-        "sha256": "a0ad5be537614a1b1125854bf593deb7a0ee7c4519284d0c578aa8482324fe64"
+        "path": "docs/assurance/receipts/2026-10-04-release-087-r3-reliability-stress.json",
+        "sha256": "75b0b8b79d03e358517381c3982d7eb01ac28caf967975b5055bbf1c42149db7"
       }
     },
     {

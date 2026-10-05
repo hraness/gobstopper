@@ -123,6 +123,11 @@ impl StatsLog {
         )
     }
 
+    pub(super) fn snapshot(&self, current_in: u64, current_out: u64) -> ((u64, u64), Value) {
+        let persistence = self.status();
+        (self.totals(current_in, current_out), persistence)
+    }
+
     pub(super) fn status(&self) -> Value {
         let write_failures = self.state.failures.load(Ordering::Acquire);
         let available = self.state.available.load(Ordering::Acquire);
@@ -344,6 +349,41 @@ mod tests {
         assert_eq!(log.status()["loading_history"], false);
         assert_eq!(log.totals(3, 2), (10, 6));
         assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(), 2);
+    }
+
+    #[test]
+    fn completed_history_snapshot_includes_recovered_totals() {
+        let (sender, receiver) = sync_channel::<Arc<State>>(1);
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let worker_barrier = Arc::clone(&barrier);
+        let worker = std::thread::spawn(move || {
+            for state in receiver {
+                worker_barrier.wait();
+                state.prior.set((7, 4)).unwrap();
+                state.loading.store(false, Ordering::Release);
+                worker_barrier.wait();
+            }
+        });
+        for _ in 0..10_000 {
+            let log = StatsLog {
+                path: Some("unused".into()),
+                sender: None,
+                state: Arc::default(),
+            };
+            log.state.loading.store(true, Ordering::Release);
+            sender.send(Arc::clone(&log.state)).unwrap();
+            barrier.wait();
+            let (totals, persistence) = log.snapshot(3, 2);
+            barrier.wait();
+            if persistence["loading_history"] == false {
+                assert_eq!(totals, (10, 6));
+            }
+            let (totals, persistence) = log.snapshot(3, 2);
+            assert_eq!(persistence["loading_history"], false);
+            assert_eq!(totals, (10, 6));
+        }
+        drop(sender);
+        worker.join().unwrap();
     }
 
     #[test]

@@ -7591,6 +7591,13 @@
     },
     {
       "path": "crates/gobstopper-cli/src/proxy_stats.rs",
+      "symbol": "snapshot",
+      "effects": [
+        "memory"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/proxy_stats.rs",
       "symbol": "status",
       "effects": [
         "memory"
