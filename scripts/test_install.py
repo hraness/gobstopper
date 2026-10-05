@@ -51,10 +51,14 @@ FAKE = f"#!/bin/sh\n[ -z \"${{FIXTURE_EXECUTION_LOG:-}}\" ] || echo executed >> 
 AICHARTS_VERSION = "0.3.1"
 AICHARTS_TARGET = {"darwin-aarch64": "aarch64-apple-darwin", "linux-x86_64": "x86_64-unknown-linux-gnu"}
 # Reports the pinned version, an off history status, and logs every enable.
+# `update status` answers FIXTURE_UPDATE_STATUS; unset it to stand in for an
+# aicharts released before `aicharts update` existed.
 FAKE_AICHARTS = (f"#!/bin/sh\n[ -z \"${{FIXTURE_EXECUTION_LOG:-}}\" ] || echo aicharts \"$@\" >> \"$FIXTURE_EXECUTION_LOG\"\n"
                  f"case \"$*\" in --version) echo 'aicharts {AICHARTS_VERSION} (0123456789ab)' ;;\n"
                  "'history status --json') echo '{\"data\":{\"collecting\":\"off\",\"record\":null},\"ok\":true}' ;;\n"
-                 "'history enable') echo enabled >> \"$FIXTURE_HISTORY_LOG\" ;;\n*) exit 2 ;;\nesac\n").encode()
+                 "'history enable') echo enabled >> \"$FIXTURE_HISTORY_LOG\" ;;\n"
+                 "'update status --json') [ -n \"${FIXTURE_UPDATE_STATUS+x}\" ] || exit 2; printf '%s\\n' \"$FIXTURE_UPDATE_STATUS\" ;;\n"
+                 "'update enable') echo enabled >> \"$FIXTURE_UPDATE_LOG\" ;;\n*) exit 2 ;;\nesac\n").encode()
 
 
 class Quiet(http.server.SimpleHTTPRequestHandler):
@@ -127,6 +131,7 @@ class InstallShTests(unittest.TestCase):
                "GOBSTOPPER_INSTALL_PREFIX": str(self.prefix),
                "FIXTURE_EXECUTION_LOG": str(self.execution_log), "FIXTURE_SIGNATURE_LOG": str(self.signature_log),
                "FIXTURE_SIGNATURE_RESULT": self.signature_result, "FIXTURE_HISTORY_LOG": str(self.dir / "history-enabled"),
+               "FIXTURE_UPDATE_LOG": str(self.dir / "update-enabled"), "FIXTURE_UPDATE_STATUS": '{"scheduler":"off"}',
                "FIXTURE_AICHARTS_SIGNATURE_LOG": str(self.dir / "aicharts-codesign-called")}
         env.update(overrides)
         env = {key: value for key, value in env.items() if value is not None}
@@ -155,6 +160,10 @@ class InstallShTests(unittest.TestCase):
         log = self.dir / "history-enabled"
         return len(log.read_text().splitlines()) if log.exists() else 0
 
+    def update_enables(self):
+        log = self.dir / "update-enabled"
+        return len(log.read_text().splitlines()) if log.exists() else 0
+
     @unittest.skipIf(PLATFORM not in AICHARTS_TARGET, "no aicharts release for this host")
     def test_first_install_adds_aicharts_and_turns_on_local_history_once(self):
         self.publish(archive({"gobstopper": FAKE}))
@@ -167,11 +176,39 @@ class InstallShTests(unittest.TestCase):
         self.assertIn("Local usage history is on", result.stdout)
         self.assertIn("aicharts history disable", result.stdout)
         self.assertEqual(self.history_enables(), 1)
-        # A later install keeps whatever history choice the user has made.
+        self.assertIn("Daily aicharts updates are on", result.stdout)
+        self.assertIn("aicharts update disable", result.stdout)
+        self.assertEqual(self.update_enables(), 1)
+        # A later install keeps whatever history and update choices the user has made.
         again = self.install(**self.publish_aicharts())
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertEqual(self.history_enables(), 1)
         self.assertNotIn("Local usage history is on", again.stdout)
+        self.assertEqual(self.update_enables(), 1)
+        self.assertNotIn("Daily aicharts updates are on", again.stdout)
+
+    @unittest.skipIf(PLATFORM not in AICHARTS_TARGET, "no aicharts release for this host")
+    def test_first_install_respects_aicharts_update_choice_and_ownership(self):
+        self.publish(archive({"gobstopper": FAKE}))
+        # Opt-out leaves updates off but still turns on history.
+        off = self.install(GOBSTOPPER_AICHARTS_UPDATE="no", **self.publish_aicharts())
+        self.assertEqual(off.returncode, 0, off.stderr)
+        self.assertEqual(self.update_enables(), 0)
+        self.assertEqual(self.history_enables(), 1)
+        self.assertNotIn("Daily aicharts updates", off.stdout)
+        shutil.rmtree(self.prefix)
+        for state in ('{"scheduler":"on"}', '{"scheduler":"not-ours"}', '{"scheduler":"unsupported"}'):
+            result = self.install(**self.publish_aicharts(), FIXTURE_UPDATE_STATUS=state)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.update_enables(), 0, state)
+            self.assertNotIn("Daily aicharts updates are on", result.stdout)
+            shutil.rmtree(self.prefix)
+        # An aicharts released before `aicharts update` fails its status probe;
+        # the install finishes quietly without warning about updates.
+        old = self.install(**self.publish_aicharts(), FIXTURE_UPDATE_STATUS=None)
+        self.assertEqual(old.returncode, 0, old.stderr)
+        self.assertEqual(self.update_enables(), 0)
+        self.assertNotIn("update", old.stderr)
 
     @unittest.skipIf(PLATFORM not in AICHARTS_TARGET, "no aicharts release for this host")
     def test_first_install_preserves_existing_aicharts_history_choice(self):

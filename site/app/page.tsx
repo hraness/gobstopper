@@ -146,6 +146,23 @@ export default function Home() {
 
 
           <MarketingSection
+            heading="Measure what your agents sent."
+            headingId="usage-title"
+            id="usage"
+            label="Usage history"
+            summary="The installer adds aicharts beside Gobstopper and turns on its local usage history: your token use by day, agent, provider and model, kept on this computer and never uploaded."
+          >
+            <Terminal title="Usage history" code={`gobstopper usage\ngobstopper usage report --days 7 --csv`} />
+            <p>
+              <code>gobstopper usage</code> reads the same aicharts record across every agent,
+              including ones that never pass through the proxy, and agents read it back through
+              the read-only <code>aicharts mcp</code> tools. aicharts checks GitHub once a day for
+              a new release and installs it only after verifying it; <code>aicharts update disable</code>{" "}
+              turns that off. <a href="https://aicharts.io/usage">aicharts usage</a>.
+            </p>
+          </MarketingSection>
+
+          <MarketingSection
             heading={`About as many tasks solved, ${F.inputFewer} fewer tokens sent.`}
             headingId="terminal-bench-title"
             id="terminal-bench"
