@@ -6,6 +6,12 @@
   "scope": "Current reviewed contracts and bounded evidence for the correctness foundation; immutable baseline records remain historical. No whole-system theorem or live native qualification.",
   "states": [
     {
+      "id": "ci_system_config",
+      "meaning": "Ubuntu archive source files in a task-owned disposable CI runner",
+      "owner": "CI workflow",
+      "boundary": "Only exact active Azure archive URIs are normalized; signing settings and third-party sources remain unchanged. This authority does not include provider sessions or persistent user hosts."
+    },
+    {
       "id": "source_file",
       "meaning": "Provider-owned JSONL bytes and record identity",
       "owner": "provider; Gobstopper publishes separate fresh files only",
@@ -405,6 +411,19 @@
       ]
     },
     {
+      "id": "E-CI-BROWSER-SOURCE",
+      "kind": "source_review",
+      "revision": "current-source; independent browser-acquisition review on 2026-10-04",
+      "scope": "Exact Ubuntu mirror URI normalization, tempfile regression cases and browser workflow wiring.",
+      "bounds": "Source review and focused tests only; normal exact-head CI must qualify real package acquisition and browser behavior.",
+      "references": [
+        { "path": "scripts/browser_acquisition.py", "anchor": "def plan" },
+        { "path": "scripts/test_browser_acquisition.py" },
+        { "path": ".github/workflows/ci.yml", "anchor": "Provision locked Chromium" }
+      ],
+      "exclusions": ["No live acquisition timing claim", "No race-proof or transactional filesystem claim", "No persistent-host qualification"]
+    },
+    {
       "id": "E-FOUNDATION-SOURCE",
       "kind": "source_review",
       "revision": "current-source; delivery revision recorded by PR 90",
@@ -529,8 +548,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-release-087-r3-reliability-stress.json",
-        "sha256": "75b0b8b79d03e358517381c3982d7eb01ac28caf967975b5055bbf1c42149db7"
+        "path": "docs/assurance/receipts/2026-10-05-088-browser-acquisition-merge-stress.json",
+        "sha256": "91041ff1330e89e4c77262cef83cf5e6f6a3dfd7ccc29e06f9e5a1d82f0718b2"
       }
     },
     {

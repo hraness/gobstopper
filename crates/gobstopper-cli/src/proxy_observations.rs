@@ -1401,6 +1401,7 @@ mod tests {
     fn stalled_storage_never_blocks_callers(open: bool) {
         let temp = Temp::new();
         let (hook, entered, release) = stalled_hook();
+        let (open_hook, open_entered, open_release) = stalled_hook();
         let hooks = if open {
             StorageHooks {
                 open: Some(hook),
@@ -1408,7 +1409,7 @@ mod tests {
             }
         } else {
             StorageHooks {
-                open: None,
+                open: Some(open_hook),
                 append: Some(hook),
             }
         };
@@ -1416,14 +1417,21 @@ mod tests {
         let recorder = Recorder::open_impl(true, Some(temp.path()), hooks);
         assert!(started.elapsed() < Duration::from_millis(500));
         if !open {
-            wait_for_idle_recorder(&recorder);
+            open_entered.recv_timeout(Duration::from_secs(5)).unwrap();
             no_usage_attempt(&recorder);
+            assert_eq!(recorder.status()["pending_events"], 2);
+            assert_eq!(recorder.status()["dropped_events"], 0);
+            open_release.send(()).unwrap();
         }
         entered.recv_timeout(Duration::from_secs(5)).unwrap();
         let shared = Arc::downgrade(&recorder.shared);
         let started = Instant::now();
         no_usage_attempt(&recorder);
-        assert!(recorder.status()["pending_events"].as_u64().unwrap() >= 2);
+        assert_eq!(
+            recorder.status()["pending_events"],
+            if open { 2 } else { 4 }
+        );
+        assert_eq!(recorder.status()["dropped_events"], 0);
         assert!(recorder.request_id().is_some());
         // Drop cannot join the owner of a stalled open or append.
         drop(recorder);

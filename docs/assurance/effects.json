@@ -4,6 +4,22 @@
   "scope": "Potential direct and delegated effects by current public surface. Conditions distinguish CLI branches and library caller responsibility; no blanket sandbox/read-only claim.",
   "profiles": [
     {
+      "id": "ci-browser-acquisition",
+      "owner": "CI workflow",
+      "reads": ["ci_system_config"],
+      "writes": [{ "state": "ci_system_config", "mode": "replace", "condition": "Explicit CI setup on a trusted disposable runner; replace only exact active Azure archive URI tokens after validating every source file." }],
+      "outbound": [],
+      "authority": "Task-owned Ubuntu runner setup only; the helper does not install packages or change signature verification.",
+      "invariants": ["PRIV-1"],
+      "assumptions": ["A-OS"],
+      "source": [{ "path": "scripts/browser_acquisition.py", "anchor": "def plan" }],
+      "status": "source_reviewed",
+      "bounds": "Finite workflow deadline; input byte and file counts are not globally bounded. Reject nonregular or symlinked inputs before writes.",
+      "exclusions": ["No transactional writes", "No hostile privileged-concurrency protection", "No provider-session authority", "No measured performance claim"],
+      "evidence": ["E-CI-BROWSER-SOURCE"],
+      "next_gate": "C15"
+    },
+    {
       "id": "pure",
       "owner": "core/adapter caller",
       "reads": [],
@@ -4094,6 +4110,10 @@
     }
   ],
   "scripts": [
+    {
+      "path": "scripts/browser_acquisition.py",
+      "effects": ["ci-browser-acquisition", "output"]
+    },
     {
       "path": "scripts/compare_proxy_tails.py",
       "effects": [
