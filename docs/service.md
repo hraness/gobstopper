@@ -86,6 +86,14 @@ The controller runs outside the caller's tool shell. On macOS it uses a one-shot
 
 `proxy upgrade`, `proxy install --replace`, `proxy uninstall`, `proxy repair` when it might restart, and `proxy migrate-service` refuse callers whose environment indicates they depend on this proxy: a matching loopback `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL`, `GOBSTOPPER_SCOPE`, an `X-Gobstopper-Scope` custom header, or `CLAUDECODE`. Run the command from a terminal outside an agent tool shell, or pass `--allow-dependent-caller`. A detached controller does not make it safe to stop the service its caller depends on. Preview commands with `--print` do not refuse.
 
+### Updates and long-running commands
+
+Every command on a managed release installation holds its update activity lock for its entire lifetime, so the executable is never replaced under a running process — except `gobstopper mcp`, which releases the lock once its startup check completes because a stdio tool server never re-executes its binary and would otherwise pin the lock for the whole agent session. `gobstopper update` reports `Busy` while any command holds the lock and names the lock path for `lsof` holder enumeration; while the managed service is running, `proxy upgrade` is the path that works — it stops the service under the drain protocol, releases the lock, replaces, and restarts.
+
+Continuous daemons on the managed binary block every update path the same way, including `proxy upgrade`. Run watchers and monitors as periodic supervised passes — `gobstopper watch --once` under `StartInterval` or a timer — rather than always-on `KeepAlive` loops, so the lock is free between passes. A continuous `watch` on an enrolled installation prints a reminder. The upgrade controller also retries brief lock contention for up to 90 seconds before rolling back.
+
+`proxy doctor`'s `installation` object reports whether the service executable is a managed release, its update policy, and pin state; `stale_references` lists embedded gobstopper command paths in agent configs and service definitions that no longer exist or sit where managed enrollment refuses to install, such as a package-manager bin directory.
+
 ### Interrupted service operations
 
 Generated service definitions record their private state directory. At startup, the proxy checks its recorded identity and that directory's journal before accepting inference. It refuses startup for commit intent, committed or submitted stops, and damaged journals. This prevents an automatic replacement process from accepting work that a delayed stop could interrupt. Public status reports `drain_control.startup_guard`.

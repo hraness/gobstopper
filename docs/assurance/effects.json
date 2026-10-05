@@ -7401,6 +7401,27 @@
     },
     {
       "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "installation_enrolled",
+      "effects": [
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "installation_report",
+      "effects": [
+        "upgrade-directory-read"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
+      "symbol": "is_installation_busy",
+      "effects": [
+        "pure"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update.rs",
       "symbol": "paths",
       "effects": [
         "pure"
@@ -8106,6 +8127,13 @@
       "symbol": "discard_upgrade",
       "effects": [
         "native-upgrade-stage"
+      ]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/self_update/unix.rs",
+      "symbol": "is_installation_busy",
+      "effects": [
+        "pure"
       ]
     },
     {

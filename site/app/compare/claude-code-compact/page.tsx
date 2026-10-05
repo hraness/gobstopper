@@ -64,7 +64,7 @@ export default function CompareClaudeCodeCompact() {
         type="application/ld+json"
       />
       <SiteHeader path="/compare/claude-code-compact" />
-      <main id="main" tabIndex={-1}>
+      <main id="main" tabIndex={-1} data-hraness-landscape="page">
         <SiteDocument
           dek="Claude Code's /compact swaps history for a model-written summary with no preview; Gobstopper previews the cut, archives the original, and can undo it."
           eyebrow="Comparison"

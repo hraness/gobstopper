@@ -464,8 +464,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-05-089-clef-core.json",
-        "sha256": "fc089cfc5c5f9cb1ce0770263f77aa1734fe588c8eb51c9b9d5f4e4d3ededd74"
+        "path": "docs/assurance/receipts/2026-10-05-mcp-lease-core.json",
+        "sha256": "a21c8e502f36becdec03e1ce10eab4723caa061127d9403d9dd9e6a6eefeb61f"
       }
     },
     {
@@ -527,8 +527,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-05-089-clef-transcript.json",
-        "sha256": "83b8d1ad82c315fe4445c89e879009792536c8c3802397187f1ccbba04f47daa"
+        "path": "docs/assurance/receipts/2026-10-05-mcp-lease-transcript.json",
+        "sha256": "f567a77bdcf2e74c8b2782d2cf82a1fc9722d4bd06c5e006ec796ed764692f7a"
       }
     },
     {
@@ -548,8 +548,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-05-fixture-nonblocking-accept-stress.json",
-        "sha256": "f7200b33e71c7a595b3385cc190ac604c728ba4a6cb39c96b0168c0a639ab4e0"
+        "path": "docs/assurance/receipts/2026-10-05-mcp-lease-stress.json",
+        "sha256": "90e0138a6bf0aee9f9b8afdc6747de87ac207a1cad8662974c1830290e021395"
       }
     },
     {

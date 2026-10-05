@@ -5,7 +5,7 @@ use anyhow::{bail, Result};
 use clap::{Args, ValueEnum};
 use hraness_cli_update::{
     ActiveLease, Channel, CommandAction, CurlGithub, Paths, Product, RunningIdentity,
-    StartupContext, StartupOutcome, UpdateResult, Updater,
+    StartupContext, StartupOutcome, UpdateResult, UpdateStatus, Updater,
 };
 use std::path::{Path, PathBuf};
 
@@ -249,13 +249,106 @@ pub(crate) fn explicit(args: &UpdateArgs) -> Result<()> {
     let installer = native::NativeInstaller;
     #[cfg(not(unix))]
     let installer = UnsupportedInstaller;
-    let report = updater.execute_with_context(
+    let mut report = updater.execute_with_context(
         action,
         &StartupContext::from_process(),
         &source,
         &installer,
     )?;
+    if report.status == UpdateStatus::Busy {
+        let lock = std::env::current_exe()
+            .ok()
+            .and_then(|exe| exe.canonicalize().ok())
+            .and_then(|exe| paths(&exe).ok())
+            .map(|paths| paths.receipt.with_file_name("activity.lock"));
+        report.instructions = Some(busy_instructions(
+            crate::proxy_agent::installed(),
+            lock.as_deref(),
+            report.instructions.take(),
+        ));
+    }
     print_result(&report, args.json)
+}
+
+/// `update` reports Busy whenever another command holds the installation's
+/// activity lock — which a managed proxy does for its entire lifetime, so a
+/// bare retry can never succeed while the service runs. Say who is holding it
+/// and name the path that actually works.
+fn busy_instructions(
+    service_installed: bool,
+    lock: Option<&Path>,
+    existing: Option<String>,
+) -> String {
+    let mut hint = if service_installed {
+        "A managed Gobstopper service holds this installation's update lock for \
+        its entire lifetime. `gobstopper proxy upgrade` pauses requests, \
+        replaces the executable, and restarts the service."
+            .to_string()
+    } else {
+        "Running Gobstopper commands hold this installation's update lock for \
+        their entire lifetime. Retry after they finish, or stop them first."
+            .to_string()
+    };
+    if let Some(lock) = lock {
+        hint += &format!("\nSee who holds it: lsof {}", lock.display());
+    }
+    match existing {
+        Some(previous) => format!("{previous}\n{hint}"),
+        None => hint,
+    }
+}
+
+/// A verified install receipt beside this executable means another running
+/// command holds its activity lock for life — continuous daemons on a managed
+/// path permanently block updates.
+pub(crate) fn installation_enrolled(executable: &Path) -> bool {
+    executable.is_absolute()
+        && paths(executable)
+            .map(|paths| paths.receipt.is_file())
+            .unwrap_or(false)
+}
+
+/// Machine-readable enrollment for `proxy doctor`: whether the service's
+/// executable is a managed release installation and what its update policy is.
+/// Reads local state only; never touches the network.
+pub(crate) fn installation_report(executable: &Path) -> serde_json::Value {
+    let report = (|| -> Result<serde_json::Value> {
+        let updater =
+            Updater::for_executable(product(), paths(executable)?, executable.to_path_buf())?;
+        #[cfg(unix)]
+        let installer = native::NativeInstaller;
+        #[cfg(not(unix))]
+        let installer = UnsupportedInstaller;
+        let policy = updater
+            .execute(CommandAction::Status, &client()?, &installer)
+            .ok()
+            .map(|report| report.policy);
+        match updater.inspect() {
+            Ok(installation) => Ok(serde_json::json!({
+                "managed": true,
+                "kind": installation.receipt.kind,
+                "release_tag": installation.receipt.release_tag,
+                "pinned": installation.receipt.pinned,
+                "policy": policy,
+            })),
+            Err(_) => Ok(serde_json::json!({
+                "managed": false,
+                "policy": policy,
+            })),
+        }
+    })();
+    report.unwrap_or_else(|_| serde_json::json!({"managed": false}))
+}
+
+/// unix replacement fails fast while any command holds the activity lock.
+#[cfg(unix)]
+pub(crate) fn is_installation_busy(error: &anyhow::Error) -> bool {
+    native::is_installation_busy(error)
+}
+
+#[cfg(not(unix))]
+pub(crate) fn is_installation_busy(_: &anyhow::Error) -> bool {
+    false
 }
 
 pub(crate) fn startup(offline: bool, no_update: bool) -> Result<Option<ActiveLease>> {
@@ -308,5 +401,49 @@ pub(crate) fn released_tag() -> Result<&'static str> {
         RunningIdentity::Source => {
             bail!("This source build cannot enroll as an official release installation.")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn busy_instructions_names_the_service_upgrade_path() {
+        let text = busy_instructions(true, None, None);
+        assert!(text.contains("proxy upgrade"));
+        assert!(text.contains("managed Gobstopper service"));
+        let text = busy_instructions(true, None, Some("prior".into()));
+        assert!(text.starts_with("prior\n"));
+    }
+
+    #[test]
+    fn busy_instructions_without_a_service_points_at_holders() {
+        let text = busy_instructions(false, None, None);
+        assert!(text.contains("Retry after they finish"));
+        assert!(!text.contains("proxy upgrade"));
+    }
+
+    #[test]
+    fn busy_instructions_names_the_lock_for_holder_enumeration() {
+        let lock = Path::new("/usr/local/bin/.hraness-cli-update-gobstopper/activity.lock");
+        let text = busy_instructions(true, Some(lock), None);
+        assert!(text.contains(&format!("lsof {}", lock.display())));
+    }
+
+    #[test]
+    fn installation_enrolled_requires_an_existing_receipt() {
+        let root =
+            std::env::temp_dir().join(format!("gobstopper-enrolled-test-{}", std::process::id()));
+        let bin = root.join("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join("gobstopper");
+        std::fs::write(&exe, b"binary").unwrap();
+        assert!(!installation_enrolled(&exe));
+        let receipt_dir = bin.join(".hraness-cli-update-gobstopper");
+        std::fs::create_dir_all(&receipt_dir).unwrap();
+        std::fs::write(receipt_dir.join("install.json"), b"{}").unwrap();
+        assert!(installation_enrolled(&exe));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }
