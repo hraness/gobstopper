@@ -464,8 +464,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-05-mcp-lease-core.json",
-        "sha256": "a21c8e502f36becdec03e1ce10eab4723caa061127d9403d9dd9e6a6eefeb61f"
+        "path": "docs/assurance/receipts/2026-10-05-090-clef-core.json",
+        "sha256": "bca55844e15c715036f0596631aac7949eb09fc76d458f8ef4b9a12230dc0203"
       }
     },
     {
@@ -527,8 +527,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-05-mcp-lease-transcript.json",
-        "sha256": "f567a77bdcf2e74c8b2782d2cf82a1fc9722d4bd06c5e006ec796ed764692f7a"
+        "path": "docs/assurance/receipts/2026-10-05-090-clef-transcript.json",
+        "sha256": "0547716c6d7a4402fad661f3238f02b38f46d7238e76d9e4c2ce0e56e04ba56e"
       }
     },
     {
@@ -548,8 +548,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-05-mcp-lease-stress.json",
-        "sha256": "90e0138a6bf0aee9f9b8afdc6747de87ac207a1cad8662974c1830290e021395"
+        "path": "docs/assurance/receipts/2026-10-05-090-clef-stress.json",
+        "sha256": "b3e1eecedf5c83d76d214d8835b5274a41850646217cf4f5c59e6f7a8dcee395"
       }
     },
     {
