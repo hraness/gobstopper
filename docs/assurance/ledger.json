@@ -548,8 +548,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-05-090-clef-stress.json",
-        "sha256": "b3e1eecedf5c83d76d214d8835b5274a41850646217cf4f5c59e6f7a8dcee395"
+        "path": "docs/assurance/receipts/2026-10-05-mcp-lease-stress.json",
+        "sha256": "ff79f06a9079b4a5507fc7b53702c9ace61516fdd2c285ac1a14014d7b7083f9"
       }
     },
     {

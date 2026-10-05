@@ -150,11 +150,11 @@
     "verify/watch/check.py": "97ce34ea1926af465cfd242074ad80d9941311c9f412ee163923a90b7bfaebad"
   },
   "tool_sha256": {
-    "/opt/homebrew/bin/cargo": "b7a341737d8777ef0e21a71f0af90723ccf692914255110c12bbcfed79d75a53",
-    "/opt/homebrew/bin/rustc": "d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd",
-    "/opt/homebrew/Cellar/python@3.14/3.14.6/Frameworks/Python.framework/Versions/3.14/bin/python3.14": "4f00ea2ad53d62437a6a3946b73c73614a97e8accdc5b96dc095ea1a0d9c6a56",
-    "/opt/homebrew/Cellar/rust/1.97.1/bin/cargo": "b7a341737d8777ef0e21a71f0af90723ccf692914255110c12bbcfed79d75a53",
-    "/opt/homebrew/Cellar/rust/1.97.1/bin/rustc": "d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd"
+    "cargo-dispatcher": "b7a341737d8777ef0e21a71f0af90723ccf692914255110c12bbcfed79d75a53",
+    "rustc-dispatcher": "d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd",
+    "python": "4f00ea2ad53d62437a6a3946b73c73614a97e8accdc5b96dc095ea1a0d9c6a56",
+    "cargo": "b7a341737d8777ef0e21a71f0af90723ccf692914255110c12bbcfed79d75a53",
+    "rustc": "d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd"
   },
   "platform": "darwin",
   "identity_log_sha256": {
