@@ -1,8 +1,8 @@
-//! Jev (typesafe.ai `systemone`) scorer driver for the `scored` strategy.
+//! Cloudflare Clef scorer driver for the `scored` strategy.
 //!
-//! Jev is a System One scorer: no prose generation, just typed
-//! question/answer pairs. It is fast (~100ms/call), cheap
-//! ($0.042/M input tokens, output free), and structured. For compaction
+//! Clef is a hosted decision model: no prose generation, just typed
+//! question/answer pairs through Cloudflare Workers AI.
+//! Scoring is opt-in and experimental. For compaction
 //! we ask one `noul` (yes/no probability) question per eligible item:
 //! "Does the output of `{label}` need to stay visible for the agent to
 //! continue?". The conversation is stripped of full tool payloads before
@@ -10,7 +10,7 @@
 //! transcript-derived text: tool arguments, output tails, and user snippets.
 //!
 //! Calls are made via `curl` (spawning the system binary) so gobstopper
-//! needs no HTTP dependency. Batching keeps the request under Jev's 32k
+//! needs no HTTP dependency. Batching keeps scoring evidence small for Clef's 65k
 //! context window and a bounded runtime.
 //!
 //! Request economy: identical question texts in one pass are asked once
@@ -22,24 +22,24 @@
 //! Scorer and judge resolve the API key once per process, so `watch`
 //! does not re-read the OS credential store every pass.
 //!
-//! API key resolution: `TYPESAFE_API_KEY` → `GOBSTOPPER_JEV_API_KEY` →
-//! the OS keychain written by `gobstopper auth jev` (macOS Keychain /
+//! API key resolution: `CLOUDFLARE_API_TOKEN` → `CLOUDFLARE_AUTH_TOKEN` →
+//! the OS keychain written by `gobstopper auth clef` (macOS Keychain /
 //! Windows Credential Manager / Linux kernel keyring).
 //!
-//!   GOBSTOPPER_JEV_ENDPOINT       - https://api.typesafe.ai/v1/systemone
-//!   GOBSTOPPER_JEV_MAX_Q          - 64 questions per call (1..64)
-//!   GOBSTOPPER_JEV_MAX_STATE      - 40 state items (1..128)
-//!   GOBSTOPPER_JEV_MAX_BATCHES    - 4 calls per scoring pass (1..16)
-//!   GOBSTOPPER_JEV_PARALLEL       - 2 concurrent calls (1..4)
-//!   GOBSTOPPER_JEV_TIMEOUT_MS     - 8000 (100..30000)
-//!   GOBSTOPPER_JEV_CACHE          - 0 disables response-cache use
-//!   GOBSTOPPER_JEV_CACHE_TTL_SECS - 300; 0 disables the cache (max 3600)
-//!   GOBSTOPPER_JEV_CACHE_PATH     - ~/.local/share/gobstopper/jev-cache.json
+//!   CLOUDFLARE_ACCOUNT_ID          - 32-hex account; fixed Cloudflare API origin
+//!   GOBSTOPPER_CLEF_MAX_Q          - 64 questions per call (1..64)
+//!   GOBSTOPPER_CLEF_MAX_STATE      - 40 state items (1..128)
+//!   GOBSTOPPER_CLEF_MAX_BATCHES    - 4 calls per scoring pass (1..16)
+//!   GOBSTOPPER_CLEF_PARALLEL       - 2 concurrent calls (1..4)
+//!   GOBSTOPPER_CLEF_TIMEOUT_MS     - 8000 (100..30000)
+//!   GOBSTOPPER_CLEF_CACHE          - 0 disables response-cache use
+//!   GOBSTOPPER_CLEF_CACHE_TTL_SECS - 300; 0 disables the cache (max 3600)
+//!   GOBSTOPPER_CLEF_CACHE_PATH     - ~/.local/share/gobstopper/clef-cache.json
 //!     (per-question answers persist across processes; the file holds
 //!     only sha256 key digests → probability + timestamp, never text)
-//!   GOBSTOPPER_JEV_CONTENT_BYTES  - 0 = labels and summaries only; >0
+//!   GOBSTOPPER_CLEF_CONTENT_BYTES  - 0 = labels and summaries only; >0
 //!     attaches an additional excerpt capped at 1024 bytes per candidate.
-//!     Jev is remote; enabling the scorer sends bounded transcript text.
+//!     Clef is remote; enabling the scorer sends bounded transcript text.
 
 use anyhow::Context;
 use serde::{Deserialize, Serialize};
@@ -53,50 +53,59 @@ use std::time::{Duration, Instant};
 
 use gobstopper_core::{HeuristicScorer, ScoreDriver, ScoredItem, Transcript};
 
-/// Where the API key was found — reported by `gobstopper auth jev
+/// Where the API key was found — reported by `gobstopper auth clef
 /// --status` so the source is never ambiguous.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeySource {
-    /// `TYPESAFE_API_KEY` in the environment.
-    EnvTypesafe,
-    /// `GOBSTOPPER_JEV_API_KEY` in the environment.
-    EnvGobstopper,
-    /// OS credential store via `gobstopper auth jev`.
+    /// `CLOUDFLARE_API_TOKEN` in the environment.
+    EnvCloudflare,
+    /// `CLOUDFLARE_AUTH_TOKEN` in the environment.
+    EnvAuthToken,
+    /// OS credential store via `gobstopper auth clef`.
     Keychain,
 }
 
 impl KeySource {
     pub fn describe(self) -> &'static str {
         match self {
-            Self::EnvTypesafe => "env TYPESAFE_API_KEY",
-            Self::EnvGobstopper => "env GOBSTOPPER_JEV_API_KEY",
+            Self::EnvCloudflare => "env CLOUDFLARE_API_TOKEN",
+            Self::EnvAuthToken => "env CLOUDFLARE_AUTH_TOKEN",
             Self::Keychain => "OS keychain",
         }
     }
 }
 
 /// Key resolution order: env first (CI and ad-hoc shells keep working),
-/// then the OS keychain written by `gobstopper auth jev`.
+/// then the OS keychain written by `gobstopper auth clef`.
 pub fn resolve_key() -> Option<(String, KeySource)> {
-    env_key().or_else(|| crate::secrets::jev_key().map(|k| (k, KeySource::Keychain)))
+    resolve_key_from(|name| std::env::var(name).ok(), crate::secrets::clef_key)
+}
+
+fn resolve_key_from(
+    get: impl FnMut(&str) -> Option<String>,
+    _stored: impl FnOnce() -> Option<String>,
+) -> Option<(String, KeySource)> {
+    env_key_from(get)
 }
 
 /// The key from the environment only, without touching the keychain.
 pub fn env_key() -> Option<(String, KeySource)> {
-    if let Ok(k) = std::env::var("TYPESAFE_API_KEY") {
-        if !k.trim().is_empty() {
-            return Some((k, KeySource::EnvTypesafe));
-        }
-    }
-    if let Ok(k) = std::env::var("GOBSTOPPER_JEV_API_KEY") {
-        if !k.trim().is_empty() {
-            return Some((k, KeySource::EnvGobstopper));
+    env_key_from(|name| std::env::var(name).ok())
+}
+
+fn env_key_from(mut get: impl FnMut(&str) -> Option<String>) -> Option<(String, KeySource)> {
+    for (name, source) in [
+        ("CLOUDFLARE_API_TOKEN", KeySource::EnvCloudflare),
+        ("CLOUDFLARE_AUTH_TOKEN", KeySource::EnvAuthToken),
+    ] {
+        if let Some(key) = get(name).filter(|key| !key.trim().is_empty()) {
+            return Some((key, source));
         }
     }
     None
 }
 
-const DEFAULT_ENDPOINT: &str = "https://api.typesafe.ai/v1/systemone";
+const DEFAULT_ENDPOINT: &str = "";
 const MAX_QUESTIONS_PER_CALL: usize = 64;
 const DEFAULT_MAX_STATE_ITEMS: usize = 40;
 const MAX_STATE_ITEMS: usize = 128;
@@ -125,12 +134,13 @@ fn bounded_u64(value: Option<String>, default: u64, min: u64, max: u64) -> u64 {
         .clamp(min, max)
 }
 
-/// Runtime configuration for the Jev scorer. Lives in gobstopper.toml as
-/// `[scorer]` or `[scorer.jev]` depending on which design we ship.
+/// Runtime configuration for the Clef scorer, resolved from environment
+/// and the dedicated OS credential entry; tokens never live in config files.
 #[derive(Clone)]
-pub struct JevConfig {
+pub struct ClefConfig {
     pub api_key: String,
     pub endpoint: String,
+    pub model: String,
     pub max_questions_per_call: usize,
     pub max_state_items: usize,
     pub max_batches: usize,
@@ -142,11 +152,12 @@ pub struct JevConfig {
     pub content_bytes: usize,
 }
 
-impl Default for JevConfig {
+impl Default for ClefConfig {
     fn default() -> Self {
         Self {
             api_key: String::new(),
             endpoint: DEFAULT_ENDPOINT.into(),
+            model: "clef".into(),
             max_questions_per_call: MAX_QUESTIONS_PER_CALL,
             max_state_items: DEFAULT_MAX_STATE_ITEMS,
             max_batches: DEFAULT_MAX_BATCHES,
@@ -157,51 +168,57 @@ impl Default for JevConfig {
     }
 }
 
-impl JevConfig {
+impl ClefConfig {
     /// Load from env (default) or the OS keychain. Returns `None` if no key.
     pub fn resolve() -> Option<Self> {
         Self::resolve_with_source().map(|(cfg, _)| cfg)
     }
 
     pub fn resolve_with_source() -> Option<(Self, KeySource)> {
+        let account = std::env::var("CLOUDFLARE_ACCOUNT_ID").ok()?;
+        let model = std::env::var("GOBSTOPPER_CLEF_MODEL").unwrap_or_else(|_| "clef".into());
+        let endpoint = crate::clef::endpoint(&account, &model).ok()?;
         let (api_key, source) = resolve_key()?;
+        if !crate::secrets::safe_bearer_key(&api_key) {
+            return None;
+        }
         Some((
             Self {
                 api_key,
-                endpoint: std::env::var("GOBSTOPPER_JEV_ENDPOINT")
-                    .unwrap_or_else(|_| DEFAULT_ENDPOINT.into()),
+                endpoint,
+                model,
                 max_questions_per_call: bounded_usize(
-                    std::env::var("GOBSTOPPER_JEV_MAX_Q").ok(),
+                    std::env::var("GOBSTOPPER_CLEF_MAX_Q").ok(),
                     MAX_QUESTIONS_PER_CALL,
                     1,
                     MAX_QUESTIONS_PER_CALL,
                 ),
                 max_state_items: bounded_usize(
-                    std::env::var("GOBSTOPPER_JEV_MAX_STATE").ok(),
+                    std::env::var("GOBSTOPPER_CLEF_MAX_STATE").ok(),
                     DEFAULT_MAX_STATE_ITEMS,
                     1,
                     MAX_STATE_ITEMS,
                 ),
                 max_batches: bounded_usize(
-                    std::env::var("GOBSTOPPER_JEV_MAX_BATCHES").ok(),
+                    std::env::var("GOBSTOPPER_CLEF_MAX_BATCHES").ok(),
                     DEFAULT_MAX_BATCHES,
                     1,
                     MAX_BATCHES,
                 ),
                 parallelism: bounded_usize(
-                    std::env::var("GOBSTOPPER_JEV_PARALLEL").ok(),
+                    std::env::var("GOBSTOPPER_CLEF_PARALLEL").ok(),
                     DEFAULT_PARALLELISM,
                     1,
                     MAX_PARALLELISM,
                 ),
                 timeout_ms: bounded_u64(
-                    std::env::var("GOBSTOPPER_JEV_TIMEOUT_MS").ok(),
+                    std::env::var("GOBSTOPPER_CLEF_TIMEOUT_MS").ok(),
                     DEFAULT_TIMEOUT_MS,
                     MIN_TIMEOUT_MS,
                     MAX_TIMEOUT_MS,
                 ),
                 content_bytes: bounded_usize(
-                    std::env::var("GOBSTOPPER_JEV_CONTENT_BYTES").ok(),
+                    std::env::var("GOBSTOPPER_CLEF_CONTENT_BYTES").ok(),
                     0,
                     0,
                     MAX_CONTENT_BYTES,
@@ -232,28 +249,14 @@ struct NoulQuestion {
 }
 
 #[derive(Debug, Clone, Serialize)]
-struct JevRequest {
-    model: &'static str,
+struct ClefRequest {
+    model: String,
     state: serde_json::Value,
     questions: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-struct JevAnswer {
-    #[serde(default)]
-    noul: Option<f64>,
-    #[serde(default)]
-    probability: Option<f64>,
-    #[serde(default)]
-    answer: Option<bool>,
-    #[serde(default)]
-    score: Option<f64>,
-    #[serde(default)]
-    p: Option<f64>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct JevAnswers {
+struct ClefAnswers {
     answers: serde_json::Map<String, serde_json::Value>,
 }
 
@@ -313,11 +316,11 @@ impl<V: Clone> ResponseCache<V> {
 }
 
 fn cache_ttl() -> Option<Duration> {
-    if std::env::var("GOBSTOPPER_JEV_CACHE").as_deref() == Ok("0") {
+    if std::env::var("GOBSTOPPER_CLEF_CACHE").as_deref() == Ok("0") {
         return None;
     }
     let secs = bounded_u64(
-        std::env::var("GOBSTOPPER_JEV_CACHE_TTL_SECS").ok(),
+        std::env::var("GOBSTOPPER_CLEF_CACHE_TTL_SECS").ok(),
         DEFAULT_CACHE_TTL_SECS,
         0,
         MAX_CACHE_TTL_SECS,
@@ -345,7 +348,7 @@ fn question_cache() -> &'static Mutex<ResponseCache<f64>> {
 fn cache_key(endpoint: &str, api_key: &str, payload: &[u8]) -> CacheKey {
     let mut hasher = Sha256::new();
     for part in [
-        b"gobstopper-jev-request-v3".as_slice(),
+        b"gobstopper-clef-request-v3".as_slice(),
         endpoint.as_bytes(),
         api_key.as_bytes(),
         payload,
@@ -365,8 +368,8 @@ fn question_cache_key(
     // The namespace strands old question-only entries in both memory and
     // disk caches without rewriting or deleting the existing cache file.
     let payload = serde_json::to_vec(&(
-        "gobstopper/jev-question-v3",
-        "jev-latest",
+        "gobstopper/clef-question-v3",
+        "cloudflare-clef-v1",
         state,
         instructions,
     ))
@@ -417,14 +420,14 @@ fn question_cache_put(key: CacheKey, probability: f64, ttl: Option<Duration>) {
 }
 
 /// On-disk question cache, persisted across processes at
-/// `~/.local/share/gobstopper/jev-cache.json` (override:
-/// `GOBSTOPPER_JEV_CACHE_PATH`). Entries are keyed by the same SHA-256
+/// `~/.local/share/gobstopper/clef-cache.json` (override:
+/// `GOBSTOPPER_CLEF_CACHE_PATH`). Entries are keyed by the same SHA-256
 /// digest used in memory, so the file stores only
 /// `"<key hex>": [probability, unix_secs]` tuples — question text,
 /// endpoint, and key material never land on disk. Writes are atomic
 /// (temp file + rename); concurrent processes are last-writer-wins,
 /// which is safe for a cache: a lost entry just re-asks a question.
-/// `GOBSTOPPER_JEV_CACHE=0` disables reads and writes on this layer
+/// `GOBSTOPPER_CLEF_CACHE=0` disables reads and writes on this layer
 /// too, via the `ttl: None` guards above.
 struct DiskCache {
     path: PathBuf,
@@ -553,7 +556,7 @@ fn publish_disk_cache(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<()
         "cache_parent_invalid"
     );
     let temp = parent.join(format!(
-        ".jev-cache-{}-{}.tmp",
+        ".clef-cache-{}-{}.tmp",
         std::process::id(),
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
@@ -581,11 +584,11 @@ fn publish_disk_cache(path: &std::path::Path, bytes: &[u8]) -> anyhow::Result<()
 
 #[cfg(not(test))]
 fn disk_cache_path() -> Option<PathBuf> {
-    if let Some(path) = std::env::var_os("GOBSTOPPER_JEV_CACHE_PATH") {
+    if let Some(path) = std::env::var_os("GOBSTOPPER_CLEF_CACHE_PATH") {
         return Some(PathBuf::from(path));
     }
     std::env::var_os("HOME")
-        .map(|h| PathBuf::from(h).join(".local/share/gobstopper/jev-cache.json"))
+        .map(|h| PathBuf::from(h).join(".local/share/gobstopper/clef-cache.json"))
 }
 
 fn disk_cache() -> Option<&'static Mutex<DiskCache>> {
@@ -623,16 +626,16 @@ fn unhex(s: &str) -> Option<CacheKey> {
     Some(out)
 }
 
-pub struct JevScorer {
-    cfg: JevConfig,
+pub struct ClefScorer {
+    cfg: ClefConfig,
     /// One-line summary of the most recent `score` pass, surfaced via
     /// `ScoreDriver::last_run_summary` so plan rationale and compaction
     /// events carry the request-economy numbers.
     last_summary: Mutex<Option<String>>,
 }
 
-impl JevScorer {
-    pub fn new(cfg: JevConfig) -> Self {
+impl ClefScorer {
+    pub fn new(cfg: ClefConfig) -> Self {
         Self {
             cfg: cfg.bounded(),
             last_summary: Mutex::new(None),
@@ -691,14 +694,14 @@ where
             slot.into_inner()
                 .unwrap_or_else(|e| e.into_inner())
                 .unwrap_or_else(|| {
-                    Err(Box::new("jev worker stopped before claiming task")
+                    Err(Box::new("clef worker stopped before claiming task")
                         as Box<dyn std::any::Any + Send>)
                 })
         })
         .collect()
 }
 
-impl ScoreDriver for JevScorer {
+impl ScoreDriver for ClefScorer {
     fn score(&self, transcript: &Transcript, candidates: &[usize]) -> Vec<ScoredItem> {
         if candidates.is_empty() {
             return Vec::new();
@@ -769,20 +772,20 @@ impl ScoreDriver for JevScorer {
                     if fetch.remote_failed.is_some() {
                         failed += 1;
                         eprintln!(
-                            "jev scorer call failed for chunk {chunk_index}; retaining heuristic scores for unanswered questions: response_unavailable"
+                            "clef scorer call failed for chunk {chunk_index}; retaining heuristic scores for unanswered questions: response_unavailable"
                         );
                     }
                 }
                 Err(_) => {
                     failed += 1;
                     eprintln!(
-                        "jev scorer worker panicked for chunk {chunk_index}; retaining heuristic scores"
+                        "clef scorer worker panicked for chunk {chunk_index}; retaining heuristic scores"
                     );
                 }
             }
         }
         let summary = format!(
-            "jev: {} candidates → {unique_total} unique questions ({cached} cached, {sent} sent) in {calls} call(s), {answered_items} items overlaid, {failed} failed, {}ms",
+            "clef: {} candidates → {unique_total} unique questions ({cached} cached, {sent} sent) in {calls} call(s), {answered_items} items overlaid, {failed} failed, {}ms",
             requested.len(),
             started.elapsed().as_millis()
         );
@@ -897,7 +900,7 @@ fn fetch_chunk(
     state: &serde_json::Value,
     chunk: &[(String, Vec<usize>)],
     chunk_index: usize,
-    cfg: &JevConfig,
+    cfg: &ClefConfig,
     ttl: Option<Duration>,
 ) -> ChunkFetch {
     let mut cached = 0usize;
@@ -925,8 +928,8 @@ fn fetch_chunk(
                 .unwrap(),
             );
         }
-        let request = JevRequest {
-            model: "jev-latest",
+        let request = ClefRequest {
+            model: cfg.model.clone(),
             state: state.clone(),
             questions,
         };
@@ -953,7 +956,7 @@ fn fetch_chunk(
     }
 }
 
-/// POST a JSON body to the Jev endpoint via curl; returns the HTTP
+/// POST a JSON body to the Clef endpoint via curl; returns the HTTP
 /// status and response body. `-w` appends the status on its own line.
 fn post_json(
     endpoint: &str,
@@ -961,6 +964,12 @@ fn post_json(
     body: &[u8],
     timeout_ms: u64,
 ) -> anyhow::Result<(u16, String)> {
+    #[cfg(not(test))]
+    crate::clef::validate_endpoint(endpoint)?;
+    anyhow::ensure!(
+        body.len() <= crate::clef::MAX_BODY_BYTES,
+        "clef_request_invalid"
+    );
     let mut cmd = Command::new("curl");
     crate::secrets::configure_curl_bearer(&mut cmd, api_key)?;
     cmd.arg("-sS")
@@ -973,113 +982,96 @@ fn post_json(
         .arg("-w")
         .arg("\n%{http_code}")
         .arg("--proto")
-        .arg("=http,https")
+        .arg(if cfg!(test) { "=http,https" } else { "=https" })
         .arg("--url")
         .arg(endpoint);
     let raw =
-        gobstopper_adapters::plugins::run_bounded(cmd, body.to_vec(), timeout_ms, 1024 * 1024)?;
-    let text = String::from_utf8(raw).context("jev response is not utf8")?;
+        gobstopper_adapters::plugins::run_bounded_http(cmd, body.to_vec(), timeout_ms, 1024 * 1024)
+            .map_err(|_| anyhow::anyhow!("clef_transport_failed"))?;
+    let text = String::from_utf8(raw).map_err(|_| anyhow::anyhow!("clef_response_invalid"))?;
     let (body, code) = text
         .rsplit_once('\n')
         .and_then(|(b, c)| c.trim().parse::<u16>().ok().map(|n| (b, n)))
-        .context("jev response missing http status")?;
+        .context("clef response missing http status")?;
     Ok((code, body.to_string()))
 }
 
 /// One retry for transient failures only: transport errors and HTTP
 /// 5xx. Auth rejections (4xx) fail immediately — retrying a rejected
 /// key just hammers the API. Bounded: at most two attempts per call.
-const RETRY_DELAY_MS: u64 = 250;
-
 fn post_json_retried(
     endpoint: &str,
     api_key: &str,
     body: &[u8],
     timeout_ms: u64,
 ) -> anyhow::Result<(u16, String)> {
-    let first = post_json(endpoint, api_key, body, timeout_ms);
-    let retryable = match &first {
-        Ok((code, _)) => *code >= 500,
-        Err(_) => true,
-    };
-    if !retryable {
-        return first;
-    }
-    std::thread::sleep(Duration::from_millis(RETRY_DELAY_MS));
     post_json(endpoint, api_key, body, timeout_ms)
 }
 
 fn answer_probability(value: serde_json::Value) -> Option<f64> {
-    if let Some(object) = value.as_object() {
-        if ["noul", "probability", "p", "score", "answer"]
-            .iter()
-            .filter(|key| object.contains_key(**key))
-            .count()
-            != 1
-        {
-            return None;
-        }
+    let object = value.as_object()?;
+    if object.len() != 2 || value["type"].as_str() != Some("noul") {
+        return None;
     }
-    let probability = if let Ok(answer) = serde_json::from_value::<JevAnswer>(value.clone()) {
-        answer
-            .noul
-            .or(answer.probability)
-            .or(answer.p)
-            .or(answer.score)
-            .or_else(|| answer.answer.map(|yes| if yes { 1.0 } else { 0.0 }))?
-    } else if let Some(yes) = value.as_bool() {
-        if yes {
-            1.0
-        } else {
-            0.0
-        }
-    } else {
-        value.as_f64()?
-    };
+    let probability = value["noul"].as_f64()?;
     crate::llm_scorer::valid_probability(probability).then_some(probability)
 }
 
 fn parse_answers(text: &str) -> anyhow::Result<HashMap<String, f64>> {
     let value = crate::mcp::strict_json(text.as_bytes())
-        .map_err(|_| anyhow::anyhow!("jev_response_invalid"))?;
-    let parsed: JevAnswers =
-        serde_json::from_value(value).map_err(|_| anyhow::anyhow!("jev_response_invalid"))?;
+        .map_err(|_| anyhow::anyhow!("clef_response_invalid"))?;
+    let parsed: ClefAnswers =
+        serde_json::from_value(value).map_err(|_| anyhow::anyhow!("clef_response_invalid"))?;
     anyhow::ensure!(
         parsed.answers.len() <= MAX_QUESTIONS_PER_CALL,
-        "jev_response_invalid"
+        "clef_response_invalid"
     );
     parsed
         .answers
         .into_iter()
         .map(|(key, value)| answer_probability(value).map(|probability| (key, probability)))
         .collect::<Option<_>>()
-        .context("jev response contains an invalid answer")
+        .context("clef response contains an invalid answer")
 }
 
 /// Send one request and return parsed answers — one transient retry,
 /// no caching. The scorer layers its per-question cache on top.
-fn post_answers(request: &JevRequest, cfg: &JevConfig) -> anyhow::Result<HashMap<String, f64>> {
-    let body = serde_json::to_vec(request)?;
-    let (code, text) = post_json_retried(&cfg.endpoint, &cfg.api_key, &body, cfg.timeout_ms)?;
-    if !(200..300).contains(&code) {
-        anyhow::bail!("jev HTTP {code}");
-    }
-    let answers = parse_answers(&text)?;
+pub(crate) fn post_decision(
+    request: &serde_json::Value,
+    cfg: &ClefConfig,
+) -> anyhow::Result<serde_json::Value> {
+    crate::clef::validate_request(request)?;
     anyhow::ensure!(
-        answers
-            .keys()
-            .all(|key| request.questions.contains_key(key)),
-        "jev_answer_identity_invalid"
+        request["model"].as_str() == Some(&cfg.model),
+        "clef_config_invalid"
     );
-    Ok(answers)
+    #[cfg(not(test))]
+    anyhow::ensure!(
+        cfg.endpoint
+            .ends_with(&format!("/@cf/cloudflare/{}", cfg.model)),
+        "clef_config_invalid"
+    );
+    let body = serde_json::to_vec(request).map_err(|_| anyhow::anyhow!("clef_request_invalid"))?;
+    let (code, text) = post_json_retried(&cfg.endpoint, &cfg.api_key, &body, cfg.timeout_ms)?;
+    anyhow::ensure!((200..300).contains(&code), "clef_http_{code}");
+    let envelope = crate::mcp::strict_json(text.as_bytes())
+        .map_err(|_| anyhow::anyhow!("clef_response_invalid"))?;
+    crate::clef::validate_response(request, &envelope)
+}
+
+fn post_answers(request: &ClefRequest, cfg: &ClefConfig) -> anyhow::Result<HashMap<String, f64>> {
+    let value =
+        serde_json::to_value(request).map_err(|_| anyhow::anyhow!("clef_request_invalid"))?;
+    let result = post_decision(&value, cfg)?;
+    parse_answers(&result.to_string())
 }
 
 /// Exact-request cache wrapper used by the eval judge: the judge's
 /// answers depend on the entire submitted context, so only a verbatim
 /// request replay may be reused.
-fn call_jev(
-    request: &JevRequest,
-    cfg: &JevConfig,
+fn call_clef(
+    request: &ClefRequest,
+    cfg: &ClefConfig,
     ttl: Option<Duration>,
 ) -> anyhow::Result<HashMap<String, f64>> {
     let body = serde_json::to_vec(request)?;
@@ -1100,46 +1092,41 @@ fn call_jev(
 /// Process-lifetime memoization of the resolved config: `maybe_scorer`
 /// and `eval_judge` construct a driver once per scoring pass, and the
 /// OS credential read should not repeat under `watch`. Env vars are
-/// process-fixed anyway; a mid-process `auth jev --delete` takes effect
+/// process-fixed anyway; a mid-process `auth clef --delete` takes effect
 /// on the next invocation. `auth` itself resolves fresh so store,
 /// status, and delete stay truthful.
-fn cached_config() -> Option<JevConfig> {
-    static CFG: OnceLock<Option<JevConfig>> = OnceLock::new();
-    CFG.get_or_init(JevConfig::resolve).clone()
+fn cached_config() -> Option<ClefConfig> {
+    static CFG: OnceLock<Option<ClefConfig>> = OnceLock::new();
+    CFG.get_or_init(ClefConfig::resolve).clone()
 }
 
 /// Convenience: resolve a driver when the `scored` strategy is selected
 /// and a key is configured. Returns `None` if the user wants the default
 /// heuristic scorer (no key), and never fails the compaction.
-pub fn maybe_jev_scorer() -> Option<Box<dyn ScoreDriver>> {
-    cached_config().map(|cfg| Box::new(JevScorer::new(cfg)) as Box<dyn ScoreDriver>)
+pub fn maybe_clef_scorer() -> Option<Box<dyn ScoreDriver>> {
+    cached_config().map(|cfg| Box::new(ClefScorer::new(cfg)) as Box<dyn ScoreDriver>)
 }
 
-/// Live key verification for `gobstopper auth`: one minimal noul
-/// question. Distinguishes a rejected key (401/403 → refuse to store)
-/// from transport/other failures (stored anyway, reported as
-/// unverified).
+/// Local credential-format and endpoint checks for `gobstopper auth`.
+/// Status never submits evidence or invokes the hosted model.
+/// Stored tokens are unverified until used for an explicit request;
+/// configuration checks do not establish provider readiness.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Health {
     Ok,
-    /// HTTP 401/403 — the key is wrong or expired.
+    /// The token contains unsafe whitespace or control characters.
     Rejected,
-    /// Non-auth HTTP error or transport failure.
+    /// The account or model configuration is missing or invalid.
     Unverified,
 }
 
 pub fn health_check(api_key: &str, endpoint: &str) -> Health {
-    let body = serde_json::json!({
-        "model": "jev-latest",
-        "state": {"probe": "gobstopper auth"},
-        "questions": {
-            "health": {"type": "noul", "instructions": "Is two plus two equal to four?"}
-        }
-    });
-    match post_json(endpoint, api_key, body.to_string().as_bytes(), 8_000) {
-        Ok((code, _)) if (200..300).contains(&code) => Health::Ok,
-        Ok((401 | 403, _)) => Health::Rejected,
-        Ok(_) | Err(_) => Health::Unverified,
+    if !crate::secrets::safe_bearer_key(api_key) {
+        Health::Rejected
+    } else if crate::clef::validate_endpoint(endpoint).is_ok() {
+        Health::Ok
+    } else {
+        Health::Unverified
     }
 }
 
@@ -1166,12 +1153,12 @@ fn safe_suffix(s: &str, max: usize) -> &str {
 /// paraphrase in state cards and per-item stubs that the verbatim
 /// probe check cannot credit.
 ///
-/// Opt-in via `GOBSTOPPER_EVAL_JUDGE=jev`: the judge ships the bounded
+/// Opt-in via `GOBSTOPPER_EVAL_JUDGE=clef`: the judge ships the bounded
 /// post-compaction transcript text to the remote API — the same data
-/// boundary as `GOBSTOPPER_JEV_CONTENT_BYTES` — so it is off unless
+/// boundary as `GOBSTOPPER_CLEF_CONTENT_BYTES` — so it is off unless
 /// asked for. One bounded request per strategy row.
-pub struct JevProbeJudge {
-    cfg: JevConfig,
+pub struct ClefProbeJudge {
+    cfg: ClefConfig,
 }
 
 /// Probe cap per judge call — one request, same bound as the scorer's
@@ -1227,7 +1214,7 @@ fn append_judge_evidence(evidence: &mut String, line: &str) {
     evidence.push_str(safe_prefix(line, remaining));
 }
 
-impl gobstopper_core::probe::ProbeJudge for JevProbeJudge {
+impl gobstopper_core::probe::ProbeJudge for ClefProbeJudge {
     fn score(&self, probes: &[gobstopper_core::probe::Probe], post_text: &str) -> Option<Vec<f64>> {
         let judged = probes.len().min(JUDGE_MAX_PROBES);
         if judged == 0 {
@@ -1251,12 +1238,12 @@ impl gobstopper_core::probe::ProbeJudge for JevProbeJudge {
                 .ok()?,
             );
         }
-        let request = JevRequest {
-            model: "jev-latest",
+        let request = ClefRequest {
+            model: self.cfg.model.clone(),
             state: json!({ "compacted_context": state_text }),
             questions,
         };
-        let answers = call_jev(&request, &self.cfg, cache_ttl()).ok()?;
+        let answers = call_clef(&request, &self.cfg, cache_ttl()).ok()?;
         (0..judged)
             .map(|i| answers.get(&format!("p_{i}")).copied())
             .collect()
@@ -1264,20 +1251,142 @@ impl gobstopper_core::probe::ProbeJudge for JevProbeJudge {
 }
 
 /// Resolve the eval probe judge from `GOBSTOPPER_EVAL_JUDGE`. Only
-/// `jev` is supported; any other value and a missing key both yield
+/// `clef` is supported; any other value and a missing key both yield
 /// `None` (the semantic pass is skipped, verbatim recall still runs).
 pub fn eval_judge() -> Option<Box<dyn gobstopper_core::probe::ProbeJudge + Sync>> {
-    if std::env::var("GOBSTOPPER_EVAL_JUDGE").ok().as_deref() != Some("jev") {
+    if std::env::var("GOBSTOPPER_EVAL_JUDGE").ok().as_deref() != Some("clef") {
         return None;
     }
     cached_config().map(|cfg| {
-        Box::new(JevProbeJudge { cfg }) as Box<dyn gobstopper_core::probe::ProbeJudge + Sync>
+        Box::new(ClefProbeJudge { cfg }) as Box<dyn gobstopper_core::probe::ProbeJudge + Sync>
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clef_resolution_remains_environment_only_despite_legacy_storage_settings() {
+        for flag in [None, Some("0"), Some("true"), Some("yes")] {
+            assert!(resolve_key_from(
+                |name| {
+                    match name {
+                        "GOBSTOPPER_CLEF_USE_KEYCHAIN" => flag.map(String::from),
+                        "TYPESAFE_API_KEY" | "GOBSTOPPER_JEV_API_KEY" => {
+                            Some("legacy-private".into())
+                        }
+                        _ => None,
+                    }
+                },
+                || panic!("default resolution must not read credential storage")
+            )
+            .is_none());
+        }
+        assert_eq!(
+            resolve_key_from(
+                |name| (name == "GOBSTOPPER_CLEF_USE_KEYCHAIN").then(|| "1".into()),
+                || Some("stored-synthetic".into())
+            ),
+            None
+        );
+        assert_eq!(
+            resolve_key_from(
+                |name| match name {
+                    "CLOUDFLARE_API_TOKEN" => Some("primary-synthetic".into()),
+                    "GOBSTOPPER_CLEF_USE_KEYCHAIN" => Some("1".into()),
+                    _ => None,
+                },
+                || panic!("environment token must take precedence over credential storage")
+            ),
+            Some(("primary-synthetic".into(), KeySource::EnvCloudflare))
+        );
+    }
+
+    #[test]
+    fn clef_never_reads_storage_even_with_the_retired_opt_in_toggle() {
+        for flag in [None, Some("0"), Some("1"), Some("true")] {
+            let reads = std::cell::Cell::new(0);
+            let found = resolve_key_from(
+                |name| match name {
+                    "GOBSTOPPER_CLEF_USE_KEYCHAIN" => flag.map(String::from),
+                    "TYPESAFE_API_KEY" | "GOBSTOPPER_JEV_API_KEY" => {
+                        Some("synthetic-legacy".into())
+                    }
+                    _ => None,
+                },
+                || {
+                    reads.set(reads.get() + 1);
+                    Some("synthetic-stored-token".into())
+                },
+            );
+            assert!(found.is_none(), "storage resolved for toggle {flag:?}");
+            assert_eq!(reads.get(), 0);
+        }
+    }
+
+    #[test]
+    fn clef_never_replays_http_failures_redirects_or_malformed_responses() {
+        for code in [500, 503, 302, 401, 429, 599, 999, 200] {
+            let server = serve(vec![
+                (code, "SYNTHETIC_PRIVATE_MALFORMED".into()),
+                (
+                    200,
+                    clef_reply(json!({"q_one_attempt":{"type":"noul","noul":0.7}})),
+                ),
+            ]);
+            let cfg = test_cfg(server.endpoint);
+            let result = call_clef(&noul_request("q_one_attempt"), &cfg, None);
+            assert_eq!(
+                server.bodies.lock().unwrap().len(),
+                1,
+                "replayed HTTP {code}"
+            );
+            let error = result.unwrap_err();
+            assert!(!format!("{error:#}").contains("SYNTHETIC_PRIVATE_MALFORMED"));
+        }
+    }
+
+    #[test]
+    fn clef_never_replays_http_503_after_the_provider_received_the_request() {
+        let server = serve(vec![
+            (503, "unavailable".into()),
+            (200, clef_reply(json!({"q_503":{"type":"noul","noul":0.7}}))),
+        ]);
+        let result = call_clef(&noul_request("q_503"), &test_cfg(server.endpoint), None);
+        assert_eq!(server.bodies.lock().unwrap().len(), 1);
+        assert!(result.unwrap_err().to_string().contains("503"));
+    }
+
+    #[test]
+    fn clef_credentials_use_only_cloudflare_inputs_and_local_health() {
+        let env = HashMap::from([
+            ("CLOUDFLARE_API_TOKEN", "primary"),
+            ("CLOUDFLARE_AUTH_TOKEN", "alias"),
+            ("TYPESAFE_API_KEY", "legacy"),
+            ("GOBSTOPPER_JEV_API_KEY", "legacy"),
+        ]);
+        assert_eq!(
+            env_key_from(|name| env.get(name).map(|s| s.to_string())),
+            Some(("primary".into(), KeySource::EnvCloudflare))
+        );
+        assert_eq!(
+            env_key_from(|name| (name != "CLOUDFLARE_API_TOKEN")
+                .then(|| env.get(name).map(|s| s.to_string()))
+                .flatten()),
+            Some(("alias".into(), KeySource::EnvAuthToken))
+        );
+        assert!(
+            env_key_from(|name| (name == "TYPESAFE_API_KEY").then(|| "legacy".into())).is_none()
+        );
+        let endpoint = crate::clef::endpoint("0123456789abcdef0123456789abcdef", "clef").unwrap();
+        assert_eq!(health_check("synthetic", &endpoint), Health::Ok);
+        assert_eq!(
+            health_check("synthetic", "https://api.typesafe.ai/v1/systemone"),
+            Health::Unverified
+        );
+        assert_eq!(health_check("bad\r\nheader", &endpoint), Health::Rejected);
+    }
 
     #[test]
     fn judge_state_is_strictly_bounded_and_utf8_safe() {
@@ -1324,7 +1433,7 @@ mod tests {
             MIN_TIMEOUT_MS
         );
 
-        let scorer = JevScorer::new(JevConfig {
+        let scorer = ClefScorer::new(ClefConfig {
             max_questions_per_call: 0,
             max_state_items: usize::MAX,
             max_batches: 0,
@@ -1426,11 +1535,11 @@ mod tests {
             answer_probability(json!({"type": "noul", "noul": 0.83})),
             Some(0.83)
         );
-        assert_eq!(answer_probability(json!({"probability": 0.2})), Some(0.2));
-        assert_eq!(answer_probability(json!(true)), Some(1.0));
+        assert_eq!(answer_probability(json!({"probability": 0.2})), None);
+        assert_eq!(answer_probability(json!(true)), None);
         assert_eq!(answer_probability(json!(1.7)), None);
         assert_eq!(answer_probability(json!({"unknown": 1})), None);
-        assert!(serde_json::from_str::<JevAnswers>("{}").is_err());
+        assert!(serde_json::from_str::<ClefAnswers>("{}").is_err());
     }
 
     #[test]
@@ -1539,15 +1648,19 @@ mod tests {
         }
     }
 
-    fn test_cfg(endpoint: String) -> JevConfig {
-        JevConfig {
+    fn clef_reply(answers: serde_json::Value) -> String {
+        json!({"success":true,"errors":[],"result":{"model":"clef","answers":answers,"usage":{"input_tokens":1,"output_tokens":0}}}).to_string()
+    }
+
+    fn test_cfg(endpoint: String) -> ClefConfig {
+        ClefConfig {
             api_key: "test-api-key-123".into(),
             endpoint,
             ..Default::default()
         }
     }
 
-    fn noul_request(id: &str) -> JevRequest {
+    fn noul_request(id: &str) -> ClefRequest {
         let mut questions = serde_json::Map::new();
         questions.insert(
             id.to_string(),
@@ -1557,24 +1670,27 @@ mod tests {
             })
             .unwrap(),
         );
-        JevRequest {
-            model: "jev-latest",
+        ClefRequest {
+            model: "clef".into(),
             state: json!({}),
             questions,
         }
     }
 
     #[test]
-    fn call_jev_retries_transient_5xx_once_then_serves_from_cache() {
+    fn call_clef_requires_a_new_explicit_call_after_5xx_then_serves_from_cache() {
         let server = serve(vec![
             (500, "temporary".into()),
-            (200, r#"{"answers":{"q_0":{"noul":0.7}}}"#.into()),
+            (200, clef_reply(json!({"q_0":{"type":"noul","noul":0.7}}))),
         ]);
         let cfg = test_cfg(server.endpoint);
         let request = noul_request("q_0");
         let ttl = Some(Duration::from_secs(60));
 
-        let answers = call_jev(&request, &cfg, ttl).unwrap();
+        let error = call_clef(&request, &cfg, ttl).unwrap_err();
+        assert!(error.to_string().contains("500"));
+        assert_eq!(server.bodies.lock().unwrap().len(), 1);
+        let answers = call_clef(&request, &cfg, ttl).unwrap();
         assert_eq!(answers["q_0"], 0.7);
         assert_eq!(server.bodies.lock().unwrap().len(), 2);
         let headers = server.headers.lock().unwrap();
@@ -1585,20 +1701,30 @@ mod tests {
         drop(headers);
 
         // Exact-request cache: the replay never reaches the wire.
-        let again = call_jev(&request, &cfg, ttl).unwrap();
+        let again = call_clef(&request, &cfg, ttl).unwrap();
         assert_eq!(again["q_0"], 0.7);
         assert_eq!(server.bodies.lock().unwrap().len(), 2);
     }
 
     #[test]
-    fn call_jev_never_retries_auth_rejection() {
+    fn call_clef_http_failure_is_single_attempt_even_with_minimum_deadline() {
+        let server = serve(vec![(500, "temporary".into())]);
+        let mut cfg = test_cfg(server.endpoint);
+        cfg.timeout_ms = MIN_TIMEOUT_MS;
+        let error = call_clef(&noul_request("q_budget"), &cfg, None).unwrap_err();
+        assert!(error.to_string().contains("500"));
+        assert_eq!(server.bodies.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn call_clef_never_retries_auth_rejection() {
         let server = serve(vec![
             (401, "rejected".into()),
-            (200, r#"{"answers":{"q_0":{"noul":0.7}}}"#.into()),
+            (200, clef_reply(json!({"q_0":{"type":"noul","noul":0.7}}))),
         ]);
         let cfg = test_cfg(server.endpoint);
         let request = noul_request("q_0");
-        let error = call_jev(&request, &cfg, Some(Duration::from_secs(60))).unwrap_err();
+        let error = call_clef(&request, &cfg, Some(Duration::from_secs(60))).unwrap_err();
         assert!(format!("{error:#}").contains("401"));
         assert_eq!(server.bodies.lock().unwrap().len(), 1);
     }
@@ -1607,14 +1733,14 @@ mod tests {
     fn malformed_responses_fail_and_are_never_cached() {
         let server = serve(vec![
             (200, r#"{"answers":{"q_0":{"unexpected":1}}}"#.into()),
-            (200, r#"{"answers":{"q_0":{"noul":0.5}}}"#.into()),
+            (200, clef_reply(json!({"q_0":{"type":"noul","noul":0.5}}))),
         ]);
         let cfg = test_cfg(server.endpoint);
         let request = noul_request("q_0");
         let ttl = Some(Duration::from_secs(60));
 
-        assert!(call_jev(&request, &cfg, ttl).is_err());
-        let answers = call_jev(&request, &cfg, ttl).unwrap();
+        assert!(call_clef(&request, &cfg, ttl).is_err());
+        let answers = call_clef(&request, &cfg, ttl).unwrap();
         assert_eq!(answers["q_0"], 0.5);
         assert_eq!(server.bodies.lock().unwrap().len(), 2);
     }
@@ -1622,22 +1748,25 @@ mod tests {
     #[test]
     fn partial_and_foreign_answers_never_poison_exact_request_cache() {
         let server = serve(vec![
-            (200, r#"{"answers":{}}"#.into()),
+            (200, clef_reply(json!({}))),
             (200, r#"{"answers":{"foreign":0.1}}"#.into()),
-            (200, r#"{"answers":{"q_0":0.8}}"#.into()),
+            (200, clef_reply(json!({"q_0":{"type":"noul","noul":0.8}}))),
         ]);
         let cfg = test_cfg(server.endpoint);
         let request = noul_request("q_0");
         let ttl = Some(Duration::from_secs(60));
-        assert!(call_jev(&request, &cfg, ttl).unwrap().is_empty());
-        assert!(call_jev(&request, &cfg, ttl).is_err());
-        assert_eq!(call_jev(&request, &cfg, ttl).unwrap()["q_0"], 0.8);
+        assert!(call_clef(&request, &cfg, ttl).unwrap().is_empty());
+        assert!(call_clef(&request, &cfg, ttl).is_err());
+        assert_eq!(call_clef(&request, &cfg, ttl).unwrap()["q_0"], 0.8);
         assert_eq!(server.bodies.lock().unwrap().len(), 3);
     }
 
     #[test]
     fn fetch_chunk_sends_only_uncached_questions() {
-        let server = serve(vec![(200, r#"{"answers":{"q_0_1":{"noul":0.9}}}"#.into())]);
+        let server = serve(vec![(
+            200,
+            clef_reply(json!({"q_0_1":{"type":"noul","noul":0.9}})),
+        )]);
         let cfg = test_cfg(server.endpoint);
         let ttl = Some(Duration::from_secs(60));
         let chunk: Vec<(String, Vec<usize>)> = vec![
@@ -1677,8 +1806,8 @@ mod tests {
     #[test]
     fn fetch_chunk_rescores_identical_question_when_task_context_changes() {
         let server = serve(vec![
-            (200, r#"{"answers":{"q_0_0":{"noul":0.1}}}"#.into()),
-            (200, r#"{"answers":{"q_0_0":{"noul":0.9}}}"#.into()),
+            (200, clef_reply(json!({"q_0_0":{"type":"noul","noul":0.1}}))),
+            (200, clef_reply(json!({"q_0_0":{"type":"noul","noul":0.9}}))),
         ]);
         let cfg = test_cfg(server.endpoint.clone());
         let ttl = Some(Duration::from_secs(60));
@@ -1747,9 +1876,11 @@ mod tests {
     fn scorer_dedups_questions_and_reuses_them_next_pass() {
         let server = serve(vec![(
             200,
-            r#"{"answers":{"q_0_0":{"noul":0.9},"q_0_1":{"noul":0.1}}}"#.into(),
+            clef_reply(
+                json!({"q_0_0":{"type":"noul","noul":0.9},"q_0_1":{"type":"noul","noul":0.1}}),
+            ),
         )]);
-        let scorer = JevScorer::new(test_cfg(server.endpoint.clone()));
+        let scorer = ClefScorer::new(test_cfg(server.endpoint.clone()));
         let transcript = test_transcript(vec![
             test_item(0, "exec", "cargo test: pass"),
             test_item(1, "exec", "cargo build: ok"),
@@ -1824,7 +1955,7 @@ mod tests {
             .file_name()
             .unwrap()
             .to_string_lossy()
-            .starts_with("gobstopper-jev-test-"));
+            .starts_with("gobstopper-clef-test-"));
         let key = std::env::var("GOBSTOPPER_C10_CACHE_KEY")
             .unwrap()
             .parse::<u8>()
@@ -1867,7 +1998,7 @@ mod tests {
 
     fn temp_cache_path(name: &str) -> PathBuf {
         std::env::temp_dir().join(format!(
-            "gobstopper-jev-test-{}-{}",
+            "gobstopper-clef-test-{}-{}",
             std::process::id(),
             name
         ))

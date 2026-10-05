@@ -246,7 +246,8 @@ Sessions and snapshots
 Setup
   update            Update Gobstopper or change automatic-update settings
   watch             Prepare compacted copies as sessions grow
-  auth              Store or check the TypeSafe key for the jev scorer
+  auth              Check Cloudflare environment configuration
+  decide            Send your JSON evidence file to Cloudflare Clef
   apple             Set up and check Apple's on-device model for scoring
   mcp               Let an agent inspect sessions and snapshots
   presets           List the presets in your config
@@ -313,13 +314,13 @@ mod tests {
         );
         let denied = guided_detail(
             "keychain-denied",
-            "Gobstopper can't store your TypeSafe key: the keychain request was denied",
+            "Gobstopper can't store your Cloudflare key: the keychain request was denied",
             "Run it again and choose Always Allow when macOS asks.",
-            "gobstopper auth jev",
+            "gobstopper auth clef",
         );
         assert_eq!(
             render_error(&denied, plain),
-            "✗ Gobstopper can't store your TypeSafe key: the keychain request was denied.\n  Run it again and choose Always Allow when macOS asks.\n→ gobstopper auth jev"
+            "✗ Gobstopper can't store your Cloudflare key: the keychain request was denied.\n  Run it again and choose Always Allow when macOS asks.\n→ gobstopper auth clef"
         );
         let plain_error = anyhow::anyhow!("session 'x' not found");
         assert_eq!(

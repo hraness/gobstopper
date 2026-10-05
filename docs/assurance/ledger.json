@@ -57,7 +57,7 @@
       "id": "cache",
       "meaning": "Discovery, validated model-response and in-memory request-prefix/evidence caches",
       "owner": "CLI/model library",
-      "boundary": "Apple is memory-only and installed-bridge-only; Jev disk cache is private, bounded and atomically replaced. Request prefixes and bounded retained evidence are ephemeral; cache eviction or restart cannot manufacture recovered native-compacted content."
+      "boundary": "Apple is memory-only and installed-bridge-only; Clef disk cache is private, bounded and atomically replaced. Request prefixes and bounded retained evidence are ephemeral; cache eviction or restart cannot manufacture recovered native-compacted content."
     },
     {
       "id": "config",
@@ -1405,6 +1405,9 @@
         },
         {
           "path": "crates/gobstopper-cli/src/jev.rs"
+        },
+        {
+          "path": "crates/gobstopper-cli/src/clef.rs"
         },
         {
           "path": "crates/gobstopper-cli/src/llm_scorer.rs"

@@ -258,7 +258,7 @@ pub fn prefix_tokens(transcript: &Transcript, plan: &CompactionPlan) -> u64 {
 }
 
 /// Optional seams the CLI injects into eval. `scorer` drives the
-/// `scored` strategy's ranking (jev/apple drivers via env); without it
+/// `scored` strategy's ranking (clef/apple drivers via env); without it
 /// scored falls back to the built-in heuristic. `probe_judge` adds a
 /// semantic probe pass over each rewritten copy.
 #[derive(Default)]

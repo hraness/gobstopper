@@ -475,6 +475,211 @@ fn proxy_install_refuses_an_occupied_port_without_killing_its_owner() {
     assert!(listener.local_addr().is_ok());
 }
 
+#[cfg(unix)]
+#[test]
+fn clef_decide_forwards_only_explicit_evidence_to_fixed_model_endpoint() {
+    use std::os::unix::fs::PermissionsExt;
+    for model in ["clef", "clef-flash"] {
+        let sandbox = Sandbox::new(&format!("clef-decide-{model}"));
+        let path = sandbox.0.join("evidence.json");
+        let recorded = sandbox.0.join("request.json");
+        let url = sandbox.0.join("url");
+        use base64::Engine;
+        let mut image = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(1, 1)
+            .write_to(&mut image, image::ImageFormat::Png)
+            .unwrap();
+        let evidence = serde_json::json!({"model":model,"state":{"report":"PRIVATE_EXPLICIT_STATE"},"questions":{"keep":{"type":"noul","instructions":"Keep this?"}},"images":[{"content_type":"image/png","base64":base64::engine::general_purpose::STANDARD.encode(image.into_inner())}]});
+        let bytes = serde_json::to_vec(&evidence).unwrap();
+        std::fs::write(&path, &bytes).unwrap();
+        let reply = serde_json::json!({"success":true,"errors":[],"result":{"model":model,"answers":{"keep":{"type":"noul","noul":0.7}},"usage":{"input_tokens":1,"output_tokens":0}}});
+        let script = format!("#!/bin/sh\nset -eu\ntest -z \"${{CLOUDFLARE_API_TOKEN-}}\"\ntest \"$GOBSTOPPER_CURL_BEARER\" = synthetic-clef-token\nlast=''\nfor arg do last=\"$arg\"; done\nprintf '%s' \"$last\" >'{}'\n/bin/cat >'{}'\nprintf '%s\\n%s' '{}' 200\n", url.display(), recorded.display(), reply);
+        let curl = sandbox.0.join("bin/curl");
+        std::fs::write(&curl, script).unwrap();
+        std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let output = sandbox.run(
+            &["decide", path.to_str().unwrap()],
+            &[
+                ("CLOUDFLARE_ACCOUNT_ID", "0123456789abcdef0123456789abcdef"),
+                ("CLOUDFLARE_API_TOKEN", "synthetic-clef-token"),
+                ("GOBSTOPPER_JEV_ENDPOINT", "https://untrusted.invalid"),
+            ],
+        );
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        assert!(output.stderr.is_empty());
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+            reply["result"]
+        );
+        assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&std::fs::read(recorded).unwrap()).unwrap(),
+            evidence
+        );
+        assert_eq!(std::fs::read_to_string(url).unwrap(), format!("https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef/ai/run/@cf/cloudflare/{model}"));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn clef_decide_transports_explicit_evidence_above_the_plugin_input_cap() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::new("clef-large-evidence");
+    let path = sandbox.0.join("evidence.json");
+    let recorded = sandbox.0.join("request.json");
+    let evidence = serde_json::json!({"state":"x".repeat(2 * 1024 * 1024),"questions":{"keep":{"type":"noul","instructions":"Keep?"}}});
+    std::fs::write(&path, evidence.to_string()).unwrap();
+    let reply = serde_json::json!({"success":true,"errors":[],"result":{"model":"clef","answers":{"keep":{"type":"noul","noul":0.7}},"usage":{"input_tokens":1,"output_tokens":0}}});
+    let curl = sandbox.0.join("bin/curl");
+    std::fs::write(
+        &curl,
+        format!(
+            "#!/bin/sh\nset -eu\n/bin/cat >'{}'\nprintf '%s\\n%s' '{}' 200\n",
+            recorded.display(),
+            reply
+        ),
+    )
+    .unwrap();
+    std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let output = sandbox.run(
+        &["decide", path.to_str().unwrap()],
+        &[
+            ("CLOUDFLARE_ACCOUNT_ID", "0123456789abcdef0123456789abcdef"),
+            ("CLOUDFLARE_API_TOKEN", "synthetic-clef-token"),
+        ],
+    );
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let mut expected = evidence;
+    expected["model"] = serde_json::json!("clef");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&std::fs::read(recorded).unwrap()).unwrap(),
+        expected
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn clef_decide_never_replays_an_uncertain_transport_failure() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::new("clef-uncertain-transport");
+    let path = sandbox.0.join("evidence.json");
+    let calls = sandbox.0.join("calls");
+    std::fs::write(
+        &path,
+        r#"{"state":"synthetic","questions":{"keep":{"type":"noul","instructions":"Keep?"}}}"#,
+    )
+    .unwrap();
+    let curl = sandbox.0.join("bin/curl");
+    std::fs::write(&curl, format!("#!/bin/sh\nprintf x >>'{}'\n/bin/cat >/dev/null\nprintf PRIVATE_TRANSPORT >&2\nexit 7\n", calls.display())).unwrap();
+    std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let output = sandbox.run(
+        &["decide", path.to_str().unwrap()],
+        &[
+            ("CLOUDFLARE_ACCOUNT_ID", "0123456789abcdef0123456789abcdef"),
+            ("CLOUDFLARE_API_TOKEN", "synthetic-clef-token"),
+        ],
+    );
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(text(&output.stderr)
+        .to_ascii_lowercase()
+        .contains("clef_transport_failed"));
+    assert!(!text(&output.stderr).contains("PRIVATE"));
+    assert_eq!(std::fs::read(calls).unwrap(), b"x");
+}
+
+#[cfg(unix)]
+#[test]
+fn clef_decide_http_failures_redirects_unknown_status_and_malformed_output_get_one_attempt() {
+    use std::os::unix::fs::PermissionsExt;
+    for code in ["500", "503", "302", "999", "000", "malformed", "200"] {
+        let sandbox = Sandbox::new(&format!("clef-one-post-{code}"));
+        let path = sandbox.0.join("evidence.json");
+        let calls = sandbox.0.join("calls");
+        std::fs::write(
+            &path,
+            r#"{"state":"synthetic","questions":{"keep":{"type":"noul","instructions":"Keep?"}}}"#,
+        )
+        .unwrap();
+        let curl = sandbox.0.join("bin/curl");
+        let script = format!("#!/bin/sh\nset -eu\ntest \"$1\" = -q\nfor arg do\n case \"$arg\" in --location|--location-trusted|-L|--retry|--retry-all-errors|--retry-connrefused) exit 90;; esac\ndone\nprintf x >>'{}'\n/bin/cat >/dev/null\nprintf '%s\\n%s' PRIVATE_SYNTHETIC_RESPONSE '{code}'\n", calls.display());
+        std::fs::write(&curl, script).unwrap();
+        std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let output = sandbox.run(
+            &["decide", path.to_str().unwrap()],
+            &[
+                ("CLOUDFLARE_ACCOUNT_ID", "0123456789abcdef0123456789abcdef"),
+                ("CLOUDFLARE_API_TOKEN", "synthetic-clef-token"),
+            ],
+        );
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+        assert!(!text(&output.stderr).contains("PRIVATE_SYNTHETIC_RESPONSE"));
+        assert_eq!(std::fs::read(calls).unwrap(), b"x", "replayed HTTP {code}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn clef_decide_timeout_aborts_owned_curl_without_replay() {
+    use std::os::unix::fs::PermissionsExt;
+    let sandbox = Sandbox::new("clef-single-attempt-timeout");
+    let path = sandbox.0.join("evidence.json");
+    let calls = sandbox.0.join("calls");
+    std::fs::write(
+        &path,
+        r#"{"state":"synthetic","questions":{"keep":{"type":"noul","instructions":"Keep?"}}}"#,
+    )
+    .unwrap();
+    let curl = sandbox.0.join("bin/curl");
+    std::fs::write(&curl, format!("#!/bin/sh\nprintf x >>'{}'\n/bin/cat >/dev/null\n/bin/sleep 5\nprintf 'unexpected\\n200'\n", calls.display())).unwrap();
+    std::fs::set_permissions(&curl, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let started = std::time::Instant::now();
+    let output = sandbox.run(
+        &["decide", path.to_str().unwrap()],
+        &[
+            ("CLOUDFLARE_ACCOUNT_ID", "0123456789abcdef0123456789abcdef"),
+            ("CLOUDFLARE_API_TOKEN", "synthetic-clef-token"),
+            ("GOBSTOPPER_CLEF_TIMEOUT_MS", "1000"),
+        ],
+    );
+    assert!(started.elapsed() < std::time::Duration::from_secs(4));
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(text(&output.stderr)
+        .to_ascii_lowercase()
+        .contains("clef_transport_failed"));
+    assert_eq!(std::fs::read(calls).unwrap(), b"x");
+}
+
+#[test]
+fn clef_auth_help_describes_environment_configuration_and_refused_storage() {
+    let sandbox = Sandbox::new("clef-auth-help");
+    let output = sandbox.run(&["auth", "--help"], &[]);
+    assert!(output.status.success());
+    let help = text(&output.stdout);
+    assert!(help.contains("environment"));
+    assert!(help.contains("unsupported"));
+    assert!(!help.contains("Manage vaulted"));
+    assert!(!help.contains("Remove the stored key"));
+}
+
+#[test]
+fn clef_decide_invalid_evidence_is_private_and_precedes_credentials() {
+    let sandbox = Sandbox::new("clef-invalid");
+    let path = sandbox.0.join("PRIVATE_PATH.json");
+    let bytes = br#"{"state":"PRIVATE_STATE","questions":{"q":{"type":"noul","instructions":"x"}},"images":["https://example.com/PRIVATE_IMAGE"]}"#;
+    std::fs::write(&path, bytes).unwrap();
+    let output = sandbox.run(&["decide", path.to_str().unwrap()], &[]);
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(text(&output.stderr)
+        .to_ascii_lowercase()
+        .contains("clef_request_invalid"));
+    assert!(!text(&output.stderr).contains("PRIVATE"));
+    assert_eq!(std::fs::read(path).unwrap(), bytes);
+}
+
 #[test]
 fn auth_names_the_one_supported_provider() {
     let sandbox = Sandbox::new("auth");
@@ -482,6 +687,6 @@ fn auth_names_the_one_supported_provider() {
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(
         text(&output.stderr),
-        "✗ Gobstopper stores keys for jev only, not \"openai\".\n→ gobstopper auth jev\n"
+        "✗ Gobstopper uses Cloudflare Clef; Jev keys are not reused.\n→ gobstopper auth clef\n"
     );
 }

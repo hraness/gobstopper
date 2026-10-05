@@ -9,9 +9,9 @@
 
 use std::process::Command;
 
-/// Keyring service+account pair for the TypeSafe/Jev API key.
-const JEV_SERVICE: &str = "gobstopper";
-const JEV_ACCOUNT: &str = "typesafe-api-key";
+/// Keyring service+account pair for the Cloudflare/Clef API key.
+const CLEF_SERVICE: &str = "gobstopper";
+const CLEF_ACCOUNT: &str = "cloudflare-clef-api-token";
 const CURL_BEARER_ENV: &str = "GOBSTOPPER_CURL_BEARER";
 
 /// Configure curl bearer authentication without placing the credential
@@ -28,6 +28,8 @@ pub(crate) fn configure_curl_bearer(command: &mut Command, key: &str) -> anyhow:
         "GOBSTOPPER_LLM_API_KEY",
         "TYPESAFE_API_KEY",
         "GOBSTOPPER_JEV_API_KEY",
+        "CLOUDFLARE_API_TOKEN",
+        "CLOUDFLARE_AUTH_TOKEN",
     ] {
         command.env_remove(name);
     }
@@ -44,8 +46,8 @@ pub(crate) fn configure_curl_bearer(command: &mut Command, key: &str) -> anyhow:
 /// Stored key lookup. Returns `None` when no credential exists or the
 /// store is unavailable (headless Linux without Secret Service, locked
 /// keychain) — callers fall back to env keys or skip the feature.
-pub fn jev_key() -> Option<String> {
-    match jev_key_state() {
+pub fn clef_key() -> Option<String> {
+    match clef_key_state() {
         KeyState::Stored(key) => Some(key),
         _ => None,
     }
@@ -63,11 +65,12 @@ pub enum KeyState {
     Unavailable,
 }
 
-pub fn jev_key_state() -> KeyState {
-    let Ok(entry) = keyring::Entry::new(JEV_SERVICE, JEV_ACCOUNT) else {
-        return KeyState::Unavailable;
-    };
-    match entry.get_password() {
+pub fn clef_key_state() -> KeyState {
+    let unavailable = keyring::Error::NoStorageAccess(Box::new(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "Cloudflare credentials are environment-only",
+    )));
+    match Err::<String, _>(unavailable) {
         Ok(key) if !key.trim().is_empty() => KeyState::Stored(key),
         Ok(_) | Err(keyring::Error::NoEntry) => KeyState::Absent,
         Err(keyring::Error::NoStorageAccess(_)) => KeyState::Unavailable,
@@ -79,83 +82,41 @@ pub fn jev_key_state() -> KeyState {
 }
 
 /// The recovery copy for a keychain failure (SPEC keychain templates).
-fn keychain_error(action: &str, error: &keyring::Error) -> anyhow::Error {
-    match error {
-        _ if !cfg!(target_os = "macos") => crate::ux::guided_detail(
-            "keychain-unavailable",
-            format!("Gobstopper can't {action}: no keychain is available here"),
-            "Set TYPESAFE_API_KEY in your environment instead.",
-            "export TYPESAFE_API_KEY=<your key>",
-        ),
-        keyring::Error::NoStorageAccess(_) => crate::ux::guided_detail(
-            "keychain-unavailable",
-            format!("Gobstopper can't {action}: no keychain is available here"),
-            "Set TYPESAFE_API_KEY in your environment instead.",
-            "export TYPESAFE_API_KEY=<your key>",
-        ),
-        _ => crate::ux::guided_detail(
-            "keychain-denied",
-            format!("Gobstopper can't {action}: the keychain request was denied"),
-            "Run it again and choose Always Allow when macOS asks.",
-            "gobstopper auth jev",
-        ),
-    }
+fn keychain_error(action: &str, _error: &keyring::Error) -> anyhow::Error {
+    crate::ux::guided_detail(
+        "cloudflare-environment-only",
+        format!("Cloudflare tokens are environment-only; Gobstopper cannot {action} in the {}", crate::jev::KeySource::Keychain.describe()),
+        format!("Stored {CLEF_SERVICE}/{CLEF_ACCOUNT} entries are left untouched. Set CLOUDFLARE_API_TOKEN or CLOUDFLARE_AUTH_TOKEN in your environment."),
+        "export CLOUDFLARE_API_TOKEN=<your token>",
+    )
 }
 
 /// Store a key in the OS credential store.
-pub fn store_jev_key(key: &str) -> anyhow::Result<()> {
-    anyhow::ensure!(
-        safe_bearer_key(key),
-        "that isn't a usable API key: it must be one line of printable text"
-    );
-    let entry = keyring::Entry::new(JEV_SERVICE, JEV_ACCOUNT)
-        .map_err(|error| keychain_error("store your TypeSafe key", &error))?;
-    entry
-        .set_password(key)
-        .map_err(|error| keychain_error("store your TypeSafe key", &error))
+pub fn store_clef_key(_key: &str) -> anyhow::Result<()> {
+    Err(keychain_error("store tokens", &keyring::Error::NoEntry))
 }
 
 /// Remove the stored key. Ok(true) = a credential was deleted.
-pub fn delete_jev_key() -> anyhow::Result<bool> {
-    let entry = keyring::Entry::new(JEV_SERVICE, JEV_ACCOUNT)
-        .map_err(|error| keychain_error("remove your TypeSafe key", &error))?;
-    match entry.delete_credential() {
-        Ok(()) => Ok(true),
-        Err(keyring::Error::NoEntry) => Ok(false),
-        Err(error) => Err(keychain_error("remove your TypeSafe key", &error)),
-    }
+pub fn delete_clef_key() -> anyhow::Result<bool> {
+    Err(keychain_error("remove tokens", &keyring::Error::NoEntry))
 }
 
 /// Read the system clipboard (bounded) for onboarding. Returns `None`
 /// when no clipboard tool exists, it fails, or the content is not a
 /// plausible API key.
+#[cfg(test)]
 pub fn clipboard_secret() -> Option<String> {
-    let candidates: &[(&str, &[&str])] = &[
+    let _candidates: &[(&str, &[&str])] = &[
         ("pbpaste", &[]),                                             // macOS
         ("wl-paste", &["-n"]),                                        // Wayland
         ("xclip", &["-selection", "clipboard", "-o"]),                // X11
         ("xsel", &["--clipboard", "--output"]),                       // X11 alt
         ("powershell", &["-NoProfile", "-Command", "Get-Clipboard"]), // Windows
     ];
-    for (bin, args) in candidates {
-        let mut cmd = Command::new(bin);
-        cmd.args(*args);
-        let Ok(out) = gobstopper_adapters::plugins::run_bounded(cmd, Vec::new(), 3_000, 16 * 1024)
-        else {
-            continue;
-        };
-        let Ok(text) = String::from_utf8(out) else {
-            continue;
-        };
-        let text = text.trim();
-        if plausible_key(text) {
-            return Some(text.to_string());
-        }
-    }
     None
 }
 
-fn safe_bearer_key(s: &str) -> bool {
+pub(crate) fn safe_bearer_key(s: &str) -> bool {
     let n = s.len();
     (1..=4096).contains(&n)
         && !s.contains(char::is_whitespace)
@@ -165,6 +126,7 @@ fn safe_bearer_key(s: &str) -> bool {
 /// A plausible pasted API key: single line, 12..512 chars, no spaces or
 /// control characters. Deliberately permissive about shape — real
 /// validation happens against the API, not a regex.
+#[cfg(test)]
 fn plausible_key(s: &str) -> bool {
     let n = s.chars().count();
     (12..=512).contains(&n)
@@ -175,6 +137,26 @@ fn plausible_key(s: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clef_keychain_identity_is_not_the_legacy_typesafe_entry() {
+        assert_eq!(CLEF_ACCOUNT, "cloudflare-clef-api-token");
+        assert_ne!(CLEF_ACCOUNT, "typesafe-api-key");
+    }
+
+    #[test]
+    fn cloudflare_storage_and_clipboard_helpers_have_no_credential_effects() {
+        assert!(clef_key().is_none());
+        assert!(matches!(clef_key_state(), KeyState::Unavailable));
+        assert!(clipboard_secret().is_none());
+        for error in [
+            store_clef_key("PRIVATE_SYNTHETIC_TOKEN").unwrap_err(),
+            delete_clef_key().unwrap_err(),
+        ] {
+            assert!(error.to_string().contains("environment-only"));
+            assert!(!format!("{error:#}").contains("PRIVATE_SYNTHETIC_TOKEN"));
+        }
+    }
 
     #[test]
     fn plausible_key_filters() {

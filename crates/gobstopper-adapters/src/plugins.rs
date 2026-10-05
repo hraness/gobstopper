@@ -374,6 +374,29 @@ pub fn run_bounded(
     run_unix(command, input, timeout_ms, output_limit)
 }
 
+pub fn run_bounded_http(
+    command: Command,
+    input: Vec<u8>,
+    timeout_ms: u64,
+    output_limit: usize,
+) -> anyhow::Result<Vec<u8>> {
+    if input.len() > 13 * 1024 * 1024
+        || output_limit == 0
+        || output_limit > 1024 * 1024
+        || timeout_ms == 0
+        || timeout_ms > 30_000
+    {
+        bail!("invalid HTTP subprocess resource bounds");
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = command;
+        bail!("bounded HTTP process custody is unsupported on this platform");
+    }
+    #[cfg(unix)]
+    run_unix(command, input, timeout_ms, output_limit)
+}
+
 /// The same owned reactor for explicitly selected local inference. Apple model
 /// warm-up has a longer declared deadline; plugin admission remains at 30s.
 pub fn run_bounded_inference(

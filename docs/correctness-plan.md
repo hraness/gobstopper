@@ -348,7 +348,7 @@ serialize shared `main.rs` changes, and C6/C7/C11 must hand off core interfaces.
 - **Depends on:** C1
 - **Objective:** optional inference cannot violate admission, privacy, caching or
   resource invariants when a provider misbehaves or changes.
-- **Scope:** Apple/Jev/LLM scoring, digest drivers, secrets and caches.
+- **Scope:** Apple/Clef/LLM scoring, digest drivers, secrets and caches.
 - **Out of scope:** proving semantic summaries universally faithful.
 - **Approach:** bind cache identity to available model/client identity, prompt,
   schema and the exact submitted bounded source/task projection; omitted raw

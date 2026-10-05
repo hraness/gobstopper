@@ -608,7 +608,12 @@ below; the current plan addresses them explicitly.
   `transaction::replace`'s changed-during-write check) so `claude --resume <id>`
   keeps working on the same id.
 
-### R8: Scored relevance compaction (smart strategy)
+### R8: Scored relevance compaction (historical implementation)
+
+This section records the original Jev implementation and its trials. Current
+hosted scoring uses Cloudflare Clef with explicit opt-in and Cloudflare
+credentials. See the [scoring setup in the README](../README.md) for current
+commands and the limits on caller-supplied images.
 
 - **Scope:** `scored` strategy, built-in heuristic scorer, optional Jev driver.
 - **Objective:** score each stale tool result by keep-probability instead of

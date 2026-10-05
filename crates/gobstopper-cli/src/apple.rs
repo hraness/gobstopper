@@ -155,6 +155,8 @@ fn inference_command(path: &Path) -> std::process::Command {
         "TYPESAFE_API_KEY",
         "GOBSTOPPER_JEV_API_KEY",
         "GOBSTOPPER_CURL_BEARER",
+        "CLOUDFLARE_API_TOKEN",
+        "CLOUDFLARE_AUTH_TOKEN",
     ] {
         command.env_remove(key);
     }
@@ -556,6 +558,14 @@ mod tests {
     // The response cache is a process-wide static — serialize these tests
     // so one cannot evict the other's entries mid-assertion.
     static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn local_bridge_does_not_inherit_cloudflare_credentials() {
+        let command = inference_command(Path::new("/synthetic/must-not-spawn"));
+        for key in ["CLOUDFLARE_API_TOKEN", "CLOUDFLARE_AUTH_TOKEN", "TYPESAFE_API_KEY", "GOBSTOPPER_JEV_API_KEY", "GOBSTOPPER_CURL_BEARER"] {
+            assert!(command.get_envs().any(|(name, value)| name == key && value.is_none()));
+        }
+    }
 
     #[test]
     fn cache_round_trip_and_schema_isolation() {

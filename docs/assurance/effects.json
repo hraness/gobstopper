@@ -884,7 +884,7 @@
         {
           "state": "process_state",
           "mode": "spawn",
-          "condition": "Clipboard utility/keychain backend/curl health request as selected."
+          "condition": "Confirmed clipboard utility or OS keychain backend as selected; no model health request."
         },
         {
           "state": "output",
@@ -892,10 +892,8 @@
           "condition": "Key source and closed health category; C1 removes key fragments."
         }
       ],
-      "outbound": [
-        "Live provider health-check request uses selected bearer credential."
-      ],
-      "authority": "Explicit auth invocation; --status may contact provider, --delete changes only stored credential.",
+      "outbound": [],
+      "authority": "Explicit auth invocation; --status performs local configuration checks only, --delete changes only the Cloudflare-specific stored credential.",
       "invariants": [
         "PRIV-1",
         "READ-1",
@@ -913,11 +911,11 @@
         },
         {
           "path": "crates/gobstopper-cli/src/secrets.rs",
-          "anchor": "pub fn store_jev_key"
+          "anchor": "pub fn store_clef_key"
         }
       ],
       "status": "source_reviewed",
-      "bounds": "Clipboard bounded 3 seconds/16 KiB; piped auth stdin bounded 5 seconds/64 KiB. Interactive terminal confirmation waits for the user; unverified health may still store.",
+      "bounds": "Clipboard bounded 3 seconds/16 KiB; piped auth stdin bounded 5 seconds/64 KiB. Interactive terminal confirmation waits for the user; stored tokens are not live-verified.",
       "exclusions": [
         "No all-keys-verified claim",
         "Environment key authority remains separate"
@@ -1111,7 +1109,7 @@
         {
           "state": "cache",
           "mode": "create_replace",
-          "condition": "Private bounded Jev per-question cache admits individually valid answers (including partial batches); whole-request memory cache requires complete validated output. Atomic last-writer-wins disk publication."
+          "condition": "Private bounded Clef per-question cache admits individually valid answers (including partial batches); whole-request memory cache requires complete validated output. Atomic last-writer-wins disk publication."
         },
         {
           "state": "process_state",
@@ -1142,11 +1140,11 @@
       "source": [
         {
           "path": "crates/gobstopper-cli/src/jev.rs",
-          "anchor": "pub fn health_check"
+          "anchor": "pub(crate) fn post_decision"
         },
         {
           "path": "crates/gobstopper-cli/src/jev.rs",
-          "anchor": "pub fn maybe_jev_scorer"
+          "anchor": "pub fn maybe_clef_scorer"
         },
         {
           "path": "crates/gobstopper-cli/src/llm_scorer.rs",
@@ -1532,7 +1530,7 @@
       "source": [
         {
           "path": "crates/gobstopper-cli/src/secrets.rs",
-          "anchor": "pub fn jev_key"
+          "anchor": "pub fn clef_key"
         }
       ],
       "status": "source_reviewed",
@@ -3134,13 +3132,28 @@
       }
     },
     {
+      "name": "Decide",
+      "effects": [
+        "inspect",
+        "remote-score",
+        "output",
+        "native-update-storage",
+        "native-update-network"
+      ],
+      "contract": "Explicit bounded regular JSON evidence file only; optional embedded images, no session discovery or screenshot capture. Fixed Cloudflare origin and validated account/model; no transcript mutation, cache publication or MCP exposure.",
+      "source": {
+        "path": "crates/gobstopper-cli/src/main.rs",
+        "anchor": "enum Cmd"
+      }
+    },
+    {
       "name": "Auth",
       "effects": [
         "auth",
         "native-update-storage",
         "native-update-network"
       ],
-      "contract": "Store/delete/status/stdin authority; the clipboard is read only after an interactive yes; status is a live health check and reports a stored key macOS refused to read.",
+      "contract": "Store/delete/status/stdin authority; env or official-tool piped tokens are preferred; the clipboard is read only after an interactive yes; status checks local configuration and reports a stored token macOS refused to read, without a model call.",
       "source": {
         "path": "crates/gobstopper-cli/src/main.rs",
         "anchor": "enum Cmd"
@@ -3602,6 +3615,41 @@
     }
   ],
   "library_callables": [
+    {
+      "path": "crates/gobstopper-cli/src/clef.rs",
+      "symbol": "endpoint",
+      "effects": ["pure"]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/clef.rs",
+      "symbol": "validate_endpoint",
+      "effects": ["pure"]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/clef.rs",
+      "symbol": "validate_request",
+      "effects": ["pure"]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/clef.rs",
+      "symbol": "validate_response",
+      "effects": ["pure"]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/clef.rs",
+      "symbol": "read_evidence",
+      "effects": ["inspect"]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/jev.rs",
+      "symbol": "post_decision",
+      "effects": ["remote-score"]
+    },
+    {
+      "path": "crates/gobstopper-cli/src/secrets.rs",
+      "symbol": "safe_bearer_key",
+      "effects": ["pure"]
+    },
     {
       "path": "crates/gobstopper-adapters/src/claude.rs",
       "symbol": "apply",
@@ -5282,12 +5330,12 @@
       "path": "crates/gobstopper-cli/src/jev.rs",
       "symbol": "health_check",
       "effects": [
-        "remote-score"
+        "pure"
       ]
     },
     {
       "path": "crates/gobstopper-cli/src/jev.rs",
-      "symbol": "maybe_jev_scorer",
+      "symbol": "maybe_clef_scorer",
       "effects": [
         "remote-score"
       ]
@@ -5567,21 +5615,21 @@
     },
     {
       "path": "crates/gobstopper-cli/src/secrets.rs",
-      "symbol": "delete_jev_key",
+      "symbol": "delete_clef_key",
       "effects": [
         "auth"
       ]
     },
     {
       "path": "crates/gobstopper-cli/src/secrets.rs",
-      "symbol": "jev_key",
+      "symbol": "clef_key",
       "effects": [
         "credential-read"
       ]
     },
     {
       "path": "crates/gobstopper-cli/src/secrets.rs",
-      "symbol": "store_jev_key",
+      "symbol": "store_clef_key",
       "effects": [
         "auth"
       ]
@@ -6066,7 +6114,7 @@
     },
     {
       "path": "crates/gobstopper-cli/src/secrets.rs",
-      "symbol": "jev_key_state",
+      "symbol": "clef_key_state",
       "effects": [
         "credential-read"
       ]
