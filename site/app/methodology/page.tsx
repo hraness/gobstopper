@@ -34,7 +34,7 @@ export default function Methodology() {
   return (
     <>
       <SiteHeader path="/methodology" />
-      <main id="main" tabIndex={-1}>
+      <main id="main" tabIndex={-1} data-hraness-landscape="page">
         <SiteDocument
           dek="Gobstopper compares how compaction changes context size and which details survive; you choose a threshold and strategy, then inspect the result. Saved-session edits produce separate copies so you can compare the result with the original."
           eyebrow="Method"

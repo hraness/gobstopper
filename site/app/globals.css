@@ -16,6 +16,7 @@
 @import "../vendor/hraness-lantern/lantern-material.css";
 @import "@hraness/site-footer/styles.css";
 @import "../vendor/hraness-forced-colors/marketing-forced-colors.css";
+@import "@hraness/design-kit/product-landscape.css";
 
 :root {
   --hraness-site-accent: var(--primary);
@@ -818,41 +819,11 @@ a[href] {
 }
 a[href]:where(:hover, :focus-visible) { text-decoration-color: currentColor; }
 
-/* Product landscape: the generated, product-themed world behind the homepage.
- * A grayscale luminance mask carries the drawing, so its ink is the page's own
- * text mixed into the paper: a deeper shade of the background hue in light
- * themes and a lifted one in dark themes, never an accent colour. */
-.product-landscape {
-  isolation: isolate;
-  position: relative;
+/* Product landscape: this product's drawing for @hraness/design-kit/product-landscape.css.
+ * Public pages opt in with data-hraness-landscape="page"; see the kit's LANDSCAPE.md. */
+:root {
+  --hraness-landscape-image: image-set(url("/landscape/landscape-138b65e7bcd13fb064fffa83d0a120fab41e234f5ac484c0d7db0db3359eec2a.webp") 1x, url("/landscape/landscape-b7043a016a04b31f749ee1c022d10ad411ec3bf9463c8aa330ed346d4b57744d.webp") 2x);
+  --hraness-landscape-image-narrow: url("/landscape/landscape-0966d693033094fc4af421a1f4d409b28fb400141a0a97b41c70faf013dc46a2.webp");
+  --hraness-landscape-ink: color-mix(in oklch, var(--foreground, CanvasText) 30%, var(--background, Canvas));
 }
-
-@supports (mask-mode: luminance) {
-  .product-landscape::before {
-    background: color-mix(in oklch, var(--foreground, CanvasText) 30%, var(--background, Canvas));
-    content: "";
-    inset: 0;
-    mask-image: image-set(url("/landscape/landscape-bf9a44e6b0f6423b16aec9d2f55a9aa7dc63b2d8088579396261204b41a2a41d.webp") 1x, url("/landscape/landscape-8fd512732088ba456f11044561670091b23080951aa4e29fe35c4c270759938f.webp") 2x);
-    mask-mode: luminance;
-    mask-position: top center;
-    mask-repeat: no-repeat;
-    mask-size: 100% auto;
-    opacity: .5;
-    pointer-events: none;
-    position: absolute;
-    z-index: -1;
-  }
-}
-
-@media (max-width: 48rem) {
-  .product-landscape::before {
-    mask-image: url("/landscape/landscape-e107b97467536e1fabe1e9cb7519cd29d3812707620d02a805431a550a921381.webp");
-    opacity: .36;
-  }
-}
-
-@media (forced-colors: active), print {
-  .product-landscape::before {
-    display: none;
-  }
-}
+/* Product landscape: end */

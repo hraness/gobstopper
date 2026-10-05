@@ -66,7 +66,7 @@ export default function CompareCliffCompaction() {
         type="application/ld+json"
       />
       <SiteHeader path="/compare/cliffcompaction" />
-      <main id="main" tabIndex={-1}>
+      <main id="main" tabIndex={-1} data-hraness-landscape="page">
         <SiteDocument
           dek="CliffCompaction and Gobstopper build mechanical summaries and keep the newest turns untouched. Gobstopper adds selected evidence retention and temporary context budgets."
           eyebrow="Comparison"

@@ -90,7 +90,7 @@ export default function Home() {
       <script dangerouslySetInnerHTML={{ __html: JSON.stringify(structuredData) }} type="application/ld+json" />
       <SiteHeader path="/" />
       <main id="main" tabIndex={-1}>
-        <MarketingPage className="product-landscape">
+        <MarketingPage landscape="page">
           <ProductHero
             backdrop={false}
             align="start"

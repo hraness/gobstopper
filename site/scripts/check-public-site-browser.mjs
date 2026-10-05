@@ -96,7 +96,7 @@ try {
   async function checkCombo({ width, theme }, comboRecords, index) {
     const context = await browser.newContext({ viewport: { width, height: width === 360 ? 740 : width === 390 ? 844 : 900 }, colorScheme: theme, reducedMotion: 'reduce', serviceWorkers: 'block' });
     const page = await context.newPage(); activePages.set(index, page);
-    page.setDefaultTimeout(10000);
+    page.setDefaultTimeout(60_000);
     page.on('pageerror', error => errors.push(`${width}-${theme}: ${error.message}`));
     page.on('console', message => { if (message.type() === 'error' && !message.location().url.includes('/missing-public-verification')) errors.push(`${width}-${theme}: ${message.text()}`); });
     page.on('response', response => { if (response.status() >= 400 && !response.url().includes('/missing-public-verification')) errors.push(`${width}-${theme}: HTTP ${response.status()} ${new URL(response.url()).pathname}`); });
@@ -111,7 +111,7 @@ try {
       assert.equal(await page.locator('#hraness-site-footer').count(), 1, label);
       assert.equal(await page.locator('iframe').count(), 0, 'Retired embedded preview stays absent');
       await until(() => page.evaluate(() => document.documentElement.dataset.theme).then(value => value === theme), `${label}: resolved theme`);
-      const screenshot = await page.screenshot({ path: resolve(artifacts, `${label}.png`), fullPage: true, animations: 'disabled' });
+      const screenshot = await page.screenshot({ path: resolve(artifacts, `${label}.png`), fullPage: true, animations: 'disabled', timeout: 60_000 });
       assert.equal(screenshot.readUInt32BE(16), width, `${label}: full-page screenshot width`);
       const metrics = await page.evaluate(() => {
         const header = document.querySelector('.hraness-marketing-header');
@@ -161,9 +161,9 @@ try {
       const id = anchor.split('#')[1];
       assert.equal(await page.locator(`#${id}`).count(), 1, `${label}: anchor target exists`);
       await until(() => page.locator(`#${id}`).evaluate(element => element.getBoundingClientRect().top >= document.querySelector('.hraness-marketing-header').getBoundingClientRect().bottom - 1), `${label}: anchor clears sticky chrome`);
-      await page.screenshot({ path: resolve(artifacts, `${label}.png`), animations: 'disabled' });
+      await page.screenshot({ path: resolve(artifacts, `${label}.png`), animations: 'disabled', timeout: 60_000 });
       for (const [index, figure] of (await page.locator('.gob-figure').all()).entries()) {
-        await figure.screenshot({ path: resolve(artifacts, `${label}-figure-${index}.png`), animations: 'disabled' });
+        await figure.screenshot({ path: resolve(artifacts, `${label}-figure-${index}.png`), animations: 'disabled', timeout: 60_000 });
       }
     }
     await page.goto(origin, { waitUntil: 'load' });

@@ -367,7 +367,7 @@ export default function Benchmarks() {
         type="application/ld+json"
       />
       <SiteHeader path="/benchmarks" />
-      <main id="main" tabIndex={-1}>
+      <main id="main" tabIndex={-1} data-hraness-landscape="page">
         <SiteDocument
           dek="Offline replays project context size and check which text survives; one live Terminal-Bench run compared the proxy with Claude Code alone. None of them claim subscription or billing savings."
           eyebrow="Evidence"
