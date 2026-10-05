@@ -2,9 +2,9 @@
 //!
 //! This calls any OpenAI-compatible chat endpoint, defaulting to Vercel
 //! AI Gateway (`https://ai-gateway.vercel.sh/v1/chat/completions`).
-//! With a Qwen 0.5B/1.5B/7B model it is super cheap and works today while
-//! Jev is on a waitlist. Only sanitized labels and summaries are sent —
-//! full tool output never leaves the machine.
+//! This is a separate opt-in provider from Cloudflare Clef.
+//! Bounded labels and summaries contain transcript-derived text;
+//! additional full tool output is not attached.
 //!
 //! Configuration (all optional, defaults listed):
 //!   AI_GATEWAY_API_KEY  - bearer token

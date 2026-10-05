@@ -67,7 +67,7 @@ for deeper verification; the [plan](correctness-plan.md) gives acceptance gates.
 | Native compaction and watch state | CLI `main.rs`; adapters `codex_compact.rs`, `claude.rs` | watch subprocess fixtures | All-order protocol state machines; durable dispatch/reconciliation; live pinning |
 | Hooks and settings | CLI `hooks.rs` | installer/advisory/postcompact tests | Concurrent settings writes, backup identity, exact pre/post operation correlation |
 | Configuration and plugins | CLI `config.rs`; adapters `plugins.rs` | strict schema; bounded plugin contract tests | Trusted code is unsandboxed; aggregate projection/resource bounds |
-| Model scorers/digests | CLI `apple*`, `jev.rs`, `llm_scorer.rs`, `secrets.rs` | cache/input/output/fallback tests | Cross-process cache integrity, privacy opt-ins, model drift and semantic fidelity |
+| Model scorers/digests | CLI `apple*`, `jev.rs` (Clef scorer), `clef.rs`, `llm_scorer.rs`, `secrets.rs` | cache/input/output/fallback tests | Cross-process cache integrity, privacy opt-ins, model drift and semantic fidelity |
 | MCP and CLI inspection | CLI `mcp.rs`, history/vault/recall/show | content opt-in tests; new shared-store fixtures | Bounded JSON-RPC framing and all inspection paths' side effects |
 | Evaluation, retention, reporting | adapters `eval.rs`, `study.rs`; core `probe.rs`, `events.rs`; CLI `report.rs` | replay and score tests | Source-bound annotations, missingness, selection bias, counter reset semantics |
 | Monitor and experiments | `scripts/monitor.py`, study/probe runners | Python child/allowlist/timeout tests | Independent vault readers, process-tree exit, corpus and registration integrity |

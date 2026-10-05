@@ -12,6 +12,34 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[test]
+fn http_input_capacity_preserves_plugin_limits_and_all_lifecycle_bounds() {
+    let command = || Command::new("gobstopper-no-such-command-must-not-run");
+    let error = plugins::run_bounded(command(), vec![0; 2 * 1024 * 1024 + 1], 100, 1).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("invalid subprocess resource bounds"));
+    for (input_bytes, timeout, output) in [
+        (13 * 1024 * 1024 + 1, 100, 1),
+        (0, 0, 1),
+        (0, 30_001, 1),
+        (0, 100, 0),
+        (0, 100, 1024 * 1024 + 1),
+    ] {
+        let error = plugins::run_bounded_http(command(), vec![0; input_bytes], timeout, output)
+            .unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("invalid HTTP subprocess resource bounds"));
+    }
+    let mut drain = Command::new("/bin/sh");
+    drain.args(["-c", "/bin/cat >/dev/null; printf accepted"]);
+    assert_eq!(
+        plugins::run_bounded_http(drain, vec![0; 13 * 1024 * 1024], 10_000, 100).unwrap(),
+        b"accepted"
+    );
+}
+
 static FIXTURE_SEQ: AtomicU64 = AtomicU64::new(0);
 
 struct Fixture(PathBuf);

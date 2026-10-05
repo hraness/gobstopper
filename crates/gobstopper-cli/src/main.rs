@@ -4,6 +4,7 @@ mod apple;
 mod apple_cmd;
 mod apple_digest;
 mod apple_scorer;
+mod clef;
 mod config;
 mod context;
 mod events_diagnostics;
@@ -37,7 +38,7 @@ use gobstopper_core::events::{append_event, default_log_path, CompactionEvent};
 use gobstopper_core::plan::{CompactionPlan, Edit};
 use gobstopper_core::strategy::{self, HeuristicScorer, QuotaPressure, ScoredStrategy};
 use gobstopper_core::{Provider, SessionHandle};
-use std::io::{BufRead as _, IsTerminal as _, Read as _, Write as _};
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
@@ -501,15 +502,25 @@ enum Cmd {
         #[command(subcommand)]
         command: apple_cmd::AppleCmd,
     },
+    #[command(
+        about = "Send only the state, questions and embedded images in your JSON evidence file to Cloudflare Clef"
+    )]
+    Decide { evidence: PathBuf },
     /// Manage vaulted provider credentials (OS keychain).
+    #[command(
+        about = "Check Cloudflare environment configuration; token storage and removal are unsupported"
+    )]
     Auth {
-        /// Provider to configure (currently only `jev`).
+        /// Provider to configure (`clef` or `cloudflare`).
         provider: String,
-        /// Show where the key comes from and run a live check.
+        /// Show credential source and local configuration, without a model call.
         #[arg(long)]
         status: bool,
         /// Remove the stored key.
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Refuse unsupported token removal; existing stored entries are left untouched"
+        )]
         delete: bool,
     },
     /// Return the compaction action for context numbers you supply, for
@@ -788,12 +799,12 @@ fn effective_policy(
 }
 
 fn maybe_scorer() -> Option<Box<dyn gobstopper_core::ScoreDriver>> {
-    // The LLM and Jev scorers are opt-in. The built-in heuristic is the
+    // The LLM and Clef scorers are opt-in. The built-in heuristic is the
     // default because it is fast, deterministic, and private.
     let name = std::env::var("GOBSTOPPER_SCORER").ok()?;
     let driver = match name.as_str() {
         "llm" => llm_scorer::maybe_llm_scorer(),
-        "jev" => jev::maybe_jev_scorer(),
+        "clef" => jev::maybe_clef_scorer(),
         "apple" => apple_scorer::maybe_apple_scorer(),
         _ => None,
     };
@@ -5139,113 +5150,50 @@ fn cmd_watch(
 
 fn cmd_auth(provider: &str, status: bool, delete: bool) -> Result<()> {
     match provider {
-        "jev" | "typesafe" => auth_jev(status, delete),
-        other => Err(ux::guided(
-            format!("Gobstopper stores keys for jev only, not \"{other}\""),
-            "gobstopper auth jev",
+        "clef" | "cloudflare" => auth_clef(status, delete),
+        _ => Err(ux::guided(
+            "Gobstopper uses Cloudflare Clef; Jev keys are not reused",
+            "gobstopper auth clef",
         )),
     }
 }
 
-/// `gobstopper auth jev` onboarding: piped stdin wins; else the system
-/// clipboard when running interactively. The key is verified against the
-/// API before it reaches the OS keychain — a definitively rejected key is
-/// never stored.
-fn auth_jev(status: bool, delete: bool) -> Result<()> {
-    let endpoint = std::env::var("GOBSTOPPER_JEV_ENDPOINT")
-        .unwrap_or_else(|_| "https://api.typesafe.ai/v1/systemone".into());
+/// `gobstopper auth clef` onboarding: piped stdin wins; else the system
+/// clipboard when running interactively. Environment tokens are preferred;
+/// tokens are checked locally before storage. Onboarding never invokes
+/// the model and never reads Wrangler's private credential files.
+fn auth_clef(status: bool, delete: bool) -> Result<()> {
+    let endpoint = std::env::var("CLOUDFLARE_ACCOUNT_ID")
+        .ok()
+        .and_then(|account| {
+            let model = std::env::var("GOBSTOPPER_CLEF_MODEL").unwrap_or_else(|_| "clef".into());
+            clef::endpoint(&account, &model).ok()
+        })
+        .unwrap_or_default();
     if delete {
-        match secrets::delete_jev_key()? {
-            true => println!("removed stored typesafe key"),
-            false => println!("no stored typesafe key"),
-        }
-        return Ok(());
+        return secrets::delete_clef_key().map(|_| ());
     }
     if status {
         // One keychain read: a denied read must not prompt twice.
-        let resolved = match jev::env_key() {
-            Some(found) => Some(found),
-            None => match secrets::jev_key_state() {
-                secrets::KeyState::Stored(key) => Some((key, jev::KeySource::Keychain)),
-                secrets::KeyState::Denied => {
-                    return Err(ux::guided_detail(
-                        "keychain-denied",
-                        "A TypeSafe key is stored in your keychain, but macOS didn't let gobstopper read it",
-                        "Run it again and choose Always Allow when macOS asks.",
-                        "gobstopper auth jev --status",
-                    ))
-                }
-                secrets::KeyState::Absent | secrets::KeyState::Unavailable => None,
-            },
-        };
+        let resolved = jev::env_key();
         let Some((key, source)) = resolved else {
-            println!("jev: no key configured");
-            ux::next_hint("pbpaste | gobstopper auth jev");
+            println!("clef: no environment token configured");
             return Ok(());
         };
         println!(
-            "jev: {} key configured — {}",
+            "clef: {} key configured — {}",
             source.describe(),
             match jev::health_check(&key, &endpoint) {
-                jev::Health::Ok => "verified",
-                jev::Health::Rejected => "rejected by API (401/403)",
-                jev::Health::Unverified => "could not verify (network/API error)",
+                jev::Health::Ok => "account configured; not live-verified",
+                jev::Health::Rejected => "invalid token format",
+                jev::Health::Unverified =>
+                    "set a valid CLOUDFLARE_ACCOUNT_ID and Clef model; not live-verified",
             }
         );
         return Ok(());
     }
-    let key = if !std::io::stdin().is_terminal() {
-        let buf = hooks::read_stdin_bounded()?.context(
-            "authentication input must be valid UTF-8 with EOF within 64 KiB and five seconds",
-        )?;
-        buf.trim().to_string()
-    } else {
-        // Ask before touching the clipboard: reading it is the user's call.
-        eprint!("Read your TypeSafe key from the clipboard and store it in your keychain? [y/N] ");
-        std::io::stderr().flush()?;
-        let mut ans = String::new();
-        std::io::stdin().lock().read_line(&mut ans)?;
-        if !matches!(ans.trim().to_lowercase().as_str(), "y" | "yes") {
-            eprintln!("Nothing was read or stored.");
-            ux::next_hint("pbpaste | gobstopper auth jev");
-            return Ok(());
-        }
-        secrets::clipboard_secret().ok_or_else(|| {
-            ux::guided(
-                "The clipboard doesn't hold anything that looks like an API key",
-                "pbpaste | gobstopper auth jev",
-            )
-        })?
-    };
-    if !(12..=512).contains(&key.chars().count()) || key.contains(char::is_whitespace) {
-        return Err(ux::guided(
-            format!(
-                "That doesn't look like an API key ({} characters, expected 12 to 512 with no spaces)",
-                key.chars().count()
-            ),
-            "pbpaste | gobstopper auth jev",
-        ));
-    }
-    match jev::health_check(&key, &endpoint) {
-        jev::Health::Rejected => {
-            return Err(ux::guided(
-                "TypeSafe rejected that key (HTTP 401 or 403), so it wasn't stored",
-                "pbpaste | gobstopper auth jev",
-            ))
-        }
-        health => {
-            secrets::store_jev_key(&key)?;
-            match health {
-                jev::Health::Ok => println!("typesafe key verified and stored in the OS keychain"),
-                jev::Health::Unverified => println!(
-                    "typesafe key stored in the OS keychain (could not verify: network/API error)"
-                ),
-                jev::Health::Rejected => unreachable!(),
-            }
-            println!("scorer ready: GOBSTOPPER_SCORER=jev gobstopper plan <session>");
-        }
-    }
-    Ok(())
+    // Ask before touching the clipboard: reading it is the user's call.
+    secrets::store_clef_key("")
 }
 
 fn policy_decision(
@@ -5940,6 +5888,33 @@ fn run(cli: Cli) -> Result<()> {
             Ok(())
         }
         Cmd::Apple { command } => apple_cmd::run(command),
+        Cmd::Decide { evidence } => {
+            let request = clef::read_evidence(evidence)?;
+            let mut cfg = jev::ClefConfig::resolve().context(
+                "clef_credentials_unavailable: set CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN",
+            )?;
+            cfg.model = request["model"]
+                .as_str()
+                .context("clef_request_invalid")?
+                .into();
+            cfg.endpoint = clef::endpoint(
+                &std::env::var("CLOUDFLARE_ACCOUNT_ID")
+                    .map_err(|_| anyhow::anyhow!("clef_config_invalid"))?,
+                &cfg.model,
+            )?;
+            let result = jev::post_decision(&request, &cfg)?;
+            anyhow::ensure!(
+                result["answers"].as_object().map(|a| a.len())
+                    == request["questions"].as_object().map(|q| q.len()),
+                "clef_response_incomplete"
+            );
+            println!(
+                "{}",
+                serde_json::to_string(&result)
+                    .map_err(|_| anyhow::anyhow!("clef_response_invalid"))?
+            );
+            Ok(())
+        }
         Cmd::Auth {
             provider,
             status,

@@ -882,8 +882,8 @@ records are both supported, including the advertised model context window.
 
 `scored` uses the deterministic offline heuristic by default. Experimental
 model scoring is opt-in with `GOBSTOPPER_SCORER=llm`,
-`GOBSTOPPER_SCORER=jev`, or `GOBSTOPPER_SCORER=apple`; merely setting an API
-key never sends data. Remote Jev and LLM scorers receive bounded labels and
+`GOBSTOPPER_SCORER=clef`, or `GOBSTOPPER_SCORER=apple`; merely setting an API
+token never sends data. Remote Clef and LLM scorers receive bounded labels and
 summaries, including tool arguments, short output tails, and user-prompt
 snippets. These are transcript-derived text, not redacted metadata; enabling
 a remote scorer sends them to its configured endpoint even when additional
@@ -916,42 +916,51 @@ strategies ignore the cutoff. Omitting it in a later configuration layer
 inherits an earlier value rather than clearing it. The default configuration
 has no cutoff.
 
-`GOBSTOPPER_SCORER=jev` scores with TypeSafe's System One API, which returns
-typed `noul` keep-probabilities instead of generated prose. Onboarding vaults the key
-in the OS credential store
-(macOS Keychain, Windows Credential Manager, Linux kernel keyring):
+`GOBSTOPPER_SCORER=clef` uses [Cloudflare Clef](https://developers.cloudflare.com/workers-ai/models/clef/)
+on Workers AI. It returns typed `noul` keep-probabilities instead of generated
+prose. Set `CLOUDFLARE_ACCOUNT_ID` to your 32-character hexadecimal account ID
+and `CLOUDFLARE_API_TOKEN` to a token with Workers AI access for that account.
+`CLOUDFLARE_AUTH_TOKEN` is an alternative token variable. The endpoint is fixed
+to `https://api.cloudflare.com/client/v4/accounts/{account}/ai/run/@cf/cloudflare/{model}`;
+`GOBSTOPPER_CLEF_MODEL` selects `clef` (default) or `clef-flash`.
+
+Cloudflare credentials come only from `CLOUDFLARE_API_TOKEN`, then
+`CLOUDFLARE_AUTH_TOKEN`. Gobstopper does not read credential files, the clipboard
+or OS credential stores for Clef. The retired `GOBSTOPPER_CLEF_USE_KEYCHAIN`
+setting has no effect. Existing stored entries are left untouched.
 
 ```sh
-pbpaste | gobstopper auth jev     # or run it bare to use the clipboard
-gobstopper auth jev --status      # key source + live check; no key fragments
-gobstopper auth jev --delete      # remove the stored key
+gobstopper auth clef --status     # environment source and local checks; no model call
 ```
 
-An API check precedes storage. A definitively rejected key is refused;
-network or API failures allow storage with an explicit unverified result.
-Resolution order at scoring time is
-`TYPESAFE_API_KEY` → `GOBSTOPPER_JEV_API_KEY` → OS keychain, so CI keeps
-working from env alone. Linux kernel-keyring entries are session-scoped and
-do not survive a reboot; use an environment variable for persistent
-noninteractive Linux automation. On macOS, a self-built unsigned binary may
-show a one-time keychain access prompt on first read. Remote scorers require
-curl 8.3+: bearer credentials are imported from a child-only environment
-variable and expanded inside curl, never placed in process argv; Gobstopper
-also disables `.curlrc` for these calls so user defaults cannot enable verbose
-header logging.
-`GOBSTOPPER_JEV_CONTENT_BYTES` (default `0`, maximum `1024`) opts in to
+`auth clef` without `--status` and `auth clef --delete` refuse token storage
+and removal without reading stdin or accessing a credential store. Status
+checks local configuration only; it does not establish API access or model quality.
+
+Live Jev scoring is retired. Historical measurements and offline artifacts
+remain available under their original names. TypeSafe keys, old endpoints and
+`GOBSTOPPER_JEV_*` settings are not accepted by Cloudflare. Select `clef`
+explicitly and configure Cloudflare environment credentials;
+`GOBSTOPPER_SCORER=jev` falls back to the heuristic with a warning.
+Remote scorers require curl 8.3+: bearer credentials are imported from a
+child-only environment variable and expanded inside curl, never placed in
+process argv. Gobstopper disables `.curlrc` for these calls so user defaults
+cannot enable verbose header logging.
+`GOBSTOPPER_CLEF_CONTENT_BYTES` (default `0`, maximum `1024`) opts in to
 attaching additional bounded per-candidate content excerpts to each question.
 The remote scorer already receives the bounded labels and summaries described
-above. A post-fix 141k-token A/B run selected the same six records with and
+above. A historical Jev 141k-token A/B run selected the same six records with and
 without 400-byte additional excerpts, so those excerpts remain off by default.
 Every numeric runtime knob is clamped: 1–64 questions per call, 1–128 state
 items, 100–30,000 ms timeout, 1–16 batches per scoring pass, and 1–4
-concurrent calls (`GOBSTOPPER_JEV_PARALLEL`, default `2`).
-`GOBSTOPPER_JEV_MAX_BATCHES` defaults to `4`. Only the newest
+concurrent calls (`GOBSTOPPER_CLEF_PARALLEL`, default `2`).
+`GOBSTOPPER_CLEF_MAX_BATCHES` defaults to `4`. Only the newest
 `MAX_Q × MAX_BATCHES` tailward candidates are sent; an older prefix keeps its
 deterministic heuristic score. This caps the default at four calls and 256
 remote-scored candidates even for unusually large transcripts. Each logical
-batch can make two transport attempts if the first has a transient failure.
+batch sends at most one HTTP POST. Redirects, HTTP failures (including 5xx),
+transport failures and malformed responses are never retried automatically.
+A failure does not prove the provider did no billable work.
 Identical
 question texts within a pass are asked once: repeated tool outputs share a
 single remote answer instead of being billed per item. Batches run through
@@ -959,14 +968,14 @@ a bounded worker pool: execution is parallel, but results are overlaid in
 stable order, a failed or panicked batch retains heuristic scores, and
 cached answers still overlay when a batch's remote half fails. Each pass logs one summary line
 to stderr (candidates, unique/cached/sent questions, calls, failures,
-elapsed). In a historical trial recorded on September 19, 2026, one three-batch
+elapsed). In a historical Jev trial recorded on September 19, 2026, one three-batch
 336k-token Claude session took 148.64s before bounded parallelism and 19.47s
 afterward (about 7.6×). This single-session latency observation does not
 establish current or provider-wide performance.
 
 `eval` and `bench` honor `GOBSTOPPER_SCORER` for their `scored` row, so
-an A/B run measures the same Jev or Apple ranking used by `plan` rather than
-silently substituting the heuristic. `GOBSTOPPER_EVAL_JUDGE=jev` adds a
+an A/B run measures the same Clef or Apple ranking used by `plan` rather than
+silently substituting the heuristic. `GOBSTOPPER_EVAL_JUDGE=clef` adds a
 separate model-judged retention estimate to `eval`. Verbatim survivors are
 credited locally; only up to 64 sampled strings absent from the rewritten live
 context become typed `noul` questions. They are judged against at most 100,000 bytes of bounded
@@ -977,16 +986,16 @@ remote API. Invalid or missing answers remain unmeasured; coverage is explicit
 through `probes_requested`, `probes_total`, `complete`, `recall_available` and
 `basis`. A partial denominator must not be compared as if it covered every
 probe. Restricting the run to `--strategy scored` creates at most one logical
-judge request, with one retry allowed on transient transport/5xx failure:
+judge request, with no automatic retry:
 
 ```sh
-GOBSTOPPER_SCORER=jev GOBSTOPPER_EVAL_JUDGE=jev \
+GOBSTOPPER_SCORER=clef GOBSTOPPER_EVAL_JUDGE=clef \
   gobstopper eval <session> --strategy scored
 ```
 
-Gobstopper reads the official `answers.<id>.noul` probability returned by
-System One, while retaining bounded compatibility fallbacks for older response
-shapes. Jev starts from the complete deterministic heuristic ranking and
+Gobstopper checks Cloudflare's `success`, `result` and `errors` response,
+the returned model, question IDs and typed probabilities. Clef starts from
+the complete deterministic heuristic ranking and
 overlays only valid remote answers; capped candidates, missing answers, and
 failed or malformed chunks keep their heuristic scores. Semantic eval omits
 unavailable answers instead of crediting unknown facts. These estimates do not
@@ -997,7 +1006,7 @@ probes. At a more aggressive floor, one probe lost verbatim was not falsely
 credited by the semantic judge (37/38 on both scores). This is one session,
 not a general measure of ranking quality.
 
-Successful Jev answers are cached in-process for five minutes under two
+Successful Clef answers are cached in-process for five minutes under two
 scopes. The scorer caches each question together with the complete scoring
 state and model identifier. Unchanged polls reuse judgments, including across
 different question batches. A changed goal or tail requires fresh answers
@@ -1009,22 +1018,66 @@ state or full request text; values are
 parsed probabilities only (never transcript text), evict oldest-first at
 512 questions and 64 requests, and failures are never cached. The
 question layer also persists to
-`~/.local/share/gobstopper/jev-cache.json` as sha256 key digests mapped to
+`~/.local/share/gobstopper/clef-cache.json` as sha256 key digests mapped to
 a probability and timestamp, never text, so a cold `plan` inside
 the TTL can reuse an answer when its question and scoring state match.
 The version 2 disk format rejects malformed, duplicate, future-dated and
 out-of-range entries. Publication uses a new private temporary file, sync and
 atomic replacement; concurrent writers can lose reusable entries, causing a
 fresh request, but do not publish a partial image. Older cache formats are
-ignored. `jev-latest` is a provider alias, not an attested weight revision;
+ignored. `clef` and `clef-flash` are provider model names, not weight hashes;
 matching context and TTL do not prove the remote model stayed unchanged.
-Transient transport errors and HTTP 5xx responses are retried once; auth rejections
-are not. The scorer and judge resolve the API key once per process, so
-`watch` does not re-read the OS credential store every pass. Set
-`GOBSTOPPER_JEV_CACHE=0` or `GOBSTOPPER_JEV_CACHE_TTL_SECS=0` to disable
+Clef inference has no automatic retries or redirect following. HTTP 5xx,
+transport failures and malformed responses may follow billable provider work;
+Gobstopper returns the failure or keeps heuristic scores without another POST.
+The configured timeout covers the single attempt and its subprocess cleanup.
+The scorer and judge resolve environment credentials once per process. Set
+`GOBSTOPPER_CLEF_CACHE=0` or `GOBSTOPPER_CLEF_CACHE_TTL_SECS=0` to disable
 both layers;
-`GOBSTOPPER_JEV_CACHE_PATH` relocates the disk file;
+`GOBSTOPPER_CLEF_CACHE_PATH` relocates the disk file;
 the TTL maximum is 3,600 seconds.
+
+For a separate hosted decision, write a JSON evidence file and run
+`gobstopper decide evidence.json`. This command sends only the file's `state`,
+`questions` and optional `images` to Cloudflare, and prints the validated model,
+answers and usage. It does not discover sessions, capture screenshots, compact
+transcripts, or replace provider originals. It is not exposed through the
+read-only MCP server. The file's `model` defaults to `clef`; use `clef-flash`
+explicitly to select the other endpoint.
+
+```json
+{
+  "model": "clef",
+  "state": "The selected build report shows two failing tests.",
+  "questions": {
+    "investigate": {
+      "type": "noul",
+      "instructions": "Does this report need investigation?"
+    }
+  }
+}
+```
+
+Questions require instructions and IDs of 1–100 ASCII letters, digits, `_`,
+`.` or `-`. A request has 1–64 questions. `choice` uses a `criteria` object with
+2–255 options; `score` uses an ordered array of 2–10 levels. Returned choices
+must match the requested options and highest reported probability. Score legends
+must match the rubric. Gobstopper allows rounding to four decimal places: there
+must be a distribution summing to one within the reported probabilities' rounding
+intervals, clipped to 0–1. Its probability-weighted score must fit the reported
+score's rounding interval within the rubric's range. Returned values are not
+renormalized. A separate `decide` request requires all answers; the scorer and eval judge
+keep their fallback and missing-evidence behavior described above.
+
+Images must be embedded PNG, JPEG or WebP, either as a
+`data:image/png;base64,...` string (with the appropriate MIME type), or an
+object with `content_type` and `base64`. Only images you put in this evidence
+file are sent. Images are never automatically attached to scoring or eval.
+Remote URLs, unsupported formats and malformed images are rejected locally.
+Limits are four images, 4 MiB per image file after base64 decoding, 8 MiB total,
+16 megapixels per image and 13 MiB for the JSON request. Image decoding has a
+128 MiB allocation limit. Oversized evidence is rejected rather than shortened. Credentials, images and state are not included
+in diagnostics.
 
 `GOBSTOPPER_SCORER=apple` (macOS 26+, Apple Silicon) scores on-device with
 Apple Intelligence Foundation Models via the shared `apple-foundation`

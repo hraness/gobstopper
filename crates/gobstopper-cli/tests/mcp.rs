@@ -237,11 +237,12 @@ fn inspection_disables_external_strategies_models_and_bridge_writes() {
                 fixture.root.join("bin/forbidden"),
             )
             .env("AI_GATEWAY_API_KEY", "synthetic-test-key")
-            .env("TYPESAFE_API_KEY", "synthetic-test-key");
+            .env("CLOUDFLARE_API_TOKEN", "synthetic-test-key")
+            .env("CLOUDFLARE_ACCOUNT_ID", "0123456789abcdef0123456789abcdef");
         cmd
     };
     let mut expected = None;
-    for scorer in ["apple", "jev", "llm"] {
+    for scorer in ["apple", "clef", "llm"] {
         let value = content(&rpc(command(scorer), "plan", json!({"session":source})));
         assert!(
             value["plan"].is_object(),

@@ -37,6 +37,17 @@ function compare(left: readonly [bigint, bigint, bigint], right: readonly [bigin
 }
 
 describe("Gobstopper site source contract", () => {
+  test("documents Clef opt-in credentials and explicit image evidence without relabeling Jev research", async () => {
+    const [generated, benchmarks] = await Promise.all([
+      read("app/readme.generated.ts"),
+      read("app/benchmarks/page.tsx"),
+    ]);
+    for (const fact of ["GOBSTOPPER_SCORER=clef", "GOBSTOPPER_EVAL_JUDGE=clef", "CLOUDFLARE_ACCOUNT_ID", "CLOUDFLARE_API_TOKEN", "CLOUDFLARE_AUTH_TOKEN", "gobstopper decide evidence.json", "clef-flash", "4 MiB", "8 MiB", "16 megapixels", "13 MiB"]) {
+      expect(generated).toContain(fact);
+    }
+    expect(benchmarks).toContain("https://github.com/tamaratran/fast-jev-compaction");
+    expect(benchmarks).not.toContain("fast-clef-compaction");
+  });
   test("advertises only a verified published release that does not exceed the source version", async () => {
     const [home, publication, manifest] = await Promise.all([
       read("app/page.tsx"),

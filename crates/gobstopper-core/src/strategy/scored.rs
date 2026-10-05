@@ -7,7 +7,7 @@
 //! smallest tailward window that can reach the configured floor. A built-in deterministic
 //! heuristic scorer makes this strategy useful with no external API; the
 //! `ScoreDriver` trait lets a CLI-side driver plug in a model-based
-//! scorer such as Jev.
+//! scorer such as Clef.
 
 use super::elide::DEFAULT_STUB;
 use super::{state_card_digest, PolicyConfig, Strategy, STATE_CARD_RESERVE_TOKENS};
@@ -32,7 +32,7 @@ pub trait ScoreDriver {
     fn score(&self, transcript: &Transcript, candidates: &[usize]) -> Vec<ScoredItem>;
 
     /// One-line summary of the most recent [`score`](Self::score) pass
-    /// (e.g. `jev: 18 candidates → 18 unique questions (18 cached, 0
+    /// (e.g. `clef: 18 candidates → 18 unique questions (18 cached, 0
     /// sent) in 0 call(s), 18 items overlaid, 0 failed, 4ms`). The CLI
     /// appends it to the plan rationale so request-economy stats land
     /// in compaction events instead of staying stderr-only. `None` for

@@ -46,7 +46,7 @@ SUITES = {
     "watch": ("gobstopper", ["--test", "watch"], 28, 360, 2),
     "claude-process": ("gobstopper-adapters", ["--test", "native_process"], 2, 60, 1),
     "codex-process": ("gobstopper", ["--bin", "gobstopper", "tests::codex_"], 12, 90, 1),
-    "plugins": ("gobstopper-adapters", ["--test", "plugin_contract"], 11, 90, 1),
+    "plugins": ("gobstopper-adapters", ["--test", "plugin_contract"], 12, 90, 1),
     "events": ("gobstopper-core", ["--lib", "events::tests::"], 15, 60, 1),
     "monitor": (None, ["scripts/test_monitor.py", "-v"], 47, 90, 1),
 }
