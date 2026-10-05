@@ -1,6 +1,15 @@
 {
-  "schema": "gobstopper.bounded-stress.v1",
+  "schema": "gobstopper.assurance-receipt.v1",
   "observed_at": "2026-10-05T17:12:58.905708+00:00",
+  "scope": "Bounded synthetic operation, process and fault suites.",
+  "bounds": "See retained exact suite inventory and receipt bounds; fixed sequence seed and finite capacities.",
+  "exclusions": [
+    "No physical power-loss or real full-volume qualification",
+    "No whole-process-tree RSS theorem",
+    "No live provider acceptance"
+  ],
+  "passed": true,
+  "inputs_unchanged": true,
   "source_sha256": {
     "Cargo.lock": "b1e85016f7159e337601fe6cf960ff0799747a7c5f0852ed9ae548274ccfe21b",
     "Cargo.toml": "0e6b55504269e6be141b5dff532e19f19f42c4ea13c79f30cc7946d231266c2c",
@@ -148,7 +157,25 @@
     "/opt/homebrew/Cellar/rust/1.97.1/bin/rustc": "d69d40bfd2e11825feb3538512b6ffcd63de91c35ec36bb876849f0f9f8fe6bd"
   },
   "platform": "darwin",
-  "passed": true,
+  "identity_log_sha256": {
+    "rust-sysroot.log": "847d7ac7f933b46e8c43448239a79c704197305fbbac1a630bef9f038e5fb835",
+    "cargo-version.log": "22cf38b38044f7e66c130e80d546028773672b549ec7bb81bf1e7652ede0c8ac",
+    "rust-version.log": "eaf195daced7a434718b67881bed97c02440b2b6196dad18db476478c66b1c36"
+  },
+  "elapsed_seconds": 117.45760979107581,
+  "raw_bounds": {
+    "total_seconds": 900,
+    "max_log_bytes_per_command": 8388608,
+    "cargo_jobs": 2,
+    "test_threads": 1,
+    "suite_workers": 3,
+    "max_observed_single_child_rss_bytes": 2147483648,
+    "sequence_steps": 64,
+    "sequence_corruption_recoveries": 16,
+    "sequence_post_step_file_limit": 1200,
+    "sequence_post_step_bytes_limit": 16777216,
+    "sequence_elapsed_ms_limit": 90000
+  },
   "results": [
     {
       "passed": true,
@@ -764,32 +791,6 @@
       "largest_reaped_child_rss_bytes": 578387968
     }
   ],
-  "identity_log_sha256": {
-    "rust-sysroot.log": "847d7ac7f933b46e8c43448239a79c704197305fbbac1a630bef9f038e5fb835",
-    "cargo-version.log": "22cf38b38044f7e66c130e80d546028773672b549ec7bb81bf1e7652ede0c8ac",
-    "rust-version.log": "eaf195daced7a434718b67881bed97c02440b2b6196dad18db476478c66b1c36"
-  },
-  "bounds": {
-    "total_seconds": 900,
-    "max_log_bytes_per_command": 8388608,
-    "cargo_jobs": 2,
-    "test_threads": 1,
-    "suite_workers": 3,
-    "max_observed_single_child_rss_bytes": 2147483648,
-    "sequence_steps": 64,
-    "sequence_corruption_recoveries": 16,
-    "sequence_post_step_file_limit": 1200,
-    "sequence_post_step_bytes_limit": 16777216,
-    "sequence_elapsed_ms_limit": 90000
-  },
-  "limits": [
-    "synthetic bounded fixtures only; no live provider qualification",
-    "RUSAGE_CHILDREN maximum is largest reaped-child high-water, not simultaneous tree RSS or an enforced OS allocation limit",
-    "child collection assertions cover owned fixture descendants, not a hard process-count sandbox",
-    "wall deadline cannot preempt uninterruptible kernel I/O; wait/cleanup failure fails admission",
-    "no physical power-loss, network-filesystem or real-full-volume qualification",
-    "native journal faults are covered; not every target-registry persistence boundary has a process-crash fault seam"
-  ],
-  "inputs_unchanged": true,
-  "elapsed_seconds": 117.45760979107581
+  "raw_receipt_sha256": "76c3751c45dc97b04c04cfa39d0d297add5b977baa828be9350bb93248863d9f",
+  "local_verification": "Recorded source/tool and local artifact hashes rechecked; no proof rerun or provider attestation."
 }
