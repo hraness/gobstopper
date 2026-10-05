@@ -2552,7 +2552,17 @@ fn send_upstream(request: &Request, upstream: &str, body: &[u8]) -> Result<Upstr
     let mut command = Command::new("curl");
     command
         .args(["-q", "-sS", "-N", "-i", "--suppress-connect-headers"])
-        .args(["--proto", "=http,https", "--connect-timeout", "30"])
+        // Provider edge proxies have intermittently reset HTTP/2 streams (curl
+        // 92 in the local reliability log). HTTP/1.1 keeps the long-lived
+        // streaming path deterministic and lets the managed service recover
+        // from ordinary connection failures without protocol renegotiation.
+        .args([
+            "--proto",
+            "=http,https",
+            "--http1.1",
+            "--connect-timeout",
+            "30",
+        ])
         .args([
             "--speed-time",
             "900",
