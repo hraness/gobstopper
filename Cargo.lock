@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "anyhow",
  "apple-foundation",
@@ -381,7 +381,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper-adapters"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "anyhow",
  "fs2",
@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper-core"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "libc",
  "serde",
@@ -617,7 +617,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "miniz_oxide"
-version = "0.8.9"
+version = "0.8.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1fa76a2c86f704bdb222d66965fb3d63269ce38518b83cb0575fca855ebb6316"
 dependencies = [
@@ -705,7 +705,7 @@ dependencies = [
  "crc32fast",
  "fdeflate",
  "flate2",
- "miniz_oxide 0.8.9",
+ "miniz_oxide 0.8.10",
 ]
 
 [[package]]
