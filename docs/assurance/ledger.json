@@ -464,8 +464,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-release-087-r3-reliability-core.json",
-        "sha256": "d545473fffae482b879cdbbcbb9238b11f37131e240d8a34ac0217664b4b82e5"
+        "path": "docs/assurance/receipts/2026-10-05-update-lock-lease-core.json",
+        "sha256": "e69d5e4a0bb636341d3e1ce6da32e6043e9c7a8656603274ef13d27c4d1e60b7"
       }
     },
     {
@@ -527,8 +527,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-04-release-087-r3-reliability-transcript.json",
-        "sha256": "52c00ed1c678e32c890b331ac897081f273d7d64abee2c4679c5dacb587d4a1c"
+        "path": "docs/assurance/receipts/2026-10-05-update-lock-lease-transcript.json",
+        "sha256": "890895c852b1c17a1cc2b7aa01d7e801d261d2526f5574ad4aed035fc0775ce3"
       }
     },
     {
@@ -548,8 +548,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-05-fixture-nonblocking-accept-stress.json",
-        "sha256": "f7200b33e71c7a595b3385cc190ac604c728ba4a6cb39c96b0168c0a639ab4e0"
+        "path": "docs/assurance/receipts/2026-10-05-update-lock-lease-stress.json",
+        "sha256": "35fd5092793c2bd0fa6d3c5e6e28239c8eea167ce872382e2b679507104d4ef9"
       }
     },
     {

@@ -679,6 +679,15 @@ pub(super) fn verify_prepared_upgrade(
     Ok(())
 }
 
+/// True when replacement failed only because another command holds the
+/// activity lock — the detached upgrade controller retries this bounded rather
+/// than rolling back over a transient watcher or monitor pass.
+pub(super) fn is_installation_busy(error: &anyhow::Error) -> bool {
+    error
+        .chain()
+        .any(|cause| cause.to_string() == files::BUSY_MESSAGE)
+}
+
 pub(super) fn replace_upgrade(
     executable: &Path,
     stage_path: &Path,
@@ -2081,5 +2090,15 @@ pub(crate) mod tests {
         let restored: InstallReceipt =
             serde_json::from_slice(&fs::read(state.path.join("install.json")).unwrap()).unwrap();
         assert_eq!(restored.binary_sha256, previous.binary_sha256);
+    }
+
+    #[test]
+    fn busy_detection_matches_only_lock_contention() {
+        let busy = anyhow::anyhow!("{}", files::BUSY_MESSAGE);
+        assert!(is_installation_busy(&busy));
+        let wrapped = Err::<(), _>(busy).context("outer");
+        assert!(is_installation_busy(&wrapped.unwrap_err()));
+        let other = anyhow::anyhow!("Managed installation changed while upgrade was staged");
+        assert!(!is_installation_busy(&other));
     }
 }

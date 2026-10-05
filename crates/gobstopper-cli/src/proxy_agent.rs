@@ -2582,6 +2582,7 @@ pub fn inspect() -> Result<Value> {
     let manager = registered(&m, &p);
     let is_registered = manager.as_ref().is_ok_and(|value| value.is_some());
     let manager_error = manager.err().map(|error| error.to_string());
+    let stale_references = stale_gobstopper_references();
     Ok(json!({
         "schema":SCHEMA, "platform":platform, "installed":true,
         "upgrade":upgrade,
@@ -2594,8 +2595,109 @@ pub fn inspect() -> Result<Value> {
         "service_id":m.service_id, "manager_registered":is_registered, "manager_error":manager_error,
         "live_version":live.as_ref().and_then(|v|v.get("version")),
         "keep_awake":live.as_ref().and_then(|v|v.get("keep_awake")), "next":"gobstopper proxy repair"
-        ,"draining":live.as_ref().and_then(|v|v.get("draining"))
+        ,"draining":live.as_ref().and_then(|v|v.get("draining")),
+        "installation":crate::self_update::installation_report(&m.executable),
+        "stale_references":stale_references,
     }))
+}
+
+/// Gobstopper command paths embedded in agent configs and service definitions
+/// keep pointing at an installation that moved — report references that no
+/// longer resolve to an enrolled executable so they can be repointed before
+/// the next session, not after. Read-only; bounded file reads.
+fn stale_gobstopper_references() -> Value {
+    const MAX_CONFIG_BYTES: u64 = 512 * 1024;
+    let Ok(home) = home() else {
+        return json!([]);
+    };
+    let mut found = Vec::new();
+    for file in [
+        home.join(".codex/config.toml"),
+        home.join(".claude.json"),
+        home.join(".config/devin/config.json"),
+        home.join(".config/devin/mcp_config.json"),
+    ] {
+        collect_stale_references(&file, MAX_CONFIG_BYTES, &mut found);
+    }
+    let agents = home.join("Library/LaunchAgents");
+    if let Ok(entries) = std::fs::read_dir(&agents) {
+        for entry in entries.flatten().take(256) {
+            if entry.file_name().to_string_lossy().contains("gobstopper")
+                && entry.path().extension().is_some_and(|ext| ext == "plist")
+            {
+                collect_stale_references(&entry.path(), MAX_CONFIG_BYTES, &mut found);
+            }
+        }
+    }
+    json!(found)
+}
+
+/// An absolute gobstopper path in a config is stale when it no longer exists
+/// or lives where the installer refuses managed enrollment (the same
+/// rejection list `eligible_destination` applies).
+fn stale_reference_issue(referenced: &str) -> Option<&'static str> {
+    let referenced = referenced.trim();
+    if !referenced.contains("gobstopper") || !Path::new(referenced).is_absolute() {
+        return None;
+    }
+    if !Path::new(referenced).exists() {
+        return Some("missing");
+    }
+    if Path::new(referenced)
+        .components()
+        .filter_map(|part| part.as_os_str().to_str())
+        .any(|part| {
+            matches!(
+                part,
+                ".cargo" | "target" | "node_modules" | "Cellar" | ".git"
+            )
+        })
+    {
+        return Some("unmanaged_path");
+    }
+    None
+}
+
+fn collect_stale_references(file: &Path, max_bytes: u64, found: &mut Vec<Value>) {
+    let bytes = match read_file(file) {
+        Ok(Some(bytes)) if bytes.len() as u64 <= max_bytes => bytes,
+        _ => return,
+    };
+    let text = String::from_utf8_lossy(&bytes);
+    let mut record = |referenced: &str| {
+        if let Some(issue) = stale_reference_issue(referenced) {
+            found.push(json!({"file": file, "path": referenced.trim(), "issue": issue}));
+        }
+    };
+    if let Ok(value) = serde_json::from_str::<Value>(&text) {
+        let mut stack = vec![&value];
+        while let Some(node) = stack.pop() {
+            if let Some(object) = node.as_object() {
+                for (key, value) in object {
+                    if key == "command" {
+                        if let Some(command) = value.as_str() {
+                            record(command);
+                        }
+                    } else {
+                        stack.push(value);
+                    }
+                }
+            } else if let Some(array) = node.as_array() {
+                stack.extend(array.iter());
+            }
+        }
+    }
+    if file
+        .extension()
+        .is_some_and(|ext| ext == "toml" || ext == "plist")
+    {
+        for line in text.lines() {
+            for token in line.split(|c: char| c == '"' || c == '<' || c == '>' || c.is_whitespace())
+            {
+                record(token.trim_end_matches(','));
+            }
+        }
+    }
 }
 
 pub(crate) fn upgrade_journal_path() -> Result<PathBuf> {
@@ -5304,5 +5406,77 @@ pub(crate) mod tests {
             .unwrap_err()
             .to_string()
             .contains("target is invalid"));
+    }
+}
+
+#[cfg(test)]
+mod stale_reference_tests {
+    use super::*;
+
+    #[test]
+    fn stale_reference_classification() {
+        let missing = std::env::temp_dir()
+            .join("gobstopper-ref-missing")
+            .join("gobstopper");
+        assert_eq!(
+            stale_reference_issue(missing.to_str().unwrap()),
+            Some("missing")
+        );
+        let here = std::env::temp_dir().join(format!(
+            "gobstopper-ref-test-{}/.cargo/bin",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&here).unwrap();
+        let exe = here.join("gobstopper");
+        std::fs::write(&exe, b"x").unwrap();
+        assert_eq!(
+            stale_reference_issue(exe.to_str().unwrap()),
+            Some("unmanaged_path")
+        );
+        assert_eq!(stale_reference_issue("gobstopper"), None); // PATH-relative
+        assert_eq!(stale_reference_issue("/tmp"), None); // not gobstopper
+        assert_eq!(stale_reference_issue("/bin/ls"), None);
+        std::fs::remove_dir_all(here.parent().unwrap().parent().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn collect_finds_json_commands_toml_and_plist_strings() {
+        let dir = std::env::temp_dir().join(format!("gobstopper-stale-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = std::env::temp_dir()
+            .join("gobstopper-collect-missing")
+            .join("gobstopper");
+        let missing_str = missing.to_str().unwrap();
+        let json = dir.join("mcp_config.json");
+        std::fs::write(
+            &json,
+            format!(
+                r#"{{"mcpServers":{{"gobstopper":{{"command":"{}"}}}}}}"#,
+                missing_str.replace('\\', "\\\\")
+            ),
+        )
+        .unwrap();
+        let toml = dir.join("config.toml");
+        std::fs::write(&toml, format!("command = \"{missing_str}\"\n")).unwrap();
+        let plist = dir.join("agent.plist");
+        std::fs::write(
+            &plist,
+            format!("<string>{missing_str}</string>\n<string>/bin/ls</string>\n"),
+        )
+        .unwrap();
+        let mut found = Vec::new();
+        collect_stale_references(&json, 512 * 1024, &mut found);
+        collect_stale_references(&toml, 512 * 1024, &mut found);
+        collect_stale_references(&plist, 512 * 1024, &mut found);
+        assert_eq!(found.len(), 3);
+        assert!(found
+            .iter()
+            .all(|row| row["issue"] == "missing" && row["path"] == missing_str));
+        // An over-size file is skipped, never read past the bound.
+        let big = dir.join("big.json");
+        std::fs::write(&big, vec![b' '; 513 * 1024]).unwrap();
+        collect_stale_references(&big, 512 * 1024, &mut found);
+        assert_eq!(found.len(), 3);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
