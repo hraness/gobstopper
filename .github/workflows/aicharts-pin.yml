@@ -1,0 +1,86 @@
+name: aicharts pin
+
+# Every six hours, refresh the aicharts release this repository's installer
+# pins to the newest stable cli-v* tag, verify the pin against the release's
+# own checksum files, run the installer tests, and open a pull request. The
+# release-tagger app pushes the refresh branch; this workflow then opens the
+# PR with GITHUB_TOKEN and pushes one empty commit so pull_request CI runs on
+# the head and the ordinary Required gate decides the merge.
+
+on:
+  schedule:
+    - cron: "41 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: aicharts-pin
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: Refresh the pinned aicharts release
+    if: github.repository == 'hraness/gobstopper'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Refresh the pinned aicharts release
+        id: refresh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/refresh-aicharts-pin.mjs --pin scripts/install.sh
+      - name: Validate the refreshed installer
+        if: steps.refresh.outputs.changed == 'true'
+        run: |
+          sh -n scripts/install.sh
+          python3 scripts/test_install.py
+      - name: Mint the release-tagger token
+        id: tagger
+        if: steps.refresh.outputs.changed == 'true'
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2.2.2
+        with:
+          app-id: ${{ vars.RELEASE_TAGGER_APP_ID }}
+          private-key: ${{ secrets.RELEASE_TAGGER_PRIVATE_KEY }}
+          permission-contents: write
+      - name: Publish the pin update as a pull request
+        if: steps.refresh.outputs.changed == 'true' && steps.tagger.outcome == 'success'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAGGER: ${{ steps.tagger.outputs.token }}
+          VERSION: ${{ steps.refresh.outputs.version }}
+          COMMIT: ${{ steps.refresh.outputs.commit }}
+        run: |
+          set -euo pipefail
+          branch="automation/aicharts-pin-$VERSION"
+          remote="https://x-access-token:${TAGGER}@github.com/${GITHUB_REPOSITORY}.git"
+          git config user.name "0thernet"
+          git config user.email "894119+0thernet@users.noreply.github.com"
+          git add scripts/install.sh
+          git commit -m "chore: pin aicharts $VERSION"
+          git push "$remote" "HEAD:refs/heads/$branch"
+
+          run_url="${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          while IFS= read -r stale_number; do
+            [[ -z "$stale_number" ]] && continue
+            gh pr close "$stale_number" --delete-branch --comment "Superseded by the pin refresh in ${run_url}." || true
+          done < <(gh pr list --state open --limit 50 --json number,headRefName --jq '.[] | select(.headRefName | startswith("automation/aicharts-pin-")) | .number')
+
+          pr_url="$(gh pr list --head "$branch" --json url --jq '.[0].url')"
+          if [[ -z "$pr_url" ]]; then
+            printf -v pr_body 'Pins the installer to [aicharts cli-v%s](https://github.com/hraness/aicharts/releases/tag/cli-v%s) (commit `%s`).\n\nDigests come from the release'"'"'s own checksum files and the installer tests passed before this PR was opened; Required CI decides the merge.' "$VERSION" "$VERSION" "$COMMIT"
+            pr_url="$(gh pr create --base main --head "$branch" --title "chore: pin aicharts $VERSION" --body "$pr_body")"
+          fi
+          # A GITHUB_TOKEN-opened PR dispatches no pull_request runs, so push
+          # one empty commit with the app token: the synchronize event runs
+          # Required CI on this head.
+          git commit --allow-empty -m "chore: dispatch checks for aicharts $VERSION"
+          git push "$remote" "HEAD:refs/heads/$branch"
+          gh pr merge "$pr_url" --auto --squash --delete-branch

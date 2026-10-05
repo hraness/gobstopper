@@ -577,9 +577,12 @@ On macOS (Apple silicon) and Linux x86_64, `install.sh` also adds `aicharts`
 beside `gobstopper`, checked against a pinned SHA-256 digest and, on macOS,
 its Developer ID signature. On a first install it turns on local usage
 history: daily token totals for your agents, kept on this computer and never
-uploaded. `aicharts history disable` turns it off. Set
-`GOBSTOPPER_USAGE_HISTORY=no` to leave it off, or `GOBSTOPPER_AICHARTS=no` to
-skip aicharts.
+uploaded. `aicharts history disable` turns it off. It also turns on
+aicharts' daily self-update check, which installs a new release only after
+verifying it; `aicharts update disable` turns that off, or set
+`GOBSTOPPER_AICHARTS_UPDATE=no` before installing. Set
+`GOBSTOPPER_USAGE_HISTORY=no` to leave history off, or `GOBSTOPPER_AICHARTS=no`
+to skip aicharts.
 
 Set `GOBSTOPPER_VERSION=X.Y.Z` to install one exact release. The installers
 check each download against the release's SHA-256 file; [docs/release.md](docs/release.md)

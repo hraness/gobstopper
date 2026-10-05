@@ -11,14 +11,16 @@
 #
 # It also installs aicharts beside it for local usage history across your
 # agents (https://aicharts.io/usage), checked against the digest pinned below,
-# and on a first install turns that history on. It stays on this computer;
-# nothing is uploaded.
+# and on a first install turns that history and aicharts' daily verified
+# self-update check on. Everything stays on this computer; nothing is
+# uploaded.
 #
 # Options (environment):
 #   GOBSTOPPER_VERSION         exact version, MAJOR.MINOR.PATCH (default: the latest release)
 #   GOBSTOPPER_INSTALL_PREFIX  install into <prefix>/bin (default: ~/.local)
 #   GOBSTOPPER_AICHARTS=no     skip aicharts
 #   GOBSTOPPER_USAGE_HISTORY=no  install aicharts but leave usage history off
+#   GOBSTOPPER_AICHARTS_UPDATE=no  install aicharts but leave daily updates off
 # Source: https://github.com/hraness/gobstopper/blob/main/scripts/install.sh
 #
 # Everything is inside main(), so a partial download runs nothing.
@@ -161,8 +163,9 @@ AICHARTS_SHA256_LINUX_X86_64=c2a8acf56019565668bbcf84884503428d857ab5c54fecec85a
 
 # install_aicharts BIN PLATFORM FIRST_INSTALL installs or upgrades the pinned
 # aicharts in BIN, leaves an aicharts installed elsewhere or a newer one alone,
-# and on a first install turns on local usage history. A failure here only
-# warns: gobstopper is already installed.
+# and on a first install turns on local usage history and aicharts' daily
+# self-update check. A failure here only warns: gobstopper is already
+# installed.
 install_aicharts() {
   case "${GOBSTOPPER_AICHARTS:-yes}" in no | 0 | false | off) return 0 ;; esac
   case "$2" in
@@ -194,12 +197,23 @@ install_aicharts() {
     fi
   fi
   [ "$3" = yes ] && [ "$aicharts_new" = yes ] || return 0
-  case "${GOBSTOPPER_USAGE_HISTORY:-yes}" in no | 0 | false | off) return 0 ;; esac
-  # Leave history alone unless it has never been turned on.
-  status=$(HRANESS_SUPPORT_AUDIENCE=off "$aicharts" history status --json 2>/dev/null) || return 0
+  case "${GOBSTOPPER_USAGE_HISTORY:-yes}" in
+    no | 0 | false | off) ;;
+    *) enable_aicharts_history "$aicharts" ;;
+  esac
+  case "${GOBSTOPPER_AICHARTS_UPDATE:-yes}" in
+    no | 0 | false | off) ;;
+    *) enable_aicharts_updates "$aicharts" ;;
+  esac
+}
+
+# enable_aicharts_history AICHARTS turns local history on unless it has ever
+# been turned on before.
+enable_aicharts_history() {
+  status=$(HRANESS_SUPPORT_AUDIENCE=off "$1" history status --json 2>/dev/null) || return 0
   case "$status" in *'"collecting":"off"'*) ;; *) return 0 ;; esac
   case "$status" in *'"record":null'*) ;; *) return 0 ;; esac
-  if HRANESS_SUPPORT_AUDIENCE=off "$aicharts" history enable >/dev/null 2>&1; then
+  if HRANESS_SUPPORT_AUDIENCE=off "$1" history enable >/dev/null 2>&1; then
     echo
     echo "Local usage history is on: aicharts records your agents' daily token totals"
     echo "on this computer and never uploads them."
@@ -207,6 +221,25 @@ install_aicharts() {
     echo "  Turn off:  aicharts history disable"
   else
     warn "could not turn on local usage history; run: aicharts history enable"
+  fi
+}
+
+# enable_aicharts_updates AICHARTS turns aicharts' daily verified self-update
+# check on when this aicharts supports it. An aicharts released before
+# `aicharts update` existed fails its status probe and is left alone; so is a
+# scheduler already on, unsupported, or owned by another install.
+enable_aicharts_updates() {
+  status=$(HRANESS_SUPPORT_AUDIENCE=off "$1" update status --json 2>/dev/null) || return 0
+  case "$status" in
+    *'"scheduler":"on"'* | *'"scheduler":"not-ours"'* | *'"scheduler":"unsupported"'*) return 0 ;;
+  esac
+  if HRANESS_SUPPORT_AUDIENCE=off "$1" update enable >/dev/null 2>&1; then
+    echo
+    echo "Daily aicharts updates are on: it checks GitHub once a day and installs"
+    echo "a new release only after verifying it. Nothing is uploaded."
+    echo "  Turn off:  aicharts update disable"
+  else
+    warn "could not turn on daily aicharts updates; run: aicharts update enable"
   fi
 }
 
