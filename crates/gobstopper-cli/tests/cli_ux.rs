@@ -391,6 +391,7 @@ fn proxy_status_uses_the_managed_port_and_explicit_port_overrides_damaged_manife
                     Err(error) => panic!("accept failed: {error}"),
                 }
             };
+            socket.set_nonblocking(false).unwrap();
             socket
                 .set_read_timeout(Some(Duration::from_secs(2)))
                 .unwrap();
