@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { join } from "node:path";
 
-import { articleProvenanceSentence } from "@hraness/design-kit";
+import { articleProvenanceSentence, isArticleIndexable } from "@hraness/design-kit";
 import { blogPosts, postProvenance } from "../app/blog/articles";
 
 import { publishedRelease } from "../app/publication";
@@ -155,6 +155,36 @@ describe("built Gobstopper site", () => {
       await stopBuiltSite(server);
     }
   }, 20_000);
+  test("serves the proxy guide with its own canonical, card, and sitemap entry", async () => {
+    const server = await startBuiltSite();
+    try {
+      const canonical = (html: string): string => html.replaceAll(/https:\/\/[a-z0-9-]+\.vercel\.app/gu, "https://gobstopper.sh");
+      const [guideResponse, cardResponse, sitemapResponse, docsResponse] = await Promise.all([
+        fetch(`${server.origin}/docs/proxy`, { redirect: "manual" }),
+        fetch(`${server.origin}/docs/proxy/opengraph-image`, { redirect: "manual" }),
+        fetch(`${server.origin}/sitemap.xml`, { redirect: "manual" }),
+        fetch(`${server.origin}/docs`, { redirect: "manual" }),
+      ]);
+      expect(guideResponse.status).toBe(200);
+      const guide = canonical(await guideResponse.text());
+      expect(guide).toContain('<link rel="canonical" href="https://gobstopper.sh/docs/proxy"');
+      expect(guide).toContain("<title>Route Claude Code and Codex through the proxy | Gobstopper</title>");
+      expect(guide).toMatch(/<meta\s+property="og:image"\s+content="https:\/\/gobstopper\.sh\/docs\/proxy\/opengraph-image(?:\?[^"]+)?"/u);
+      expect(guide).not.toMatch(/<meta\s+name="robots"\s+content="noindex/u);
+      for (const id of ["troubleshooting", "diagnose-repair-and-remove", "launch-with-a-direct-fallback", "codex"]) {
+        expect(guide).toContain(`id="${id}"`);
+      }
+      expect(cardResponse.status).toBe(200);
+      expect(cardResponse.headers.get("content-type")).toContain("image/png");
+      expect(await sitemapResponse.text()).toContain("<loc>https://gobstopper.sh/docs/proxy</loc>");
+      // The README rendered at /docs sends setup readers to the guide, not GitHub.
+      const docs = await docsResponse.text();
+      expect(docs).toContain('href="/docs/proxy"');
+      expect(docs).not.toContain("blob/main/docs/proxy.md");
+    } finally {
+      await stopBuiltSite(server);
+    }
+  }, 20_000);
   test("serves the blog, its posts, the Atom feed, and indexable sitemap entries", async () => {
     const server = await startBuiltSite();
     try {
@@ -174,7 +204,9 @@ describe("built Gobstopper site", () => {
         expect(html).toContain(articleProvenanceSentence(postProvenance(post)));
         expect(html).not.toContain("<time");
         expect(html).toMatch(/<meta\s+property="og:type"\s+content="article"/u);
-        expect(html).not.toMatch(/<meta\s+name="robots"\s+content="noindex/u);
+        // A quarantined post is readable at its address but asks not to be indexed.
+        if (isArticleIndexable(post.admission)) expect(html).not.toMatch(/<meta\s+name="robots"\s+content="noindex/u);
+        else expect(html).toMatch(/<meta\s+name="robots"\s+content="noindex/u);
         const card = await fetch(`${server.origin}/blog/${slug}/opengraph-image`, { redirect: "manual" });
         expect(card.status).toBe(200);
         expect(card.headers.get("content-type")).toContain("image/png");
@@ -189,7 +221,8 @@ describe("built Gobstopper site", () => {
       expect(sitemap).toContain("<loc>https://gobstopper.sh/blog/introducing-gobstopper</loc>");
       for (const post of blogPosts) {
         const entry = sitemap.split("<url>").find(item => item.includes(`<loc>https://gobstopper.sh/blog/${post.slug}</loc>`));
-        expect(entry).toContain(`<lastmod>${post.updated ?? post.published}T00:00:00.000Z</lastmod>`);
+        if (isArticleIndexable(post.admission)) expect(entry).toContain(`<lastmod>${post.updated ?? post.published}T00:00:00.000Z</lastmod>`);
+        else expect(entry).toBeUndefined();
       }
     } finally {
       await stopBuiltSite(server);

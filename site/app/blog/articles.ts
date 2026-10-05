@@ -24,6 +24,8 @@ const REVIEWED_ON: ArticleIsoDate = "2026-09-30";
 const REASSESS_ON: ArticleIsoDate = "2026-11-10";
 // The introduction was rewritten around the Terminal-Bench study and reviewed again.
 const INTRO_REVIEWED_ON: ArticleIsoDate = "2026-09-30";
+/** Ben Guo's human review in the October 4 editorial pass. */
+const EDITOR_REVIEW = { reviewer: "Ben Guo", reviewerType: "human-editor", reviewedOn: "2026-10-04" } as const;
 
 function repo(path: string, name = "gobstopper"): string {
   return `https://github.com/hraness/${name}/blob/main/${path}`;
@@ -99,7 +101,7 @@ const introducing: BlogPost = {
     owner: "Hraness",
     drafting: "ai-from-source",
     review: { reviewer: REVIEWER, reviewerType: "ai", reviewedOn: REVIEWED_ON },
-    humanReview: null,
+    humanReview: EDITOR_REVIEW,
     reassessOn: REASSESS_ON,
     harmIfWrong: "A reader could take one single-trial run as proof that the proxy never costs tasks, or assume the benchmark's 45,000-token threshold is the default.",
     refreshTriggers: [
@@ -157,7 +159,7 @@ const terminalBench: BlogPost = {
     owner: "Hraness",
     drafting: "ai-from-source",
     review: { reviewer: REVIEWER, reviewerType: "ai", reviewedOn: REVIEWED_ON },
-    humanReview: null,
+    humanReview: EDITOR_REVIEW,
     reassessOn: REASSESS_ON,
     harmIfWrong: "A reader could trust a single-trial resolution or cost difference as a ranking, read gateway dollars for one model as their own bill, or assume the 128,000-token default behaves like the 45,000-token benchmark.",
     refreshTriggers: [
@@ -216,7 +218,7 @@ const proofs: BlogPost = {
     owner: "Hraness",
     drafting: "ai-from-source",
     review: { reviewer: REVIEWER, reviewerType: "ai", reviewedOn: REVIEWED_ON },
-    humanReview: null,
+    humanReview: EDITOR_REVIEW,
     reassessOn: REASSESS_ON,
     harmIfWrong: "A reader could believe Gobstopper proves more than it does, such as staying under a context budget or recovering the original transcript.",
     refreshTriggers: [
@@ -274,7 +276,7 @@ const vault: BlogPost = {
     owner: "Hraness",
     drafting: "ai-from-source",
     review: { reviewer: REVIEWER, reviewerType: "ai", reviewedOn: REVIEWED_ON },
-    humanReview: null,
+    humanReview: EDITOR_REVIEW,
     reassessOn: REASSESS_ON,
     harmIfWrong: "A reader could trust the archive through failures the models do not cover, such as a power cut that loses unsynced writes.",
     refreshTriggers: [
@@ -289,8 +291,58 @@ const vault: BlogPost = {
   },
 };
 
+const aicharts: BlogPost = {
+  slug: "how-gobstopper-uses-aicharts",
+  body: "markdown",
+  title: "How Gobstopper uses aicharts to show token use across your agents",
+  dek: "Gobstopper's installer adds aicharts, which keeps a daily record of your agents' token use on your computer. gobstopper usage reads it beside the proxy's own counts.",
+  shareLine: "Every agent's token use, kept on your computer.",
+  shareHeadline: "How Gobstopper uses aicharts",
+  eyebrow: "Integration",
+  published: "2026-10-04",
+  keywords: ["Gobstopper", "aicharts", "token usage", "coding agents", "Claude Code", "Codex", "local usage history"],
+  admission: {
+    href: "/blog/how-gobstopper-uses-aicharts",
+    lifecycle: "indexable",
+    readerJob: "Find out what the Gobstopper installer adds for usage history, how to read it, and how it relates to the proxy's own counts.",
+    nonObviousAnswer: "gobstopper usage counts every agent aicharts can read, including sessions that never pass through the proxy, so a proxied request appears in both gobstopper data and the aicharts record; compare the two instead of adding them.",
+    originalContribution: "The installer's checks and defaults, the five forwarded history commands, and the difference between the proxy's counts and aicharts' record, read from the v0.8.6 source and the aicharts 0.3.1 release.",
+    hostFit: "A How Gobstopper uses aicharts post on Gobstopper's host for the registered relation runtime:gobstopper:aicharts:installs.",
+    nearestUrls: [
+      { url: "https://aicharts.io/usage", distinction: "aicharts' page covers the collector and its dashboard; this post covers what Gobstopper installs and how its usage command reads the record." },
+      { url: "/blog/gobstopper-on-terminal-bench", distinction: "That post measures compaction on a benchmark; this one explains where everyday token totals come from." },
+    ],
+    sources: [
+      source("gobstopper usage: the five forwarded aicharts history commands", repo("crates/gobstopper-cli/src/usage.rs"), "2026-10-04"),
+      source("Installer: pinned aicharts digests, signature check and first-install history", repo("scripts/install.sh"), "2026-10-04"),
+      source("Session data: what gobstopper data counts and how it relates to gobstopper usage", repo("docs/session-data.md"), "2026-10-04"),
+      source("Gobstopper v0.8.6 release", "https://github.com/hraness/gobstopper/releases/tag/v0.8.6", "2026-10-04"),
+      source("aicharts usage history and agent queries", repo("docs/usage-history.md", "aicharts"), "2026-10-04"),
+      source("aicharts CLI 0.3.1 release", "https://github.com/hraness/aicharts/releases/tag/cli-v0.3.1", "2026-10-04"),
+    ],
+    observations: [
+      "The installer verifies the aicharts archive against digests pinned in scripts/install.sh, not a checksum file fetched alongside it.",
+      "History is turned on only on a first install and only when aicharts reports collection off.",
+    ],
+    scores: {"readerUtility": 2, "originalEvidence": 1, "factualConfidence": 2, "hostFit": 2, "voiceIntegrity": 2, "maintenanceValue": 2},
+    owner: "Hraness",
+    drafting: "ai-from-source",
+    review: EDITOR_REVIEW,
+    humanReview: EDITOR_REVIEW,
+    reassessOn: "2026-11-15",
+    harmIfWrong: "A reader could add the proxy's counts to aicharts' totals and overstate their token use, or expect usage data to leave the computer.",
+    refreshTriggers: [
+      "Change to the relation runtime:gobstopper:aicharts:installs",
+      "Change to the pinned aicharts version or digests in scripts/install.sh",
+      "Change to the forwarded commands in crates/gobstopper-cli/src/usage.rs",
+      "Change to aicharts' collection schedule or MCP tools",
+      "Rename of Gobstopper or aicharts",
+    ],
+  },
+};
+
 /** Every post, newest first. Quarantined and archived posts stay readable but are not listed. */
-export const blogPosts: readonly BlogPost[] = [introducing, terminalBench, proofs, vault];
+export const blogPosts: readonly BlogPost[] = [aicharts, introducing, terminalBench, proofs, vault];
 
 /** The posts written in Markdown, whose bodies scripts/sync-blog.ts generates. */
 export const markdownPosts = blogPosts.filter((post): post is BlogPost & { slug: MarkdownSlug } => post.body === "markdown");

@@ -2,6 +2,13 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## v0.8.6 - 2026-10-04
+
+`gobstopper usage` shows your token use across coding agents, from aicharts' daily record on your computer.
+
+- `gobstopper usage` reports token use by day, agent, provider and model for every agent aicharts can read, including agents that never pass through the proxy. `report` (the default), `status`, `enable`, `disable` and `collect` run the matching `aicharts history` command; anything else is refused, so it never enrolls, publishes or uploads. It runs before Gobstopper's configuration and update check, and finds aicharts through `GOBSTOPPER_AICHARTS`, your `PATH` or `~/.local/bin`.
+- `curl -fsSL https://gobstopper.sh/install.sh | sh` also installs aicharts on macOS (Apple silicon) and Linux x86_64, checked against a pinned digest and, on macOS, its Developer ID signature, and turns on local usage history on a first install. `GOBSTOPPER_AICHARTS=no` skips it and `GOBSTOPPER_USAGE_HISTORY=no` leaves history off.
+
 ## v0.8.5 - 2026-10-01
 
 A context scope can carry its own standing input threshold, so a long-lived agent runs wider than the proxy default without re-arming a reservation.

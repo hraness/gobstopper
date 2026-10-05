@@ -41,17 +41,18 @@ The doctor reports configuration ownership, registration with the service manage
 
 `proxy status` uses the installed service's recorded port. An explicit `--port`
 checks that address even when the saved service configuration is damaged. Its
-network check has a two-second total deadline and a bounded response size, so
+network check has a two-second total deadline and a response size limit, so
 a listening socket that never responds cannot hang the command indefinitely.
 If a background transform holds the prefix-store lock, status returns
 `store_details_available: false` and null store sizes instead of waiting for it.
 
-`GET /gobstopper/ready` is a small local check of the listener and request
-admission state. It returns the process and service identity, active inference
-count, and whether admission is open. It returns 503 while draining or when
-admission state is busy. It does not wait for statistics, calibration, context
-storage, or power-status collection. This checks Gobstopper's ability to admit
-work, not provider credentials or upstream availability.
+`GET /gobstopper/ready` is a small local check of the listener and of whether
+the proxy accepts new requests. It returns the process and service identity,
+the active inference count, and whether new requests are accepted. It returns
+503 while draining or while that state is busy. It does not wait for
+statistics, calibration, context storage, or power-status collection. This
+checks whether Gobstopper can accept work, not provider credentials or
+upstream availability.
 
 Normal forwarding has its own concurrency limit. Extra capacity remains for
 health and service-control requests. Request headers and bodies have total
@@ -62,11 +63,11 @@ At the absolute socket limit, new sockets close immediately so the accept
 thread continues handling connections. Existing inference is not restarted
 or replayed to recover capacity.
 
-Repair recreates missing managed definitions and restarts an absent owned job. Running repair or an identical installation from the service's recorded executable also restarts a proxy when its running version differs from the installed version, using the same waiting lease on capable proxies. It resumes a legacy idle pause and reconciles recorded lease operations before starting a service. Installations record an immutable configuration snapshot and a journal before replacement. Repair reconciles an interrupted operation only when its files and loaded job match those recorded identities. It restores the predecessor configuration when available, or completes a first installation. It leaves externally edited files and unrelated jobs intact, and reports the mismatch.
+Repair recreates missing managed definitions and restarts an absent owned job. Running repair or an identical installation from the service's recorded executable also restarts a proxy when its running version differs from the installed version, using the same [waiting lease](#install-and-inspect) on capable proxies. It resumes a legacy idle pause and reconciles recorded lease operations before starting a service. Installations record an immutable configuration snapshot and a journal before replacement. Repair reconciles an interrupted operation only when its files and loaded job match those recorded identities. It restores the predecessor configuration when available, or completes a first installation. It leaves externally edited files and unrelated jobs intact, and reports the mismatch.
 
 A damaged manifest, a missing executable, unavailable service manager, or changed job requires investigation before repair can proceed. On Windows, a process interruption between task registration and recording the queried task definition can require manual reconciliation; repair won't overwrite a task whose ownership it cannot establish.
 
-Uninstall uses the same drain procedure, then removes the owned startup definition. It retains observation data, logs, and backups. Older proxies require idle inference; unresolved operations require recovery first.
+Uninstall uses the same [drain procedure](#install-and-inspect), then removes the owned startup definition. It retains observation data, logs, and backups. Older proxies require idle inference; unresolved operations require recovery first.
 
 ### Interrupted upgrades
 
@@ -74,7 +75,7 @@ Generated service definitions record their private state directory. At startup, 
 
 Service definitions without the recorded directory use idle-only replacement. Run `proxy install --replace` with the intended proxy settings while idle to generate a guarded definition. Older running binaries cannot gain the startup check until that first upgrade.
 
-Once active inference reaches zero, the controller commits the drain before asking the operating system to stop the service. A committed drain does not expire: reopening it after an uncertain stop could admit work that a delayed operating-system command then interrupts. Other controllers and the legacy resume endpoint cannot release it.
+Once active inference reaches zero, the controller commits the drain before asking the operating system to stop the service. A committed drain does not expire: reopening it after an uncertain stop could accept work that a delayed operating-system command then interrupts. Other controllers and the legacy resume endpoint cannot release it.
 
 The service journal records waiting, commit intent, committed, stop started, and stop acknowledged stages. Repair checks that journal even when the old listener or startup job has disappeared. It restarts only after the stop is acknowledged and the port is free. Startup health must identify the expected service, accepting requests, and the installed version when repair runs from the recorded executable.
 
@@ -93,13 +94,13 @@ Migration recognizes the legacy `sh.gobstopper.proxy` and `io.hraness.gobstopper
 
 Explicit proxy arguments are preserved. When `--keep-tail-percent` is omitted, migration saves the running proxy's reported value as an explicit argument: a service using the older 40% default keeps it even though current releases default to 0%. A value read from status must be an integer from 0 through 60. If an older version does not report that setting, migration leaves the argument absent; it does not infer an unavailable value. New features without a legacy setting use the new release's defaults. The preview's `serve_args` shows the arguments that will be saved.
 
-Legacy versions cannot atomically pause new requests. Stop initiating requests from connected clients before migrating and keep them paused until migration completes. The legacy idle check observes current activity; it cannot prevent a later request from starting during that first upgrade. Subsequent managed upgrades use the admission handshake above.
+Legacy versions cannot atomically pause new requests. Stop initiating requests from connected clients before migrating and keep them paused until migration completes. The legacy idle check observes current activity; it cannot prevent a later request from starting during that first upgrade. Subsequent managed upgrades pause new requests as described in [Install and inspect](#install-and-inspect).
 
 Do not add temporary firewall or packet-filter rules to automate that first
 upgrade. An external filter can outlive its controller and block client
 connections even when the replacement proxy is healthy. Gobstopper's service
-commands do not install network filters; managed upgrades use the proxy's
-request-admission protocol.
+commands do not install network filters; managed upgrades pause new requests
+inside the proxy instead.
 
 Migration keeps the original plist bytes in its backup and journal. If rollback must restart the legacy job using the upgraded binary, a separate prepared definition makes the observed retained-history setting explicit and preserves the original label, environment, working directory, logging, and other settings. This prevents rollback from switching an implicit 40% setting to the newer 0% default. Explicit proxy arguments remain authoritative.
 

@@ -77,7 +77,7 @@ describe("Gobstopper site source contract", () => {
       read("app/readme.generated.ts"),
     ]);
     expect(packageJson).toContain('"@hraness/ui": "github:hraness/ui#v0.5.18"');
-    expect(packageJson).toContain('"@hraness/design-kit": "github:hraness/design-kit#v0.40.0"');
+    expect(packageJson).toContain('"@hraness/design-kit": "github:hraness/design-kit#v0.40.2"');
     expect(chrome).toContain('import { AskAiAboutThis } from "@hraness/ui"');
     expect(chrome).toContain('url={absoluteUrl(path)}');
     expect(generated).toContain('export const readmeTitle = "Gobstopper";');
@@ -113,7 +113,7 @@ describe("Gobstopper site source contract", () => {
   test("keeps the sitemap and robots on the canonical origin", async () => {
     const [{ default: sitemap }, { default: robots }] = await Promise.all([import("../app/sitemap"), import("../app/robots")]);
     const urls = sitemap().map((entry) => entry.url);
-    for (const path of ["", "/docs", "/methodology", "/benchmarks", "/compare/cliffcompaction", "/blog"]) {
+    for (const path of ["", "/docs", "/docs/proxy", "/methodology", "/benchmarks", "/compare/cliffcompaction", "/blog"]) {
       expect(urls).toContain(`https://gobstopper.sh${path === "" ? "/" : path}`);
     }
     expect(urls.every((url) => url.startsWith("https://gobstopper.sh/"))).toBe(true);
@@ -132,22 +132,26 @@ describe("Gobstopper site source contract", () => {
   });
 
   test("keeps social previews and the agent map on the canonical origin", async () => {
-    const [layout, docs, llms, homeCard, docsCard, postCard] = await Promise.all([
+    const [layout, docs, proxyGuide, llms, homeCard, docsCard, proxyGuideCard, postCard] = await Promise.all([
       read("app/layout.tsx"),
       read("app/docs/page.tsx"),
+      read("app/docs/proxy/page.tsx"),
       read("public/llms.txt"),
       read("app/opengraph-image/route.ts"),
       read("app/docs/opengraph-image/route.ts"),
+      read("app/docs/proxy/opengraph-image/route.ts"),
       read("app/blog/[slug]/opengraph-image/route.ts"),
     ]);
-    for (const page of [layout, docs]) {
+    for (const page of [layout, docs, proxyGuide]) {
       expect(page).toContain('card: "summary_large_image"');
       expect(page).toContain("opengraph-image");
     }
     expect(layout).toContain('url: "/opengraph-image"');
     expect(docs).toContain('url: "/docs/opengraph-image"');
+    expect(proxyGuide).toContain('const path = "/docs/proxy";');
+    expect(proxyGuide).toContain("url: `${path}/opengraph-image`");
     // Every card renders the shared template from the one site declaration.
-    for (const card of [homeCard, docsCard, postCard]) {
+    for (const card of [homeCard, docsCard, proxyGuideCard, postCard]) {
       expect(card).toContain('from "@hraness/web-discovery/social-image"');
       expect(card).toContain("createSiteSocialImageResponse(socialSite");
       expect(card).not.toContain("new ImageResponse");
@@ -155,6 +159,9 @@ describe("Gobstopper site source contract", () => {
     }
     expect(llms).toContain("https://gobstopper.sh/");
     expect(llms).toContain("https://gobstopper.sh/docs");
+    expect(llms).toContain("https://gobstopper.sh/docs/proxy");
+    // Agents named only by contract tests keep that limit wherever the guide is described.
+    expect(llms).toContain("Routing for opencode, Crush, Aider, and Goose is tested against synthetic histories, not live sessions.");
     expect(llms).toContain("https://gobstopper.sh/compare/cliffcompaction");
     expect(llms).not.toContain("http://");
   });
@@ -583,7 +590,8 @@ describe("share card declaration", () => {
     const { blogPosts } = await import("../app/blog/articles");
     const { postSocialPage } = await import("../app/blog/discovery");
     const { docsSocialPage } = await import("../app/docs/social-page");
-    for (const page of [docsSocialPage, ...blogPosts.map(postSocialPage)]) {
+    const { proxyGuideSocialPage } = await import("../app/docs/proxy/social-page");
+    for (const page of [docsSocialPage, proxyGuideSocialPage, ...blogPosts.map(postSocialPage)]) {
       expect(Object.keys(page).sort()).toEqual(["description", "eyebrow", "headline"]);
       // Two card lines at the smallest body size hold about 100 characters.
       expect(page.description?.length ?? 0).toBeLessThanOrEqual(100);
@@ -595,10 +603,12 @@ describe("share card declaration", () => {
     const { blogPosts } = await import("../app/blog/articles");
     const { postSocialPage } = await import("../app/blog/discovery");
     const { docsSocialPage } = await import("../app/docs/social-page");
+    const { proxyGuideSocialPage } = await import("../app/docs/proxy/social-page");
     const { socialImageFit, socialImageSiteDetails } = await import("@hraness/web-discovery/social-image/card");
     const cards = [
       ["home", homeSocialPage],
       ["docs", docsSocialPage],
+      ["docs/proxy", proxyGuideSocialPage],
       ...blogPosts.map((post) => [`blog/${post.slug}`, postSocialPage(post)] as const),
     ] as const;
     for (const [name, page] of cards) {

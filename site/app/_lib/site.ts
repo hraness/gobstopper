@@ -15,7 +15,7 @@ export const HRANESS_ORGANIZATION = {
 } as const;
 export const ARCHITECTURE_URL = "https://github.com/hraness/gobstopper/blob/main/docs/design.md";
 
-export type CanonicalPagePath = "/" | "/docs" | "/methodology" | "/benchmarks" | "/compare/cliffcompaction" | "/compare/claude-code-compact" | "/blog" | `/blog/${string}`;
+export type CanonicalPagePath = "/" | "/docs" | "/docs/proxy" | "/methodology" | "/benchmarks" | "/compare/cliffcompaction" | "/compare/claude-code-compact" | "/blog" | `/blog/${string}`;
 
 export function absoluteUrl(path: CanonicalPagePath | string): string {
   if (path.startsWith("http")) return path;

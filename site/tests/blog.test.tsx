@@ -47,7 +47,7 @@ describe("Gobstopper blog", () => {
   });
 
   test("the validator refuses an indexable post without its review", () => {
-    const [first] = articleAdmissions;
+    const first = articleAdmissions.find((admission) => admission.lifecycle === "indexable");
     const unreviewed: ArticleAdmission = { ...first!, review: null };
     expect(() => assertArticleAdmissions([unreviewed])).toThrow(ArticleAdmissionError);
   });
@@ -167,12 +167,19 @@ describe("Gobstopper blog", () => {
       expect(html).toContain('data-author-kind="organization"');
       expect(html).toMatch(/By <a href="https:\/\/hraness\.com" rel="author">Hraness<\/a>/u);
       const sentence = articleProvenanceSentence(postProvenance(post));
-      expect(sentence).toBe(`Drafted with AI from the source code and reviewed by ${post.admission.review?.reviewer}.`);
       expect(html).toContain(sentence);
-      expect(html).toContain('data-reviewer-type="ai"');
-      expect(sentence).not.toMatch(/human/iu);
+      // A post awaiting its independent review stays out of every index.
+      if (post.admission.review === null) {
+        expect(post.admission.lifecycle).toBe("quarantined");
+        expect(sentence).not.toContain("reviewed by");
+      } else {
+        const suffix = post.admission.review.reviewerType === "human-editor" ? ", a human editor" : "";
+        expect(sentence).toBe(`Drafted with AI from the source code and reviewed by ${post.admission.review.reviewer}${suffix}.`);
+        expect(html).toContain(`data-reviewer-type="${post.admission.review.reviewerType}"`);
+        if (post.admission.review.reviewerType !== "human-editor") expect(sentence).not.toMatch(/human/iu);
+      }
       expect(html).not.toContain("<time");
-      expect(post.admission.humanReview).toBeNull();
+      expect(post.admission.humanReview).toEqual({ reviewer: "Ben Guo", reviewerType: "human-editor", reviewedOn: "2026-10-04" });
       for (const item of relatedFor("gobstopper")) expect(html).toContain(item.href);
       expect(html).toContain('"@type":"BlogPosting"');
     }

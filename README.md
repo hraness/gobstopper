@@ -48,6 +48,12 @@ Website: [gobstopper.sh](https://gobstopper.sh) · Compared with [Claude Code /c
 
 ## Quick start
 
+For the Claude Code example, install and sign in to Claude Code first, and
+make sure `claude` and `curl` are on your `PATH`. Gobstopper forwards your
+client's authentication; it does not sign you in to the model provider.
+The temporary proxy applies to the child command only, so you do not need
+to edit your shell's base URL settings.
+
 ```sh
 curl -fsSL https://gobstopper.sh/install.sh | sh   # macOS (Apple silicon) and Linux
 gobstopper proxy run -- claude   # one Claude Code session through a temporary proxy
@@ -70,7 +76,12 @@ the PowerShell installer. Update-enabled installs also need the
 [GitHub CLI](https://cli.github.com/) (`gh`) authenticated with github.com; run
 `gh auth login` before installing. See [update behavior](docs/release.md#updates).
 
-When the session ends, `proxy run` prints how many requests it compacted. For
+When the session ends, `proxy run` prints request and compaction counts.
+A short session can report zero compacted requests: compaction starts only
+when a supported request crosses the threshold. If Claude Code cannot start,
+check that `claude` runs directly in the same terminal. For proxy connection
+problems, follow [diagnosis and repair](docs/service.md#diagnose-repair-and-remove).
+For
 a proxy that stays up, with `gobstopper proxy status` counters, see [Compact
 live coding-agent requests](#compact-live-coding-agent-requests). For Codex,
 see [Set up Gobstopper for Claude Code and
@@ -427,8 +438,9 @@ predates them and does not measure their effect on task accuracy.
 `gobstopper usage` shows your token use across coding agents by day, agent,
 provider and model, including agents that never pass through the proxy. The
 numbers come from [aicharts](https://aicharts.io), which keeps a daily record
-on your computer and uploads nothing, so it needs the `aicharts` command
-installed ([get it](https://aicharts.io/usage)).
+on your computer and uploads nothing. The installer below adds `aicharts` and
+turns that record on; after another install method,
+[get aicharts](https://aicharts.io/usage).
 
 ```sh
 gobstopper usage                        # the last 30 days, per agent
@@ -560,6 +572,14 @@ curl -fsSL https://gobstopper.sh/install.sh | sh
 # Windows (x86_64), in PowerShell: installs to %LOCALAPPDATA%\Programs\gobstopper\bin, no administrator rights
 irm https://gobstopper.sh/install.ps1 | iex
 ```
+
+On macOS (Apple silicon) and Linux x86_64, `install.sh` also adds `aicharts`
+beside `gobstopper`, checked against a pinned SHA-256 digest and, on macOS,
+its Developer ID signature. On a first install it turns on local usage
+history: daily token totals for your agents, kept on this computer and never
+uploaded. `aicharts history disable` turns it off. Set
+`GOBSTOPPER_USAGE_HISTORY=no` to leave it off, or `GOBSTOPPER_AICHARTS=no` to
+skip aicharts.
 
 Set `GOBSTOPPER_VERSION=X.Y.Z` to install one exact release. The installers
 check each download against the release's SHA-256 file; [docs/release.md](docs/release.md)
