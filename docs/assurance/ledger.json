@@ -548,8 +548,8 @@
         }
       ],
       "receipt": {
-        "path": "docs/assurance/receipts/2026-10-05-089-clef-stress.json",
-        "sha256": "9954839a83c7137eff08c4efaffe4ceff3f78d0bd09dcdb1471ad67094f87e78"
+        "path": "docs/assurance/receipts/2026-10-05-fixture-nonblocking-accept-stress.json",
+        "sha256": "f7200b33e71c7a595b3385cc190ac604c728ba4a6cb39c96b0168c0a639ab4e0"
       }
     },
     {
