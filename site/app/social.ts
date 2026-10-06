@@ -20,9 +20,8 @@ export const socialSite = defineSocialImageSite({
 });
 
 /**
- * The home card mirrors the hero: the category eyebrow over the tagline, which
- * is also the hero heading. It fits two lines, so the card keeps the default
- * product layout.
+ * The home card mirrors the hero: the category eyebrow over the tagline as the
+ * headline. It fits two lines, so the card keeps the default product layout.
  */
 export const homeSocialPage = {
   eyebrow: productMessaging.category,

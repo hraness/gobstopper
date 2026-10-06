@@ -579,7 +579,6 @@ describe("share card declaration", () => {
     expect(socialSite.theme).toBeUndefined();
     // The home card is the hero: category eyebrow over the tagline heading.
     expect(socialSite.description).toBe(productMessaging.tagline);
-    expect(productMessaging.hero.heading).toBe(productMessaging.tagline);
     expect(homeSocialPage.eyebrow).toBe(productMessaging.category);
     const details = socialImageSiteDetails(socialSite, homeSocialPage);
     expect(socialImageLayout(details)).toBe("product");
