@@ -2,6 +2,15 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## v0.8.10 - 2026-10-06
+
+A managed installation whose executable bytes no longer match its verified install receipt repairs itself instead of deadlocking every command.
+
+- `gobstopper update` on such an install reinstalls a verified release: the drifted bytes are preserved beside the install record, a pinned install is restored to its recorded pin, and the recorded tag is reinstalled when nothing newer is published.
+- `gobstopper update status` and `gobstopper update check` report a `mismatch` status with repair guidance instead of exiting before command dispatch.
+- Automatic-policy startup repairs the installation and re-enters the verified image before any product work — including a supervised `proxy serve`, which therefore self-heals through launchd relaunch. Disabled policies and suppressing contexts still fail closed, and repair attempts are bounded once per day.
+- `proxy doctor` reports a `drifted` flag when the service executable has a valid managed receipt whose bytes no longer match.
+
 ## v0.8.9 - 2026-10-05
 
 Agent-session tool servers no longer pin a managed installation's update lock, and a busy update names how to see its holders.

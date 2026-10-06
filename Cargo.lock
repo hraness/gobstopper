@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "anyhow",
  "apple-foundation",
@@ -381,7 +381,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper-adapters"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "anyhow",
  "fs2",
@@ -396,7 +396,7 @@ dependencies = [
 
 [[package]]
 name = "gobstopper-core"
-version = "0.8.9"
+version = "0.8.10"
 dependencies = [
  "libc",
  "serde",
@@ -477,8 +477,8 @@ dependencies = [
 
 [[package]]
 name = "hraness-cli-update"
-version = "0.1.0"
-source = "git+https://github.com/hraness/cli-update?tag=v0.1.0#e1e44d49b2ed21ca7a59cc0cb4f4a91209edd8ee"
+version = "0.1.2"
+source = "git+https://github.com/hraness/cli-update?tag=v0.1.2#7a7144006aed59033f6797a0e33f81af0e2886cf"
 dependencies = [
  "fs2",
  "libc",

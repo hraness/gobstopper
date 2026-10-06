@@ -319,10 +319,13 @@ pub(crate) fn installation_report(executable: &Path) -> serde_json::Value {
         let installer = native::NativeInstaller;
         #[cfg(not(unix))]
         let installer = UnsupportedInstaller;
-        let policy = updater
+        let status = updater
             .execute(CommandAction::Status, &client()?, &installer)
-            .ok()
-            .map(|report| report.policy);
+            .ok();
+        let policy = status.as_ref().map(|report| report.policy);
+        // A valid receipt with drifted executable bytes is still a managed
+        // record worth reporting: `update` repairs it, so say so.
+        let drifted = status.is_some_and(|report| report.status == UpdateStatus::Mismatch);
         match updater.inspect() {
             Ok(installation) => Ok(serde_json::json!({
                 "managed": true,
@@ -333,6 +336,7 @@ pub(crate) fn installation_report(executable: &Path) -> serde_json::Value {
             })),
             Err(_) => Ok(serde_json::json!({
                 "managed": false,
+                "drifted": drifted,
                 "policy": policy,
             })),
         }
