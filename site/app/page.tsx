@@ -116,7 +116,7 @@ export default function Home() {
           <FounderNote
             emoji="🍬"
             paragraphs={[
-              "Gobstopper is a tool for saving tokens while preserving context. Compaction is the process built into your harness that automatically compresses long conversations to fit inside the context window. Gobstopper is a replacement for the compaction built into Claude Code and Codex. It proxies API requests and compacts more often, which saves tokens. Your agent\u2019s full history stays on your machine, and compacted session copies are archived in a local vault your agents can search. On Terminal-Bench 2.1, Gobstopper used 29% fewer tokens than Claude Code\u2019s built-in compaction and solved as many tasks.",
+              "Gobstopper saves tokens while preserving context. Compaction is the step your harness runs to squeeze a long conversation into the context window. Gobstopper replaces the compaction built into Claude Code and Codex. It proxies API requests, compacts more often to save tokens, and writes the full history to a local database your agents can search. On Terminal-Bench 2.1 it used 29% fewer tokens than Claude Code's built-in compaction and solved the same number of tasks.",
             ]}
             action={{ label: "Ask your agent to set it up:", href: "https://gobstopper.sh" }}
             signature="Ben Guo"
