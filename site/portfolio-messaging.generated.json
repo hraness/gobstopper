@@ -5,7 +5,7 @@
   "portfolio": {
     "contract": "hraness.portfolio-public/v1",
     "url": "https://hraness.com/portfolio.json",
-    "digest": "sha256:3d3a303e32a0c39eb32054df7f5537e0caa1d0db7d5f3bc2abc6f935eea31d9a"
+    "digest": "sha256:d59d09f6944486d48162f8ebd4af2529d9f0aafeb653ba13ee6ba585456183fc"
   },
   "messaging": {
     "formatVersion": 1,
@@ -14,15 +14,15 @@
       "name": "Gobstopper",
       "command": "gobstopper"
     },
-    "category": "Session compaction tool",
-    "tagline": "Reversible context compaction",
-    "short": "Compacts long agent sessions into smaller copies, keeping every byte",
-    "meta": "Gobstopper makes long Claude Code and Codex sessions smaller. A local proxy compacts live requests, and saved sessions get a smaller copy beside the original.",
-    "medium": "Gobstopper is a free, open-source command-line tool that makes long coding sessions smaller. A local proxy compacts live Claude Code and Codex requests. For saved sessions, it writes a smaller copy and keeps the original in a local vault.",
-    "long": "Long coding-agent sessions collect tool output that mattered once: test logs from runs that have since passed, file listings from before a refactor, stack traces for bugs already fixed. Every turn sends all of it to the model again. Gobstopper is a free, open-source command-line tool that finds your Claude Code and Codex sessions, shows what each compaction strategy would cut, and writes a smaller copy. Before it writes, it stores the original bytes in a content-addressed vault on your machine, so you can search for the exact record a compaction left out or restore the whole session.",
+    "category": "Context compaction proxy",
+    "tagline": "Save tokens while preserving context",
+    "short": "Replaces Claude Code and Codex compaction to save tokens and keep context",
+    "meta": "Gobstopper replaces the compaction built into Claude Code and Codex with a local proxy that compacts more often, saving tokens while preserving context.",
+    "medium": "Gobstopper is a free, open-source tool for saving tokens while preserving context. It replaces Claude Code and Codex compaction with a local proxy that compacts more often, and used 29% fewer tokens on Terminal-Bench 2.1.",
+    "long": "Compaction is the process built into your harness that compresses a long conversation to fit inside the context window. Gobstopper is a free, open-source replacement for the compaction built into Claude Code and Codex. It proxies API requests and compacts more often, which saves tokens. Your agent's full history stays on your machine, and compacted session copies are archived in a local vault your agents can search. On Terminal-Bench 2.1, Gobstopper used 29% fewer tokens than Claude Code's built-in compaction and solved as many tasks.",
     "hero": {
-      "heading": "Context compaction you can undo.",
-      "summary": "Preview the cut, write a smaller session, and keep every original byte in a local vault you can search and restore from. Keep the source intact while the working session stays small.",
+      "heading": "Save tokens while preserving context.",
+      "summary": "Gobstopper replaces the compaction built into Claude Code and Codex with a local proxy that compacts more often. Your agent's full history stays on your machine.",
       "primaryAction": "Install Gobstopper",
       "secondaryAction": "How it works"
     },
@@ -48,7 +48,7 @@
     {
       "id": "gobstopper",
       "name": "Gobstopper",
-      "description": "compacts long agent sessions into smaller copies, keeping every byte",
+      "description": "replaces claude code and codex compaction to save tokens and keep context",
       "canonicalUrl": "https://gobstopper.sh",
       "surface": {
         "actionLabel": "explore Gobstopper",
@@ -56,21 +56,21 @@
           "CLI",
           "MCP"
         ],
-        "proof": "automatic context compaction that snapshots each transcript before changing it"
+        "proof": "a local proxy that compacts more often than built-in compaction, using 29% fewer tokens on Terminal-Bench 2.1"
       },
       "messaging": {
         "names": {
           "name": "Gobstopper",
           "command": "gobstopper"
         },
-        "short": "Compacts long agent sessions into smaller copies, keeping every byte",
-        "tagline": "Reversible context compaction"
+        "short": "Replaces Claude Code and Codex compaction to save tokens and keep context",
+        "tagline": "Save tokens while preserving context"
       }
     },
     {
       "id": "xcb",
       "name": "Excalibur (xcb)",
-      "description": "routes coding tasks across the claude, codex, and devin plans you have",
+      "description": "runs agent work across every claude and codex account you sign in",
       "canonicalUrl": "https://xcb.sh",
       "surface": {
         "actionLabel": "explore Excalibur (xcb)",
@@ -78,7 +78,7 @@
           "CLI",
           "SDK"
         ],
-        "proof": "a customizable terminal workspace, provider account management, and token usage tracking"
+        "proof": "routes agent work across signed-in Claude and Codex accounts, with a backlog, a JSON route command, and a TypeScript SDK"
       },
       "messaging": {
         "names": {
@@ -90,8 +90,8 @@
             "HRA"
           ]
         },
-        "short": "Routes coding tasks across the Claude, Codex, and Devin plans you have",
-        "tagline": "One plan across your coding agents"
+        "short": "Runs agent work across every Claude and Codex account you sign in",
+        "tagline": "Operate your AI subscriptions"
       }
     },
     {
