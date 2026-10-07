@@ -194,3 +194,11 @@ test("each benchmark Dataset points at a section the benchmarks page renders", (
   }
   expect(html).toContain('"@type":"Dataset"');
 });
+
+test("the home page leads with Ryaan's testimonial above the founder note", () => {
+  const html = renderToStaticMarkup(<Home />);
+  expect(html).toContain("Testimonial from Ryaan");
+  expect(html).toContain("Software Engineer, BandLab");
+  expect(html).toContain("the token savings are insane");
+  expect(html.indexOf("testimonial")).toBeLessThan(html.indexOf("founder-note"));
+});

@@ -16,6 +16,7 @@ import { FounderNote } from "./_components/founder-note";
 import { GobFilm } from "./_components/gob-film";
 import { GobMeterShowcase, GobVaultSteps } from "./_mockups/gob-mockups";
 import { GobTokens } from "./_components/gob-tokens";
+import { Testimonial } from "./_components/testimonial";
 import { SiteHeader, SiteFooter } from "./_components/site-chrome";
 import { gobFilm } from "./_data/gob-film";
 import { F } from "./_lib/gobbench-format";
@@ -103,6 +104,13 @@ export default function Home() {
             install={<PlatformInstall platforms={installPlatforms} />}
             name=""
             summary={summary}
+          />
+
+          <Testimonial
+            quote={"btw, like a week in, Gobstopper is absolutely kicking ass. I\u2019m using the higher context scope for my orchestration agent, and then all workers on the default, and the token savings are insane and the quality of task completion is unchanged."}
+            name="Ryaan"
+            role="Software Engineer"
+            company="BandLab"
           />
 
           <FounderNote
