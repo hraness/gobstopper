@@ -48,7 +48,7 @@ test("extracts the landing block between the shared Hraness markers", async () =
   expect(source.indexOf(LANDING_END)).toBeGreaterThan(source.indexOf(LANDING_START));
   const landing = readmeLanding(source);
   expect(landing.title).toBe("Gobstopper");
-  expect(landing.lead).toStartWith("🍬 Gobstopper is a tool for saving tokens while preserving context.");
+  expect(landing.lead).toStartWith("🍬 Gobstopper saves tokens while preserving context.");
   expect(landing.lead).not.toContain(">");
   expect(landing.markdown).toMatch(/cannot ask providers to compact,\s+even when `auto_compact_closed` is enabled/u);
 });
