@@ -1,12 +1,24 @@
 <!-- hraness:gobstopper-landing:start -->
 # Gobstopper
 
-Gobstopper is a free, open-source command-line tool that makes long coding
-sessions smaller. Its main tool, `gobstopper proxy`, runs on your machine
-between a coding agent and its model provider. When a request passes a token
-threshold, the proxy replaces the older turns with one mechanical summary and
-sends the newest turns word for word, so the provider sees a smaller context. That can delay the agent’s own
-auto-compaction trigger.
+> 🍬 Gobstopper is a tool for saving tokens while preserving context.
+> Compaction is the process built into your harness that automatically
+> compresses long conversations to fit inside the context window. Gobstopper
+> is a replacement for the compaction built into Claude Code and Codex. It
+> proxies API requests and compacts more often, which saves tokens. Your
+> agent’s full history stays on your machine, and compacted session copies are
+> archived in a local vault your agents can search. On Terminal-Bench 2.1,
+> Gobstopper used 29% fewer tokens than Claude Code’s built-in compaction and
+> solved as many tasks.
+>
+> Ask your agent to set it up: https://gobstopper.sh
+>
+> — Ben Guo
+
+Gobstopper is free and open source. When a request passes a token threshold,
+`gobstopper proxy` replaces the older turns with one mechanical summary and
+sends the newest turns word for word, so the provider sees a smaller context.
+That can delay the agent’s own auto-compaction trigger.
 
 On Terminal-Bench 2.1 through Claude Code, Gobstopper at its default tail
 and a 45,000-token threshold (the default threshold is 128,000) solved as

@@ -12,6 +12,7 @@ import { portfolioRelatedGroups } from "@hraness/design-kit/portfolio";
 import { PlatformBadges, PlatformInstall } from "@hraness/design-kit/react";
 
 import { Terminal } from "./_components/code-block";
+import { FounderNote } from "./_components/founder-note";
 import { GobFilm } from "./_components/gob-film";
 import { GobMeterShowcase, GobVaultSteps } from "./_mockups/gob-mockups";
 import { GobTokens } from "./_components/gob-tokens";
@@ -102,6 +103,15 @@ export default function Home() {
             install={<PlatformInstall platforms={installPlatforms} />}
             name=""
             summary={summary}
+          />
+
+          <FounderNote
+            emoji="🍬"
+            paragraphs={[
+              "Gobstopper is a tool for saving tokens while preserving context. Compaction is the process built into your harness that automatically compresses long conversations to fit inside the context window. Gobstopper is a replacement for the compaction built into Claude Code and Codex. It proxies API requests and compacts more often, which saves tokens. Your agent\u2019s full history stays on your machine, and compacted session copies are archived in a local vault your agents can search. On Terminal-Bench 2.1, Gobstopper used 29% fewer tokens than Claude Code\u2019s built-in compaction and solved as many tasks.",
+            ]}
+            action={{ label: "Ask your agent to set it up:", href: "https://gobstopper.sh" }}
+            signature="Ben Guo"
           />
 
           <MarketingSection
