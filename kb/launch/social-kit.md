@@ -6,10 +6,10 @@ Posts go out from the @hraness account. The status is Latest release: v0.8.10. E
 
 ## X thread
 
-Post 1 of 9, 196 characters
+Post 1 of 9, 207 characters
 
 ```text
-Long Claude Code and Codex sessions keep resending old test logs and file listings. Gobstopper is a free, open-source tool that trims them, and it keeps the original so you can get any of it back.
+Gobstopper replaces the compaction built into Claude Code and Codex. It proxies API requests, compacts more often, and keeps the full history in a local database your agents can search. Free and open source.
 ```
 
 Post 2 of 9, 208 characters
@@ -18,10 +18,10 @@ Post 2 of 9, 208 characters
 A coding agent carries earlier context into later model requests: test logs, file listings, and stack traces for bugs you already fixed. Without trimming, that repeated context grows as the session continues.
 ```
 
-Post 3 of 9, 181 characters
+Post 3 of 9, 241 characters
 
 ```text
-Run your agent through gobstopper proxy. Past 128,000 tokens, it keeps your task and the last three turns word for word and summarizes the older turns. Session files stay unchanged.
+Run your agent through gobstopper proxy. Past 128,000 tokens, it keeps your task and the last three turns word for word and summarizes the older turns, which squeezes a long conversation into the context window. Session files stay unchanged.
 ```
 
 Post 4 of 9, 229 characters
@@ -30,10 +30,10 @@ Post 4 of 9, 229 characters
 Got a saved Claude Code or Codex session that grew too big? Preview what would go, then write a smaller copy. Old tool output becomes a one-line note that says how big it was. Your messages stay word for word in the smaller copy.
 ```
 
-Post 5 of 9, 195 characters
+Post 5 of 9, 186 characters
 
 ```text
-Before Gobstopper writes a smaller copy, it saves the original bytes in an archive on your machine. Search it for a detail the copy left out, or restore the original into a separate session copy.
+Gobstopper writes the full history to a database on your machine. You and your agents can search it for a detail a summary left out, or restore the original into a separate session copy.
 ```
 
 Post 6 of 9, 170 characters
@@ -42,10 +42,10 @@ Post 6 of 9, 170 characters
 The proxy runs locally and builds the summary with fixed rules, not by asking a model. It needs no Gobstopper account and leaves the session files on your disk unchanged.
 ```
 
-Post 7 of 9, 217 characters
+Post 7 of 9, 240 characters
 
 ```text
-On Terminal-Bench 2.1, Claude Code through the proxy with a 45,000-token threshold solved 61 of 89 tasks, against 60 without it, and sent 29% fewer input tokens. Built for people who run long agent sessions every day.
+On Terminal-Bench 2.1, Claude Code through the proxy with a 45,000-token threshold used 29% fewer input tokens than with its built-in compaction, and solved 61 of 89 tasks, against 60. Built for people who run long agent sessions every day.
 ```
 
 Post 8 of 9, 155 characters
@@ -64,10 +64,10 @@ https://gobstopper.sh/blog/introducing-gobstopper
 
 ## Bluesky thread
 
-Post 1 of 9, 196 characters
+Post 1 of 9, 207 characters
 
 ```text
-Long Claude Code and Codex sessions keep resending old test logs and file listings. Gobstopper is a free, open-source tool that trims them, and it keeps the original so you can get any of it back.
+Gobstopper replaces the compaction built into Claude Code and Codex. It proxies API requests, compacts more often, and keeps the full history in a local database your agents can search. Free and open source.
 ```
 
 Post 2 of 9, 208 characters
@@ -76,10 +76,10 @@ Post 2 of 9, 208 characters
 A coding agent carries earlier context into later model requests: test logs, file listings, and stack traces for bugs you already fixed. Without trimming, that repeated context grows as the session continues.
 ```
 
-Post 3 of 9, 181 characters
+Post 3 of 9, 241 characters
 
 ```text
-Run your agent through gobstopper proxy. Past 128,000 tokens, it keeps your task and the last three turns word for word and summarizes the older turns. Session files stay unchanged.
+Run your agent through gobstopper proxy. Past 128,000 tokens, it keeps your task and the last three turns word for word and summarizes the older turns, which squeezes a long conversation into the context window. Session files stay unchanged.
 ```
 
 Post 4 of 9, 229 characters
@@ -88,10 +88,10 @@ Post 4 of 9, 229 characters
 Got a saved Claude Code or Codex session that grew too big? Preview what would go, then write a smaller copy. Old tool output becomes a one-line note that says how big it was. Your messages stay word for word in the smaller copy.
 ```
 
-Post 5 of 9, 195 characters
+Post 5 of 9, 186 characters
 
 ```text
-Before Gobstopper writes a smaller copy, it saves the original bytes in an archive on your machine. Search it for a detail the copy left out, or restore the original into a separate session copy.
+Gobstopper writes the full history to a database on your machine. You and your agents can search it for a detail a summary left out, or restore the original into a separate session copy.
 ```
 
 Post 6 of 9, 170 characters
@@ -100,10 +100,10 @@ Post 6 of 9, 170 characters
 The proxy runs locally and builds the summary with fixed rules, not by asking a model. It needs no Gobstopper account and leaves the session files on your disk unchanged.
 ```
 
-Post 7 of 9, 217 characters
+Post 7 of 9, 240 characters
 
 ```text
-On Terminal-Bench 2.1, Claude Code through the proxy with a 45,000-token threshold solved 61 of 89 tasks, against 60 without it, and sent 29% fewer input tokens. Built for people who run long agent sessions every day.
+On Terminal-Bench 2.1, Claude Code through the proxy with a 45,000-token threshold used 29% fewer input tokens than with its built-in compaction, and solved 61 of 89 tasks, against 60. Built for people who run long agent sessions every day.
 ```
 
 Post 8 of 9, 155 characters
@@ -122,10 +122,10 @@ https://gobstopper.sh/blog/introducing-gobstopper
 
 ## Threads thread
 
-Post 1 of 9, 196 characters
+Post 1 of 9, 207 characters
 
 ```text
-Long Claude Code and Codex sessions keep resending old test logs and file listings. Gobstopper is a free, open-source tool that trims them, and it keeps the original so you can get any of it back.
+Gobstopper replaces the compaction built into Claude Code and Codex. It proxies API requests, compacts more often, and keeps the full history in a local database your agents can search. Free and open source.
 ```
 
 Post 2 of 9, 208 characters
@@ -134,10 +134,10 @@ Post 2 of 9, 208 characters
 A coding agent carries earlier context into later model requests: test logs, file listings, and stack traces for bugs you already fixed. Without trimming, that repeated context grows as the session continues.
 ```
 
-Post 3 of 9, 181 characters
+Post 3 of 9, 241 characters
 
 ```text
-Run your agent through gobstopper proxy. Past 128,000 tokens, it keeps your task and the last three turns word for word and summarizes the older turns. Session files stay unchanged.
+Run your agent through gobstopper proxy. Past 128,000 tokens, it keeps your task and the last three turns word for word and summarizes the older turns, which squeezes a long conversation into the context window. Session files stay unchanged.
 ```
 
 Post 4 of 9, 229 characters
@@ -146,10 +146,10 @@ Post 4 of 9, 229 characters
 Got a saved Claude Code or Codex session that grew too big? Preview what would go, then write a smaller copy. Old tool output becomes a one-line note that says how big it was. Your messages stay word for word in the smaller copy.
 ```
 
-Post 5 of 9, 195 characters
+Post 5 of 9, 186 characters
 
 ```text
-Before Gobstopper writes a smaller copy, it saves the original bytes in an archive on your machine. Search it for a detail the copy left out, or restore the original into a separate session copy.
+Gobstopper writes the full history to a database on your machine. You and your agents can search it for a detail a summary left out, or restore the original into a separate session copy.
 ```
 
 Post 6 of 9, 170 characters
@@ -158,10 +158,10 @@ Post 6 of 9, 170 characters
 The proxy runs locally and builds the summary with fixed rules, not by asking a model. It needs no Gobstopper account and leaves the session files on your disk unchanged.
 ```
 
-Post 7 of 9, 217 characters
+Post 7 of 9, 240 characters
 
 ```text
-On Terminal-Bench 2.1, Claude Code through the proxy with a 45,000-token threshold solved 61 of 89 tasks, against 60 without it, and sent 29% fewer input tokens. Built for people who run long agent sessions every day.
+On Terminal-Bench 2.1, Claude Code through the proxy with a 45,000-token threshold used 29% fewer input tokens than with its built-in compaction, and solved 61 of 89 tasks, against 60. Built for people who run long agent sessions every day.
 ```
 
 Post 8 of 9, 155 characters
@@ -181,19 +181,19 @@ https://gobstopper.sh/blog/introducing-gobstopper
 ## LinkedIn post
 
 ```text
-Long Claude Code and Codex sessions keep resending old test logs and file listings. Gobstopper is a free, open-source tool that trims them, and it keeps the original so you can get any of it back.
+Gobstopper replaces the compaction built into Claude Code and Codex. It proxies API requests, compacts more often, and keeps the full history in a local database your agents can search. Free and open source.
 
 A coding agent carries earlier context into later model requests: test logs, file listings, and stack traces for bugs you already fixed. Without trimming, that repeated context grows as the session continues.
 
-Run your agent through gobstopper proxy. Past 128,000 tokens, it keeps your task and the last three turns word for word and summarizes the older turns. Session files stay unchanged.
+Run your agent through gobstopper proxy. Past 128,000 tokens, it keeps your task and the last three turns word for word and summarizes the older turns, which squeezes a long conversation into the context window. Session files stay unchanged.
 
 Got a saved Claude Code or Codex session that grew too big? Preview what would go, then write a smaller copy. Old tool output becomes a one-line note that says how big it was. Your messages stay word for word in the smaller copy.
 
-Before Gobstopper writes a smaller copy, it saves the original bytes in an archive on your machine. Search it for a detail the copy left out, or restore the original into a separate session copy.
+Gobstopper writes the full history to a database on your machine. You and your agents can search it for a detail a summary left out, or restore the original into a separate session copy.
 
 The proxy runs locally and builds the summary with fixed rules, not by asking a model. It needs no Gobstopper account and leaves the session files on your disk unchanged.
 
-On Terminal-Bench 2.1, Claude Code through the proxy with a 45,000-token threshold solved 61 of 89 tasks, against 60 without it, and sent 29% fewer input tokens. Built for people who run long agent sessions every day.
+On Terminal-Bench 2.1, Claude Code through the proxy with a 45,000-token threshold used 29% fewer input tokens than with its built-in compaction, and solved 61 of 89 tasks, against 60. Built for people who run long agent sessions every day.
 
 The goal: an agent that can work for hours without dragging its whole history along, where cutting context is always something you can check and take back.
 
@@ -217,23 +217,23 @@ Topics: Developer Tools, Open Source, Artificial Intelligence
 ## Show HN and first comment fact sheet
 
 - Context compaction you can undo.
-- Long Claude Code and Codex sessions keep resending old test logs and file listings. Gobstopper is a free, open-source tool that trims them, and it keeps the original so you can get any of it back.
+- Gobstopper replaces the compaction built into Claude Code and Codex. It proxies API requests, compacts more often, and keeps the full history in a local database your agents can search. Free and open source.
 - A coding agent carries earlier context into later model requests: test logs, file listings, and stack traces for bugs you already fixed. Without trimming, that repeated context grows as the session continues.
-- Run your agent through gobstopper proxy. Past 128,000 tokens, it keeps your task and the last three turns word for word and summarizes the older turns. Session files stay unchanged.
+- Run your agent through gobstopper proxy. Past 128,000 tokens, it keeps your task and the last three turns word for word and summarizes the older turns, which squeezes a long conversation into the context window. Session files stay unchanged.
 - Got a saved Claude Code or Codex session that grew too big? Preview what would go, then write a smaller copy. Old tool output becomes a one-line note that says how big it was. Your messages stay word for word in the smaller copy.
-- Before Gobstopper writes a smaller copy, it saves the original bytes in an archive on your machine. Search it for a detail the copy left out, or restore the original into a separate session copy.
+- Gobstopper writes the full history to a database on your machine. You and your agents can search it for a detail a summary left out, or restore the original into a separate session copy.
 - The proxy runs locally and builds the summary with fixed rules, not by asking a model. It needs no Gobstopper account and leaves the session files on your disk unchanged.
-- On Terminal-Bench 2.1, Claude Code through the proxy with a 45,000-token threshold solved 61 of 89 tasks, against 60 without it, and sent 29% fewer input tokens. Built for people who run long agent sessions every day.
+- On Terminal-Bench 2.1, Claude Code through the proxy with a 45,000-token threshold used 29% fewer input tokens than with its built-in compaction, and solved 61 of 89 tasks, against 60. Built for people who run long agent sessions every day.
 - Latest release: v0.8.10. Free and open source, with install scripts for Apple silicon Macs, Linux and Windows.
 - Latest release: v0.8.10. https://gobstopper.sh/blog/introducing-gobstopper
 
 ## Beats
 
-1. Gobstopper keeps long coding sessions small
+1. Gobstopper saves tokens while preserving context
 2. Earlier context travels with later requests
 3. Put it between your agent and the model
 4. Shrink a saved session, and see the cut first
-5. Keep the original beside the smaller copy
+5. The full history stays in a local database
 6. It runs on your machine, with no extra model call
 7. Tested on real terminal tasks
 8. Long sessions should not cost more with every step
