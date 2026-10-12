@@ -20,7 +20,7 @@ import { GobBenchTable } from "./_components/gob-bench-table";
 import { GobFilm } from "./_components/gob-film";
 import { GobMechanismDiagram } from "./_components/gob-mechanism";
 import { GobCompactionSignature } from "./_components/gob-signature";
-import { GobVaultSteps } from "./_mockups/gob-mockups";
+import { GobMeterShowcase, GobVaultSteps } from "./_mockups/gob-mockups";
 import { cli, commands } from "./_mockups/fixtures";
 import { Testimonial } from "./_components/testimonial";
 import { SiteHeader, SiteFooter } from "./_components/site-chrome";
@@ -164,6 +164,7 @@ export default function Home() {
           >
             <GobMechanismDiagram />
             <Terminal title="Run a session" code={commands.proxyRun} />
+            <GobMeterShowcase />
             <p>
               The proxy starts on a free local port and stops when the agent exits. Its default
               threshold is 128,000 estimated tokens. Session files on disk stay unchanged.

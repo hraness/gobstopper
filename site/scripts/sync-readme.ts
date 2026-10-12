@@ -1,4 +1,4 @@
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 
 import { documentSections, readmeLanding, renderReadmeHtml } from "./readme-html.ts";
 import { publishedReadme } from "./published-readme.ts";
@@ -19,6 +19,21 @@ async function workspaceVersion(): Promise<string> {
   return version;
 }
 
+/**
+ * Vector figures the README references are copied under public/readme/ and
+ * served by the site, so /docs does not depend on the repository's main branch.
+ */
+async function siteImages(source: string): Promise<ReadonlyMap<string, string>> {
+  const images = new Map<string, string>();
+  for (const match of source.matchAll(/\]\((docs\/assets\/[a-z0-9-]+\.svg)\)/gu)) {
+    const path = match[1]!;
+    const route = `/readme/${basename(path)}`;
+    await Bun.write(resolve(siteRoot, `public${route}`), Bun.file(resolve(repositoryRoot, path)));
+    images.set(path, route);
+  }
+  return images;
+}
+
 if (import.meta.main) {
   const source = await Bun.file(resolve(repositoryRoot, "README.md")).text();
   const service = await Bun.file(resolve(repositoryRoot, SERVICE_SOURCE)).text();
@@ -28,7 +43,7 @@ if (import.meta.main) {
     publishedRelease === null
       ? source
       : publishedReadme(source, version, publishedRelease.version),
-    { resolveSiteLink: createSiteLinkResolver(service) },
+    { resolveSiteLink: createSiteLinkResolver(service), siteImages: await siteImages(source) },
   );
   await Bun.write(
     resolve(siteRoot, "app/readme.generated.ts"),
