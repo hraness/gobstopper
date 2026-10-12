@@ -69,7 +69,7 @@ export function SiteFooter({ path }: Readonly<{ path?: CanonicalPagePath }>) {
         ]}
         name="Gobstopper"
       >
-        <p>Context compaction you can undo · MIT or Apache-2.0 · Preview</p>
+        <p>Context compaction you can undo · MIT or Apache-2.0</p>
       </MarketingSiteFooter>
       <div className="network-footer">
         <HranessSiteFooter

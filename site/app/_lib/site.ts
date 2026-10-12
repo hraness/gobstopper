@@ -3,7 +3,8 @@ import { productMessaging, productName, productCanonicalUrl } from "../messaging
 export const SITE_ORIGIN = productCanonicalUrl;
 export const SITE_NAME = productName;
 export const SITE_TAGLINE = productMessaging.tagline;
-export const SITE_TITLE = productMessaging.headings["home-search-title"];
+/** The document title: the display name and the registry tagline, as MESSAGING.md asks. */
+export const SITE_TITLE = `${productName} · ${productMessaging.tagline}`;
 export const SITE_DESCRIPTION = productMessaging.meta;
 export const GITHUB_URL = "https://github.com/hraness/gobstopper";
 /** The Hraness organization node, identified by the @id hraness.com publishes. */

@@ -9,6 +9,7 @@ import RootLayout from "../app/layout";
 import Benchmarks from "../app/benchmarks/page";
 import { BENCHMARK_STUDIES } from "../app/benchmarks/datasets";
 import { plainInline, renderInline } from "../app/_lib/inline";
+import { SITE_TITLE } from "../app/_lib/site";
 
 const SUPPORT_URL = "https://account.hraness.com/support?product=gobstopper&amp;source=web#support";
 const SUPPORT_LABEL = "Support ongoing development of Gobstopper, context compaction you can undo.";
@@ -201,4 +202,45 @@ test("the home page leads with Ryaan's testimonial above the founder note", () =
   expect(html).toContain("Software Engineer, BandLab");
   expect(html).toContain("the token savings are insane");
   expect(html.indexOf("testimonial")).toBeLessThan(html.indexOf("founder-note"));
+});
+
+test("the home page carries one signature moment, a mechanism diagram, and a dated benchmark table", () => {
+  const html = renderToStaticMarkup(<Home />);
+  expect(html.match(/data-hraness-signature="/gu)).toHaveLength(1);
+  expect(html).toContain('data-hraness-signature="compaction"');
+  // The drawing is hidden from assistive technology; the figcaption carries its meaning.
+  expect(html).toMatch(/<figure class="gob-sig" data-hraness-signature="compaction"[^>]*><svg aria-hidden="true"/u);
+  expect(html).toContain("writes the whole conversation to a local vault");
+  expect(html).toContain('class="hraness-diagram');
+  expect(html).toContain("Gobstopper proxy on localhost");
+  expect(html).toContain("Terminal-Bench 2.1, with and without Gobstopper");
+  expect(html).toContain("September 27–28, 2026");
+  expect(html).toContain("Gobstopper, tail 0");
+  expect(html).toContain("Claude Code, no proxy");
+});
+
+test("the home page states limits once and keeps caveats out of the hero and sections", () => {
+  const html = renderToStaticMarkup(<Home />);
+  const text = html.replace(/<[^>]+>/gu, " ").replace(/\s+/gu, " ");
+  expect(html.match(/id="limits"/gu)).toHaveLength(1);
+  const limitsStart = html.indexOf('id="limits"');
+  // The film's text alternative repeats the film's own lower-third word for word; it is the film, not page copy.
+  const beforeLimits = html.slice(0, limitsStart).replace(/<details id="film-text">[\s\S]*?<\/details>/u, " ").replace(/<[^>]+>/gu, " ");
+  for (const caveat of ["single-trial", "earlier build", "synthetic histories", "cannot guarantee", "experimental", "prototype", "in development"]) {
+    expect(beforeLimits).not.toContain(caveat);
+  }
+  expect(text).toContain("21 of the 89 tail-0 trials may have run an earlier build");
+  // Recorded command output is quoted byte for byte; the em dash rule covers prose.
+  const prose = html
+    .replace(/<pre\b[\s\S]*?<\/pre>/gu, " ")
+    .replace(/<span class="hkm-sample">[\s\S]*?<\/span>/gu, " ")
+    .replace(/<[^>]+>/gu, " ");
+  expect(prose).not.toContain("—");
+});
+
+test("the document title is the display name and the registry tagline", () => {
+  expect(SITE_TITLE).toBe("Gobstopper · Smarter compaction, 29% fewer tokens");
+  const html = renderToStaticMarkup(<Home />);
+  expect(html).toContain("Install Gobstopper");
+  expect(html).toContain("See the benchmark");
 });
