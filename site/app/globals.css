@@ -928,3 +928,26 @@ a[href]:where(:hover, :focus-visible) { text-decoration-color: currentColor; }
 .gob-limits { margin-block-start: 1.5rem; max-inline-size: 64ch; }
 .gob-limits__heading { margin: 0 0 0.4rem; font-weight: 600; }
 .gob-limits ul { display: grid; gap: 0.4rem; margin: 0; padding-inline-start: 1.1rem; color: var(--muted); font-size: 0.92rem; line-height: 1.5; }
+
+/* Docs: the reference routed by reader task. */
+.plain-publication__article-body .gob-doc-tasks { margin-block: 0 2.5rem; }
+.plain-publication__article-body .gob-doc-tasks h2 { font-size: 1.25rem; margin-block: 0 0.75rem; }
+.plain-publication__article-body .gob-doc-tasks ul { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); list-style: none; margin: 0; padding: 0; }
+.plain-publication__article-body .gob-doc-tasks li { margin: 0; padding: 0; }
+.plain-site.plain-publication.plain-publication--embedded .plain-publication__article-body .gob-doc-tasks a { background: var(--card, var(--background)); border: 1px solid var(--border); border-radius: 0.75rem; color: inherit; display: grid; gap: 0.35rem; min-block-size: 100%; padding: 0.9rem 1rem; text-decoration: none; }
+.plain-site.plain-publication.plain-publication--embedded .plain-publication__article-body .gob-doc-tasks a:is(:hover, :focus-visible) { border-color: var(--primary); }
+.plain-site.plain-publication.plain-publication--embedded .plain-publication__article-body .gob-doc-tasks a:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.plain-site.plain-publication.plain-publication--embedded .plain-publication__article-body .gob-doc-tasks a:is(:hover, :focus-visible) strong { text-decoration: underline; }
+.plain-publication__article-body .gob-doc-tasks strong { color: var(--primary); font-size: 1rem; }
+.plain-publication__article-body .gob-doc-tasks span { color: var(--muted); font-size: 0.9rem; line-height: 1.4; }
+
+/* Blog index cards: the share image beside each post's title, summary, and dates. */
+.plain-site.plain-publication.gob-blog .gob-blog__list { display: grid; gap: 2rem; }
+.plain-site.plain-publication.gob-blog .gob-blog__card { display: grid; gap: 0.75rem 1.5rem; }
+@media (min-width: 48rem) {
+  .plain-site.plain-publication.gob-blog .gob-blog__card { align-items: start; grid-template-columns: minmax(0, 15rem) minmax(0, 1fr); }
+}
+.gob-blog .gob-blog__art { border: 1px solid var(--border); border-radius: 0.75rem; display: block; overflow: hidden; }
+.gob-blog .gob-blog__art img { aspect-ratio: 1200 / 630; block-size: auto; display: block; inline-size: 100%; object-fit: cover; }
+.gob-blog .gob-blog__copy { min-inline-size: 0; }
+.gob-blog .gob-blog__copy > * { margin-block-start: 0; }
