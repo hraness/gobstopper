@@ -64,7 +64,7 @@ test("omits repository landing markers and keeps real links durable", async () =
   const source = await Bun.file(new URL("../../README.md", import.meta.url)).text();
   const html = renderReadmeHtml(source);
   expect(html).not.toContain("hraness:gobstopper-landing");
-  expect(html).toContain('href="https://github.com/hraness/gobstopper/blob/main/docs/roadmap.md"');
+  expect(html).toContain('href="https://github.com/hraness/gobstopper/blob/main/docs/design.md"');
 });
 
 

@@ -13,17 +13,32 @@
 >
 > — Ben Guo
 
-Gobstopper is free and open source. When a request passes a token threshold,
-`gobstopper proxy` replaces the older turns with one mechanical summary and
-sends the newest turns word for word, so the provider sees a smaller context.
-That can delay the agent’s own auto-compaction trigger.
+Gobstopper is an intelligent compaction proxy for Claude Code and Codex. It
+compacts more often than the built-in step, keeps full history on your
+machine, and used 29% fewer tokens on Terminal-Bench 2.1 solving the same
+tasks. It is free and open source.
 
-On Terminal-Bench 2.1 through Claude Code, Gobstopper at its default tail
-and a 45,000-token threshold (the default threshold is 128,000) solved as
-many tasks as Claude Code with no proxy, 61 and 60 of 89, and sent 29%
-fewer input tokens. That is one trial per arm with GLM 5.3 Flash on
-September 27 and 28, 2026, so the solved counts are within single-trial
-noise; see [Benchmark results](#benchmark-results).
+Compaction is the step that squeezes a long conversation into the model's
+context window. `gobstopper proxy` runs on 127.0.0.1 between your agent and
+the model API. Past a token threshold it keeps the system prompt, the first
+task, and the newest three turns word for word, turns the older turns into
+one summary with local rules and no model call, and sends that smaller
+request on. Every turn it summarized stays readable in a local vault your
+agent can search and restore from. Session files on disk stay unchanged.
+
+![Diagram: your agent sends every request to the Gobstopper proxy on 127.0.0.1, which forwards a compacted request to the model API and returns the response. The proxy writes the full history to a local vault your agent can search and restore from.](docs/assets/gob-mechanism.svg)
+
+| Setup | Tasks solved of 89 | Input tokens | Cache reads | New input |
+|---|---:|---:|---:|---:|
+| Gobstopper, tail 0 | 61 | 84.3M | 68.7M | 15.6M |
+| Claude Code, no proxy | 60 | 118.6M | 102.6M | 15.9M |
+
+*Terminal-Bench 2.1 · 89 tasks · one trial per arm · Claude Code 2.1.283
+with GLM 5.3 Flash via Vercel AI Gateway · Gobstopper v0.7.2 at a
+45,000-token threshold (the default is 128,000) · September 27 and 28, 2026.
+The two-task gap is within single-trial noise, and 21 of the 89 tail-0
+trials may have run an earlier build. [Benchmark results](#benchmark-results)
+has the per-arm tables, the paired statistics, and the limits.*
 
 [![Play the 34-second Gobstopper film on gobstopper.sh](docs/assets/gob-film-card.png)](https://gobstopper.sh/#film)
 
@@ -39,17 +54,10 @@ login, or see
 
 Gobstopper also works on saved Claude Code and Codex session files. Preview a
 compaction at a context size you choose, prepare a separate smaller copy, and
-keep the original byte for byte in a local vault. It archives the exact source
-and candidate bytes and checks supported structural properties and protected
-recent output.
-
-Use `gobstopper watch --dry-run` to inspect threshold decisions, or prepare a
-copy with a file strategy. Released CLI builds cannot ask providers to compact,
-even when `auto_compact_closed` is enabled. Direct provider-store and in-place
-rewrites are disabled. Copy preparation preserves the source; resuming a copy
-with a live provider requires separate compatibility testing. See the
-[provider support status](docs/assurance/qualification.json) and
-[recovery runbook](docs/assurance/operations.md). Plugins can add strategies
+keep the original byte for byte in a local vault. Every copy is checked for
+record links, order, and tool-call pairs before you resume it. Released
+CLI builds cannot ask providers to compact, even when `auto_compact_closed` is enabled,
+and nothing rewrites a session file in place. Plugins can add strategies
 and providers when you explicitly trust them.
 
 <!-- hraness:gobstopper-landing:end -->
@@ -105,11 +113,6 @@ step rarely needs, and later requests include it again. When the history
 nears the model's window, the agent asks a model to summarize it. That call
 is itself a large request, the summary can leave out an exact error or
 constraint, and each later summary summarizes the one before.
-
-![Diagram: five columns of stacked blocks, one per step. Each column is one block taller than the last, because every request resends all earlier steps.](docs/assets/gob-resend.png)
-
-*Without compaction, each later request carries the earlier messages and
-tool output. This diagram shows how repeated context accumulates.*
 
 `gobstopper proxy` keeps each request under a threshold you choose, without
 a model call:
@@ -254,10 +257,9 @@ It speaks the three dialects coding agents use:
 
 The setup for each agent is in [docs/proxy.md](docs/proxy.md). Any other
 OpenAI-compatible client that posts to `{base}/chat/completions` works the
-same way. Claude Code and Codex routing is live-checked; the Chat
-Completions dialect is contract-tested against synthetic histories and has
-not yet been qualified against a live opencode, Crush, Aider, or Goose
-session.
+same way. Claude Code and Codex routing is checked against live sessions;
+the Chat Completions dialect is tested against synthetic histories, not a
+live opencode, Crush, Aider, or Goose session.
 
 The summary keeps human and assistant text, keeps tool results of at most 500
 characters, and reduces each tool call to a one-line signature. A separate
@@ -544,7 +546,7 @@ the strategy and where it cuts matter as much as the timing.
 | id | kind | what it does |
 |---|---|---|
 | `auto` (default) | dynamic | live sessions delegate to provider controls (`cache_edits` for eligible Claude sessions); idle sessions choose the best validated file strategy by savings and preserved-prefix score |
-| `sawtooth` | provider | proposes provider-native compaction to the session owner; released CLI dispatch is blocked pending qualification |
+| `sawtooth` | provider | proposes provider-native compaction to the session owner; released CLI builds do not send it |
 | `cache_edits` | provider | emits bounded Claude `tool_use_id` values for API-layer context editing; never rewrites a transcript |
 | `elide` | transcript | stubs stale tool outputs oldest-first until the floor |
 | `cliff` | transcript | keeps the head, the newest three assistant steps, and the newest `keep_recent_tool_outputs` tool results (default 8) byte-for-byte and drops older eligible tool results over 500 bytes; no floor seeking and no state card (see [CliffCompaction](#how-gobstopper-compares-with-cliffcompaction); for running sessions, use [`gobstopper proxy`](#compact-live-coding-agent-requests)) |
@@ -660,11 +662,12 @@ gobstopper proxy serve             # compact live Claude Code and Codex requests
 
 Hook installation and removal export candidates without changing provider settings.
 The bundle includes the exact original settings and hashes, so keep it private.
-Automatic settings replacement is disabled because Gobstopper cannot obtain
-custody honored by provider/editor writers. Review and apply candidates through
-provider-owned settings controls and retain provider trust prompts. Callbacks
-archive source-bound evidence; their session identifiers do not prove which
-operation caused a compaction. See [the recovery runbook](docs/assurance/operations.md).
+Automatic settings replacement is disabled because the provider and your
+editor also write those files. Review and apply candidates through the
+provider's own settings controls and keep its trust prompts. Callbacks
+archive the source they saw; their session identifiers do not prove which
+operation caused a compaction. [docs/assurance/operations.md](docs/assurance/operations.md)
+covers recovery.
 
 For automation, `gobstopper plan <session> --json` returns the existing plan
 object when a plan is available. A successful inspection without a plan returns
@@ -1323,9 +1326,9 @@ original interface and the obligations of a runtime that uses it.
 
 ## Provider levers observed in earlier versions
 
-These are protocol notes from earlier provider builds, not an activation grant
-for the installed version. The [qualification matrix](docs/assurance/qualification.json)
-records current status; there are no qualified live native cells.
+These are protocol notes from earlier provider builds. Released Gobstopper
+builds do not send them; [docs/assurance/qualification.json](docs/assurance/qualification.json)
+records what each provider path supports today.
 
 | lever | codex | claude code |
 |---|---|---|
@@ -1531,37 +1534,29 @@ recalled the standing task. These trials used earlier builds and do not establis
 compatibility. Current `apply` writes Claude Code compactions to a separate fork.
 
 
-## Status
+## Verification
 
-The [correctness audit](docs/correctness-audit.md) records established behavior,
-known defects and evidence limits; the [assurance plan](docs/correctness-plan.md)
-tracks the remaining work. No whole-system correctness proof is claimed.
-File-copy publication uses source hashes, no-clobber creation, retained source
-and candidate bytes, structural checks and durable operation receipts. Shared
-vault readers coordinate with pruning, which fails closed on corrupt recovery
-roots. Operation pins have no automatic retirement policy. Transcript processing
-defaults to 512 MiB and 100,000 records. Process-death fixtures and
+Each release runs the Rust test suite, process-death fixtures, and the
+site's checks before it is tagged; [docs/release.md](docs/release.md)
+shows how to check a download's build attestation yourself. The
 [TLA+ vault models](verify/vault/README.md), the
 [native dispatch model](verify/watch/README.md),
-[Kani proofs of selected production Rust kernels](verify/core/README.md), and
-[Lean transcript algebra](verify/transcript/README.md) cover their declared
-invariants and bounds; the TLA+ models check safety only, without fairness, so they make no eventual-completion claim. The [bounded synthetic stress gate](verify/stress/README.md)
-exercises named fault, restart and process fixtures. The
-[verification guide](verify/README.md) describes reproducible tool inputs and CI
-gates. These checks do not prove that the Rust code implements the TLA+ models
-or the Lean algebra (that link is reviewed, or tested on finite fixtures), arbitrary filesystem power-loss
-behavior, proprietary provider acceptance, or preservation of every task fact.
+[Kani proofs of selected Rust kernels](verify/core/README.md), and the
+[Lean transcript algebra](verify/transcript/README.md) cover the invariants
+their READMEs name; the [verification guide](verify/README.md) lists the
+tool versions and inputs to reproduce them. Together they do not prove that
+the Rust code implements the models, how a filesystem behaves at power loss,
+that a provider accepts a compacted copy, or that a summary kept every fact.
+[docs/correctness-audit.md](docs/correctness-audit.md) records known
+defects and the limits of that evidence.
 
-Direct provider controls still belong to the live session owner. Synthetic
-Codex `compacted` records, external model scoring, and semantic editor plugins
-remain explicitly experimental or trusted extension paths. Released
-native dispatch remains guarded for both providers. In-place and
-arbitrary-path rewrite APIs refuse mutation. Deterministic MCP inspection rejects
-executable strategies; explicitly invoked extensions remain trusted code rather
-than an OS sandbox. The [activation matrix](docs/assurance/qualification.json)
-and [recovery runbook](docs/assurance/operations.md) define the supported modes.
-See [docs/design.md](docs/design.md), [docs/roadmap.md](docs/roadmap.md), and
-[docs/plugin-protocol.md](docs/plugin-protocol.md) for details.
+Direct provider controls belong to the live session owner. Synthetic Codex
+`compacted` records need `--experimental-compacted`; external model scorers
+and editor plugins run as code you trust. In-place and arbitrary-path
+rewrites refuse to run. `gobstopper mcp` inspects deterministically and
+rejects executable strategies. [docs/design.md](docs/design.md) and
+[docs/plugin-protocol.md](docs/plugin-protocol.md) describe the design and
+the plugin interface.
 
 ## License
 

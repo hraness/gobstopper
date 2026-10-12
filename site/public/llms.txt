@@ -9,7 +9,7 @@ For saved Claude Code and Codex sessions, Gobstopper previews what each strategy
 When to use this site:
 - Use gobstopper.sh to learn what Gobstopper does, which strategies it runs, and how to install it.
 - Use /docs for the full reference: installation, the proxy, strategies, configuration, the watcher, hooks, the snapshot vault, and the MCP server.
-- Use /docs/proxy to point Claude Code, Codex, or another agent at the proxy, choose its settings, and troubleshoot, diagnose, repair, or bypass the proxy service.
+- Use /docs/proxy to point Claude Code, Codex, or another agent at the proxy, choose its settings, and troubleshoot, diagnose, repair, or bypass the proxy service. Routing for opencode, Crush, Aider, and Goose is tested against synthetic histories, not live sessions.
 - Use /methodology for the occupancy model behind the projections and what each strategy does.
 - Use /benchmarks for a live Terminal-Bench 2.1 run of the request proxy, dated results, cohort sizes, limitations, and aggregate downloads.
 - Use /compare/cliffcompaction to see how Gobstopper and its proxy compare with CliffCompaction, the API-proxy compactor, and what the cliff strategy does.
