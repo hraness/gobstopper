@@ -51,5 +51,6 @@
   "type": "module",
   "overrides": {
     "fast-glob": "npm:tinyglobby@0.2.17"
-  }
+  },
+  "description": "Gobstopper is an intelligent compaction proxy for Claude Code and Codex. It compacts more often, keeps history local, and cut tokens 29% on Terminal-Bench 2.1."
 }
