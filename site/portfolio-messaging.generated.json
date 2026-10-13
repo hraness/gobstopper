@@ -5,7 +5,7 @@
   "portfolio": {
     "contract": "hraness.portfolio-public/v1",
     "url": "https://hraness.com/portfolio.json",
-    "digest": "sha256:9fee76882f7ddfe3eadffc0a1acad6a8975b7b2fa8580433efadfcffe469c757"
+    "digest": "sha256:f22d8bdf1b765586ce4e862e410156bf18ff889feeacd2b55aad668e9d9f1022"
   },
   "messaging": {
     "formatVersion": 1,
@@ -28,7 +28,7 @@
     },
     "blurb": {
       "emoji": "🍬",
-      "text": "Gobstopper is an intelligent compaction proxy that reduces token spend by about 30%. Compaction is the step your harness runs to squeeze a long conversation into the context window. Gobstopper replaces the compaction built into Claude Code and Codex: it proxies API requests, compacts more often, and writes the full history to a local database your agents can search. On Terminal-Bench 2.1 it used 29% fewer tokens than Claude Code's built-in compaction and solved the same number of tasks.",
+      "text": "Gobstopper replaces the compaction built into Claude Code and Codex. It proxies the API, compacts more often, and keeps the full history in a local database your agents can search. On Terminal-Bench 2.1 it used 29% fewer tokens than the built-in step and solved the same number of tasks.",
       "cta": {
         "label": "Ask your agent to set it up",
         "url": "https://gobstopper.sh"
@@ -37,15 +37,17 @@
     "headings": {
       "home-live": "Keep the recent work in view.",
       "home-file-copy": "Try a smaller copy. Keep a way back.",
-      "home-results": "38% smaller on requests it compacted.",
+      "home-results": "29% fewer input tokens, as many tasks solved.",
       "home-film": "Watch it in 34 seconds.",
       "home-install": "Start with one session.",
       "home-questions": "Before you install.",
       "home-related": "Other tools from our studio",
-      "home-search-title": "Gobstopper: context compaction proxy for Claude Code and Codex",
+      "home-search-title": "Gobstopper · Smarter compaction, 29% fewer tokens",
       "home-primitive-preview": "Preview the cut",
       "home-primitive-original": "Keep the original",
-      "home-primitive-resume": "Check before resuming"
+      "home-primitive-resume": "Check before resuming",
+      "home-idea": "Compact more often. Keep everything.",
+      "home-compare": "How it compares."
     },
     "status": {
       "default": "proposed"
@@ -191,7 +193,7 @@
       "messaging": {
         "names": {
           "name": "Sponge",
-          "command": "spongev2"
+          "command": "sponge"
         },
         "short": "Local deep research agent that writes cited reports and improves with each run",
         "tagline": "Deep research that runs on your machine"
