@@ -960,8 +960,8 @@ a[href]:where(:hover, :focus-visible) { text-decoration-color: currentColor; }
 @media (forced-colors: active) { .gob-hero-sig { border-color: CanvasText; background: Canvas; box-shadow: none; } }
 
 /* Recorded terminal captures wrap instead of widening a phone. */
-.gob-run pre, .gob-plan pre { margin: 0; padding: 0.9rem 1rem; font-family: var(--hkm-mono, ui-monospace, monospace); font-size: 0.8rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
-.gob-run pre:focus-visible, .gob-plan pre:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.gob-session pre, .gob-plan pre { margin: 0; padding: 0.9rem 1rem; font-family: var(--hkm-mono, ui-monospace, monospace); font-size: 0.8rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.gob-session pre:focus-visible, .gob-plan pre:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
 
 /* The hero's second action is a text link, never a second filled button. */
 .hraness-marketing-hero__actions .hraness-marketing-action[data-emphasis="secondary"] {

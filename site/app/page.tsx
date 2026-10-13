@@ -156,7 +156,7 @@ export default function Home() {
             label="Works with"
             summary="Claude Code and Codex start through the proxy with one command; opencode, Crush, Aider, and Goose point at its local address."
           >
-            <MarketingProofFrame chrome="terminal" className="gob-run" title="Run a session">
+            <MarketingProofFrame chrome="terminal" className="gob-session" title="Run a session">
               <pre tabIndex={0}><SyntaxCode code={runTranscript} language="shell" styles="classes" /></pre>
             </MarketingProofFrame>
             <div className="gob-agent-marks">
