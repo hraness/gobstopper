@@ -944,9 +944,47 @@ a[href]:where(:hover, :focus-visible) { text-decoration-color: currentColor; }
   .founder-note__signature + .founder-note__action { grid-column: 1; justify-self: start; }
 }
 
-/* Hero proof frame (app/page.tsx): real CLI output wraps instead of widening a phone. */
-.gob-hero-proof pre { margin: 0; padding: 0.9rem 1rem; font-family: var(--hkm-mono, ui-monospace, monospace); font-size: 0.8rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
-.gob-hero-proof pre:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+/* Hero proof (app/page.tsx): the compaction signature on a graphite instrument panel. */
+.gob-hero-sig {
+  box-sizing: border-box; inline-size: 100%; padding: 1.25rem 1.25rem 1.1rem;
+  border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
+  border-radius: 1rem;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--foreground) 5%, transparent), transparent 40%),
+    color-mix(in srgb, var(--background, Canvas) 92%, var(--foreground, CanvasText));
+  box-shadow: inset 0 1px 0 color-mix(in srgb, white 35%, transparent), 0 1px 2px color-mix(in srgb, var(--foreground) 8%, transparent);
+}
+.gob-hero-sig .gob-sig { gap: 0.75rem; }
+.gob-hero-sig .gob-sig__canvas { max-inline-size: none; }
+.gob-hero-sig .gob-sig__caption { font-size: 0.8125rem; line-height: 1.45; }
+@media (forced-colors: active) { .gob-hero-sig { border-color: CanvasText; background: Canvas; box-shadow: none; } }
+
+/* Recorded terminal captures wrap instead of widening a phone. */
+.gob-run pre, .gob-plan pre { margin: 0; padding: 0.9rem 1rem; font-family: var(--hkm-mono, ui-monospace, monospace); font-size: 0.8rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.gob-run pre:focus-visible, .gob-plan pre:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+
+/* The hero's second action is a text link, never a second filled button. */
+.hraness-marketing-hero__actions .hraness-marketing-action[data-emphasis="secondary"] {
+  background: none; border: 0; box-shadow: none; padding-inline: 0.25rem;
+  color: var(--foreground); font-weight: 500;
+  text-decoration-line: underline; text-decoration-color: color-mix(in srgb, var(--foreground) 35%, transparent); text-underline-offset: 0.2em;
+}
+.hraness-marketing-hero__actions .hraness-marketing-action[data-emphasis="secondary"]:hover { background: none; text-decoration-color: currentColor; }
+
+/* Benchmark counters: tabular figures, the first one in the accent. */
+.gob-stats .hraness-marketing-stats__value { font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
+.gob-stats .hraness-marketing-facts__item:first-child .hraness-marketing-stats__value { color: var(--primary); }
+.gob-stats .hraness-marketing-stats__source a { color: var(--foreground); text-decoration-line: underline; text-decoration-color: color-mix(in srgb, var(--foreground) 35%, transparent); text-underline-offset: 0.18em; }
+.gob-stats .hraness-marketing-stats__source a:hover { text-decoration-color: currentColor; }
+
+/* One text link after an object. */
+.gob-more { margin: 0; color: var(--muted); font-size: 0.95rem; }
+.gob-more a { color: var(--foreground); text-decoration-line: underline; text-decoration-color: color-mix(in srgb, var(--foreground) 35%, transparent); text-underline-offset: 0.18em; }
+.gob-more a:hover { text-decoration-color: currentColor; }
+
+/* Related products: a compact row of marks and names. */
+.gob-related .hraness-marketing-related__card { align-items: center; }
+.gob-related .hraness-marketing-related__card-meta, .gob-related .hraness-marketing-related__card-summary, .gob-related .hraness-marketing-related__card-role { display: none; }
 
 /* Signature moment: compaction (app/_components/gob-signature.tsx).
    The static final frame is the default; motion runs only when the reader allows it. */
@@ -1010,7 +1048,8 @@ a[href]:where(:hover, :focus-visible) { text-decoration-color: currentColor; }
 
 /* Limits, stated once, inside the install panel. */
 .gob-limits { margin-block-start: 1.5rem; max-inline-size: 64ch; }
-.gob-limits__heading { margin: 0 0 0.4rem; font-weight: 600; }
+.gob-limits > summary { cursor: pointer; margin: 0 0 0.4rem; font-weight: 600; }
+.gob-limits > summary:focus-visible { outline: 2px solid var(--focus); outline-offset: 3px; }
 .gob-limits ul { display: grid; gap: 0.4rem; margin: 0; padding-inline-start: 1.1rem; color: var(--muted); font-size: 0.92rem; line-height: 1.5; }
 
 /* Docs: the reference routed by reader task. */
