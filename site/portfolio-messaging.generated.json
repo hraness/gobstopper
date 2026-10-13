@@ -5,7 +5,7 @@
   "portfolio": {
     "contract": "hraness.portfolio-public/v1",
     "url": "https://hraness.com/portfolio.json",
-    "digest": "sha256:d59d09f6944486d48162f8ebd4af2529d9f0aafeb653ba13ee6ba585456183fc"
+    "digest": "sha256:9fee76882f7ddfe3eadffc0a1acad6a8975b7b2fa8580433efadfcffe469c757"
   },
   "messaging": {
     "formatVersion": 1,
@@ -15,16 +15,24 @@
       "command": "gobstopper"
     },
     "category": "Context compaction proxy",
-    "tagline": "Save tokens while preserving context",
-    "short": "Replaces Claude Code and Codex compaction to save tokens and keep context",
-    "meta": "Gobstopper replaces the compaction built into Claude Code and Codex with a local proxy that compacts more often, saving tokens while preserving context.",
-    "medium": "Gobstopper is a free, open-source tool for saving tokens while preserving context. It replaces Claude Code and Codex compaction with a local proxy that compacts more often, and used 29% fewer tokens on Terminal-Bench 2.1.",
-    "long": "Compaction is the process built into your harness that compresses a long conversation to fit inside the context window. Gobstopper is a free, open-source replacement for the compaction built into Claude Code and Codex. It proxies API requests and compacts more often, which saves tokens. Your agent's full history stays on your machine, and compacted session copies are archived in a local vault your agents can search. On Terminal-Bench 2.1, Gobstopper used 29% fewer tokens than Claude Code's built-in compaction and solved as many tasks.",
+    "tagline": "Smarter compaction, 29% fewer tokens",
+    "short": "Local compaction proxy that cuts Claude Code and Codex token spend by 29%",
+    "meta": "Gobstopper is an intelligent compaction proxy for Claude Code and Codex. It compacts more often, keeps history local, and cut tokens 29% on Terminal-Bench 2.1.",
+    "medium": "Gobstopper is an intelligent compaction proxy for Claude Code and Codex. It compacts more often than the built-in step, keeps full history on your machine, and used 29% fewer tokens on Terminal-Bench 2.1 solving the same tasks.",
+    "long": "Compaction is the step your harness runs to squeeze a long conversation into the context window. Gobstopper is a free, open-source compaction proxy for Claude Code and Codex. It sits between your agent and the API, compacts more often and more carefully than the built-in step, and writes the full conversation history to a local database your agents can search and restore from. On Terminal-Bench 2.1 it used 29% fewer input tokens than Claude Code's built-in compaction and solved the same number of tasks. Install it once, point your agent at it, and every long session costs less without losing the context that made it productive.",
     "hero": {
-      "heading": "Save tokens while preserving context.",
-      "summary": "Gobstopper replaces the compaction built into Claude Code and Codex with a local proxy that compacts more often. Your agent's full history stays on your machine.",
+      "heading": "Spend 29% fewer tokens on every long session.",
+      "summary": "Gobstopper is an intelligent compaction proxy for Claude Code and Codex. It sits between your agent and the API, compacts more often than the built-in step, and keeps the full conversation history on your machine for your agents to search.",
       "primaryAction": "Install Gobstopper",
-      "secondaryAction": "How it works"
+      "secondaryAction": "See the benchmark"
+    },
+    "blurb": {
+      "emoji": "🍬",
+      "text": "Gobstopper is an intelligent compaction proxy that reduces token spend by about 30%. Compaction is the step your harness runs to squeeze a long conversation into the context window. Gobstopper replaces the compaction built into Claude Code and Codex: it proxies API requests, compacts more often, and writes the full history to a local database your agents can search. On Terminal-Bench 2.1 it used 29% fewer tokens than Claude Code's built-in compaction and solved the same number of tasks.",
+      "cta": {
+        "label": "Ask your agent to set it up",
+        "url": "https://gobstopper.sh"
+      }
     },
     "headings": {
       "home-live": "Keep the recent work in view.",
@@ -42,13 +50,13 @@
     "status": {
       "default": "proposed"
     },
-    "reviewedOn": "2026-10-06"
+    "reviewedOn": "2026-10-13"
   },
   "projects": [
     {
       "id": "gobstopper",
       "name": "Gobstopper",
-      "description": "replaces claude code and codex compaction to save tokens and keep context",
+      "description": "local compaction proxy that cuts claude code and codex token spend by 29%",
       "canonicalUrl": "https://gobstopper.sh",
       "surface": {
         "actionLabel": "explore Gobstopper",
@@ -63,14 +71,14 @@
           "name": "Gobstopper",
           "command": "gobstopper"
         },
-        "short": "Replaces Claude Code and Codex compaction to save tokens and keep context",
-        "tagline": "Save tokens while preserving context"
+        "short": "Local compaction proxy that cuts Claude Code and Codex token spend by 29%",
+        "tagline": "Smarter compaction, 29% fewer tokens"
       }
     },
     {
       "id": "xcb",
       "name": "Excalibur (xcb)",
-      "description": "runs agent work across every claude and codex account you sign in",
+      "description": "routes unattended agent work across your codex and claude code subscriptions",
       "canonicalUrl": "https://xcb.sh",
       "surface": {
         "actionLabel": "explore Excalibur (xcb)",
@@ -90,8 +98,8 @@
             "HRA"
           ]
         },
-        "short": "Runs agent work across every Claude and Codex account you sign in",
-        "tagline": "Operate your AI subscriptions"
+        "short": "Routes unattended agent work across your Codex and Claude Code subscriptions",
+        "tagline": "Route agent work across every subscription you pay for"
       }
     },
     {
@@ -147,7 +155,7 @@
     {
       "id": "oh-computer",
       "name": "Oh",
-      "description": "memory for agents that stores each fact with its sources and history",
+      "description": "memory framework that organizes what agents learn into a traceable ontology",
       "canonicalUrl": "https://oh.computer",
       "surface": {
         "actionLabel": "research with Oh",
@@ -163,14 +171,14 @@
           "name": "Oh",
           "command": "oh"
         },
-        "short": "Memory for agents that stores each fact with its sources and history",
-        "tagline": "Evidence-backed memory for agents"
+        "short": "Memory framework that organizes what agents learn into a traceable ontology",
+        "tagline": "Ontology-driven memory for agents"
       }
     },
     {
       "id": "sponge",
       "name": "Sponge",
-      "description": "local research service that keeps its sources and writes cited reports",
+      "description": "local deep research agent that writes cited reports and improves with each run",
       "canonicalUrl": "https://sponge.computer",
       "surface": {
         "actionLabel": "Explore Sponge",
@@ -185,14 +193,14 @@
           "name": "Sponge",
           "command": "spongev2"
         },
-        "short": "Local research service that keeps its sources and writes cited reports",
-        "tagline": "Deep research on your machine"
+        "short": "Local deep research agent that writes cited reports and improves with each run",
+        "tagline": "Deep research that runs on your machine"
       }
     },
     {
       "id": "algal",
       "name": "ALGAL",
-      "description": "language and vm for agent programs that wait for approval and resume",
+      "description": "durable agent programs that pause for approval, resume after restart, and replay",
       "canonicalUrl": "https://algal.computer",
       "surface": {
         "actionLabel": "explore ALGAL",
@@ -210,14 +218,14 @@
             "Morphogen"
           ]
         },
-        "short": "Language and VM for agent programs that wait for approval and resume",
-        "tagline": "Programs for agents that wait and resume"
+        "short": "Durable agent programs that pause for approval, resume after restart, and replay",
+        "tagline": "A programming language for agents that run for weeks"
       }
     },
     {
       "id": "valhalla",
       "name": "Valhalla",
-      "description": "peer-to-peer rooms where agents and their owners share signed work",
+      "description": "chat rooms for agents and their people, with identity and hosts you choose",
       "canonicalUrl": "https://vhalla.com",
       "surface": {
         "actionLabel": "explore Valhalla",
@@ -232,14 +240,14 @@
           "name": "Valhalla",
           "command": "vhalla"
         },
-        "short": "Peer-to-peer rooms where agents and their owners share signed work",
-        "tagline": "Shared workspaces for agents and their people"
+        "short": "Chat rooms for agents and their people, with identity and hosts you choose",
+        "tagline": "Rooms where agents and people meet, run by you"
       }
     },
     {
       "id": "peopleblade",
       "name": "PeopleBlade",
-      "description": "the contact book you own, built for your agent",
+      "description": "local personal crm that your agent runs from the command line",
       "canonicalUrl": "https://peopleblade.com",
       "surface": {
         "actionLabel": "open PeopleBlade",
@@ -254,8 +262,8 @@
           "name": "PeopleBlade",
           "command": "peopleblade"
         },
-        "short": "The contact book you own, built for your agent",
-        "tagline": "A local personal CRM for everyone you know."
+        "short": "Local personal CRM that your agent runs from the command line",
+        "tagline": "The contact book you own, built for your agent"
       }
     },
     {
@@ -282,7 +290,7 @@
     {
       "id": "wrench",
       "name": "GhostGet",
-      "description": "named web actions for ai agents: read pages, save media, use connected accounts",
+      "description": "lets agents drive websites fast through named actions, holding no password",
       "canonicalUrl": "https://ghostget.com",
       "surface": {
         "actionLabel": "open GhostGet",
@@ -301,8 +309,8 @@
             "Wrench"
           ]
         },
-        "short": "Named web actions for AI agents: read pages, save media, use connected accounts",
-        "tagline": "Your agent calls web actions by name and holds no password."
+        "short": "Lets agents drive websites fast through named actions, holding no password",
+        "tagline": "Drive websites fast, by name, with no password"
       }
     },
     {

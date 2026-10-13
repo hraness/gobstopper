@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="330" viewBox="0 0 880 330" role="img" aria-labelledby="gob-mech-title">
+  <title id="gob-mech-title">Your agent sends every request to the Gobstopper proxy on 127.0.0.1. The proxy forwards a compacted request to the model API and returns the response. It writes the full history to a local vault your agent can search and restore from.</title>
+  <defs>
+    <marker id="gob-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#7c8894"/>
+    </marker>
+  </defs>
+  <g font-family="ui-sans-serif, system-ui, -apple-system, Segoe UI, Helvetica, Arial, sans-serif" text-anchor="middle">
+    <!-- edges -->
+    <g fill="none" stroke="#7c8894" stroke-width="2" marker-end="url(#gob-arrow)">
+      <path d="M240 96 H328"/>
+      <path d="M330 118 H242" stroke-dasharray="5 5"/>
+      <path d="M550 96 H638"/>
+      <path d="M640 118 H552" stroke-dasharray="5 5"/>
+      <path d="M440 158 V228"/>
+      <path d="M465 228 V158" stroke-dasharray="5 5"/>
+    </g>
+    <g fill="#7c8894" font-size="14">
+      <text x="285" y="78">every request</text>
+      <text x="285" y="142">responses</text>
+      <text x="595" y="78">compacted request</text>
+      <text x="595" y="142">responses</text>
+      <text x="400" y="200" text-anchor="end">full history</text>
+      <text x="505" y="200" text-anchor="start">search, undo</text>
+    </g>
+    <!-- nodes -->
+    <g>
+      <rect x="20" y="60" width="220" height="100" rx="12" fill="#3b4654"/>
+      <text x="130" y="104" fill="#ffffff" font-size="20" font-weight="600">Your agent</text>
+      <text x="130" y="130" fill="#d5dbe2" font-size="14">Claude Code, Codex, and more</text>
+    </g>
+    <g>
+      <rect x="330" y="60" width="220" height="100" rx="12" fill="#2474d4"/>
+      <text x="440" y="104" fill="#ffffff" font-size="20" font-weight="600">Gobstopper proxy</text>
+      <text x="440" y="130" fill="#e3eefb" font-size="14">on 127.0.0.1, no model call</text>
+    </g>
+    <g>
+      <rect x="640" y="60" width="220" height="100" rx="12" fill="#3b4654"/>
+      <text x="750" y="104" fill="#ffffff" font-size="20" font-weight="600">Model API</text>
+      <text x="750" y="130" fill="#d5dbe2" font-size="14">Anthropic, OpenAI, a gateway</text>
+    </g>
+    <g>
+      <rect x="330" y="230" width="220" height="80" rx="12" fill="none" stroke="#7c8894" stroke-width="2" stroke-dasharray="6 5"/>
+      <text x="440" y="265" fill="#7c8894" font-size="20" font-weight="600">Local vault</text>
+      <text x="440" y="290" fill="#7c8894" font-size="14">the full history, on your disk</text>
+    </g>
+  </g>
+</svg>

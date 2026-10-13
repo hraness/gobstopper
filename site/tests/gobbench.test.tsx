@@ -372,8 +372,9 @@ describe("launch pages", () => {
 
   test("the homepage places the Terminal-Bench result before How it works, without dollars, and the film only once it exists", () => {
     const html = renderToStaticMarkup(<Home />);
-    // The homepage uses the chart figure; its detailed table is behind "Show the numbers".
-    expect(html).toContain('id="fig-tokens"');
+    // The homepage states the result as a dated table; the charts live on /benchmarks.
+    expect(html).toContain("Terminal-Bench 2.1, with and without Gobstopper");
+    expect(html).toContain("September 27–28, 2026");
     const bench = html.indexOf('id="terminal-bench"');
     const how = html.indexOf('id="how"');
     expect(how).toBeGreaterThan(-1);

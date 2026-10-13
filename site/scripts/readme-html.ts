@@ -20,6 +20,8 @@ export interface RenderDocumentOptions {
   readonly resolveSiteLink?: SiteLinkResolver;
   /** The page being rendered; links into it become same-page fragments. */
   readonly currentRoute?: string;
+  /** Repository image paths the site serves itself, keyed to their same-origin routes. */
+  readonly siteImages?: ReadonlyMap<string, string>;
 }
 
 export const LANDING_START = "<!-- hraness:gobstopper-landing:start -->";
@@ -78,11 +80,15 @@ function rewriteRelativeTargets(html: string, options: RenderDocumentOptions = {
     ) {
       return attribute;
     }
-    if (baseDirectory === "" && options.resolveSiteLink === undefined) {
+    if (baseDirectory === "" && options.resolveSiteLink === undefined && options.siteImages === undefined) {
       const root = name === "src" ? REPOSITORY_RAW_ROOT : REPOSITORY_BLOB_ROOT;
       return `${name}="${root}${target}"`;
     }
     const { path, fragment } = repositoryTarget(target, baseDirectory);
+    if (name === "src") {
+      const site = options.siteImages?.get(path);
+      if (site !== undefined) return `src="${site}"`;
+    }
     if (name === "href") {
       const site = options.resolveSiteLink?.(path, fragment);
       if (site !== undefined) {

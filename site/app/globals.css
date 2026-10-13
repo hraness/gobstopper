@@ -859,3 +859,95 @@ a[href]:where(:hover, :focus-visible) { text-decoration-color: currentColor; }
   .founder-note { grid-template-columns: minmax(0, 1fr); gap: 0.75rem; }
   .founder-note__body p { font-size: 1.25rem; }
 }
+
+/* Hero proof frame (app/page.tsx): real CLI output wraps instead of widening a phone. */
+.gob-hero-proof pre { margin: 0; padding: 0.9rem 1rem; font-family: var(--hkm-mono, ui-monospace, monospace); font-size: 0.8rem; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.gob-hero-proof pre:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+
+/* Signature moment: compaction (app/_components/gob-signature.tsx).
+   The static final frame is the default; motion runs only when the reader allows it. */
+.gob-sig { display: grid; gap: 1rem; margin: 0; }
+.gob-sig__canvas { display: block; inline-size: 100%; max-inline-size: 42rem; block-size: auto; aspect-ratio: var(--gob-sig-aspect); overflow: visible; }
+.gob-sig__bar { fill: var(--primary); }
+.gob-sig__bar--old { fill: color-mix(in srgb, var(--foreground) 22%, transparent); }
+.gob-sig__bar--summary { fill: color-mix(in srgb, var(--primary) 18%, transparent); stroke: var(--primary); stroke-width: 1.25; stroke-dasharray: 4 3; }
+.gob-sig__bar--archived { fill: color-mix(in srgb, var(--foreground) 30%, transparent); }
+.gob-sig__vault-box { fill: color-mix(in srgb, var(--foreground) 4%, transparent); stroke: color-mix(in srgb, var(--foreground) 35%, transparent); stroke-width: 1.25; }
+.gob-sig__vault-arrow { fill: none; stroke: color-mix(in srgb, var(--foreground) 35%, transparent); stroke-width: 1.25; stroke-dasharray: 4 3; }
+.gob-sig__threshold { stroke: var(--foreground); stroke-width: 1.25; stroke-dasharray: 5 4; opacity: 0.7; }
+.gob-sig__arrow line, .gob-sig__arrow path { fill: none; stroke: var(--primary); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.gob-sig__label { fill: var(--muted); font-family: var(--font-text); font-size: 15px; }
+.gob-sig__label--inside { fill: var(--foreground); font-size: 13px; }
+.gob-sig__caption { max-inline-size: 60ch; color: var(--muted); font-size: 0.9rem; line-height: 1.5; }
+@media (prefers-reduced-motion: no-preference) {
+  .gob-sig__bar--old { transform-box: fill-box; transform-origin: 0 0; animation: gob-sig-squeeze 9s ease-in-out infinite; animation-delay: calc(var(--gob-i) * 70ms); }
+  .gob-sig__bar--summary, .gob-sig__label--inside { animation: gob-sig-summary 9s ease-in-out infinite; }
+  .gob-sig__bar--archived { transform-box: fill-box; animation: gob-sig-archive 9s ease-out infinite; animation-delay: calc(var(--gob-i) * 60ms); }
+}
+@keyframes gob-sig-squeeze {
+  0%, 18% { opacity: 1; transform: none; }
+  46% { opacity: 0.35; transform: translate(278px, var(--gob-dy)) scaleY(0.18); }
+  54%, 72% { opacity: 0; transform: translate(278px, var(--gob-dy)) scaleY(0.18); }
+  86%, 100% { opacity: 1; transform: none; }
+}
+@keyframes gob-sig-summary {
+  0%, 22% { opacity: 0.2; }
+  50%, 74% { opacity: 1; }
+  88%, 100% { opacity: 0.2; }
+}
+@keyframes gob-sig-archive {
+  0%, 26% { opacity: 0; transform: translateY(-14px); }
+  58%, 74% { opacity: 1; transform: none; }
+  88%, 100% { opacity: 0; transform: translateY(-14px); }
+}
+@media (forced-colors: active) {
+  .gob-sig__bar--kept { fill: CanvasText; }
+  .gob-sig__bar--old, .gob-sig__bar--archived { fill: GrayText; }
+  .gob-sig__bar--summary { fill: Highlight; stroke: CanvasText; }
+  .gob-sig__vault-box { fill: Canvas; stroke: CanvasText; }
+  .gob-sig__vault-arrow, .gob-sig__threshold { stroke: CanvasText; }
+  .gob-sig__arrow line, .gob-sig__arrow path { stroke: CanvasText; }
+  .gob-sig__label, .gob-sig__label--inside { fill: CanvasText; }
+}
+
+/* Mechanism diagram (app/_components/gob-mechanism.tsx) inside the kit's MarketingDiagram. */
+.gob-mech__node { fill: var(--background); stroke: color-mix(in srgb, var(--foreground) 35%, transparent); stroke-width: 1.5; }
+.gob-mech__node--accent { fill: color-mix(in srgb, var(--primary) 10%, var(--background)); stroke: var(--primary); }
+.gob-mech__label { fill: var(--foreground); font-family: var(--font-text); font-size: 20px; font-weight: 550; }
+.gob-mech__detail { fill: var(--muted); font-family: var(--font-text); font-size: 14px; }
+.gob-mech__edge { fill: none; stroke: var(--primary); stroke-width: 1.5; }
+.gob-mech__edge--quiet { stroke: color-mix(in srgb, var(--foreground) 40%, transparent); }
+.gob-mech__edge-label { fill: var(--muted); font-family: var(--font-text); font-size: 14px; }
+@media (forced-colors: active) {
+  .gob-mech__node, .gob-mech__node--accent { fill: Canvas; stroke: CanvasText; }
+  .gob-mech__edge, .gob-mech__edge--quiet { stroke: CanvasText; }
+  .gob-mech__label, .gob-mech__detail, .gob-mech__edge-label { fill: CanvasText; }
+}
+
+/* Limits, stated once, inside the install panel. */
+.gob-limits { margin-block-start: 1.5rem; max-inline-size: 64ch; }
+.gob-limits__heading { margin: 0 0 0.4rem; font-weight: 600; }
+.gob-limits ul { display: grid; gap: 0.4rem; margin: 0; padding-inline-start: 1.1rem; color: var(--muted); font-size: 0.92rem; line-height: 1.5; }
+
+/* Docs: the reference routed by reader task. */
+.plain-publication__article-body .gob-doc-tasks { margin-block: 0 2.5rem; }
+.plain-publication__article-body .gob-doc-tasks h2 { font-size: 1.25rem; margin-block: 0 0.75rem; }
+.plain-publication__article-body .gob-doc-tasks ul { display: grid; gap: 0.75rem; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); list-style: none; margin: 0; padding: 0; }
+.plain-publication__article-body .gob-doc-tasks li { margin: 0; padding: 0; }
+.plain-site.plain-publication.plain-publication--embedded .plain-publication__article-body .gob-doc-tasks a { background: var(--card, var(--background)); border: 1px solid var(--border); border-radius: 0.75rem; color: inherit; display: grid; gap: 0.35rem; min-block-size: 100%; padding: 0.9rem 1rem; text-decoration: none; }
+.plain-site.plain-publication.plain-publication--embedded .plain-publication__article-body .gob-doc-tasks a:is(:hover, :focus-visible) { border-color: var(--primary); }
+.plain-site.plain-publication.plain-publication--embedded .plain-publication__article-body .gob-doc-tasks a:focus-visible { outline: 2px solid var(--primary); outline-offset: 2px; }
+.plain-site.plain-publication.plain-publication--embedded .plain-publication__article-body .gob-doc-tasks a:is(:hover, :focus-visible) strong { text-decoration: underline; }
+.plain-publication__article-body .gob-doc-tasks strong { color: var(--primary); font-size: 1rem; }
+.plain-publication__article-body .gob-doc-tasks span { color: var(--muted); font-size: 0.9rem; line-height: 1.4; }
+
+/* Blog index cards: the share image beside each post's title, summary, and dates. */
+.plain-site.plain-publication.gob-blog .gob-blog__list { display: grid; gap: 2rem; }
+.plain-site.plain-publication.gob-blog .gob-blog__card { display: grid; gap: 0.75rem 1.5rem; }
+@media (min-width: 48rem) {
+  .plain-site.plain-publication.gob-blog .gob-blog__card { align-items: start; grid-template-columns: minmax(0, 15rem) minmax(0, 1fr); }
+}
+.gob-blog .gob-blog__art { border: 1px solid var(--border); border-radius: 0.75rem; display: block; overflow: hidden; }
+.gob-blog .gob-blog__art img { aspect-ratio: 1200 / 630; block-size: auto; display: block; inline-size: 100%; object-fit: cover; }
+.gob-blog .gob-blog__copy { min-inline-size: 0; }
+.gob-blog .gob-blog__copy > * { margin-block-start: 0; }

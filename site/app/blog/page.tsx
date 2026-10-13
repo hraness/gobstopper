@@ -1,10 +1,10 @@
 import type { Metadata } from "next";
 import { socialImageAlt } from "@hraness/web-discovery/social-image";
-import { ArticleIndex } from "@hraness/design-kit/react/server";
 
+import { BlogCards } from "../_components/blog-cards";
 import { SiteFooter, SiteHeader } from "../_components/site-chrome";
 import { serializeJsonLd } from "../_lib/site";
-import { BLOG_DESCRIPTION, BLOG_FEED_PATH, BLOG_PATH, BLOG_TITLE, indexablePosts, postPath } from "./articles";
+import { BLOG_DESCRIPTION, BLOG_FEED_PATH, BLOG_PATH, BLOG_TITLE, indexablePosts } from "./articles";
 import { blogIndexJsonLd } from "./discovery";
 import { socialSite } from "../social";
 
@@ -40,21 +40,7 @@ export default function Blog() {
           dangerouslySetInnerHTML={{ __html: serializeJsonLd(blogIndexJsonLd()) }}
           type="application/ld+json"
         />
-        <ArticleIndex
-          showDates={false}
-          heading="Blog"
-          headingId="blog-title"
-          headingLevel={1}
-          items={indexablePosts.map((post) => ({
-            href: postPath(post),
-            title: post.title,
-            dek: post.dek,
-            published: post.published,
-            ...(post.updated ? { updated: post.updated } : {}),
-            eyebrow: post.eyebrow,
-          }))}
-          summary={BLOG_DESCRIPTION}
-        />
+        <BlogCards heading="Blog" headingId="blog-title" posts={indexablePosts} summary={BLOG_DESCRIPTION} />
         <p className="blog-feed-link">
           <a href={BLOG_FEED_PATH}>Subscribe with the Atom feed</a>
         </p>

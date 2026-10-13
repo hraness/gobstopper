@@ -64,11 +64,18 @@ test("omits repository landing markers and keeps real links durable", async () =
   const source = await Bun.file(new URL("../../README.md", import.meta.url)).text();
   const html = renderReadmeHtml(source);
   expect(html).not.toContain("hraness:gobstopper-landing");
-  expect(html).toContain('href="https://github.com/hraness/gobstopper/blob/main/docs/roadmap.md"');
+  expect(html).toContain('href="https://github.com/hraness/gobstopper/blob/main/docs/design.md"');
 });
 
 
 describe("README HTML boundary", () => {
+  test("serves repository images the site hosts from their own routes", () => {
+    const source = "## Why\n\n![Diagram](docs/assets/gob-mechanism.svg)\n\n![Chart](docs/assets/gob-tokens.png)\n";
+    const html = renderReadmeHtml(source, { siteImages: new Map([["docs/assets/gob-mechanism.svg", "/readme/gob-mechanism.svg"]]) });
+    expect(html).toContain('src="/readme/gob-mechanism.svg"');
+    expect(html).toContain('src="https://raw.githubusercontent.com/hraness/gobstopper/main/docs/assets/gob-tokens.png"');
+  });
+
   test("derives stable fragments from parsed heading text", () => {
     const html = renderReadmeHtml([
       "## **Hello** &amp; `world`",
