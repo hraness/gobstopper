@@ -61,7 +61,11 @@ export async function inspectMockupLayout(page, withZoom = false) {
     assert.ok(Math.max(...states.map(state => state.height)) - Math.min(...states.map(state => state.height)) <= 1, 'Every mode and option reserves one stable height');
     samples.push({ index, steps, states });
   }
-  assert.equal(samples.length, new URL(page.url()).pathname === '/' ? 2 : 3, 'Exercise all walkthroughs on the page');
+  const home = new URL(page.url()).pathname === '/';
+  assert.equal(samples.length, home ? 0 : 3, 'Exercise all walkthroughs on the page');
+  // The home page shows its proof as static terminal frames instead of walkthroughs.
+  const frames = home ? await inspectProofFrames(page) : [];
+  if (home) assert.equal(frames.length, 2, 'Home shows the session and saved-session terminals');
   let zoom;
   if (withZoom) {
     const fontSize = await page.evaluate(() => document.documentElement.style.fontSize);
@@ -71,5 +75,28 @@ export async function inspectMockupLayout(page, withZoom = false) {
       assert.ok(await page.evaluate(() => Math.max(document.documentElement.scrollWidth, document.body.scrollWidth) <= innerWidth + 1), '200% text fits the phone viewport');
     } finally { await page.evaluate(value => { document.documentElement.style.fontSize = value; }, fontSize); }
   }
-  return { samples, ...(zoom ? { zoom } : {}) };
+  return { samples, ...(frames.length ? { frames } : {}), ...(zoom ? { zoom } : {}) };
+}
+
+/** Static terminal proof: fits its column, keeps reader-size text, and scrolls only inside its focusable block. */
+async function inspectProofFrames(page) {
+  const frames = await page.locator('.hraness-marketing-proof-frame:is(.gob-session, .gob-plan)').evaluateAll(elements => elements.map(frame => {
+    const pre = frame.querySelector('pre');
+    const column = frame.parentElement.getBoundingClientRect();
+    const box = frame.getBoundingClientRect();
+    return { name: frame.className, width: box.width, left: box.left, right: box.right, columnLeft: column.left, columnRight: column.right,
+      lines: pre ? pre.textContent.trim().split('\n').length : 0,
+      size: pre ? parseFloat(getComputedStyle(pre).fontSize) : 0,
+      minimum: parseFloat(getComputedStyle(document.documentElement).fontSize) * 0.75,
+      focusable: pre?.tabIndex === 0,
+      scrolls: pre ? pre.scrollWidth > pre.clientWidth + 1 : false,
+      contained: pre ? /auto|scroll/.test(getComputedStyle(pre).overflowX) : false };
+  }));
+  for (const frame of frames) {
+    assert.ok(frame.width > 1 && frame.left >= frame.columnLeft - 1 && frame.right <= frame.columnRight + 1, `Terminal frame fits its column: ${JSON.stringify(frame)}`);
+    assert.ok(frame.lines >= 2, `Terminal frame shows its transcript: ${JSON.stringify(frame)}`);
+    assert.ok(frame.size >= frame.minimum - 0.1, `Terminal frame keeps a readable text size: ${JSON.stringify(frame)}`);
+    assert.ok(frame.focusable && (!frame.scrolls || frame.contained), `Wide terminal lines scroll inside a focusable block: ${JSON.stringify(frame)}`);
+  }
+  return frames;
 }
