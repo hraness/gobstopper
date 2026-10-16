@@ -540,7 +540,7 @@ mod tests {
     const ROUTED: &str = "approval_policy = \"on-request\"\nmodel = \"gpt\"\nmodel_provider = \"gobstopper\"\n\n[model_providers.gobstopper]\nname = \"gobstopper\"\nbase_url = \"http://127.0.0.1:18360/backend-api/codex\"\n";
 
     #[test]
-    fn codex_off_then_on_round_trips() {
+    fn switch_codex_off_then_on_round_trips() {
         let off = codex_off(ROUTED).unwrap().unwrap();
         assert!(off.contains(&format!("# model_provider = \"gobstopper\"  {OFF_MARK}\n")));
         let parsed: toml::Table = toml::from_str(&off).unwrap();
@@ -552,7 +552,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_on_inserts_above_first_table_and_respects_other_providers() {
+    fn switch_codex_on_inserts_above_first_table_and_respects_other_providers() {
         let bare = "model = \"gpt\"\n\n[model_providers.gobstopper]\nbase_url = \"x\"\n";
         let CodexOn::Changed(next) = codex_on(bare).unwrap() else {
             panic!("expected a change");
@@ -567,14 +567,14 @@ mod tests {
     }
 
     #[test]
-    fn codex_leaves_provider_lines_inside_tables_alone() {
+    fn switch_codex_leaves_provider_lines_inside_tables_alone() {
         let text = "[profiles.fast]\nmodel_provider = \"gobstopper\"\n";
         assert_eq!(codex_off(text).unwrap(), None);
         assert!(codex_off("model_provider = [").is_err());
     }
 
     #[test]
-    fn codex_ignores_brackets_inside_multi_line_strings() {
+    fn switch_codex_ignores_brackets_inside_multi_line_strings() {
         let text = "notes = \"\"\"\n[not a table]\n\"\"\"\nmodel_provider = \"gobstopper\"\n[model_providers.gobstopper]\nbase_url = \"x\"\n";
         let off = codex_off(text).unwrap().unwrap();
         assert!(off.starts_with("notes = \"\"\"\n[not a table]\n\"\"\"\n# model_provider"));
@@ -587,7 +587,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_port_warning_flags_a_stale_base_url() {
+    fn switch_codex_port_warning_flags_a_stale_base_url() {
         assert_eq!(codex_port_warning(ROUTED, 18360), None);
         assert!(codex_port_warning(ROUTED, 8260).is_some());
         assert_eq!(codex_proxy_port(ROUTED), Some(18360));
@@ -596,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_off_then_on_round_trips() {
+    fn switch_claude_off_then_on_round_trips() {
         let text = "{\n  \"env\": {\n    \"ANTHROPIC_BASE_URL\": \"http://127.0.0.1:8260\"\n  },\n  \"model\": \"opus\"\n}\n";
         let (off, url) = claude_off(text, &[8260]).unwrap().unwrap();
         assert_eq!(url, "http://127.0.0.1:8260");
@@ -609,7 +609,7 @@ mod tests {
     }
 
     #[test]
-    fn claude_off_keeps_other_base_urls() {
+    fn switch_claude_off_keeps_other_base_urls() {
         let text = "{\"env\":{\"ANTHROPIC_BASE_URL\":\"https://gateway.example\",\"X\":\"1\"}}";
         assert_eq!(claude_off(text, &[8260]).unwrap(), None);
         let text = "{\"env\":{\"ANTHROPIC_BASE_URL\":\"http://127.0.0.1:9999\"}}";
