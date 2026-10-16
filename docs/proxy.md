@@ -109,7 +109,12 @@ gobstopper on     # alias: gobstopper enable
 `off` sends Codex and Claude Code straight to their providers, then stops the
 startup service. It comments out `model_provider = "gobstopper"` in
 `~/.codex/config.toml` and removes an `ANTHROPIC_BASE_URL` that points at the
-proxy from `~/.claude/settings.json`. Each edited file keeps its previous copy
+proxy from `~/.claude/settings.json`. Codex resumes each session with the
+provider it started with, so `off` also points the gobstopper provider's
+`base_url` where the proxy sent its requests: by default
+`https://chatgpt.com/backend-api/codex`, or `https://api.openai.com/v1` with an
+API key, and your `--chatgpt-upstream` or `--openai-upstream` when you set one.
+`on` points it back at the proxy. Each edited file keeps its previous copy
 beside it as `<file>.before-gobstopper-off` (or `-on`). Requests already in flight finish
 first. Sessions that are already open keep the route they started with, so
 restart them. `off` cannot edit an `export` in your shell profile; it tells
