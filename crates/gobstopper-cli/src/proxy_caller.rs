@@ -45,7 +45,7 @@ fn numeric_loopback(host: &str) -> bool {
     address == u32::from(std::net::Ipv4Addr::LOCALHOST) as u64
 }
 
-fn loopback_service_url(value: &str, port: u16) -> bool {
+pub(crate) fn loopback_service_url(value: &str, port: u16) -> bool {
     let Some((scheme, rest)) = value.trim().split_once("://") else {
         return false;
     };
@@ -174,6 +174,32 @@ pub(crate) fn refuse(port: u16, allow: bool) -> Result<()> {
         env.push((key.to_owned(), value.to_owned()));
     }
     if let Some(signal) = refusal_signal(port, allow, false, &env) {
+        bail!(DependentCaller(signal));
+    }
+    Ok(())
+}
+
+/// Like [`refuse`], for `gobstopper off`: refuse only when this process
+/// routes through the proxy itself. Running inside an agent (`CLAUDECODE`)
+/// is not enough, because `off` also removes the saved routes.
+pub(crate) fn refuse_routed(port: u16, allow: bool) -> Result<()> {
+    if allow {
+        return Ok(());
+    }
+    let mut env = Vec::new();
+    for (key, value) in std::env::vars_os() {
+        let Some(key) = key.to_str().and_then(canonical_signal_key) else {
+            continue;
+        };
+        if key == "CLAUDECODE" {
+            continue;
+        }
+        let Some(value) = value.to_str() else {
+            bail!(DependentCaller(key));
+        };
+        env.push((key.to_owned(), value.to_owned()));
+    }
+    if let Some(signal) = dependent_signal(port, &env) {
         bail!(DependentCaller(signal));
     }
     Ok(())

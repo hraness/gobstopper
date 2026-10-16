@@ -2,6 +2,10 @@
 
 Each version section is the text of that version's release page: a summary paragraph, then one bullet per change. [`docs/release.md`](docs/release.md) describes how a release page is built from it.
 
+## Unreleased
+
+- `gobstopper off` (alias `disable`) sends Codex and Claude Code straight to their providers and stops the proxy service; `gobstopper on` (alias `enable`) restores the service with its saved port and settings and routes both agents through it again. Edited settings files keep a `.before-gobstopper-off` or `.before-gobstopper-on` copy.
+
 ## v0.8.10 - 2026-10-06
 
 A managed installation whose executable bytes no longer match its verified install receipt repairs itself instead of deadlocking every command.

@@ -25,6 +25,7 @@ mod secrets;
 mod self_update;
 mod session_data;
 mod telemetry;
+mod toggle;
 mod usage;
 mod ux;
 
@@ -252,6 +253,18 @@ enum Cmd {
         /// New file to write the settings to; it must not exist yet.
         #[arg(long)]
         output: Option<PathBuf>,
+    },
+    /// Start the proxy at login and route Codex and Claude Code through it
+    /// again, restoring what `gobstopper off` saved.
+    #[command(alias = "enable")]
+    On,
+    /// Send Codex and Claude Code straight to their providers and stop the
+    /// proxy. Settings are backed up and `gobstopper on` restores them.
+    #[command(alias = "disable")]
+    Off {
+        /// Turn off even when this shell itself routes through the proxy.
+        #[arg(long)]
+        allow_dependent_caller: bool,
     },
     /// Handle a provider hook callback (reads hook JSON on stdin).
     /// Invoked by provider hook configs, not by users.
@@ -5771,6 +5784,16 @@ fn run(cli: Cli) -> Result<()> {
         } => cmd_cache_edits(&cli, &cfg, session, *trigger, *floor, *plan),
         Cmd::InstallHooks { output } => cmd_install_hooks(false, &roots(&cli), output.as_deref()),
         Cmd::UninstallHooks { output } => cmd_install_hooks(true, &roots(&cli), output.as_deref()),
+        Cmd::On => {
+            let r = roots(&cli);
+            toggle::on(&r.codex_home, &r.claude_home)
+        }
+        Cmd::Off {
+            allow_dependent_caller,
+        } => {
+            let r = roots(&cli);
+            toggle::off(&r.codex_home, &r.claude_home, *allow_dependent_caller)
+        }
         Cmd::Hook { event } => cmd_hook(&cli, &cfg, event),
         Cmd::Report {
             strict,

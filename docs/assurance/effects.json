@@ -3,6 +3,7 @@
   "baseline_revision": "ffc71480564f0d0077f27e59a04df3174d5335ef",
   "scope": "Potential direct and delegated effects by current public surface. Conditions distinguish CLI branches and library caller responsibility; no blanket sandbox/read-only claim.",
   "profiles": [
+    {"id": "agent-routing", "owner": "CLI toggle", "reads": ["config", "service_state"], "writes": [{"state": "config", "mode": "replace", "condition": "Explicit on/off rewrites only the top-level Codex model_provider line and the Claude Code env.ANTHROPIC_BASE_URL key when it is a loopback proxy URL. Every edit is planned and re-parsed before any write, compare-before-replace refuses a concurrently changed file, and the prior bytes are kept beside it as <file>.before-gobstopper-<action>."}, {"state": "service_state", "mode": "create_replace", "condition": "paused.json records the service port, serve arguments and removed Claude URL before any client edit or service change."}, {"state": "output", "mode": "emit", "condition": "Per-agent outcome and backup paths; no settings content beyond the proxy URL."}], "outbound": [], "authority": "Explicit gobstopper on/off by the current user; off refuses when this process itself routes through the proxy unless overridden.", "invariants": ["ID-1", "REC-2", "PRIV-1"], "assumptions": ["A-OS", "A-FS", "A-AUTH"], "source": [{"path": "crates/gobstopper-cli/src/toggle.rs", "anchor": "pub(crate) fn off"}, {"path": "crates/gobstopper-cli/src/toggle.rs", "anchor": "pub(crate) fn on"}], "status": "source_reviewed", "bounds": "One Codex config.toml and one Claude settings.json under the selected homes; multi-line TOML strings are not treated as table headers.", "exclusions": ["No shell profile edits", "No project-level settings files", "Open sessions keep their original route"], "evidence": ["E-EVERLASTING-SOURCE"], "next_gate": "C15"},
     {
       "id": "ci-browser-acquisition",
       "owner": "CI workflow",
@@ -3288,6 +3289,8 @@
     }
   ],
   "cli": [
+    {"name": "On", "effects": ["agent-routing", "launch-agent", "service-inspect", "output", "native-update-storage", "native-update-network"], "contract": "Install or repair the managed proxy service on the port saved by off, then restore Codex model_provider and the saved Claude Code base URL (rewritten to the current port if it changed). Edits are validated before the service is touched.", "source": {"path": "crates/gobstopper-cli/src/main.rs", "anchor": "enum Cmd"}},
+    {"name": "Off", "effects": ["agent-routing", "launch-agent", "service-inspect", "output", "native-update-storage", "native-update-network"], "contract": "Unroute Codex and Claude Code from the proxy, record the port, serve arguments and removed URL, then uninstall the managed service with its drain. All edits are validated before any write; a failed uninstall reports that clients were already unrouted.", "source": {"path": "crates/gobstopper-cli/src/main.rs", "anchor": "enum Cmd"}},
     {
       "name": "Detect",
       "effects": [
@@ -4240,6 +4243,12 @@
     }
   ],
   "library_callables": [
+    {"path": "crates/gobstopper-cli/src/toggle.rs", "symbol": "off", "effects": ["agent-routing", "launch-agent"]},
+    {"path": "crates/gobstopper-cli/src/toggle.rs", "symbol": "on", "effects": ["agent-routing", "launch-agent"]},
+    {"path": "crates/gobstopper-cli/src/proxy_agent.rs", "symbol": "installed_service", "effects": ["inspect"]},
+    {"path": "crates/gobstopper-cli/src/proxy_agent.rs", "symbol": "service_root", "effects": ["inspect"]},
+    {"path": "crates/gobstopper-cli/src/proxy_caller.rs", "symbol": "refuse_routed", "effects": ["runtime-input"]},
+    {"path": "crates/gobstopper-cli/src/proxy_caller.rs", "symbol": "loopback_service_url", "effects": ["pure"]},
     {
       "path": "crates/gobstopper-cli/src/clef.rs",
       "symbol": "endpoint",

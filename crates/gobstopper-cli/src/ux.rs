@@ -202,6 +202,7 @@ pub(crate) fn bare_text() -> String {
          \x20 gobstopper plan <session>      Preview a compaction; changes nothing\n\
          \x20 gobstopper proxy run -- claude Compact requests while you work\n\
          \x20 gobstopper proxy install       Start the proxy at login\n\
+         \x20 gobstopper on | off           Turn the proxy and agent routing on or off\n\
          \n\
          Everyday\n\
          \x20 gobstopper apply <session>     Write a smaller copy; keeps the original\n\
@@ -228,6 +229,8 @@ Start here
   data              Inspect local sessions, tool calls, and usage
   usage             Token use across all your agents, by day (from aicharts)
   apply             Write a smaller copy of a session; keeps the original
+  on                Start the proxy and route Codex and Claude Code through it
+  off               Send agents straight to their providers and stop the proxy
 
 Sessions and snapshots
   verify            Check a transcript for problems that would break resume
