@@ -3813,6 +3813,17 @@ pub fn uninstall() -> Result<()> {
     Ok(())
 }
 
+/// The installed service's port and serve arguments, if any.
+pub(crate) fn installed_service() -> Result<Option<(u16, Vec<String>)>> {
+    let p = paths(Platform::current()?)?;
+    Ok(load(&p)?.map(|m| (m.port, m.serve_args)))
+}
+
+/// Folder that holds the service manifest and its backups.
+pub(crate) fn service_root() -> Result<PathBuf> {
+    Ok(paths(Platform::current()?)?.root)
+}
+
 pub fn installed() -> bool {
     Platform::current()
         .and_then(paths)

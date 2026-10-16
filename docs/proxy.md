@@ -99,6 +99,26 @@ written definitions are not overwritten without an exact supported migration.
 See [startup, recovery, and sleep behavior](service.md) for platform prerequisites,
 legacy Mac migration, logs and rollback.
 
+## Turn it on or off
+
+```sh
+gobstopper off    # alias: gobstopper disable
+gobstopper on     # alias: gobstopper enable
+```
+
+`off` sends Codex and Claude Code straight to their providers, then stops the
+startup service. It comments out `model_provider = "gobstopper"` in
+`~/.codex/config.toml` and removes an `ANTHROPIC_BASE_URL` that points at the
+proxy from `~/.claude/settings.json`. Each edited file keeps its previous copy
+beside it as `<file>.before-gobstopper-off` (or `-on`). Requests already in flight finish
+first. Sessions that are already open keep the route they started with, so
+restart them. `off` cannot edit an `export` in your shell profile; it tells
+you when one is set.
+
+`on` installs the service again with the port and settings `off` saved, then
+restores both routes. If Codex has no `[model_providers.gobstopper]` table yet,
+add it as shown under [Codex](#codex).
+
 For a difficult phase, use [temporary context budgets](context-budgets.md).
 For local usage, throughput, tool activity and portable exports, see
 [session data](session-data.md).
@@ -582,7 +602,7 @@ For the service itself, see [diagnose, repair, and remove](service.md#diagnose-r
 | Claude Code still uses the proxy after you remove the export | An `ANTHROPIC_BASE_URL` in the `env` block of a Claude Code settings file applies over the shell. Run `/status` in Claude Code to see the base URL in use, then remove the entry from `~/.claude/settings.json` or the project's settings file. |
 | Claude Code uses an API key instead of your claude.ai sign-in | `ANTHROPIC_API_KEY` is set. Claude Code uses it instead of a subscription sign-in, with or without the proxy. Run `unset ANTHROPIC_API_KEY` to use the sign-in. |
 | Codex requests do not reach the proxy | Put `model_provider = "gobstopper"` at the top level of `~/.codex/config.toml`, above the first table, and check that `base_url` ends in `/backend-api/codex` with ChatGPT sign-in or `/v1` with an API key. Codex ignores `model_provider` and `model_providers` in a project's `.codex/config.toml`. |
-| Codex cannot reach a stopped proxy | Codex has no direct fallback. `codex -c model_provider=openai` runs one session without the proxy; otherwise repair the proxy. `gobstopper proxy launch --client codex` refuses to start Codex until the proxy is healthy. |
+| Codex cannot reach a stopped proxy | Codex has no direct fallback. `gobstopper off` sends Codex straight to OpenAI until you run `gobstopper on`. `codex -c model_provider=openai` runs one session without the proxy; otherwise repair the proxy. `gobstopper proxy launch --client codex` refuses to start Codex until the proxy is healthy. |
 | `gobstopper proxy launch` reports `Custom client upstream is configured` | An environment variable or a client settings file sets a base URL that is neither the provider's nor this proxy's. The launcher reads the user settings, managed settings, and the project settings in the working directory and each of its parents. For Codex, match `--codex-auth` to the provider block: `chatgpt` for a `base_url` ending in `/backend-api/codex`, `api-key` for one ending in `/v1`. |
 | Claude Code compacts its own history while the proxy is running | The proxy threshold must stay below Claude Code's trigger. Lower `--threshold`, especially after setting `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`; see [Choosing a threshold](#choosing-a-threshold). |
 | `gobstopper proxy status` shows no compacted requests | Compaction starts only when a supported request crosses the threshold, 128,000 estimated tokens by default, so a short session can report zero. Preview a recorded session with `gobstopper proxy replay <session> --threshold N`. |
