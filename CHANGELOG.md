@@ -5,6 +5,7 @@ Each version section is the text of that version's release page: a summary parag
 ## Unreleased
 
 - `gobstopper off` (alias `disable`) sends Codex and Claude Code straight to their providers and stops the proxy service; `gobstopper on` (alias `enable`) restores the service with its saved port and settings and routes both agents through it again. Edited settings files keep a `.before-gobstopper-off` or `.before-gobstopper-on` copy.
+- `gobstopper off` also points Codex's gobstopper provider where the proxy sent its requests, so sessions started through the proxy work when you resume them; `gobstopper on` points it back at the proxy, on its current port.
 
 ## v0.8.10 - 2026-10-06
 

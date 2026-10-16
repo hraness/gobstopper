@@ -476,8 +476,8 @@
     }
    ],
    "receipt": {
-    "path": "docs/assurance/receipts/2026-10-16-on-off-core.json",
-    "sha256": "411615fd020c217d32ba8668feac5d230e5f0ba3c0484a9f136d35f6690f716e"
+    "path": "docs/assurance/receipts/2026-10-17-pinned-threads-core.json",
+    "sha256": "52635e1020bdb713fe0d875457e83019b30421e8ce461bf7655f129008eb9693"
    }
   },
   {
@@ -560,8 +560,8 @@
     }
    ],
    "receipt": {
-    "path": "docs/assurance/receipts/2026-10-16-on-off-stress.json",
-    "sha256": "b51bef50dd5d6f4b13c717ef80ad9dabeff0924907b4b99c4baea11193783deb"
+    "path": "docs/assurance/receipts/2026-10-17-pinned-threads-stress.json",
+    "sha256": "20ad2d032d8e186555851c8d63b95c0ccb1b8ed0bd1764d02cc5d439439c7450"
    }
   },
   {
