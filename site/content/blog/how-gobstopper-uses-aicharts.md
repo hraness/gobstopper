@@ -1,3 +1,5 @@
+**Archived November 2, 2026.** The aicharts collector is retired. The Gobstopper installer installs Gobstopper only. If aicharts is already installed, `gobstopper usage disable` stops collection and keeps the local record. The article below describes the integration as published on October 4, 2026.
+
 Gobstopper sees the requests that pass through its proxy. Your coding agents also run sessions that never touch it: a Codex run in another terminal, a Claude Code session started before the proxy, or another agent entirely. `gobstopper usage` covers all of them by reading [aicharts](https://aicharts.io/usage), which keeps a daily record of token use on your computer.
 
 ## What the installer sets up
