@@ -52,7 +52,9 @@ export default async function BlogPost({ params }: Readonly<{ params: Params }>)
                   checkedOn: source.checkedOn,
                 }))}
               />
-              <ArticleRelatedProducts items={articleRelatedProducts} />
+              {articleRelatedProducts.length > 0 && (
+                <ArticleRelatedProducts items={articleRelatedProducts} />
+              )}
             </>
           )}
           author={{ kind: "organization", name: "Hraness", href: "https://hraness.com" }}

@@ -216,6 +216,16 @@ describe("Gobstopper blog", () => {
     }
   });
 
+  test("rendered articles omit an empty related-products section", () => {
+    expect(articleRelatedProducts).toHaveLength(0);
+    for (const post of blogPosts) {
+      const html = renderToStaticMarkup(<BlogPostBody post={post} />);
+      expect(html).toContain('data-hraness-landscape="page"');
+      expect(html).not.toContain('id="article-related-products"');
+      expect(html).not.toContain("plain-publication__related-products");
+    }
+  });
+
   test("the retired aicharts integration is archived with its original article", () => {
     const post = blogPosts.find((item) => item.slug === "how-gobstopper-uses-aicharts")!;
     expect(post.admission.lifecycle).toBe("archived");
