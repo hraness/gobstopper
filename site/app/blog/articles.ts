@@ -314,11 +314,11 @@ const aicharts: BlogPost = {
       { url: "/blog/gobstopper-on-terminal-bench", distinction: "That post measures compaction on a benchmark; this one explains where everyday token totals come from." },
     ],
     sources: [
-      source("gobstopper usage: the five forwarded aicharts history commands", repo("crates/gobstopper-cli/src/usage.rs"), "2026-10-04"),
-      source("Installer: pinned aicharts digests, signature check and first-install history", repo("scripts/install.sh"), "2026-10-04"),
-      source("Session data: what gobstopper data counts and how it relates to gobstopper usage", repo("docs/session-data.md"), "2026-10-04"),
+      source("gobstopper usage: the five forwarded aicharts history commands", "https://github.com/hraness/gobstopper/blob/1aa71294f35d07ff81c82a7e133d0c2a3a220939/crates/gobstopper-cli/src/usage.rs", "2026-10-04"),
+      source("Installer: pinned aicharts digests, signature check and first-install history", "https://github.com/hraness/gobstopper/blob/1aa71294f35d07ff81c82a7e133d0c2a3a220939/scripts/install.sh", "2026-10-04"),
+      source("Session data: what gobstopper data counts and how it relates to gobstopper usage", "https://github.com/hraness/gobstopper/blob/1aa71294f35d07ff81c82a7e133d0c2a3a220939/docs/session-data.md", "2026-10-04"),
       source("Gobstopper v0.8.6 release", "https://github.com/hraness/gobstopper/releases/tag/v0.8.6", "2026-10-04"),
-      source("aicharts usage history and agent queries", repo("docs/usage-history.md", "aicharts"), "2026-10-04"),
+      source("aicharts usage history and agent queries", "https://github.com/hraness/aicharts/blob/66b7d3079b3f8fcc8945d046401c5f147c2f4a16/docs/usage-history.md", "2026-10-04"),
       source("aicharts CLI 0.3.1 release", "https://github.com/hraness/aicharts/releases/tag/cli-v0.3.1", "2026-10-04"),
     ],
     observations: [

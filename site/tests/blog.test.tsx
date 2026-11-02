@@ -235,6 +235,26 @@ describe("Gobstopper blog", () => {
     expect(indexablePosts).not.toContain(post);
   });
 
+  test("the archived integration cites immutable reviewed source files", () => {
+    const post = blogPosts.find((item) => item.slug === "how-gobstopper-uses-aicharts")!;
+    const reviewedCommits: Readonly<Record<string, string>> = {
+      gobstopper: "1aa71294f35d07ff81c82a7e133d0c2a3a220939",
+      aicharts: "66b7d3079b3f8fcc8945d046401c5f147c2f4a16",
+    };
+    const files = post.admission.sources.map((source) => new URL(source.url))
+      .filter((url) => url.hostname === "github.com" && url.pathname.includes("/blob/"));
+    expect(files).toHaveLength(4);
+    const html = renderToStaticMarkup(<BlogPostBody post={post} />);
+    for (const url of files) {
+      const match = /^\/hraness\/(gobstopper|aicharts)\/blob\/([a-f0-9]{40})\/(.+)$/u.exec(url.pathname);
+      if (match === null) throw new Error(`Archived source must name an immutable reviewed commit: ${url.href}`);
+      expect(match[2]).toBe(reviewedCommits[match[1]!]);
+      expect(url.search).toBe("");
+      expect(url.hash).toBe("");
+      expect(html).toContain(`href="${url.href}"`);
+    }
+  });
+
   test("sitemap, feed, index, and llms.txt list exactly the indexable posts", async () => {
     const indexable = indexablePosts.map((post) => `https://gobstopper.sh${postPath(post)}`).sort();
     const hidden = blogPosts.filter((post) => !indexablePosts.includes(post)).map((post) => `https://gobstopper.sh${postPath(post)}`);
