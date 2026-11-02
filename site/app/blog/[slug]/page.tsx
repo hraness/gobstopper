@@ -5,12 +5,12 @@ import {
   ArticleSources,
   MarketingArticle,
 } from "@hraness/design-kit/react/server";
-import { relatedFor } from "@hraness/design-kit/portfolio";
 
 import { SiteFooter, SiteHeader } from "../../_components/site-chrome";
 import { serializeJsonLd } from "../../_lib/site";
 import { blogPosts, findPost, postHtml, postPath, postProvenance, postToc } from "../articles";
 import { postJsonLd, postMetadata } from "../discovery";
+import { articleRelatedProducts } from "../related-products";
 import { IntroducingBody } from "../introducing/body";
 import "../post-media.css";
 
@@ -52,7 +52,7 @@ export default async function BlogPost({ params }: Readonly<{ params: Params }>)
                   checkedOn: source.checkedOn,
                 }))}
               />
-              <ArticleRelatedProducts items={relatedFor("gobstopper")} />
+              <ArticleRelatedProducts items={articleRelatedProducts} />
             </>
           )}
           author={{ kind: "organization", name: "Hraness", href: "https://hraness.com" }}

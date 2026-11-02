@@ -9,7 +9,6 @@ import {
   assertArticleAdmissions,
   type ArticleAdmission,
 } from "@hraness/design-kit";
-import { relatedFor } from "@hraness/design-kit/portfolio";
 import { NOINDEX_ROBOTS } from "@hraness/web-discovery";
 
 import {
@@ -26,6 +25,7 @@ import {
   type MarkdownSlug,
 } from "../app/blog/articles";
 import { blogAtomFeed, blogIndexJsonLd, postJsonLd, postMetadata } from "../app/blog/discovery";
+import { articleRelatedProducts } from "../app/blog/related-products";
 import BlogIndex from "../app/blog/page";
 import BlogPost from "../app/blog/[slug]/page";
 import sitemap from "../app/sitemap";
@@ -180,7 +180,7 @@ describe("Gobstopper blog", () => {
       }
       expect(html).not.toContain("<time");
       expect(post.admission.humanReview).toEqual({ reviewer: "Ben Guo", reviewerType: "human-editor", reviewedOn: "2026-10-04" });
-      for (const item of relatedFor("gobstopper")) expect(html).toContain(item.href);
+      for (const item of articleRelatedProducts) expect(html).toContain(item.href);
       expect(html).toContain('"@type":"BlogPosting"');
     }
   });
@@ -207,6 +207,22 @@ describe("Gobstopper blog", () => {
       // Hraness publishes the blog; Gobstopper is the product, not an organization.
       expect(schema.publisher).toMatchObject({ "@type": "Organization", name: "Hraness", url: "https://hraness.com" });
     }
+  });
+
+  test("related cards omit the retired installer relationship", () => {
+    expect(articleRelatedProducts.map((item) => item.productId)).not.toContain("aicharts");
+    for (const item of articleRelatedProducts) {
+      expect(item.relationship).not.toContain("installer adds aicharts");
+    }
+  });
+
+  test("the retired aicharts integration is archived with its original article", () => {
+    const post = blogPosts.find((item) => item.slug === "how-gobstopper-uses-aicharts")!;
+    expect(post.admission.lifecycle).toBe("archived");
+    expect(postHtml(post)).toContain("Archived November 2, 2026.");
+    expect(postHtml(post)).toContain("The aicharts collector is retired.");
+    expect(postMetadata(post).robots).toEqual(NOINDEX_ROBOTS);
+    expect(indexablePosts).not.toContain(post);
   });
 
   test("sitemap, feed, index, and llms.txt list exactly the indexable posts", async () => {

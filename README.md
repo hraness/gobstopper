@@ -445,24 +445,20 @@ imports, backups and metric denominators.
 These controls have functional regression tests; the September 28 benchmark
 predates them and does not measure their effect on task accuracy.
 
-### Token use across your agents
+### Earlier aicharts records
 
-`gobstopper usage` shows your token use across coding agents by day, agent,
-provider and model, including agents that never pass through the proxy. The
-numbers come from [aicharts](https://aicharts.io), which keeps a daily record
-on your computer and uploads nothing. The installer below adds `aicharts` and
-turns that record on; after another install method,
-[get aicharts](https://aicharts.io/usage).
+Earlier Gobstopper installations may include the retired aicharts collector.
+With that collector installed, `gobstopper usage`
+reads its local history. These commands read the record or stop collection
+without deleting it:
 
 ```sh
-gobstopper usage                        # the last 30 days, per agent
-gobstopper usage report --days 7 --csv  # one row per day, agent and model
-gobstopper usage enable                 # collect four times a day
+gobstopper usage report --days 7 --csv
+gobstopper usage disable
 ```
 
-Agents can read the same record through `aicharts mcp`. `gobstopper data`
-counts what the proxy saw, so some requests appear in both; read them side by
-side rather than adding them together.
+`gobstopper data` reads the proxy's own observations. Some requests can appear
+in both records, so read them side by side rather than adding them together.
 
 ## Recoverable history
 
@@ -584,17 +580,6 @@ curl -fsSL https://gobstopper.sh/install.sh | sh
 # Windows (x86_64), in PowerShell: installs to %LOCALAPPDATA%\Programs\gobstopper\bin, no administrator rights
 irm https://gobstopper.sh/install.ps1 | iex
 ```
-
-On macOS (Apple silicon) and Linux x86_64, `install.sh` also adds `aicharts`
-beside `gobstopper`, checked against a pinned SHA-256 digest and, on macOS,
-its Developer ID signature. On a first install it turns on local usage
-history: daily token totals for your agents, kept on this computer and never
-uploaded. `aicharts history disable` turns it off. It also turns on
-aicharts' daily self-update check, which installs a new release only after
-verifying it; `aicharts update disable` turns that off, or set
-`GOBSTOPPER_AICHARTS_UPDATE=no` before installing. Set
-`GOBSTOPPER_USAGE_HISTORY=no` to leave history off, or `GOBSTOPPER_AICHARTS=no`
-to skip aicharts.
 
 Set `GOBSTOPPER_VERSION=X.Y.Z` to install one exact release. The installers
 check each download against the release's SHA-256 file; [docs/release.md](docs/release.md)
