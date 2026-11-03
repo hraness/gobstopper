@@ -5,7 +5,7 @@
   "portfolio": {
     "contract": "hraness.portfolio-public/v1",
     "url": "https://hraness.com/portfolio.json",
-    "digest": "sha256:f2b09b8321e38937091bb7ac0cfc271da4bbaca79ff53b56eadf45d96a63937b"
+    "digest": "sha256:8b24ad53625f30af960016d667022ca868301c71def98ab525e8acb161c388ba"
   },
   "messaging": {
     "formatVersion": 1,
@@ -147,31 +147,6 @@
         },
         "short": "Memory framework that organizes what agents learn into a traceable ontology",
         "tagline": "Ontology-driven memory for agents"
-      }
-    },
-    {
-      "id": "algal",
-      "name": "ALGAL",
-      "description": "durable agent programs that pause for approval, resume after restart, and replay",
-      "canonicalUrl": "https://algal.computer",
-      "surface": {
-        "actionLabel": "explore ALGAL",
-        "interfaces": [
-          "CLI",
-          "SDK"
-        ],
-        "proof": "content-addressed programs, capabilities with declared limits, and replayable run receipts"
-      },
-      "messaging": {
-        "names": {
-          "name": "ALGAL",
-          "command": "algal",
-          "formerly": [
-            "Morphogen"
-          ]
-        },
-        "short": "Durable agent programs that pause for approval, resume after restart, and replay",
-        "tagline": "A programming language for agents that run for weeks"
       }
     },
     {
@@ -846,28 +821,12 @@
       "detail": "The public Suite Accounts package validates the protocol spoken by products and the Accounts authority."
     },
     {
-      "source": "message-like-me",
-      "target": "algal",
-      "kind": "runtime",
-      "label": "runs reply habitats on",
-      "direction": "forward",
-      "detail": "TextButler's opt-in per-contact habitats run as ALGAL programs: a candidate reply plan replaces the current one only after a blind replay shows no regression, and no plan can change the recipient, provider, or permissions."
-    },
-    {
       "source": "kb",
       "target": "oh-computer",
       "kind": "runtime",
       "label": "answers graph queries with",
       "direction": "forward",
       "detail": "Wordcell rebuilds a disposable Oh graph from your Markdown to answer named graph queries with source proofs; Markdown and Git stay the record, and search does not use Oh's memory retrieval."
-    },
-    {
-      "source": "pattern-language",
-      "target": "algal",
-      "kind": "development",
-      "label": "runs studies with",
-      "direction": "forward",
-      "detail": "Pattern Language uses ALGAL so its design experiments stay inspectable: content-addressed manifests and records you can replay."
     },
     {
       "source": "message-like-me",
@@ -895,14 +854,6 @@
     },
     {
       "source": "lifedaysleft",
-      "target": "cli-update",
-      "kind": "runtime",
-      "label": "updates installed CLI",
-      "direction": "forward",
-      "detail": "The installed CLI verifies release files and installation ownership before updating, preserving saved preferences and version pins."
-    },
-    {
-      "source": "algal",
       "target": "cli-update",
       "kind": "runtime",
       "label": "updates installed CLI",

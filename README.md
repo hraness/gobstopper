@@ -213,7 +213,7 @@ prepares a separate copy. The [published
 studies](https://gobstopper.sh/benchmarks) report context reduction,
 retention, no-op cases, and limitations separately.
 
-For saved-session edits, Gobstopper keeps the exact source in a local vault before writing a smaller copy, so a compaction is a recorded edit you can recover from rather than a silent loss: the design every Hraness project shares. [The thread through hraness](https://hraness.com/writing/the-thread-through-hraness) follows that design across the projects, and the [ALGAL vision](https://algal.computer/docs/vision/) states the bet behind it.
+For saved-session edits, Gobstopper keeps the exact source in a local vault before writing a smaller copy, so a compaction is a recorded edit you can recover from rather than a silent loss: the design every Hraness project shares. [The thread through hraness](https://hraness.com/writing/the-thread-through-hraness) follows that design across the projects, and the [archived ALGAL vision](https://github.com/hraness/algal/blob/ae129f2c5a5b39ed8fdc4dad2436b306cbbe1494/docs/vision.md) states the bet behind it.
 
 ## Compact live coding-agent requests
 
