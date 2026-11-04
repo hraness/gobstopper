@@ -5,7 +5,7 @@
   "portfolio": {
     "contract": "hraness.portfolio-public/v1",
     "url": "https://hraness.com/portfolio.json",
-    "digest": "sha256:8b24ad53625f30af960016d667022ca868301c71def98ab525e8acb161c388ba"
+    "digest": "sha256:92bf3b4e0670efab9b75b72b2cad51c0c8a56db1854f47ebe61a11aee2606093"
   },
   "messaging": {
     "formatVersion": 1,
@@ -150,28 +150,6 @@
       }
     },
     {
-      "id": "valhalla",
-      "name": "Valhalla",
-      "description": "chat rooms for agents and their people, with identity and hosts you choose",
-      "canonicalUrl": "https://vhalla.com",
-      "surface": {
-        "actionLabel": "explore Valhalla",
-        "interfaces": [
-          "CLI",
-          "web app"
-        ],
-        "proof": "an early Rust project for signed agent chat and browser participation"
-      },
-      "messaging": {
-        "names": {
-          "name": "Valhalla",
-          "command": "vhalla"
-        },
-        "short": "Chat rooms for agents and their people, with identity and hosts you choose",
-        "tagline": "Rooms where agents and people meet, run by you"
-      }
-    },
-    {
       "id": "peopleblade",
       "name": "PeopleBlade",
       "description": "local personal crm that your agent runs from the command line",
@@ -191,27 +169,6 @@
         },
         "short": "Local personal CRM that your agent runs from the command line",
         "tagline": "The contact book you own, built for your agent"
-      }
-    },
-    {
-      "id": "message-like-me",
-      "name": "TextButler",
-      "description": "ai butler for the imessage, whatsapp, and beeper chats you choose",
-      "canonicalUrl": "https://textbutler.app",
-      "surface": {
-        "actionLabel": "open TextButler",
-        "interfaces": [
-          "CLI"
-        ],
-        "proof": "marked replies in the one-to-one chats you turn on, with notes kept on your Mac"
-      },
-      "messaging": {
-        "names": {
-          "name": "TextButler",
-          "command": "textbutler"
-        },
-        "short": "AI butler for the iMessage, WhatsApp, and Beeper chats you choose",
-        "tagline": "A marked AI butler for your messages"
       }
     },
     {
@@ -238,30 +195,6 @@
         },
         "short": "Lets agents drive websites fast through named actions, holding no password",
         "tagline": "Drive websites fast, by name, with no password"
-      }
-    },
-    {
-      "id": "soulscrape",
-      "name": "Soulscrape",
-      "description": "free agent skill that writes dated dossiers on people, companies, and products",
-      "canonicalUrl": "https://soulscrape.com",
-      "surface": {
-        "actionLabel": "open Soulscrape",
-        "interfaces": [
-          "Agent Skill"
-        ],
-        "proof": "a dated subject model with cited evidence and open questions"
-      },
-      "messaging": {
-        "names": {
-          "name": "Soulscrape",
-          "command": "@hraness/soulscrape",
-          "formerly": [
-            "Ensoul"
-          ]
-        },
-        "short": "Free agent skill that writes dated dossiers on people, companies, and products",
-        "tagline": "Evidence-backed dossiers about people"
       }
     },
     {
@@ -631,14 +564,6 @@
       "direction": "forward"
     },
     {
-      "source": "wrench",
-      "target": "message-like-me",
-      "kind": "contract",
-      "label": "exports private bundles",
-      "direction": "forward",
-      "detail": "GhostGet produces bounded multi-account Beeper bundles that TextButler verifies and ingests locally."
-    },
-    {
       "source": "peopleblade",
       "target": "wrench",
       "kind": "runtime",
@@ -647,14 +572,6 @@
       "detail": "PeopleBlade uses GhostGet to read contacts and search results from connected accounts such as Beeper and WhatsApp, and checks each result before saving it locally."
     },
     {
-      "source": "message-like-me",
-      "target": "peopleblade",
-      "kind": "contract",
-      "label": "shared bundle format",
-      "direction": "shared",
-      "detail": "Both tools read and write the same versioned TextButler local message bundle format without importing each other's private state."
-    },
-    {
       "source": "gobstopper",
       "target": "ui",
       "kind": "runtime",
@@ -669,28 +586,6 @@
       "direction": "forward"
     },
     {
-      "source": "soulscrape",
-      "target": "ui",
-      "kind": "runtime",
-      "label": "uses",
-      "direction": "forward"
-    },
-    {
-      "source": "soulscrape",
-      "target": "design-kit",
-      "kind": "runtime",
-      "label": "uses",
-      "direction": "forward"
-    },
-    {
-      "source": "soulscrape",
-      "target": "peopleblade",
-      "kind": "contract",
-      "label": "exports dossier packets",
-      "direction": "forward",
-      "detail": "Soulscrape exports dated dossier packets that PeopleBlade imports and rebinds to contacts during local merge review."
-    },
-    {
       "source": "wrench",
       "target": "ui",
       "kind": "runtime",
@@ -699,20 +594,6 @@
     },
     {
       "source": "wrench",
-      "target": "design-kit",
-      "kind": "runtime",
-      "label": "uses",
-      "direction": "forward"
-    },
-    {
-      "source": "message-like-me",
-      "target": "ui",
-      "kind": "runtime",
-      "label": "uses",
-      "direction": "forward"
-    },
-    {
-      "source": "message-like-me",
       "target": "design-kit",
       "kind": "runtime",
       "label": "uses",
@@ -829,14 +710,6 @@
       "detail": "Wordcell rebuilds a disposable Oh graph from your Markdown to answer named graph queries with source proofs; Markdown and Git stay the record, and search does not use Oh's memory retrieval."
     },
     {
-      "source": "message-like-me",
-      "target": "wrench",
-      "kind": "runtime",
-      "label": "reads and sends messages through",
-      "direction": "forward",
-      "detail": "Messages reach TextButler through GhostGet, a separate Mac tool you install first for messaging sign-in and permissions, and TextButler's marked replies go back the same way."
-    },
-    {
       "source": "peopleblade",
       "target": "cli-update",
       "kind": "runtime",
@@ -854,14 +727,6 @@
     },
     {
       "source": "lifedaysleft",
-      "target": "cli-update",
-      "kind": "runtime",
-      "label": "updates installed CLI",
-      "direction": "forward",
-      "detail": "The installed CLI verifies release files and installation ownership before updating, preserving saved preferences and version pins."
-    },
-    {
-      "source": "valhalla",
       "target": "cli-update",
       "kind": "runtime",
       "label": "updates installed CLI",

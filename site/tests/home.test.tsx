@@ -35,6 +35,20 @@ test("every public route has one optional support footer without product signup"
   }
 });
 
+test("public pages do not link to retired project sites", () => {
+  const retiredDomains = ["xcb.sh", "vhalla.com", "textbutler.app", "soulscrape.com"];
+  for (const Page of [Home, Docs, BlogIndex, Benchmarks]) {
+    const html = renderToStaticMarkup(<RootLayout><Page /></RootLayout>);
+    const retiredLinks = [...html.matchAll(/\bhref="([^"]+)"/gu)].flatMap((match) => {
+      const url = new URL(match[1]!.replaceAll("&amp;", "&"), "https://gobstopper.sh");
+      return retiredDomains.some((domain) => url.hostname === domain || url.hostname.endsWith(`.${domain}`))
+        ? [url.href]
+        : [];
+    });
+    expect(retiredLinks).toEqual([]);
+  }
+});
+
 test("the homepage shares the README identity and installs the release for each platform", () => {
   const html = renderToStaticMarkup(<Home />);
   // Syntax highlighting wraps command tokens in spans; compare visible text.
@@ -164,13 +178,6 @@ test("inline answer markup renders code and site links, and strips both for stru
   expect(html).toBe('<p>Run <code>gobstopper proxy</code>; see <a href="/compare/cliffcompaction">the table</a> and [x](https://example.com).</p>');
   expect(plainInline("Run `a`; see [the table](/compare/x).")).toBe("Run a; see the table.");
   expect(plainInline("no markup")).toBe("no markup");
-});
-
-test("the related block lists only products with a registered relation", () => {
-  const html = renderToStaticMarkup(<Home />);
-  expect(html).toContain("Other tools from our studio");
-  expect(html).toContain('href="https://xcb.sh"');
-  expect(html).not.toContain("More from Hraness.");
 });
 
 test("the application node names Hraness as publisher and a free offer", () => {

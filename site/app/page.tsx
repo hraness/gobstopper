@@ -3,14 +3,12 @@ import {
   MarketingPage,
   MarketingProofFrame,
   MarketingQuestionList,
-  MarketingRelated,
   MarketingSection,
   MarketingStatStrip,
   ProductHero,
   ProviderMarkChip,
   SyntaxCode,
 } from "@hraness/design-kit/react/server";
-import { portfolioRelatedGroups } from "@hraness/design-kit/portfolio";
 import { PlatformBadges, PlatformInstall } from "@hraness/design-kit/react";
 
 import { FounderNote } from "./_components/founder-note";
@@ -252,12 +250,6 @@ export default function Home() {
             id="questions"
             label="Questions"
             questions={questions.map(({ answer, question }) => ({ answer: <p>{renderInline(answer)}</p>, question }))}
-          />
-          <MarketingRelated
-            className="gob-related"
-            groups={portfolioRelatedGroups(["xcb"])}
-            heading={productMessaging.headings["home-related"]}
-            headingId="related-title"
           />
         </MarketingPage>
       </main>
